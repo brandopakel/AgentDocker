@@ -1,0 +1,116 @@
+# AgentDocker
+
+**Docker for AI agents.** One daemon that creates, supervises, organises, and — above all — connects every agent running on your machines, whatever model or vendor is behind it.
+
+Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
+
+> Status: **early**. The daemon, CLI, messaging, and lease system work end-to-end on a single host. Runtime adapters, persistence, and multi-host federation are on the [roadmap](#roadmap).
+
+## The Docker analogy
+
+| Docker | AgentDocker | What it is |
+|---|---|---|
+| image | **agent spec** | How to launch an agent: runtime, model, command, workdir, env, labels |
+| container | **agent** | One running instance with an id, name, status, pid, and logs |
+| `dockerd` | **`agentd`** | Per-host daemon: registry, supervisor, message bus, lease arbiter, event log |
+| `docker` CLI | **`agentdocker`** | `ps`, `run`, `stop`, `logs`, `inspect`, `send`, `watch`, `claim`... |
+| network | **messages & topics** | Direct, topic (pub/sub), and broadcast messaging with offline inboxes |
+| volume lock | **lease** | Time-limited exclusive/shared claim on a file, directory, branch, task, or anything |
+| `docker events` | **events** | Live stream of everything the daemon does |
+
+Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
+
+## Quick start
+
+```sh
+cargo build --release
+export PATH="$PWD/target/release:$PATH"
+
+# 1. Start the daemon (listens on ~/.agentdocker/agentd.sock)
+agentd &
+
+# 2. Launch two agents. Any command works; here they are shell loops.
+agentdocker run --name writer   --runtime custom -- sh -c 'sleep 300'
+agentdocker run --name reviewer --runtime custom -- sh -c 'sleep 300'
+agentdocker ps
+
+# 3. Coordinate on a resource. The second claim is refused, and says by whom.
+agentdocker claim --as writer   src/ --note "refactoring the parser"
+agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writer
+agentdocker leases
+
+# 4. Talk. Messages to an offline agent queue in its inbox.
+agentdocker send --from reviewer --to writer "ping me when src/ is free"
+agentdocker inbox --as writer
+agentdocker watch --as writer &                       # live delivery from here on
+agentdocker send --from reviewer --to topic:repo/reviews --kind notice "PR #12 approved"
+
+# 5. Watch it all happen
+agentdocker events
+agentdocker logs -f writer
+agentdocker stop writer
+```
+
+Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
+
+```sh
+agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
+agentdocker send --to reviewer "done"  # --from too
+```
+
+An agent you did not start through the daemon (an interactive Claude Code session, say) joins with `agentdocker register --name claude-main --runtime claude-code --pid $$` and leaves with `agentdocker deregister`.
+
+## What it solves
+
+**Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
+
+**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. The next phase adds a shared, versioned context store with change notifications so an agent is told when something it depends on moved.
+
+**No common channel.** Messaging is direct (`--to writer`), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+
+## Architecture
+
+```
+┌────────────────────────────── host ──────────────────────────────┐
+│                                                                  │
+│   claude-code ─┐                                 ┌─ agentdocker  │
+│   codex ───────┤   NDJSON over Unix socket       │   (CLI)       │
+│   gemini-cli ──┼──────────────►  agentd  ◄───────┤               │
+│   custom ──────┘                   │             └─ MCP adapter  │
+│                                    │                  (planned)  │
+│               ┌────────────────────┼─────────────────────┐       │
+│               │  registry   supervisor   bus   leases    │       │
+│               │  inboxes    events       logs            │       │
+│               └──────────────────────────────────────────┘       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Three crates:
+
+- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
+- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, event stream.
+- `crates/cli` — `agentdocker`: a thin client over the same protocol.
+
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below.
+
+## Roadmap
+
+- **Phase 0 — local control plane** *(now)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
+- **Phase 1 — adapters & persistence**: an MCP server exposed by `agentd` so any MCP-capable agent gets `list_agents`, `send_message`, `read_inbox`, `claim`, `release` as tools without integration work; a Claude Code hooks pack (auto-register on session start, claim files before edits, release on stop); SQLite-backed state so leases, inboxes, and history survive daemon restarts; `Agentfile` + `agentdocker up` for multi-agent teams.
+- **Phase 2 — shared context**: a versioned key/document store with watch notifications, and a handoff protocol so one agent can package its working context for another.
+- **Phase 3 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace.
+- **Phase 4 — policy & scheduling**: quotas, priorities, dependencies between agents, restart policies, a dashboard.
+
+## Development
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons). Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

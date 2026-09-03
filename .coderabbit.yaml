@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for AgentDocker.
+# Docs: https://docs.coderabbit.ai/reference/configuration
+
+language: "en-US"
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai summary"
+  review_status: true
+  collapse_walkthrough: false
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!target/**"
+    - "!Cargo.lock"
+  path_instructions:
+    - path: "crates/core/**/*.rs"
+      instructions: |
+        This crate must stay pure: no I/O, no async, no reading the clock.
+        Functions that depend on time take `now` as a parameter. Flag any
+        std::fs, tokio, or chrono::Utc::now() usage outside of tests.
+        Every public state transition (lease claim/renew/release/expire,
+        registry insert/resolve/set_status) should have a unit test.
+    - path: "crates/agentd/**/*.rs"
+      instructions: |
+        The daemon holds at most one std::sync::Mutex at a time and never
+        across an .await point. Flag nested lock() calls and any guard that
+        lives across an await. Every state change should emit an EventKind.
+        Errors sent to clients must use a specific ErrorCode, not Internal,
+        when a more precise variant fits.
+    - path: "crates/cli/**/*.rs"
+      instructions: |
+        Output must be script-friendly: commands that create something print
+        only its id on stdout; errors go to stderr via anyhow. Check that new
+        flags have --help text and that identity flags default to
+        AGENTDOCKER_AGENT_ID.
+    - path: "docs/**"
+      instructions: |
+        ARCHITECTURE.md documents the wire protocol. If a PR changes
+        protocol.rs, verify the request/response table was updated too.
+
+chat:
+  auto_reply: true

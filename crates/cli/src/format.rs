@@ -1,0 +1,154 @@
+//! Terminal output helpers.
+
+use agentdocker_core::{Envelope, Event, EventKind};
+use chrono::{DateTime, Local, Utc};
+use serde_json::Value;
+
+/// Print rows as left-aligned columns, `docker ps` style.
+pub fn table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+    let render = |cells: Vec<&str>| {
+        let line: Vec<String> = cells
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| format!("{:<width$}", cell, width = widths[i]))
+            .collect();
+        line.join("   ").trim_end().to_owned()
+    };
+    println!("{}", render(headers.to_vec()));
+    for row in rows {
+        println!("{}", render(row.iter().map(String::as_str).collect()));
+    }
+}
+
+/// "5s ago", "3m ago", "2h ago", "4d ago".
+pub fn ago(at: DateTime<Utc>) -> String {
+    let secs = (Utc::now() - at).num_seconds().max(0);
+    format!("{} ago", span(secs))
+}
+
+/// "in 4m", or "expired".
+pub fn until(at: DateTime<Utc>) -> String {
+    let secs = (at - Utc::now()).num_seconds();
+    if secs <= 0 {
+        "expired".to_owned()
+    } else {
+        format!("in {}", span(secs))
+    }
+}
+
+pub fn span_secs(secs: u64) -> String {
+    span(i64::try_from(secs).unwrap_or(i64::MAX))
+}
+
+fn span(secs: i64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// First 12 characters of an id-like string, without splitting a char.
+fn short(s: &str) -> &str {
+    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
+    &s[..end]
+}
+
+pub fn clock(at: DateTime<Utc>) -> String {
+    at.with_timezone(&Local).format("%H:%M:%S").to_string()
+}
+
+/// `{"text": "..."}` payloads print as plain text; anything else as JSON.
+pub fn payload_text(payload: &Value) -> String {
+    match payload.get("text").and_then(Value::as_str) {
+        Some(text) if payload.as_object().is_some_and(|o| o.len() == 1) => text.to_owned(),
+        _ => payload.to_string(),
+    }
+}
+
+pub fn message_line(message: &Envelope) -> String {
+    let from = short(&message.from);
+    let reply = message
+        .reply_to
+        .as_ref()
+        .map(|id| format!(" re:{id}"))
+        .unwrap_or_default();
+    format!(
+        "{}  {from} → {}  [{}{reply}]  {}",
+        clock(message.sent_at),
+        message.to,
+        message.kind,
+        payload_text(&message.payload)
+    )
+}
+
+pub fn event_line(event: &Event) -> String {
+    let body = match &event.kind {
+        EventKind::AgentCreated { agent, name } => {
+            format!("agent created    {} ({name})", agent.short())
+        }
+        EventKind::AgentStarted { agent, pid } => {
+            let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
+            format!("agent started    {}{pid}", agent.short())
+        }
+        EventKind::AgentExited { agent, status } => {
+            format!("agent exited     {} {status}", agent.short())
+        }
+        EventKind::AgentRemoved { agent } => format!("agent removed    {}", agent.short()),
+        EventKind::MessageSent {
+            message,
+            from,
+            to,
+            kind,
+        } => {
+            format!("message sent     {message} {} → {to} [{kind}]", short(from))
+        }
+        EventKind::LeaseClaimed { lease } => format!(
+            "lease claimed    {} {} {} by {}",
+            lease.id,
+            lease.mode,
+            lease.resource,
+            lease.holder.short()
+        ),
+        EventKind::LeaseRenewed { lease } => format!(
+            "lease renewed    {} {} by {}",
+            lease.id,
+            lease.resource,
+            lease.holder.short()
+        ),
+        EventKind::LeaseReleased { lease } => format!(
+            "lease released   {} {} by {}",
+            lease.id,
+            lease.resource,
+            lease.holder.short()
+        ),
+        EventKind::LeaseExpired { lease } => format!(
+            "lease expired    {} {} held by {}",
+            lease.id,
+            lease.resource,
+            lease.holder.short()
+        ),
+        EventKind::LeaseConflict {
+            resource,
+            requester,
+            held_by,
+        } => {
+            let holders: Vec<&str> = held_by.iter().map(|h| h.short()).collect();
+            format!(
+                "lease conflict   {resource} wanted by {} held by {}",
+                requester.short(),
+                holders.join(", ")
+            )
+        }
+    };
+    format!("{}  {body}", clock(event.at))
+}

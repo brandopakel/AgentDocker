@@ -1,0 +1,61 @@
+//! Events emitted by the daemon, consumed by `agentdocker events`.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::{AgentId, AgentStatus, Destination, Lease, MessageId, ResourceKey};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum EventKind {
+    AgentCreated {
+        agent: AgentId,
+        name: String,
+    },
+    AgentStarted {
+        agent: AgentId,
+        pid: Option<u32>,
+    },
+    AgentExited {
+        agent: AgentId,
+        status: AgentStatus,
+    },
+    AgentRemoved {
+        agent: AgentId,
+    },
+    MessageSent {
+        message: MessageId,
+        from: String,
+        to: Destination,
+        kind: String,
+    },
+    LeaseClaimed {
+        lease: Lease,
+    },
+    LeaseRenewed {
+        lease: Lease,
+    },
+    LeaseReleased {
+        lease: Lease,
+    },
+    LeaseExpired {
+        lease: Lease,
+    },
+    LeaseConflict {
+        resource: ResourceKey,
+        requester: AgentId,
+        held_by: Vec<AgentId>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    pub at: DateTime<Utc>,
+    pub kind: EventKind,
+}
+
+impl Event {
+    pub fn new(kind: EventKind, now: DateTime<Utc>) -> Self {
+        Self { at: now, kind }
+    }
+}
