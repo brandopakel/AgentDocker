@@ -6,6 +6,8 @@
 //! `events`, `logs`) keep sending responses until the client closes the
 //! connection or the daemon sends [`Response::End`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -45,6 +47,13 @@ pub enum Request {
     List {
         #[serde(default)]
         all: bool,
+        /// A project id (any unique prefix), or an absolute path inside the
+        /// project.
+        #[serde(default)]
+        project: Option<String>,
+        /// Only agents carrying every one of these labels.
+        #[serde(default)]
+        labels: BTreeMap<String, String>,
     },
     Inspect {
         agent: String,
@@ -149,6 +158,10 @@ pub enum ErrorCode {
     Internal,
 }
 
+// A response is built once and serialised at once, so the size gap between
+// `Agent` (a whole record) and `Ok` never matters; boxing would only add
+// ceremony at every construction and match site.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {

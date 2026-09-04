@@ -79,7 +79,14 @@ pub async fn down(
 }
 
 async fn live_agents(client: &Client) -> Result<Vec<AgentRecord>> {
-    match client.call(&Request::List { all: false }).await? {
+    match client
+        .call(&Request::List {
+            all: false,
+            project: None,
+            labels: Default::default(),
+        })
+        .await?
+    {
         Response::Agents { agents } => Ok(agents),
         other => bail!("unexpected reply to list: {other:?}"),
     }

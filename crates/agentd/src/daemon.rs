@@ -8,16 +8,17 @@
 //! source of truth for reads; every mutation is written through to the
 //! [`Store`] so a restarted daemon rebuilds the same state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, Envelope, ErrorCode, Event,
-    EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, Registry,
-    RegistryError, Request, ResourceKey, Response, topic_matches,
+    EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectRef,
+    ProjectSource, Registry, RegistryError, Request, ResourceKey, Response, topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
@@ -27,7 +28,8 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
-use crate::procinfo;
+use agentdocker_host::{procinfo, project};
+
 use crate::store::Store;
 use crate::supervisor;
 
@@ -40,6 +42,9 @@ const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 const EVENT_HISTORY: usize = 10_000;
 /// Longest a claim may wait for a conflicting lease to clear.
 const MAX_WAIT_SECS: u64 = 600;
+/// How long `git` may take to find a repository's root commit before the
+/// project falls back to grouping by path for this daemon run.
+const FINGERPRINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -55,6 +60,10 @@ pub struct Daemon {
     /// Agents whose `Child` handle a supervisor task owns. Every other live
     /// agent with a pid is polled by [`Daemon::check_liveness`].
     supervised: Mutex<HashSet<AgentId>>,
+    /// Fingerprint per repository root. `None` means the lookup failed this
+    /// run (git missing, no commits, or timed out): kept so it is not
+    /// retried on every registration, never persisted so a restart retries.
+    projects: Mutex<HashMap<PathBuf, Option<String>>>,
     /// Next event sequence number; continues from the stored history.
     next_seq: AtomicU64,
     bus: broadcast::Sender<Envelope>,
@@ -69,7 +78,8 @@ fn registry_error(err: RegistryError) -> Response {
     let code = match err {
         RegistryError::NameTaken(_) => ErrorCode::NameTaken,
         RegistryError::NotFound(_) => ErrorCode::NotFound,
-        RegistryError::Ambiguous(_) => ErrorCode::Ambiguous,
+        RegistryError::Ambiguous(_) | RegistryError::ProjectAmbiguous(_) => ErrorCode::Ambiguous,
+        RegistryError::ProjectNotFound(_) => ErrorCode::NotFound,
     };
     Response::error(code, err.to_string())
 }
@@ -202,6 +212,11 @@ impl Daemon {
             }
         }
         let inboxes = store.load_inboxes()?;
+        let projects: HashMap<PathBuf, Option<String>> = store
+            .load_projects()?
+            .into_iter()
+            .map(|(root, fingerprint)| (root, Some(fingerprint)))
+            .collect();
         let next_seq = store.max_event_seq()? + 1;
         info!(
             agents = registry.len(),
@@ -222,6 +237,7 @@ impl Daemon {
             inboxes: Mutex::new(inboxes),
             live_subscribers: Mutex::new(HashMap::new()),
             supervised: Mutex::new(HashSet::new()),
+            projects: Mutex::new(projects),
             next_seq: AtomicU64::new(next_seq),
             bus,
             events,
@@ -285,13 +301,15 @@ impl Daemon {
                 uptime_secs: self.started.elapsed().as_secs(),
             },
             Request::Run { spec } => self.run(spec).await,
-            Request::Register { spec, pid } => self.register(spec, pid),
+            Request::Register { spec, pid } => self.register(spec, pid).await,
             Request::Deregister { agent } => self.deregister(&agent),
             Request::Stop { agent, force } => self.stop(&agent, force),
             Request::Remove { agent } => self.remove(&agent),
-            Request::List { all } => Response::Agents {
-                agents: lock(&self.registry).list(all),
-            },
+            Request::List {
+                all,
+                project,
+                labels,
+            } => self.list(all, project, labels).await,
             Request::Inspect { agent } => self.inspect(&agent),
             Request::Heartbeat { agent } => match self.resolve(&agent) {
                 Ok(id) => {
@@ -337,7 +355,9 @@ impl Daemon {
         if spec.command.is_empty() {
             return Response::error(ErrorCode::Invalid, "run needs a command to launch");
         }
+        let project = self.project_for(spec.workdir.clone(), true).await;
         let mut record = AgentRecord::new(spec, true, Utc::now());
+        record.project = project;
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -348,6 +368,7 @@ impl Daemon {
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
+            project: record.project.as_ref().map(ProjectRef::id),
         });
 
         match supervisor::spawn(self, &record).await {
@@ -387,9 +408,11 @@ impl Daemon {
         }
     }
 
-    fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
+    async fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
+        let project = self.project_for(spec.workdir.clone(), true).await;
         let now = Utc::now();
         let mut record = AgentRecord::new(spec, false, now);
+        record.project = project;
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -404,6 +427,7 @@ impl Daemon {
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
+            project: record.project.as_ref().map(ProjectRef::id),
         });
         self.emit(EventKind::AgentStarted {
             agent: record.id.clone(),
@@ -411,6 +435,92 @@ impl Daemon {
         });
         info!(agent = %record.id.short(), name = %record.spec.name, "agent registered");
         Response::Agent { agent: record }
+    }
+
+    /// The project containing `workdir`, fingerprinted from the cache or by
+    /// `git`. With `record`, a repository seen for the first time is cached,
+    /// persisted, and announced; without it (resolving a `ps --project
+    /// <path>` selector) nothing is written.
+    async fn project_for(&self, workdir: Option<PathBuf>, record: bool) -> Option<ProjectRef> {
+        let workdir = workdir?;
+        let mut project = tokio::task::spawn_blocking(move || project::discover(&workdir))
+            .await
+            .ok()?;
+        if project.source != ProjectSource::Git {
+            return Some(project);
+        }
+        if let Some(cached) = lock(&self.projects).get(&project.root).cloned() {
+            project.fingerprint = cached;
+            return Some(project);
+        }
+        let root = project.root.clone();
+        let fingerprint =
+            tokio::task::spawn_blocking(move || project::fingerprint(&root, FINGERPRINT_TIMEOUT))
+                .await
+                .ok()
+                .flatten();
+        if !record {
+            project.fingerprint = fingerprint;
+            return Some(project);
+        }
+        // Two registrations can race to fingerprint one repository; the
+        // first to cache wins so every agent in it gets the same id.
+        let fresh = match lock(&self.projects).entry(project.root.clone()) {
+            Entry::Occupied(entry) => {
+                project.fingerprint = entry.get().clone();
+                false
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(fingerprint.clone());
+                project.fingerprint = fingerprint;
+                true
+            }
+        };
+        if fresh {
+            match &project.fingerprint {
+                Some(fingerprint) => {
+                    self.persist("project", |store| {
+                        store.upsert_project(&project.root, fingerprint)
+                    });
+                }
+                None => warn!(
+                    root = %project.root.display(),
+                    "repository has no usable fingerprint (git missing, no commits, or timed out); grouping by path"
+                ),
+            }
+            info!(project = %project.id().short(), root = %project.root.display(), "project discovered");
+            self.emit(EventKind::ProjectDiscovered {
+                project: ProjectRef {
+                    worktree: None,
+                    ..project.clone()
+                },
+            });
+        }
+        Some(project)
+    }
+
+    async fn list(
+        &self,
+        all: bool,
+        project: Option<String>,
+        labels: BTreeMap<String, String>,
+    ) -> Response {
+        let project = match project {
+            None => None,
+            Some(selector) if Path::new(&selector).is_absolute() => {
+                match self.project_for(Some(PathBuf::from(selector)), false).await {
+                    Some(project) => Some(project.id()),
+                    None => return Response::error(ErrorCode::Internal, "project lookup failed"),
+                }
+            }
+            Some(selector) => match lock(&self.registry).resolve_project(&selector) {
+                Ok(id) => Some(id),
+                Err(err) => return registry_error(err),
+            },
+        };
+        Response::Agents {
+            agents: lock(&self.registry).matching(all, project.as_ref(), &labels),
+        }
     }
 
     fn deregister(&self, reference: &str) -> Response {
@@ -1326,5 +1436,194 @@ mod tests {
             .filter(|e| matches!(e.kind, EventKind::LeaseConflict { .. }))
             .count();
         assert_eq!(conflicts, 1);
+    }
+
+    fn spec_in(name: &str, workdir: &Path) -> AgentSpec {
+        AgentSpec {
+            name: name.to_owned(),
+            workdir: Some(workdir.to_path_buf()),
+            ..AgentSpec::default()
+        }
+    }
+
+    async fn register_spec(daemon: &Arc<Daemon>, spec: AgentSpec) -> AgentRecord {
+        match daemon.handle(Request::Register { spec, pid: None }).await {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    async fn register_in(daemon: &Arc<Daemon>, name: &str, workdir: &Path) -> AgentRecord {
+        register_spec(daemon, spec_in(name, workdir)).await
+    }
+
+    async fn list(
+        daemon: &Arc<Daemon>,
+        project: Option<&str>,
+        labels: &[(&str, &str)],
+    ) -> Response {
+        daemon
+            .handle(Request::List {
+                all: false,
+                project: project.map(str::to_owned),
+                labels: labels
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect(),
+            })
+            .await
+    }
+
+    fn names(response: Response) -> Vec<String> {
+        match response {
+            Response::Agents { agents } => agents.into_iter().map(|a| a.spec.name).collect(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn drain_discovered(events: &mut broadcast::Receiver<Event>) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::ProjectDiscovered { project } = event.kind {
+                roots.push(project.root);
+            }
+        }
+        roots
+    }
+
+    fn git(home: &Path, dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn have_git() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[tokio::test]
+    async fn agents_group_by_project_and_list_filters_by_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        std::fs::create_dir_all(alpha.join("src")).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("Agentfile.toml"), "").unwrap();
+
+        let one = register_in(&daemon, "one", &alpha).await;
+        let two = register_in(&daemon, "two", &alpha.join("src")).await;
+        let three = register_in(&daemon, "three", &beta).await;
+        let loner = register(&daemon, "loner", None).await;
+        let mut tagged = spec_in("tagged", &alpha);
+        tagged.labels.insert("team".to_owned(), "x".to_owned());
+        let tagged = register_spec(&daemon, tagged).await;
+
+        let project = one.project.clone().expect("derived from workdir");
+        assert_eq!(project.source, ProjectSource::Agentfile);
+        assert_eq!(project.root, alpha.canonicalize().unwrap());
+        assert_eq!(project.worktree, None);
+        assert_eq!(
+            two.project.as_ref(),
+            Some(&project),
+            "nested dirs share the root"
+        );
+        assert_eq!(tagged.project.as_ref(), Some(&project));
+        assert_eq!(
+            three.project.as_ref().unwrap().source,
+            ProjectSource::Directory
+        );
+        assert_ne!(three.project.as_ref().unwrap().id(), project.id());
+        assert_eq!(loner.project, None);
+
+        // Grouped by project, agents outside any project last.
+        assert_eq!(
+            names(list(&daemon, None, &[]).await),
+            ["one", "two", "tagged", "three", "loner"]
+        );
+        // A path inside the project, or any unique prefix of its id.
+        let inside = alpha.join("src").to_string_lossy().into_owned();
+        assert_eq!(
+            names(list(&daemon, Some(&inside), &[]).await),
+            ["one", "two", "tagged"]
+        );
+        let id = project.id();
+        let prefix = &id.as_str()[..8];
+        assert_eq!(
+            names(list(&daemon, Some(prefix), &[]).await),
+            ["one", "two", "tagged"]
+        );
+        assert_eq!(
+            names(list(&daemon, Some(prefix), &[("team", "x")]).await),
+            ["tagged"]
+        );
+        assert_eq!(
+            names(list(&daemon, None, &[("team", "x")]).await),
+            ["tagged"]
+        );
+        assert!(matches!(
+            list(&daemon, Some("zzzz"), &[]).await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn repositories_are_fingerprinted_once_and_announced() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let a = register_in(&daemon, "a", &repo).await;
+        let b = register_in(&daemon, "b", &repo.join("sub")).await;
+        let project = a.project.clone().unwrap();
+        assert_eq!(project.source, ProjectSource::Git);
+        let fingerprint = project.fingerprint.clone().expect("root commit");
+        assert_eq!(project.id().as_str(), fingerprint);
+        assert_eq!(b.project.unwrap().id(), project.id());
+        assert_eq!(drain_discovered(&mut events), vec![project.root.clone()]);
+
+        // The fingerprint is persisted: a restarted daemon neither walks the
+        // history again nor announces the repository twice.
+        drop(daemon);
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let c = register_in(&daemon, "c", &repo).await;
+        assert_eq!(
+            c.project.unwrap().fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        assert!(drain_discovered(&mut events).is_empty());
     }
 }

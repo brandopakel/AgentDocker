@@ -278,7 +278,12 @@ impl<B: Backend> McpServer<B> {
             "whoami" => self.forward(Request::Inspect { agent: me }).await,
             "list_agents" => {
                 let args: ListAgentsArgs = parse(arguments)?;
-                self.forward(Request::List { all: args.all }).await
+                self.forward(Request::List {
+                    all: args.all,
+                    project: None,
+                    labels: Default::default(),
+                })
+                .await
             }
             "inspect_agent" => {
                 let args: InspectAgentArgs = parse(arguments)?;

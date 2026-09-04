@@ -350,7 +350,14 @@ fn parent_of(pid: u32) -> Option<(u32, String)> {
 }
 
 async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
-    match backend.call(Request::List { all: true }).await? {
+    match backend
+        .call(Request::List {
+            all: true,
+            project: None,
+            labels: Default::default(),
+        })
+        .await?
+    {
         Response::Agents { agents } => Ok(agents),
         _ => Ok(Vec::new()),
     }

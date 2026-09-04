@@ -24,7 +24,12 @@ Pure types and pure logic. It has no I/O, no async, and no access to a clock: ev
 | `registry` | `Registry` — the agent table, name uniqueness, id/name/prefix resolution |
 | `event` | `Event`, `EventKind` — everything the daemon announces |
 | `protocol` | `Request`, `Response`, `ErrorCode` — the wire format |
+| `project` | `ProjectRef`, `ProjectId`, `ProjectSource` — the project an agent works in and how it becomes an id |
 | `paths` | Where the socket and data live |
+
+### `agentdocker-host` (`crates/host`)
+
+The I/O that both binaries need but that does not belong in the daemon's state: project discovery from a working directory (`project::discover`, `project::fingerprint`) and process inspection (`procinfo::start_time`). Stateless: every function answers a question about the host as it is right now.
 
 ### `agentd` (`crates/agentd`)
 
@@ -36,13 +41,14 @@ One process per host. It owns:
 - **Inboxes** — per-agent queues for messages that arrive while the agent has no live subscription. Capped at 1000; oldest dropped first.
 - **Lease table** — the core `LeaseTable`, plus a 1-second reaper that expires leases and emits events.
 - **Events** — a second broadcast channel carrying `Event`s.
+- **Projects** — the fingerprint cache per repository root; see [Projects](#projects).
 - **Store** — SQLite at `<home>/state.db`; see [Persistence](#persistence).
 
 Locking discipline: no method holds more than one mutex at a time, and no lock is held across an `.await`. There is therefore no lock ordering to get wrong.
 
 ## Persistence
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -88,6 +94,16 @@ Design points:
 
 A TOML file with an optional `name` and an `[agents.<name>]` table per agent (`runtime`, `provider`, `model`, `command`, `workdir`, `env`, `labels`; unknown keys are rejected). `up` turns each entry into a `run` request in file order, skipping names that are already live, and labels every agent with `agentfile=<path>` and `team=<name>`; `down` stops the live agents named in the file. Relative `workdir`s resolve against the file's directory. There is deliberately no daemon-side notion of a team yet: the file is a client convenience over `run`/`stop`, so a team can also be assembled by hand or by another tool.
 
+## Projects
+
+Agents are grouped by the project they work in, and the project is **derived, never declared**: the daemon computes it from `spec.workdir` when an agent is created (`run` and `register` both default the working directory to the caller's; hooks and the MCP server record theirs) and stores it on the record as `project`. Nothing ever asks an agent which project it belongs to.
+
+**Derivation** (`agentdocker_host::project::discover`): canonicalise the working directory, then walk up to the nearest ancestor holding `.git`. A `.git` *file* is a linked worktree or a submodule: a worktree's `gitdir` names a git directory whose `commondir` points at the main repository, so every worktree of one repository resolves to the same root while keeping its own path in `worktree`; a submodule has no `commondir` and is its own project. With no repository, the nearest ancestor holding an `Agentfile.toml` is the root, and failing that the working directory is its own project (`source: directory`).
+
+**Identity.** A `ProjectRef` carries `root`, `worktree`, `source`, and for repositories a `fingerprint`: the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable). The `ProjectId` is the fingerprint when there is one, else a UUIDv5 of the root path — the same repository is one project across clones and, later, across hosts, and a plain directory is still one project for everyone in it. The fingerprint walks the whole history, so the daemon runs it once per root, in a blocking task with a 3-second timeout, and caches the result in the `projects` table; a lookup that fails (no `git`, no commits, timeout) is remembered in memory only, so every agent in that repository still shares a path-derived id this run and a restart retries. `project_discovered` fires the first time a repository is fingerprinted on this host.
+
+**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `inspect` shows the full reference. Path leases need nothing new: `leases --resource path:<root>` already lists a project's leases by overlap.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
@@ -101,11 +117,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 |---|---|---|
 | `ping` | `pong` | version, uptime |
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
-| `register {spec, pid?}` | `agent` | for processes the daemon did not start |
+| `register {spec, pid?}` | `agent` | for processes the daemon did not start; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
 | `stop {agent, force?}` | `agent` | SIGTERM, or SIGKILL with `force`; status updates when the process actually exits |
 | `remove {agent}` | `ok` | forget a finished agent |
-| `list {all?}` | `agents` | live only unless `all` |
+| `list {all?, project?, labels?}` | `agents` | live only unless `all`; `project` is an id prefix or an absolute path inside it; `labels` must all match |
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `topic:<name>`, or `all` |
@@ -153,7 +169,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_created`, `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_created` (with the project id), `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 ## Process supervision
 
@@ -185,16 +201,9 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 - **Service.** `agentdocker daemon install` writes a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`, `KeepAlive`, logs to `<home>/agentd.log`) on macOS or a systemd user unit (`~/.config/systemd/user/agentd.service`, `Restart=on-failure`) on Linux; `daemon uninstall`, `daemon status`, `daemon restart`. The daemon must be safe to run without the service too, so nothing here is required.
 - **Lazy start.** When a client (CLI, hook, MCP server) cannot connect — `ENOENT` or `ECONNREFUSED` on the socket — it starts `agentd` itself, the way `ssh-agent` and `buildkitd` are started by their clients. Mechanism: the daemon holds an exclusive `flock` on `<home>/agentd.lock` for its lifetime and removes a stale socket file once it has the lock; a client that fails to connect tries the lock non-blockingly, and if it *gets* it, releases it and spawns `agentd` detached (`setsid`, stdio to `agentd.log`), then waits for the socket (up to 3 s for the CLI, 1 s for hooks, which stay fail-open). If it *cannot* get the lock a daemon is already starting, so it only waits. `AGENTDOCKER_NO_AUTOSTART=1` disables it. *Done when* the quick start no longer needs `agentd &` and a hook fired on a cold machine registers its session.
 
-#### Project identity
+#### Project identity *(done)*
 
-Agents are grouped by the project they work in, and the project is **derived, never declared**. The spec already carries `workdir` (`run` defaults it to the caller's directory, the MCP adapter and hooks record theirs); `register` gains the same default.
-
-- **Derivation.** Canonicalise `workdir`, then walk up to the nearest ancestor containing `.git`. If `.git` is a file (a worktree) follow its `gitdir:` to the worktree's git directory and that directory's `commondir` to the main repository, so every worktree of one repository resolves to the same project while keeping its own path. If there is no `.git`, the nearest ancestor containing an `Agentfile` is the root; failing that, `workdir` itself.
-- **Two keys.** `ProjectRef { root: PathBuf, worktree: Option<PathBuf>, fingerprint: Option<String>, source: Git | Agentfile | Directory }`. `root` identifies the project on this host. `fingerprint` is the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable), which identifies the same repository across clones and, later, across hosts. `ProjectId` is the fingerprint when present, otherwise a hash of `root`; displayed as the root's basename plus a short id.
-- **Where it is computed.** A new crate `crates/host` (`agentdocker-host`) holds the I/O both binaries need: project discovery and process inspection (`procinfo.rs` moves there). Core stays pure and gets only the types and `Registry::by_project()`. Clients derive the project at registration and send it in the spec; the daemon derives it from `workdir` when a client omits it, and computes the fingerprint in a blocking task by shelling out to `git` (no libgit2 dependency; `None` when `git` is absent). Fingerprints are cached in a `projects` table keyed by root so the `rev-list` walk runs once per repository per host.
-- **What it buys.** `ps` groups agents under project headings, `ps --project .` (a path, resolved to the project containing it) or `--project <id>` filters, and `list {project?}` carries the filter. A new destination `project:<id>` (CLI shorthand `--to project` for the sender's own project) delivers to every live agent in the project except the sender, with inbox fallback exactly like broadcast — a proper destination rather than an implicit topic, because topics are live-only and a newcomer must not miss "heads up, I'm rewriting the parser". Leases need nothing new: `leases --resource path:<root>` already lists everything in a project by overlap, and `--project .` becomes sugar for it. The hooks' `SessionStart` orientation lists agents in the same project first and others after. `AgentRecord` gains `project: Option<ProjectRef>`, set once at creation; `agent_created` carries it, and a `project_discovered {project}` event fires the first time a project id is seen. Persistence: the record's JSON blob (no migration) plus the `projects` cache table.
-
-*Done when* two Claude Code sessions opened in two worktrees of one repository appear under one heading in `ps`, a session in another repository does not, and `send --to project` reaches exactly the first two.
+See [Projects](#projects). Compared with the original plan, derivation lives only in the daemon (clients just send a working directory), which keeps one code path and one fingerprint cache so every agent in a repository gets the same id; `ps` shows a `PROJECT` column and sorts by project rather than printing headings, so its output still pipes into `awk`. Still to come from this item: the `project:` message destination and project-aware hook orientation (PR 2).
 
 #### Discovery and adoption
 
@@ -371,7 +380,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 
 | # | PR | phase | depends on |
 |---|---|---|---|
-| 1 | `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
+| 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 4 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
@@ -394,7 +403,6 @@ Listed here so the wire-protocol table above stays a description of what exists.
 
 | Request | Response | Phase |
 |---|---|---|
-| `list {all?, project?, labels?}` | `agents` | 2 |
 | `claim {…}` | adds `error(deadlock)` | 5 |
 | `report {agent, vcs?, reads?, writes?}` | `ok` | 2–3 |
 | `adopt {pid}` | `agent` | 2 |
@@ -407,7 +415,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-New events: `project_discovered`, `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+New events: `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 

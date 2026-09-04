@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::ProjectRef;
+
 /// Unique identifier of an agent instance. Like a Docker container ID: a
 /// random hex string that can be abbreviated to any unique prefix.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -121,6 +123,10 @@ pub struct AgentRecord {
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
+    /// The project derived from `spec.workdir` when the agent was created;
+    /// `None` when there was no working directory to derive it from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectRef>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<DateTime<Utc>>,
@@ -139,6 +145,7 @@ impl AgentRecord {
             pid: None,
             process_started_at: None,
             managed,
+            project: None,
             created_at: now,
             started_at: None,
             finished_at: None,

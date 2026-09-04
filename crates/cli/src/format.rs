@@ -93,8 +93,16 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
-        EventKind::AgentCreated { agent, name } => {
-            format!("agent created    {} ({name})", agent.short())
+        EventKind::AgentCreated {
+            agent,
+            name,
+            project,
+        } => {
+            let project = project
+                .as_ref()
+                .map(|p| format!(" in {}", p.short()))
+                .unwrap_or_default();
+            format!("agent created    {} ({name}){project}", agent.short())
         }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
@@ -149,6 +157,12 @@ pub fn event_line(event: &Event) -> String {
                 holders.join(", ")
             )
         }
+        EventKind::ProjectDiscovered { project } => format!(
+            "project found    {} {} ({})",
+            project.id().short(),
+            project.root.display(),
+            project.name()
+        ),
     };
     format!("{}  {body}", clock(event.at))
 }
