@@ -16,6 +16,7 @@ Coding agents are cheap to start and easy to lose track of. Run three of them ag
 | `docker` CLI | **`agentdocker`** | `ps`, `run`, `stop`, `logs`, `inspect`, `send`, `watch`, `claim`... |
 | network | **messages & topics** | Direct, topic (pub/sub), and broadcast messaging with offline inboxes |
 | volume lock | **lease** | Time-limited exclusive/shared claim on a file, directory, branch, task, or anything |
+| compose project | **project** | Derived from the working directory: the repository (every worktree of it), else the directory. Agents group by it automatically |
 | `docker events` | **events** | Live stream of everything the daemon does |
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
@@ -32,7 +33,8 @@ agentd &
 # 2. Launch two agents. Any command works; here they are shell loops.
 agentdocker run --name writer   --runtime custom -- sh -c 'sleep 300'
 agentdocker run --name reviewer --runtime custom -- sh -c 'sleep 300'
-agentdocker ps
+agentdocker ps                    # grouped by project: the repo each agent works in
+agentdocker ps --project .        # only agents in this project
 
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"

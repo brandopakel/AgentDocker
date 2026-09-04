@@ -40,11 +40,18 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
-    /// List agents (live ones by default).
+    /// List agents (live ones by default), grouped by project.
     Ps {
         /// Include finished agents.
         #[arg(short, long)]
         all: bool,
+        /// Only agents in this project: an id (or unique prefix), or a path
+        /// inside it such as `.`.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only agents carrying this label (repeatable).
+        #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
+        labels: Vec<String>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -198,6 +205,7 @@ struct RegisterArgs {
     /// Process id, so `stop` can signal it.
     #[arg(long)]
     pid: Option<u32>,
+    /// Working directory (default: current directory).
     #[arg(short = 'w', long)]
     workdir: Option<PathBuf>,
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
@@ -260,8 +268,17 @@ async fn main() -> Result<()> {
                 println!("agentd {version} up {}", format::span_secs(uptime_secs));
             }
         }
-        Command::Ps { all } => {
-            if let Response::Agents { agents } = client.call(&Request::List { all }).await? {
+        Command::Ps {
+            all,
+            project,
+            labels,
+        } => {
+            let request = Request::List {
+                all,
+                project: project.as_deref().map(project_selector),
+                labels: parse_pairs(&labels)?,
+            };
+            if let Response::Agents { agents } = client.call(&request).await? {
                 print_agents(&agents);
             }
         }
@@ -285,13 +302,17 @@ async fn main() -> Result<()> {
             }
         }
         Command::Register(args) => {
+            let workdir = match args.workdir {
+                Some(dir) => dir,
+                None => std::env::current_dir()?,
+            };
             let spec = AgentSpec {
                 name: args.name,
                 runtime: args.runtime,
                 provider: args.provider,
                 model: args.model,
                 command: Vec::new(),
-                workdir: args.workdir.map(|d| d.canonicalize().unwrap_or(d)),
+                workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: BTreeMap::new(),
                 labels: parse_pairs(&args.labels)?,
             };
@@ -458,6 +479,46 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// A project id prefix passes through; anything that names a path (`.`,
+/// something with a slash, or an existing entry) becomes absolute so the
+/// daemon can find the project containing it.
+fn project_selector(raw: &str) -> String {
+    let path = PathBuf::from(raw);
+    if !(raw == "." || raw.contains('/') || path.exists()) {
+        return raw.to_owned();
+    }
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
+    absolute
+        .canonicalize()
+        .unwrap_or(absolute)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `repo` for the main checkout, `repo@wt` inside a linked worktree.
+fn project_cell(agent: &AgentRecord) -> String {
+    match &agent.project {
+        None => "-".to_owned(),
+        Some(project) => match &project.worktree {
+            None => project.name(),
+            Some(worktree) => format!(
+                "{}@{}",
+                project.name(),
+                worktree
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        },
+    }
+}
+
 fn print_agents(agents: &[AgentRecord]) {
     let rows: Vec<Vec<String>> = agents
         .iter()
@@ -465,6 +526,7 @@ fn print_agents(agents: &[AgentRecord]) {
             vec![
                 a.id.short().to_owned(),
                 a.spec.name.clone(),
+                project_cell(a),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
@@ -477,7 +539,7 @@ fn print_agents(agents: &[AgentRecord]) {
         .collect();
     format::table(
         &[
-            "AGENT ID", "NAME", "RUNTIME", "MODEL", "STATUS", "PID", "CREATED",
+            "AGENT ID", "NAME", "PROJECT", "RUNTIME", "MODEL", "STATUS", "PID", "CREATED",
         ],
         &rows,
     );

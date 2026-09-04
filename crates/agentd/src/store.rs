@@ -7,7 +7,7 @@
 //! migration — only a changed meaning does.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agentdocker_core::{AgentId, AgentRecord, Envelope, Event, Lease, LeaseId};
 use anyhow::{Context, Result};
@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS events (
     seq  INTEGER PRIMARY KEY AUTOINCREMENT,
     at   TEXT NOT NULL,
     json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+    root        TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    computed_at TEXT NOT NULL
 );
 ";
 
@@ -207,6 +212,39 @@ impl Store {
                 .push_back(message);
         }
         Ok(inboxes)
+    }
+
+    // ----- projects -------------------------------------------------------
+
+    /// Remember a repository's fingerprint so `git` walks its history once
+    /// per host, not once per agent.
+    pub fn upsert_project(&self, root: &Path, fingerprint: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO projects (root, fingerprint, computed_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(root) DO UPDATE SET
+                 fingerprint = excluded.fingerprint,
+                 computed_at = excluded.computed_at",
+            params![
+                root.to_string_lossy(),
+                fingerprint,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_projects(&self) -> Result<HashMap<PathBuf, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT root, fingerprint FROM projects")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (root, fingerprint) = row?;
+            Ok((PathBuf::from(root), fingerprint))
+        })
+        .collect()
     }
 
     // ----- events ---------------------------------------------------------
@@ -376,5 +414,17 @@ mod tests {
         )
         .unwrap();
         assert!(Store::init(conn).is_err());
+    }
+
+    #[test]
+    fn projects_round_trip_and_overwrite() {
+        let store = Store::in_memory().unwrap();
+        store.upsert_project(Path::new("/repo"), "aaa").unwrap();
+        store.upsert_project(Path::new("/other"), "bbb").unwrap();
+        store.upsert_project(Path::new("/repo"), "ccc").unwrap();
+        let projects = store.load_projects().unwrap();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[Path::new("/repo")], "ccc");
+        assert_eq!(projects[Path::new("/other")], "bbb");
     }
 }

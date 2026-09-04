@@ -3,7 +3,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AgentStatus, Destination, Lease, MessageId, ResourceKey};
+use crate::{
+    AgentId, AgentStatus, Destination, Lease, MessageId, ProjectId, ProjectRef, ResourceKey,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -11,6 +13,8 @@ pub enum EventKind {
     AgentCreated {
         agent: AgentId,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
     },
     AgentStarted {
         agent: AgentId,
@@ -45,6 +49,10 @@ pub enum EventKind {
         resource: ResourceKey,
         requester: AgentId,
         held_by: Vec<AgentId>,
+    },
+    /// A repository was seen for the first time on this host.
+    ProjectDiscovered {
+        project: ProjectRef,
     },
 }
 

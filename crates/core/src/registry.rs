@@ -1,11 +1,11 @@
 //! The set of agents the daemon knows about.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::{AgentId, AgentRecord, AgentStatus};
+use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
@@ -15,6 +15,10 @@ pub enum RegistryError {
     NotFound(String),
     #[error("`{0}` is ambiguous; use a longer id prefix")]
     Ambiguous(String),
+    #[error("no agent works in a project matching `{0}`")]
+    ProjectNotFound(String),
+    #[error("`{0}` matches several projects; use a longer id prefix")]
+    ProjectAmbiguous(String),
 }
 
 #[derive(Debug, Default)]
@@ -94,20 +98,69 @@ impl Registry {
         self.agents.values().filter(|a| a.status.is_live())
     }
 
-    /// Agents ordered by creation time. `all = false` hides finished ones.
+    /// Every agent, grouped by project. `all = false` hides finished ones.
     pub fn list(&self, all: bool) -> Vec<AgentRecord> {
+        self.matching(all, None, &BTreeMap::new())
+    }
+
+    /// Agents that pass every filter: in `project` when one is given, and
+    /// carrying each of `labels`. Grouped by project (by name, then id) and
+    /// ordered by creation time within a project; agents outside any
+    /// project come last.
+    pub fn matching(
+        &self,
+        all: bool,
+        project: Option<&ProjectId>,
+        labels: &BTreeMap<String, String>,
+    ) -> Vec<AgentRecord> {
         let mut agents: Vec<AgentRecord> = self
             .agents
             .values()
             .filter(|a| all || a.status.is_live())
+            .filter(|a| {
+                project.is_none_or(|wanted| {
+                    a.project.as_ref().is_some_and(|mine| mine.id() == *wanted)
+                })
+            })
+            .filter(|a| labels.iter().all(|(k, v)| a.spec.labels.get(k) == Some(v)))
             .cloned()
             .collect();
-        agents.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.id.cmp(&b.id))
+        agents.sort_by_cached_key(|a| {
+            (
+                a.project.is_none(),
+                a.project.as_ref().map(|p| (p.name(), p.id())),
+                a.created_at,
+                a.id.clone(),
+            )
         });
         agents
+    }
+
+    /// Turn a project reference — a full id or a unique prefix — into the
+    /// id of a project some agent (live or finished) works in.
+    pub fn resolve_project(&self, reference: &str) -> Result<ProjectId, RegistryError> {
+        if reference.is_empty() {
+            return Err(RegistryError::ProjectNotFound(reference.to_owned()));
+        }
+        let mut ids: Vec<ProjectId> = self
+            .agents
+            .values()
+            .filter_map(|a| a.project.as_ref().map(ProjectRef::id))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if ids.iter().any(|id| id.as_str() == reference) {
+            return Ok(ProjectId::from(reference));
+        }
+        let by_prefix: Vec<&ProjectId> = ids
+            .iter()
+            .filter(|id| id.as_str().starts_with(reference))
+            .collect();
+        match by_prefix.as_slice() {
+            [one] => Ok((*one).clone()),
+            [] => Err(RegistryError::ProjectNotFound(reference.to_owned())),
+            _ => Err(RegistryError::ProjectAmbiguous(reference.to_owned())),
+        }
     }
 
     /// Update status and the derived timestamps. Returns the updated record.
@@ -156,7 +209,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AgentSpec;
+    use crate::{AgentSpec, ProjectRef};
 
     fn record(name: &str) -> AgentRecord {
         let spec = AgentSpec {
@@ -240,5 +293,80 @@ mod tests {
         assert_eq!(done.finished_at, Some(later));
         assert_eq!(reg.list(false).len(), 0);
         assert_eq!(reg.list(true).len(), 1);
+    }
+
+    fn record_in(name: &str, root: &str) -> AgentRecord {
+        let mut rec = record(name);
+        rec.project = Some(ProjectRef::directory(root));
+        rec
+    }
+
+    #[test]
+    fn matching_groups_by_project_and_filters() {
+        let mut reg = Registry::new();
+        let mut alone = record("alone");
+        alone.spec.labels.insert("team".into(), "x".into());
+        reg.insert(alone).unwrap();
+        reg.insert(record_in("b1", "/work/beta")).unwrap();
+        let mut a1 = record_in("a1", "/work/alpha");
+        a1.spec.labels.insert("team".into(), "x".into());
+        reg.insert(a1).unwrap();
+        reg.insert(record_in("a2", "/work/alpha")).unwrap();
+
+        let names = |agents: Vec<AgentRecord>| -> Vec<String> {
+            agents.into_iter().map(|a| a.spec.name).collect()
+        };
+        // Grouped by project name; the project-less agent last.
+        let listed = names(reg.list(false));
+        assert_eq!(listed[..2], ["a1".to_owned(), "a2".to_owned()]);
+        assert_eq!(listed[2], "b1");
+        assert_eq!(listed[3], "alone");
+
+        let alpha = ProjectRef::directory("/work/alpha").id();
+        assert_eq!(
+            names(reg.matching(false, Some(&alpha), &BTreeMap::new())),
+            ["a1", "a2"]
+        );
+        let team = BTreeMap::from([("team".to_owned(), "x".to_owned())]);
+        assert_eq!(names(reg.matching(false, None, &team)), ["a1", "alone"]);
+        assert_eq!(names(reg.matching(false, Some(&alpha), &team)), ["a1"]);
+    }
+
+    #[test]
+    fn resolve_project_by_id_or_unique_prefix() {
+        let mut reg = Registry::new();
+        reg.insert(record_in("a", "/work/alpha")).unwrap();
+        reg.insert(record_in("b", "/work/beta")).unwrap();
+        let alpha = ProjectRef::directory("/work/alpha").id();
+        assert_eq!(reg.resolve_project(alpha.as_str()), Ok(alpha.clone()));
+        assert_eq!(
+            reg.resolve_project(&alpha.as_str()[..10]),
+            Ok(alpha.clone())
+        );
+        assert_eq!(
+            reg.resolve_project("nope"),
+            Err(RegistryError::ProjectNotFound("nope".into()))
+        );
+        assert_eq!(
+            reg.resolve_project(""),
+            Err(RegistryError::ProjectNotFound(String::new()))
+        );
+        // Every id is hex, so a one-character prefix is almost surely shared;
+        // build the ambiguous case explicitly instead of hoping.
+        let beta = ProjectRef::directory("/work/beta").id();
+        let common = alpha
+            .as_str()
+            .chars()
+            .zip(beta.as_str().chars())
+            .take_while(|(x, y)| x == y)
+            .count();
+        if common > 0 {
+            assert_eq!(
+                reg.resolve_project(&alpha.as_str()[..common]),
+                Err(RegistryError::ProjectAmbiguous(
+                    alpha.as_str()[..common].to_owned()
+                ))
+            );
+        }
     }
 }

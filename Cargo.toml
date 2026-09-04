@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/agentd", "crates/cli"]
+members = ["crates/core", "crates/host", "crates/agentd", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ rust-version = "1.87"
 
 [workspace.dependencies]
 agentdocker-core = { path = "crates/core" }
+agentdocker-host = { path = "crates/host" }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -26,4 +27,4 @@ tokio = { version = "1", features = ["full"] }
 toml = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
