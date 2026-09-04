@@ -1,9 +1,11 @@
 //! `agentdocker`: command-line client for `agentd`.
 
+mod agentfile;
 mod client;
 mod format;
 mod hooks;
 mod mcp;
+mod teams;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -130,6 +132,25 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
+    /// Start the agents in an Agentfile.toml that are not already running.
+    Up {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+    },
+    /// Stop the agents in an Agentfile.toml.
+    Down {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+        /// SIGKILL instead of SIGTERM.
+        #[arg(long)]
+        force: bool,
+    },
     /// Stream daemon events.
     Events {
         /// Show this many stored events before streaming new ones.
@@ -219,6 +240,9 @@ struct ClaimArgs {
     /// What you are doing with it, for other agents to read.
     #[arg(long)]
     note: Option<String>,
+    /// Seconds to wait for the resource to free up instead of failing at once.
+    #[arg(long, default_value_t = 0)]
+    wait: u64,
 }
 
 #[tokio::main]
@@ -372,6 +396,7 @@ async fn main() -> Result<()> {
                 },
                 ttl_secs: args.ttl,
                 note: args.note,
+                wait_secs: args.wait,
             };
             if let Response::Lease { lease } = client.call(&request).await? {
                 println!("{}", lease.id);
@@ -415,6 +440,10 @@ async fn main() -> Result<()> {
         }
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
+        Command::Down { file, names, force } => {
+            teams::down(&client, file.as_deref(), &names, force).await?;
+        }
         Command::Events { replay } => {
             client
                 .stream(&Request::Events { replay }, |response| {

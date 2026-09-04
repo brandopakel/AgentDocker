@@ -83,6 +83,10 @@ Design points:
 - **Fail open.** Any daemon error is written to stderr and the hook exits 0 with no output, so an unreachable `agentd` never blocks an edit or a stop.
 - **`Stop` is the delivery guarantee for chatty agents.** A session that never calls a tool again would otherwise finish without seeing replies; blocking the stop once (never when `stop_hook_active`) turns "you have messages" into the model's next instruction.
 
+### `Agentfile.toml` and `agentdocker up` / `down` (`crates/cli/src/agentfile.rs`, `teams.rs`)
+
+A TOML file with an optional `name` and an `[agents.<name>]` table per agent (`runtime`, `provider`, `model`, `command`, `workdir`, `env`, `labels`; unknown keys are rejected). `up` turns each entry into a `run` request in file order, skipping names that are already live, and labels every agent with `agentfile=<path>` and `team=<name>`; `down` stops the live agents named in the file. Relative `workdir`s resolve against the file's directory. There is deliberately no daemon-side notion of a team yet: the file is a client convenience over `run`/`stop`, so a team can also be assembled by hand or by another tool.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
@@ -106,7 +110,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
-| `claim {agent, resource, mode?, ttl_secs?, note?}` | `lease` or `error(conflict)` | conflict `details.held_by` lists the blocking leases |
+| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
 | `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
@@ -128,7 +132,9 @@ Two **modes**: `exclusive` conflicts with any lease on an overlapping resource h
 
 **Exit.** When a managed agent's process exits, or an external agent deregisters or is stopped, every lease it holds is released and a `lease_released` event is emitted for each.
 
-**Conflicts are informative.** A refused claim returns every blocking lease including its holder, mode, expiry, and note, and emits a `lease_conflict` event. Agents are expected to read the note, message the holder, or wait; a `wait` option (block until available, with timeout) is planned.
+**Conflicts are informative.** A refused claim returns every blocking lease including its holder, mode, expiry, and note, and emits a `lease_conflict` event. Agents are expected to read the note, message the holder, or wait.
+
+**Waiting.** `claim` with `wait_secs > 0` subscribes to the event stream *before* its first attempt, and on conflict waits for a `lease_released` or `lease_expired` event on an overlapping resource (or the deadline) before trying again. One `lease_conflict` event is emitted per request no matter how long it waits. Waiters are not queued: when a lease clears, every waiter retries and the lease table decides, so two agents waiting on the same resource race. FIFO fairness is an open question below.
 
 ## Messaging
 
@@ -158,13 +164,9 @@ The socket is `0600`, so only the owning user can talk to the daemon, and every 
 
 ## Planned phases
 
-### Phase 1 — adapters & persistence
+### Phase 1 — adapters & persistence (done)
 
-- ~~**MCP server.**~~ Done as `agentdocker mcp`; see above. A2A support will be evaluated later for agent-to-agent task delegation.
-- ~~**Claude Code hooks pack.**~~ Done as `agentdocker hook`; see above.
-- ~~**Persistence.**~~ Done: see [Persistence](#persistence).
-- **Teams.** An `Agentfile` (TOML) describing several agents and their topics, and `agentdocker up` / `down` to manage them together.
-- **`claim --wait`.** Block until the resource is free or a timeout passes.
+MCP server (`agentdocker mcp`), Claude Code hooks (`agentdocker hook`), SQLite persistence, `Agentfile.toml` with `up`/`down`, and `claim --wait` — all described above. A2A support will be evaluated later for agent-to-agent task delegation.
 
 ### Phase 2 — shared context
 

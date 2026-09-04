@@ -86,6 +86,10 @@ pub enum Request {
         ttl_secs: u64,
         #[serde(default)]
         note: Option<String>,
+        /// Seconds to wait for a conflicting lease to clear before giving
+        /// up; 0 reports the conflict immediately.
+        #[serde(default)]
+        wait_secs: u64,
     },
     Renew {
         agent: String,
@@ -219,6 +223,7 @@ mod tests {
                 mode: LeaseMode::Exclusive,
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
+                wait_secs: 0,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

@@ -38,6 +38,8 @@ const INBOX_CAPACITY: usize = 1000;
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Stored event history is trimmed to this many entries.
 const EVENT_HISTORY: usize = 10_000;
+/// Longest a claim may wait for a conflicting lease to clear.
+const MAX_WAIT_SECS: u64 = 600;
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -113,6 +115,30 @@ fn same_process(pid: u32, recorded: Option<DateTime<Utc>>) -> bool {
     match (recorded, procinfo::start_time(pid)) {
         (Some(recorded), Some(current)) => (current - recorded).num_seconds().abs() <= 2,
         _ => true,
+    }
+}
+
+/// Wait until a lease overlapping `resource` is released or expires, or the
+/// deadline passes. `true` means a retry is worthwhile.
+async fn wait_for_release(
+    events: &mut broadcast::Receiver<Event>,
+    resource: &ResourceKey,
+    deadline: tokio::time::Instant,
+) -> bool {
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(event)) => match &event.kind {
+                EventKind::LeaseReleased { lease } | EventKind::LeaseExpired { lease }
+                    if lease.resource.overlaps(resource) =>
+                {
+                    return true;
+                }
+                _ => {}
+            },
+            // Events were dropped; a retry costs nothing.
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => return true,
+            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return false,
+        }
     }
 }
 
@@ -288,7 +314,11 @@ impl Daemon {
                 mode,
                 ttl_secs,
                 note,
-            } => self.claim(&agent, resource, mode, ttl_secs, note),
+                wait_secs,
+            } => {
+                self.claim(&agent, resource, mode, ttl_secs, note, wait_secs)
+                    .await
+            }
             Request::Renew {
                 agent,
                 lease,
@@ -683,60 +713,75 @@ impl Daemon {
         }
     }
 
-    fn claim(
+    async fn claim(
         &self,
         reference: &str,
         resource: String,
         mode: LeaseMode,
         ttl_secs: u64,
         note: Option<String>,
+        wait_secs: u64,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
         self.touch(&holder);
-        let result = lock(&self.leases).claim(
-            ResourceKey::new(resource),
-            holder.clone(),
-            mode,
-            ttl(ttl_secs),
-            note,
-            Utc::now(),
-        );
-        match result {
-            Ok(Claimed::New(lease)) => {
-                self.persist("lease", |store| store.upsert_lease(&lease));
-                self.emit(EventKind::LeaseClaimed {
-                    lease: lease.clone(),
-                });
-                Response::Lease { lease }
-            }
-            Ok(Claimed::Renewed(lease)) => {
-                self.persist("lease", |store| store.upsert_lease(&lease));
-                self.emit(EventKind::LeaseRenewed {
-                    lease: lease.clone(),
-                });
-                Response::Lease { lease }
-            }
-            Err(err) => {
-                let message = err.to_string();
-                match err {
-                    LeaseError::Conflict { resource, held_by } => {
-                        warn!(agent = %holder.short(), %resource, "lease conflict");
-                        self.emit(EventKind::LeaseConflict {
-                            resource,
-                            requester: holder,
-                            held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
-                        });
-                        Response::Error {
-                            code: ErrorCode::Conflict,
-                            message,
-                            details: Some(json!({ "held_by": held_by })),
-                        }
-                    }
-                    other => lease_error(other),
+        let resource = ResourceKey::new(resource);
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
+        // Subscribe before the first attempt so a release that lands between
+        // a failed attempt and the wait is not missed.
+        let mut events = self.subscribe_events();
+        let mut reported_conflict = false;
+        loop {
+            let result = lock(&self.leases).claim(
+                resource.clone(),
+                holder.clone(),
+                mode,
+                ttl(ttl_secs),
+                note.clone(),
+                Utc::now(),
+            );
+            let (message, held_by) = match result {
+                Ok(Claimed::New(lease)) => {
+                    self.persist("lease", |store| store.upsert_lease(&lease));
+                    self.emit(EventKind::LeaseClaimed {
+                        lease: lease.clone(),
+                    });
+                    return Response::Lease { lease };
                 }
+                Ok(Claimed::Renewed(lease)) => {
+                    self.persist("lease", |store| store.upsert_lease(&lease));
+                    self.emit(EventKind::LeaseRenewed {
+                        lease: lease.clone(),
+                    });
+                    return Response::Lease { lease };
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    match err {
+                        LeaseError::Conflict { held_by, .. } => (message, held_by),
+                        other => return lease_error(other),
+                    }
+                }
+            };
+            // One conflict event per request, however long it waits.
+            if !reported_conflict {
+                reported_conflict = true;
+                warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
+                self.emit(EventKind::LeaseConflict {
+                    resource: resource.clone(),
+                    requester: holder.clone(),
+                    held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
+                });
+            }
+            if wait_secs == 0 || !wait_for_release(&mut events, &resource, deadline).await {
+                return Response::Error {
+                    code: ErrorCode::Conflict,
+                    message,
+                    details: Some(json!({ "held_by": held_by })),
+                };
             }
         }
     }
@@ -911,6 +956,7 @@ mod tests {
                 mode: LeaseMode::Exclusive,
                 ttl_secs: 60,
                 note: None,
+                wait_secs: 0,
             })
             .await
     }
@@ -1210,5 +1256,75 @@ mod tests {
         assert!(!process_exists(0));
         assert!(!process_exists(u32::MAX));
         assert!(process_exists(std::process::id()));
+    }
+
+    #[tokio::test]
+    async fn claim_wait_acquires_when_the_holder_releases() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "a", None).await;
+        let b = register(&daemon, "b", None).await;
+        let Response::Lease { lease } = claim(&daemon, "a", "task:w").await else {
+            panic!("a should hold task:w")
+        };
+        let waiter = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent: "b".into(),
+                        resource: "task:w".into(),
+                        mode: LeaseMode::Exclusive,
+                        ttl_secs: 60,
+                        note: None,
+                        wait_secs: 5,
+                    })
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        daemon
+            .handle(Request::Release {
+                agent: "a".into(),
+                lease: lease.id,
+            })
+            .await;
+        let response = waiter.await.unwrap();
+        assert!(matches!(response, Response::Lease { lease } if lease.holder == b.id));
+    }
+
+    #[tokio::test]
+    async fn claim_wait_gives_up_at_the_deadline() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "a", None).await;
+        register(&daemon, "b", None).await;
+        claim(&daemon, "a", "task:w").await;
+        let started = std::time::Instant::now();
+        let response = daemon
+            .handle(Request::Claim {
+                agent: "b".into(),
+                resource: "task:w".into(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 1,
+            })
+            .await;
+        assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        // One conflict event per request, however long it waited.
+        let conflicts = daemon
+            .recent_events(50)
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::LeaseConflict { .. }))
+            .count();
+        assert_eq!(conflicts, 1);
     }
 }

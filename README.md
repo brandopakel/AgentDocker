@@ -97,6 +97,35 @@ agentdocker hook install claude-code          # writes ./.claude/settings.json (
 
 The hook fails open: if `agentd` isn't running, Claude Code carries on as if the hook weren't there.
 
+### Teams: `Agentfile.toml`
+
+Describe several agents in one file and manage them together, the way a compose file manages containers:
+
+```toml
+name = "backend"                      # every agent gets label team=backend
+
+[agents.writer]
+runtime = "claude-code"
+command = ["claude", "-p", "Implement the parser in src/parser.rs"]
+workdir = "."                         # relative to this file
+
+[agents.reviewer]
+runtime = "codex"
+command = ["codex", "exec", "Review whatever writer changes and message it"]
+env = { RUST_LOG = "info" }
+labels = { role = "review" }
+```
+
+```sh
+agentdocker up                # starts writer, then reviewer; skips any already running
+agentdocker up reviewer       # just one
+agentdocker down              # stops them
+```
+
+### Waiting instead of failing
+
+`agentdocker claim --wait 120 src/parser.rs` blocks until the holder releases (or the lease expires), then takes it — or reports the conflict after two minutes. The MCP `claim` tool has the same `wait_secs`.
+
 ## What it solves
 
 **Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
@@ -133,7 +162,7 @@ Three crates:
 ## Roadmap
 
 - **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
-- **Phase 1 — adapters & persistence** *(in progress)*: ✅ SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); ✅ `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; ✅ `agentdocker hook`, a Claude Code hooks pack (auto-register, claim before edit, deliver messages, release on stop); `Agentfile` + `agentdocker up` for multi-agent teams.
+- **Phase 1 — adapters & persistence** *(done)*: SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; `agentdocker hook`, a Claude Code hooks pack (auto-register, claim before edit, deliver messages, release on stop); `Agentfile.toml` + `agentdocker up`/`down` for teams; `claim --wait`.
 - **Phase 2 — shared context**: a versioned key/document store with watch notifications, and a handoff protocol so one agent can package its working context for another.
 - **Phase 3 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace.
 - **Phase 4 — policy & scheduling**: quotas, priorities, dependencies between agents, restart policies, a dashboard.

@@ -167,6 +167,7 @@ pub async fn claude_code<B: Backend>(
                     mode: LeaseMode::Exclusive,
                     ttl_secs: opts.ttl,
                     note: Some(format!("editing in Claude Code session {}", me.spec.name)),
+                    wait_secs: 0,
                 })
                 .await?;
             match response {
