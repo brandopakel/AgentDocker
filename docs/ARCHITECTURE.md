@@ -53,6 +53,17 @@ Every event carries a strictly increasing `seq`, assigned by the daemon and cont
 
 A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in.
 
+### `agentdocker mcp` (`crates/cli/src/mcp.rs`)
+
+The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; the server registers the host as an agent (pid = the host's, so the liveness check cleans up after a crash) and translates tool calls into daemon requests. The JSON-RPC surface is deliberately minimal — `initialize`, `ping`, `tools/list`, `tools/call`, notifications ignored — and hand-rolled, because that is a few hundred lines with tests versus a dependency on a fast-moving SDK. Supported protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's choice is echoed when supported).
+
+Design points:
+
+- **Identity.** If `AGENTDOCKER_AGENT_ID` is set the host was started by `agentdocker run` and already *is* an agent; the server adopts that identity and does not deregister on exit. Otherwise it registers a new agent and deregisters when stdin closes.
+- **Conflicts are results, not errors.** `claim` returns `{"claimed": false, "held_by": [...]}` with `isError: false`, because a conflict is information the model must reason about, whereas `isError: true` reads to most hosts as "the tool broke".
+- **`wait_for_messages` polls the inbox** rather than holding a live subscription. A live subscription would mark the agent as online, so a message arriving between the server's last read and the socket closing would be pushed to a reader that is gone. Polling at 250 ms trades a little latency for zero loss.
+- The `instructions` field returned from `initialize` tells the model when to claim, release, and read its inbox, so hosts that surface instructions need no extra prompting.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
@@ -129,7 +140,7 @@ The socket is `0600`, so only the owning user can talk to the daemon, and every 
 
 ### Phase 1 — adapters & persistence
 
-- **MCP server.** `agentd` exposes an MCP endpoint offering `list_agents`, `send_message`, `read_inbox`, `claim`, `renew`, `release`, `list_leases`. Nearly every current agent runtime speaks MCP, so this single adapter makes them all first-class participants with no bespoke integration. A2A support will be evaluated alongside it for agent-to-agent task delegation.
+- ~~**MCP server.**~~ Done as `agentdocker mcp`; see above. A2A support will be evaluated later for agent-to-agent task delegation.
 - **Claude Code hooks pack.** `SessionStart` registers the session; `PreToolUse` on Edit/Write claims the path (and surfaces a conflict as a blocking message the model sees); `Stop`/`SessionEnd` releases and deregisters.
 - ~~**Persistence.**~~ Done: see [Persistence](#persistence).
 - **Teams.** An `Agentfile` (TOML) describing several agents and their topics, and `agentdocker up` / `down` to manage them together.

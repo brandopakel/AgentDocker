@@ -33,12 +33,18 @@ impl Client {
     /// Send one request and read exactly one response. Error responses
     /// become `Err`.
     pub async fn call(&self, request: &Request) -> Result<Response> {
+        into_result(self.call_raw(request).await?)
+    }
+
+    /// Like [`Client::call`], but hands back [`Response::Error`] as a value
+    /// so the caller can act on its code. Only transport failures are `Err`.
+    pub async fn call_raw(&self, request: &Request) -> Result<Response> {
         let mut reader = self.connect(request).await?;
         let mut line = String::new();
         if reader.read_line(&mut line).await? == 0 {
             bail!("agentd closed the connection without answering");
         }
-        into_result(serde_json::from_str(&line)?)
+        Ok(serde_json::from_str(&line)?)
     }
 
     /// Send one request and feed every response to `on_response` until the

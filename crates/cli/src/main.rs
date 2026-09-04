@@ -2,6 +2,7 @@
 
 mod client;
 mod format;
+mod mcp;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -120,6 +121,8 @@ enum Command {
         #[arg(long)]
         resource: Option<String>,
     },
+    /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
+    Mcp(mcp::McpArgs),
     /// Stream daemon events.
     Events {
         /// Show this many stored events before streaming new ones.
@@ -393,6 +396,7 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
+        Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::Events { replay } => {
             client
                 .stream(&Request::Events { replay }, |response| {
