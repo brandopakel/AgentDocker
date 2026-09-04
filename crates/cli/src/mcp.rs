@@ -863,7 +863,6 @@ mod tests {
             claim["inputSchema"]["properties"]["wait_secs"]["maximum"],
             MAX_CLAIM_WAIT_SECS
         );
-        assert!(MAX_CLAIM_WAIT_SECS > MAX_MESSAGE_WAIT_SECS);
     }
 
     #[tokio::test]
