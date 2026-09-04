@@ -208,7 +208,7 @@ struct SendArgs {
 struct ClaimArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     agent: String,
-    /// `kind:value`. A bare path that exists becomes `path:<absolute>`.
+    /// `kind:value`. A bare path becomes `path:<absolute>`; it need not exist yet.
     resource: String,
     /// Allow other shared holders; blocks exclusive ones.
     #[arg(long)]

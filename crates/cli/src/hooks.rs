@@ -95,10 +95,15 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     match args.command {
         HookCommand::Install(install) => install_hooks(&install),
         HookCommand::ClaudeCode(opts) => {
-            let mut raw = String::new();
-            std::io::stdin().read_to_string(&mut raw)?;
-            let input: HookInput =
-                serde_json::from_str(&raw).context("stdin is not a Claude Code hook event")?;
+            // Fail open all the way down: an unreadable or malformed event is
+            // reported on stderr and Claude Code carries on.
+            let input = match read_event() {
+                Ok(input) => input,
+                Err(err) => {
+                    eprintln!("agentdocker hook: {err:#}");
+                    return Ok(());
+                }
+            };
             let output = match claude_code(&client, &input, &opts).await {
                 Ok(output) => output,
                 Err(err) => {
@@ -112,6 +117,12 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn read_event() -> Result<HookInput> {
+    let mut raw = String::new();
+    std::io::stdin().read_to_string(&mut raw)?;
+    serde_json::from_str(&raw).context("stdin is not a Claude Code hook event")
 }
 
 /// Handle one event. `Some(value)` is JSON for Claude Code's stdout.
@@ -491,6 +502,12 @@ fn install_hooks(args: &InstallArgs) -> Result<()> {
     let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
     let command = format!("{} hook claude-code", exe.display());
     let added = merge_claude_code_hooks(&mut settings, &command)?;
+    if added == 0 {
+        // Nothing to add, so leave the file byte-for-byte alone: a rewrite
+        // would re-sort and re-indent the user's whole settings document.
+        println!("{}: hooks already installed", path.display());
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -499,14 +516,10 @@ fn install_hooks(args: &InstallArgs) -> Result<()> {
         format!("{}\n", serde_json::to_string_pretty(&settings)?),
     )
     .with_context(|| format!("cannot write {}", path.display()))?;
-    if added == 0 {
-        println!("{}: hooks already installed", path.display());
-    } else {
-        println!(
-            "{}: added {added} hook entries running `{command}`",
-            path.display()
-        );
-    }
+    println!(
+        "{}: added {added} hook entries running `{command}`",
+        path.display()
+    );
     Ok(())
 }
 

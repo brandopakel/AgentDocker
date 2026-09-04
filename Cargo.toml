@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/brandopakel/AgentDocker"
-rust-version = "1.85"
+rust-version = "1.87"
 
 [workspace.dependencies]
 agentdocker-core = { path = "crates/core" }

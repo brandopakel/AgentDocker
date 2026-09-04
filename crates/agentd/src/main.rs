@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
             reaper.expire_leases();
             reaper.check_liveness();
             ticks += 1;
-            if ticks % 60 == 0 {
+            if ticks.is_multiple_of(60) {
                 reaper.prune_events();
             }
         }
