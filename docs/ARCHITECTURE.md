@@ -102,7 +102,7 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 **Identity.** A `ProjectRef` carries `root`, `worktree`, `source`, and for repositories a `fingerprint`: the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable). The `ProjectId` is the fingerprint when there is one, else a UUIDv5 of the root path — the same repository is one project across clones and, later, across hosts, and a plain directory is still one project for everyone in it. The fingerprint walks the whole history, so the daemon runs it once per root, in a blocking task with a 3-second timeout, and caches the result in the `projects` table; a lookup that fails (no `git`, no commits, timeout) is remembered in memory only, so every agent in that repository still shares a path-derived id this run and a restart retries. `project_discovered` fires the first time a repository is fingerprinted on this host.
 
-**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `inspect` shows the full reference. Path leases need nothing new: `leases --resource path:<root>` already lists a project's leases by overlap.
+**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Path leases need nothing new: `leases --resource path:<root>` already lists a project's leases by overlap.
 
 ## Wire protocol
 
@@ -124,7 +124,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `list {all?, project?, labels?}` | `agents` | live only unless `all`; `project` is an id prefix or an absolute path inside it; `labels` must all match |
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
-| `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `topic:<name>`, or `all` |
+| `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
@@ -157,13 +157,14 @@ Two **modes**: `exclusive` conflicts with any lease on an overlapping resource h
 
 An **envelope** carries `from` (an agent id, or `user` for CLI-injected messages), `to`, a free-form `kind`, a JSON `payload`, an optional `reply_to`, and a timestamp. The daemon routes; it does not interpret `kind` or `payload`.
 
-Three destinations:
+Four destinations:
 
 - **Agent** — one recipient, resolved by id/prefix/name before publishing.
+- **Project** — every live agent in a project except the sender. `project:<selector>` takes an id (any unique prefix) or an absolute path inside the project; the CLI and MCP server turn a bare `project` into the caller's current directory, so `send --to project` needs no ids at all.
 - **Topic** — a `/`-separated path like `repo/backend/reviews`. Subscribers give MQTT-style patterns: `+` matches one level, `#` matches the rest.
 - **Broadcast** — every live agent except the sender.
 
-**Delivery.** A message is pushed to every live subscription whose filter matches. For agent and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
+**Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
 Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inbox delivery is at-least-once until drained, and inboxes survive a daemon restart.
 
@@ -203,7 +204,7 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 #### Project identity *(done)*
 
-See [Projects](#projects). Compared with the original plan, derivation lives only in the daemon (clients just send a working directory), which keeps one code path and one fingerprint cache so every agent in a repository gets the same id; `ps` shows a `PROJECT` column and sorts by project rather than printing headings, so its output still pipes into `awk`. Still to come from this item: the `project:` message destination and project-aware hook orientation (PR 2).
+See [Projects](#projects). Compared with the original plan, derivation lives only in the daemon (clients just send a working directory), which keeps one code path and one fingerprint cache so every agent in a repository gets the same id; `ps` shows a `PROJECT` column and sorts by project rather than printing headings, so its output still pipes into `awk`. The `project:` destination and project-aware hook orientation followed in PR 2.
 
 #### Discovery and adoption
 
@@ -381,7 +382,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | # | PR | phase | depends on |
 |---|---|---|---|
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
-| 2 | `project:` destination; hooks orient by project | 2 | 1 |
+| 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 4 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 5 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |

@@ -253,8 +253,9 @@ impl<B: Backend> McpServer<B> {
                  call `claim` on `path:<absolute path>` and stop if it reports a conflict — \
                  the response says who holds it and why. Call `release` when done. Use \
                  `read_inbox` to see messages other agents sent you and `send_message` to \
-                 reply, hand off work, or announce what you are doing. `list_agents` shows \
-                 who else is running.",
+                 reply, hand off work, or announce what you are doing — `to: \"project\"` \
+                 reaches everyone working in the same repository. `list_agents` shows who \
+                 else is running and which project each is in.",
                 self.identity.name, self.identity.id
             ),
         })
@@ -300,7 +301,7 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(Request::Send {
                     from: me,
-                    to: args.to,
+                    to: crate::destination(&args.to),
                     kind: args.kind,
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
@@ -596,11 +597,11 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "send_message",
-            "description": "Send a message to another agent (by id or name), to a topic (`topic:name`), or to everyone (`all`). Give `text`, or a structured `payload` object.",
+            "description": "Send a message to another agent (by id or name), to everyone working in this project (`project`), to a topic (`topic:name`), or to everyone (`all`). Give `text`, or a structured `payload` object.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name, `topic:<name>`, or `all`." },
+                    "to": { "type": "string", "description": "Agent id/name, `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },

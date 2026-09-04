@@ -88,7 +88,7 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
-    /// Send a message to an agent, a topic (`topic:name`), or everyone (`all`).
+    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
     Send(SendArgs),
     /// Stream messages for an agent and/or matching topic patterns.
     Watch {
@@ -217,7 +217,8 @@ struct SendArgs {
     /// Sender; defaults to this agent's id, or `user`.
     #[arg(long, env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
     from: String,
-    /// Agent id/name, `topic:<name>`, or `all`.
+    /// Agent id/name, `project` (everyone working in this directory's
+    /// project) or `project:<id|path>`, `topic:<name>`, or `all`.
     #[arg(long)]
     to: String,
     /// Message kind: chat, task, handoff, question, answer, notice...
@@ -370,7 +371,7 @@ async fn main() -> Result<()> {
             };
             let request = Request::Send {
                 from: args.from,
-                to: args.to,
+                to: destination(&args.to),
                 kind: args.kind,
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
@@ -479,10 +480,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// `project` means the project containing the current directory; a
+/// `project:` selector is normalised like `ps --project`; anything else
+/// is passed through for the daemon to interpret.
+pub(crate) fn destination(raw: &str) -> String {
+    match raw {
+        "project" => format!("project:{}", project_selector(".")),
+        _ => match raw.strip_prefix("project:") {
+            Some(selector) => format!("project:{}", project_selector(selector)),
+            None => raw.to_owned(),
+        },
+    }
+}
+
 /// A project id prefix passes through; anything that names a path (`.`,
 /// something with a slash, or an existing entry) becomes absolute so the
 /// daemon can find the project containing it.
-fn project_selector(raw: &str) -> String {
+pub(crate) fn project_selector(raw: &str) -> String {
     let path = PathBuf::from(raw);
     if !(raw == "." || raw.contains('/') || path.exists()) {
         return raw.to_owned();

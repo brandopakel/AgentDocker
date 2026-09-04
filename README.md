@@ -46,6 +46,7 @@ agentdocker send --from reviewer --to writer "ping me when src/ is free"
 agentdocker inbox --as writer
 agentdocker watch --as writer &                       # live delivery from here on
 agentdocker send --from reviewer --to topic:repo/reviews --kind notice "PR #12 approved"
+agentdocker send --from reviewer --to project "heads up: I'm touching src/ next"   # everyone in this repo
 
 # 5. Watch it all happen
 agentdocker events
@@ -134,7 +135,7 @@ agentdocker down              # stops them
 
 **Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
 
-**No common channel.** Messaging is direct (`--to writer`), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 

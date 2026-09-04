@@ -447,33 +447,54 @@ fn messages_text(inbox: &[Envelope], agents: &[AgentRecord]) -> String {
 }
 
 fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> String {
-    let others: Vec<String> = agents
+    use agentdocker_core::ProjectRef;
+
+    let describe = |a: &AgentRecord| {
+        format!(
+            "{} ({}{})",
+            a.spec.name,
+            a.spec.runtime,
+            a.spec
+                .model
+                .as_ref()
+                .map(|m| format!(", {m}"))
+                .unwrap_or_default()
+        )
+    };
+    let mine = me.project.as_ref().map(ProjectRef::id);
+    let (here, elsewhere): (Vec<String>, Vec<String>) = agents
         .iter()
         .filter(|a| a.id != me.id && a.status.is_live())
-        .map(|a| {
-            format!(
-                "{} ({}{})",
-                a.spec.name,
-                a.spec.runtime,
-                a.spec
-                    .model
-                    .as_ref()
-                    .map(|m| format!(", {m}"))
-                    .unwrap_or_default()
-            )
-        })
-        .collect();
-    let mut text = format!("AgentDocker: this session is agent `{}`. ", me.spec.name);
-    if others.is_empty() {
-        text.push_str("No other agents are live right now. ");
-    } else {
-        text.push_str(&format!("Other live agents: {}. ", others.join(", ")));
+        .partition_map_by(
+            |a| mine.is_some() && a.project.as_ref().map(ProjectRef::id) == mine,
+            describe,
+        );
+
+    let mut text = format!("AgentDocker: this session is agent `{}`", me.spec.name);
+    if let Some(project) = &me.project {
+        text.push_str(&format!(" in project `{}`", project.name()));
+    }
+    text.push_str(". ");
+    match (here.is_empty(), elsewhere.is_empty()) {
+        (true, true) => text.push_str("No other agents are live right now. "),
+        (true, false) if mine.is_none() => {
+            text.push_str(&format!("Other live agents: {}. ", elsewhere.join(", ")));
+        }
+        _ => {
+            if !here.is_empty() {
+                text.push_str(&format!("In this project: {}. ", here.join(", ")));
+            }
+            if !elsewhere.is_empty() {
+                text.push_str(&format!("Elsewhere: {}. ", elsewhere.join(", ")));
+            }
+        }
     }
     text.push_str(
         "Edits are leased automatically: if another agent holds a file, the edit is refused \
          with their name and note — coordinate instead of retrying. Talk to an agent with \
-         `agentdocker send --to <name> \"<text>\"`; their replies are handed to you here as \
-         they arrive. `agentdocker ps` and `agentdocker leases` show the current state.",
+         `agentdocker send --to <name> \"<text>\"`, or to everyone in this project with \
+         `--to project`; their replies are handed to you here as they arrive. \
+         `agentdocker ps` and `agentdocker leases` show the current state.",
     );
     if !inbox.is_empty() {
         text.push_str(&format!(
@@ -484,6 +505,28 @@ fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> 
     }
     text
 }
+
+/// `partition` for iterators of references, mapping as it goes.
+trait PartitionMapBy: Iterator + Sized {
+    fn partition_map_by<T>(
+        self,
+        pick: impl Fn(&Self::Item) -> bool,
+        map: impl Fn(Self::Item) -> T,
+    ) -> (Vec<T>, Vec<T>) {
+        let mut yes = Vec::new();
+        let mut no = Vec::new();
+        for item in self {
+            if pick(&item) {
+                yes.push(map(item));
+            } else {
+                no.push(map(item));
+            }
+        }
+        (yes, no)
+    }
+}
+
+impl<I: Iterator> PartitionMapBy for I {}
 
 // ----- install --------------------------------------------------------------
 
@@ -737,6 +780,39 @@ mod tests {
             &requests[1],
             Request::Register { spec, .. } if spec.name == "claude-01234567" && spec.runtime == RUNTIME
         ));
+    }
+
+    #[tokio::test]
+    async fn session_start_names_project_mates_before_strangers() {
+        use agentdocker_core::ProjectRef;
+        let mut me = agent("claude-01234567", true);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        let mut mate = agent("mate", true);
+        mate.project = Some(ProjectRef::directory("/work/alpha"));
+        let mut stranger = agent("stranger", true);
+        stranger.project = Some(ProjectRef::directory("/work/beta"));
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Agents {
+                agents: vec![stranger, me.clone(), mate, agent("nowhere", true)],
+            },
+            Response::Messages {
+                messages: Vec::new(),
+            },
+        ]);
+        let out = claude_code(&backend, &input("SessionStart"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("in project `alpha`"), "{text}");
+        assert!(text.contains("In this project: mate ("), "{text}");
+        assert!(text.contains("Elsewhere: stranger ("), "{text}");
+        assert!(text.contains("nowhere ("), "{text}");
+        assert!(text.find("mate (").unwrap() < text.find("stranger (").unwrap());
+        assert!(text.contains("`--to project`"), "{text}");
     }
 
     #[tokio::test]

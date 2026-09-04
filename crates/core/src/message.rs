@@ -5,7 +5,7 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::AgentId;
+use crate::{AgentId, ProjectId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -44,21 +44,29 @@ pub enum Destination {
     /// Every live subscriber of a topic such as `repo/backend/reviews`.
     /// Subscribers use MQTT-style patterns (`+` one level, `#` the rest).
     Topic(String),
+    /// Every live agent working in one project, except the sender. Clients
+    /// may give an id prefix or an absolute path inside the project; the
+    /// daemon resolves to the id before publishing.
+    Project(ProjectId),
     /// Every live agent.
     Broadcast,
 }
 
 impl Destination {
-    /// Parse the shorthand accepted on the command line:
-    /// `all` / `*` → broadcast, `topic:x/y` → topic, anything else → agent.
+    /// Parse the shorthand accepted on the command line: `all` / `*` →
+    /// broadcast, `topic:x/y` → topic, `project:<id or path>` → project,
+    /// anything else → agent.
     pub fn parse(s: &str) -> Self {
-        match s {
-            "all" | "*" => Self::Broadcast,
-            _ => match s.strip_prefix("topic:") {
-                Some(topic) => Self::Topic(topic.to_owned()),
-                None => Self::Agent(AgentId::from(s)),
-            },
+        if let "all" | "*" = s {
+            return Self::Broadcast;
         }
+        if let Some(topic) = s.strip_prefix("topic:") {
+            return Self::Topic(topic.to_owned());
+        }
+        if let Some(project) = s.strip_prefix("project:") {
+            return Self::Project(ProjectId::from(project));
+        }
+        Self::Agent(AgentId::from(s))
     }
 }
 
@@ -67,6 +75,7 @@ impl fmt::Display for Destination {
         match self {
             Self::Agent(id) => f.write_str(id.short()),
             Self::Topic(topic) => write!(f, "topic:{topic}"),
+            Self::Project(id) => write!(f, "project:{}", id.short()),
             Self::Broadcast => f.write_str("all"),
         }
     }
@@ -153,6 +162,14 @@ mod tests {
         assert_eq!(
             Destination::parse("reviewer"),
             Destination::Agent(AgentId::from("reviewer"))
+        );
+        assert_eq!(
+            Destination::parse("project:/repo"),
+            Destination::Project(ProjectId::from("/repo"))
+        );
+        assert_eq!(
+            Destination::parse("project:3f9c").to_string(),
+            "project:3f9c"
         );
     }
 

@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, Envelope, ErrorCode, Event,
-    EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectRef,
+    EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId, ProjectRef,
     ProjectSource, Registry, RegistryError, Request, ResourceKey, Response, topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -324,7 +324,7 @@ impl Daemon {
                 kind,
                 payload,
                 reply_to,
-            } => self.send(from, &to, kind, payload, reply_to),
+            } => self.send(from, &to, kind, payload, reply_to).await,
             Request::Inbox { agent, drain } => self.inbox(&agent, drain),
             Request::Claim {
                 agent,
@@ -499,6 +499,23 @@ impl Daemon {
         Some(project)
     }
 
+    /// A project as a client names it: an absolute path inside it, or an id
+    /// (any unique prefix) of a project some agent works in.
+    async fn resolve_project(&self, selector: &str) -> Result<ProjectId, Box<Response>> {
+        if Path::new(selector).is_absolute() {
+            return match self.project_for(Some(PathBuf::from(selector)), false).await {
+                Some(project) => Ok(project.id()),
+                None => Err(Box::new(Response::error(
+                    ErrorCode::Internal,
+                    "project lookup failed",
+                ))),
+            };
+        }
+        lock(&self.registry)
+            .resolve_project(selector)
+            .map_err(|err| Box::new(registry_error(err)))
+    }
+
     async fn list(
         &self,
         all: bool,
@@ -507,15 +524,9 @@ impl Daemon {
     ) -> Response {
         let project = match project {
             None => None,
-            Some(selector) if Path::new(&selector).is_absolute() => {
-                match self.project_for(Some(PathBuf::from(selector)), false).await {
-                    Some(project) => Some(project.id()),
-                    None => return Response::error(ErrorCode::Internal, "project lookup failed"),
-                }
-            }
-            Some(selector) => match lock(&self.registry).resolve_project(&selector) {
+            Some(selector) => match self.resolve_project(&selector).await {
                 Ok(id) => Some(id),
-                Err(err) => return registry_error(err),
+                Err(response) => return *response,
             },
         };
         Response::Agents {
@@ -683,7 +694,7 @@ impl Daemon {
         }
     }
 
-    fn send(
+    async fn send(
         &self,
         from: String,
         to: &str,
@@ -701,6 +712,10 @@ impl Daemon {
                 Ok(id) => Destination::Agent(id),
                 Err(response) => return *response,
             },
+            Destination::Project(selector) => match self.resolve_project(selector.as_str()).await {
+                Ok(id) => Destination::Project(id),
+                Err(response) => return *response,
+            },
             other => other,
         };
         let envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
@@ -710,6 +725,12 @@ impl Daemon {
             Destination::Broadcast => lock(&self.registry)
                 .live()
                 .filter(|a| a.id.as_str() != envelope.from)
+                .map(|a| a.id.clone())
+                .collect(),
+            Destination::Project(project) => lock(&self.registry)
+                .live()
+                .filter(|a| a.id.as_str() != envelope.from)
+                .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
             Destination::Topic(_) => Vec::new(),
@@ -785,6 +806,11 @@ impl Daemon {
         topics: Vec<String>,
     ) -> Result<(Subscription, broadcast::Receiver<Envelope>), Box<Response>> {
         let agent = agent.map(|reference| self.resolve(reference)).transpose()?;
+        let project = agent.as_ref().and_then(|id| {
+            lock(&self.registry)
+                .get(id)
+                .and_then(|a| a.project.as_ref().map(ProjectRef::id))
+        });
         let receiver = self.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
@@ -805,6 +831,7 @@ impl Daemon {
             Subscription {
                 daemon: self.clone(),
                 agent,
+                project,
                 topics,
                 backlog,
                 seen,
@@ -991,6 +1018,8 @@ impl Daemon {
 pub struct Subscription {
     daemon: Arc<Daemon>,
     agent: Option<AgentId>,
+    /// The agent's project when it subscribed, for `project:` deliveries.
+    project: Option<ProjectId>,
     topics: Vec<String>,
     backlog: Vec<Envelope>,
     seen: HashSet<MessageId>,
@@ -1012,6 +1041,13 @@ impl Subscription {
                 .agent
                 .as_ref()
                 .is_none_or(|me| me.as_str() != envelope.from),
+            Destination::Project(project) => {
+                self.project.as_ref() == Some(project)
+                    && self
+                        .agent
+                        .as_ref()
+                        .is_some_and(|me| me.as_str() != envelope.from)
+            }
             Destination::Topic(topic) => self
                 .topics
                 .iter()
@@ -1625,5 +1661,89 @@ mod tests {
             Some(fingerprint.as_str())
         );
         assert!(drain_discovered(&mut events).is_empty());
+    }
+
+    async fn send(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
+        daemon
+            .handle(Request::Send {
+                from: from.to_owned(),
+                to: to.to_owned(),
+                kind: "chat".to_owned(),
+                payload: json!({ "text": "hi" }),
+                reply_to: None,
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn project_messages_reach_everyone_in_the_project_but_the_sender() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        std::fs::create_dir_all(alpha.join("src")).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("Agentfile.toml"), "").unwrap();
+        let one = register_in(&daemon, "one", &alpha).await;
+        let two = register_in(&daemon, "two", &alpha.join("src")).await;
+        let three = register_in(&daemon, "three", &beta).await;
+        let project = one.project.clone().unwrap().id();
+
+        // Addressed by a path inside the project.
+        let inside = alpha.join("src").to_string_lossy().into_owned();
+        let Response::Sent { subscribers, .. } =
+            send(&daemon, "one", &format!("project:{inside}")).await
+        else {
+            panic!("send failed");
+        };
+        assert_eq!(subscribers, 0, "nobody is live-subscribed");
+        assert_eq!(inbox(&daemon, "two", false).await.len(), 1);
+        assert!(
+            inbox(&daemon, "one", false).await.is_empty(),
+            "not to the sender"
+        );
+        assert!(
+            inbox(&daemon, "three", false).await.is_empty(),
+            "other project"
+        );
+        let queued = &inbox(&daemon, "two", true).await[0];
+        assert_eq!(queued.to, Destination::Project(project.clone()));
+        assert_eq!(queued.from, one.id.as_str());
+
+        // Addressed by an id prefix; the user is not in any project and
+        // still reaches everyone in it.
+        let prefix = &project.as_str()[..8];
+        assert!(matches!(
+            send(&daemon, "user", &format!("project:{prefix}")).await,
+            Response::Sent { .. }
+        ));
+        assert_eq!(inbox(&daemon, "one", false).await.len(), 1);
+        assert_eq!(inbox(&daemon, "two", false).await.len(), 1);
+        assert!(inbox(&daemon, "three", false).await.is_empty());
+        assert!(matches!(
+            send(&daemon, "user", "project:zzzz").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        // A live subscription filters by the subscriber's own project.
+        let (in_alpha, _rx) = daemon.subscribe(Some("two"), Vec::new()).unwrap();
+        let (in_beta, _rx) = daemon.subscribe(Some("three"), Vec::new()).unwrap();
+        let (sender, _rx) = daemon.subscribe(Some("one"), Vec::new()).unwrap();
+        let envelope = Envelope::new(
+            one.id.as_str(),
+            Destination::Project(project.clone()),
+            "chat",
+            json!({}),
+            None,
+            Utc::now(),
+        );
+        assert!(in_alpha.wants(&envelope));
+        assert!(!in_beta.wants(&envelope));
+        assert!(!sender.wants(&envelope));
+        drop(two);
+        drop(three);
     }
 }
