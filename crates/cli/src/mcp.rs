@@ -34,9 +34,11 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 
-/// Upper bound on `wait_for_messages` and on `claim` waits: the server handles
-/// one request at a time, so a long wait blocks every other method.
-const MAX_WAIT_SECS: u64 = 300;
+/// Upper bound on `wait_for_messages`: the server handles one request at a
+/// time, so a long wait blocks every other method for its duration.
+const MAX_MESSAGE_WAIT_SECS: u64 = 300;
+/// Upper bound on `claim` waits, matching the daemon's own limit.
+const MAX_CLAIM_WAIT_SECS: u64 = 600;
 /// How long `wait_for_messages` sleeps between inbox polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -310,8 +312,10 @@ impl<B: Backend> McpServer<B> {
             }
             "wait_for_messages" => {
                 let args: WaitArgs = parse(arguments)?;
-                self.wait_for_messages(Duration::from_secs(args.timeout_secs.min(MAX_WAIT_SECS)))
-                    .await
+                self.wait_for_messages(Duration::from_secs(
+                    args.timeout_secs.min(MAX_MESSAGE_WAIT_SECS),
+                ))
+                .await
             }
             "claim" => {
                 let args: ClaimArgs = parse(arguments)?;
@@ -323,7 +327,7 @@ impl<B: Backend> McpServer<B> {
                         mode: args.mode,
                         ttl_secs: args.ttl_secs,
                         note: args.note,
-                        wait_secs: args.wait_secs.min(MAX_WAIT_SECS),
+                        wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),
                     })
                     .await
                     .map_err(transport)?;
@@ -618,7 +622,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "timeout_secs": { "type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECS, "default": 30 }
+                    "timeout_secs": { "type": "integer", "minimum": 0, "maximum": MAX_MESSAGE_WAIT_SECS, "default": 30 }
                 },
                 "additionalProperties": false
             }
@@ -633,7 +637,7 @@ fn tool_definitions() -> Vec<Value> {
                     "mode": { "type": "string", "enum": ["exclusive", "shared"], "default": "exclusive" },
                     "ttl_secs": { "type": "integer", "minimum": 1, "default": DEFAULT_LEASE_TTL_SECS, "description": "Seconds until the lease expires unless renewed." },
                     "note": { "type": "string", "description": "What you are doing with it, shown to agents that conflict." },
-                    "wait_secs": { "type": "integer", "minimum": 0, "maximum": MAX_WAIT_SECS, "default": 0, "description": "Wait this long for the resource to free up before reporting a conflict." }
+                    "wait_secs": { "type": "integer", "minimum": 0, "maximum": MAX_CLAIM_WAIT_SECS, "default": 0, "description": "Wait this long for the resource to free up before reporting a conflict." }
                 },
                 "required": ["resource"],
                 "additionalProperties": false
@@ -841,8 +845,25 @@ mod tests {
             .unwrap();
         assert_eq!(
             wait["inputSchema"]["properties"]["timeout_secs"]["maximum"],
-            MAX_WAIT_SECS
+            MAX_MESSAGE_WAIT_SECS
         );
+    }
+
+    #[tokio::test]
+    async fn claim_wait_is_bounded_at_the_daemon_limit() {
+        let s = server(vec![]);
+        let reply = s.handle(rpc(31, "tools/list", json!({}))).await.unwrap();
+        let claim = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "claim")
+            .unwrap();
+        assert_eq!(
+            claim["inputSchema"]["properties"]["wait_secs"]["maximum"],
+            MAX_CLAIM_WAIT_SECS
+        );
+        assert!(MAX_CLAIM_WAIT_SECS > MAX_MESSAGE_WAIT_SECS);
     }
 
     #[tokio::test]

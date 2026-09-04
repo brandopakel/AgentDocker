@@ -9,6 +9,8 @@ use crate::agentfile::Agentfile;
 use crate::client::Client;
 
 /// Start every agent in the file (or just `only`) that is not already live.
+/// Prints the id of each agent it started on stdout, one per line, so scripts
+/// can capture them; progress goes to stderr.
 pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result<()> {
     let (agentfile, path) = Agentfile::load(file)?;
     let specs = agentfile.specs(&path, only)?;
@@ -17,12 +19,13 @@ pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result
     for spec in specs {
         let name = spec.name.clone();
         if let Some(existing) = live.iter().find(|a| a.spec.name == name) {
-            println!("{name:<24} already running   {}", existing.id.short());
+            eprintln!("{name:<24} already running   {}", existing.id.short());
             continue;
         }
         match client.call(&Request::Run { spec }).await {
             Ok(Response::Agent { agent }) => {
-                println!("{name:<24} started           {}", agent.id.short());
+                eprintln!("{name:<24} started           {}", agent.id.short());
+                println!("{}", agent.id);
             }
             Ok(other) => {
                 eprintln!("{name:<24} unexpected reply: {other:?}");

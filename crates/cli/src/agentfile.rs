@@ -69,7 +69,7 @@ impl Agentfile {
             if name.is_empty() {
                 bail!("agent names must not be empty");
             }
-            if entry.command.is_empty() {
+            if entry.command.first().is_none_or(String::is_empty) {
                 bail!("agent `{name}` has an empty command");
             }
         }
@@ -214,6 +214,7 @@ labels = { role = "review" }
     #[test]
     fn rejects_unknown_fields_and_empty_commands() {
         assert!(Agentfile::parse("[agents.a]\ncommand = []\n").is_err());
+        assert!(Agentfile::parse("[agents.a]\ncommand = [\"\"]\n").is_err());
         assert!(Agentfile::parse("[agents.a]\ncommand = [\"x\"]\nbogus = 1\n").is_err());
         assert!(Agentfile::parse("[agents.a]\nruntime = \"x\"\n").is_err());
         assert!(Agentfile::parse("").unwrap().agents.is_empty());
