@@ -114,6 +114,10 @@ pub struct AgentRecord {
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// When the process behind `pid` started, so a recycled pid is not
+    /// mistaken for the agent. `None` when the platform can't tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_started_at: Option<DateTime<Utc>>,
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
@@ -133,6 +137,7 @@ impl AgentRecord {
             status: AgentStatus::Created,
             host: "local".to_owned(),
             pid: None,
+            process_started_at: None,
             managed,
             created_at: now,
             started_at: None,

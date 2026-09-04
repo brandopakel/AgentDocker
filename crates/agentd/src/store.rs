@@ -211,12 +211,28 @@ impl Store {
 
     // ----- events ---------------------------------------------------------
 
+    /// Append an event under its `seq`; a `seq` of 0 lets SQLite pick the
+    /// next one.
     pub fn append_event(&self, event: &Event) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO events (at, json) VALUES (?1, ?2)",
-            params![event.at.to_rfc3339(), serde_json::to_string(event)?],
+            "INSERT INTO events (seq, at, json) VALUES (NULLIF(?1, 0), ?2, ?3)",
+            params![
+                i64::try_from(event.seq).unwrap_or(i64::MAX),
+                event.at.to_rfc3339(),
+                serde_json::to_string(event)?
+            ],
         )?;
         Ok(())
+    }
+
+    /// The highest `seq` ever stored, or 0 when there are none.
+    pub fn max_event_seq(&self) -> Result<u64> {
+        let max: i64 =
+            self.conn
+                .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(u64::try_from(max).unwrap_or(0))
     }
 
     /// The most recent `limit` events, oldest first.
@@ -326,14 +342,16 @@ mod tests {
     fn events_replay_and_prune() {
         let store = Store::in_memory().unwrap();
         for i in 0..10u32 {
-            let event = Event::new(
+            let mut event = Event::new(
                 EventKind::AgentRemoved {
                     agent: AgentId::from(i.to_string()),
                 },
                 Utc::now(),
             );
+            event.seq = u64::from(i) + 1;
             store.append_event(&event).unwrap();
         }
+        assert_eq!(store.max_event_seq().unwrap(), 10);
         let recent = store.recent_events(3).unwrap();
         let ids: Vec<String> = recent
             .iter()

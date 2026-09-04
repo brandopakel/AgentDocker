@@ -6,6 +6,7 @@
 //! `agentdocker_core::protocol`.
 
 mod daemon;
+mod procinfo;
 mod server;
 mod store;
 mod supervisor;

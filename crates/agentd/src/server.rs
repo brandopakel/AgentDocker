@@ -144,14 +144,23 @@ async fn stream_events(
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
     let mut receiver = daemon.subscribe_events();
-    for event in daemon.recent_events(replay) {
+    // Subscribe first so nothing is missed, then drop live events the replay
+    // already covered: seqs are strictly increasing.
+    let replayed = daemon.recent_events(replay);
+    let last_replayed = replayed.last().map(|event| event.seq);
+    for event in replayed {
         write(writer, &Response::Event { event }).await?;
     }
     loop {
         tokio::select! {
             () = client_closed(reader) => break,
             received = receiver.recv() => match received {
-                Ok(event) => write(writer, &Response::Event { event }).await?,
+                Ok(event) => {
+                    if last_replayed.is_some_and(|seen| event.seq <= seen) {
+                        continue;
+                    }
+                    write(writer, &Response::Event { event }).await?;
+                }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "event subscriber fell behind");
                 }

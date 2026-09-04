@@ -50,12 +50,20 @@ pub enum EventKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
+    /// Position in the daemon's event log: strictly increasing, assigned by
+    /// the daemon when the event is emitted. `0` means not yet assigned.
+    #[serde(default)]
+    pub seq: u64,
     pub at: DateTime<Utc>,
     pub kind: EventKind,
 }
 
 impl Event {
     pub fn new(kind: EventKind, now: DateTime<Utc>) -> Self {
-        Self { at: now, kind }
+        Self {
+            seq: 0,
+            at: now,
+            kind,
+        }
     }
 }

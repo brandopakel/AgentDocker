@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -18,7 +19,7 @@ use agentdocker_core::{
     EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, Registry,
     RegistryError, Request, ResourceKey, Response, topic_matches,
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -26,6 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
+use crate::procinfo;
 use crate::store::Store;
 use crate::supervisor;
 
@@ -51,6 +53,8 @@ pub struct Daemon {
     /// Agents whose `Child` handle a supervisor task owns. Every other live
     /// agent with a pid is polled by [`Daemon::check_liveness`].
     supervised: Mutex<HashSet<AgentId>>,
+    /// Next event sequence number; continues from the stored history.
+    next_seq: AtomicU64,
     bus: broadcast::Sender<Envelope>,
     events: broadcast::Sender<Event>,
 }
@@ -87,12 +91,37 @@ fn default_name(id: &AgentId) -> String {
 }
 
 /// Is there a process with this pid? `EPERM` means it exists but belongs to
-/// someone else, which still counts as alive.
+/// someone else, which still counts as alive. Zero and out-of-range values
+/// would address process groups, so they are never alive.
 fn process_exists(pid: u32) -> bool {
-    match kill(Pid::from_raw(pid as i32), None) {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    if raw <= 0 {
+        return false;
+    }
+    match kill(Pid::from_raw(raw), None) {
         Ok(()) | Err(Errno::EPERM) => true,
         Err(_) => false,
     }
+}
+
+/// Does the pid still belong to the process that registered it? Compared by
+/// start time, with slack for clock granularity. Lenient when either side
+/// is unknown: a pid that exists but can't be inspected is assumed alive.
+fn same_process(pid: u32, recorded: Option<DateTime<Utc>>) -> bool {
+    match (recorded, procinfo::start_time(pid)) {
+        (Some(recorded), Some(current)) => (current - recorded).num_seconds().abs() <= 2,
+        _ => true,
+    }
+}
+
+/// An unsupervised live agent whose process the reaper must check.
+struct Candidate {
+    id: AgentId,
+    pid: Option<u32>,
+    process_started_at: Option<DateTime<Utc>>,
+    managed: bool,
 }
 
 impl Daemon {
@@ -104,17 +133,50 @@ impl Daemon {
     }
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
+        let now = Utc::now();
         let mut registry = Registry::new();
-        for record in store.load_agents()? {
-            if let Err(err) = registry.insert(record) {
-                warn!(%err, "skipping stored agent");
+        for mut record in store.load_agents()? {
+            if record.managed && record.status == AgentStatus::Created {
+                // The previous daemon stopped between creating the record and
+                // spawning the process, so nothing is running for it.
+                warn!(agent = %record.id.short(), name = %record.spec.name, "agent never started; recording failure");
+                record.status = AgentStatus::Failed {
+                    reason: "daemon restarted before the process was spawned".to_owned(),
+                };
+                record.finished_at = Some(now);
+                store.upsert_agent(&record)?;
+            }
+            match registry.insert(record.clone()) {
+                Ok(()) => {}
+                Err(RegistryError::NameTaken(name)) => {
+                    // Two live records with one name can only come from a
+                    // damaged store: keep the first, retire the rest so the
+                    // store and the registry agree.
+                    warn!(%name, agent = %record.id.short(), "duplicate live agent in store; recording it as exited");
+                    record.status = AgentStatus::Exited { code: None };
+                    record.finished_at = Some(now);
+                    store.upsert_agent(&record)?;
+                    if let Err(err) = registry.insert(record) {
+                        warn!(%err, "skipping stored agent");
+                    }
+                }
+                Err(err) => warn!(%err, "skipping stored agent"),
             }
         }
         let mut leases = LeaseTable::new();
         for lease in store.load_leases()? {
-            leases.restore(lease);
+            let holder_live = registry
+                .get(&lease.holder)
+                .is_some_and(|a| a.status.is_live());
+            if holder_live {
+                leases.restore(lease);
+            } else {
+                warn!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "dropping lease with no live holder");
+                store.delete_lease(&lease.id)?;
+            }
         }
         let inboxes = store.load_inboxes()?;
+        let next_seq = store.max_event_seq()? + 1;
         info!(
             agents = registry.len(),
             leases = leases.len(),
@@ -134,6 +196,7 @@ impl Daemon {
             inboxes: Mutex::new(inboxes),
             live_subscribers: Mutex::new(HashMap::new()),
             supervised: Mutex::new(HashSet::new()),
+            next_seq: AtomicU64::new(next_seq),
             bus,
             events,
         })
@@ -170,7 +233,8 @@ impl Daemon {
     }
 
     pub fn emit(&self, kind: EventKind) {
-        let event = Event::new(kind, Utc::now());
+        let mut event = Event::new(kind, Utc::now());
+        event.seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
         self.persist("event", |store| store.append_event(&event));
         let _ = self.events.send(event);
     }
@@ -258,11 +322,13 @@ impl Daemon {
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
                 let pid = spawned.pid;
+                let process_started_at = procinfo::start_time(pid);
                 lock(&self.supervised).insert(record.id.clone());
                 let updated = {
                     let mut registry = lock(&self.registry);
                     if let Some(rec) = registry.get_mut(&record.id) {
                         rec.pid = Some(pid);
+                        rec.process_started_at = process_started_at;
                     }
                     registry.set_status(&record.id, AgentStatus::Running, Utc::now())
                 };
@@ -297,6 +363,7 @@ impl Daemon {
             record.spec.name = default_name(&record.id);
         }
         record.pid = pid;
+        record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;
         record.started_at = Some(now);
         if let Err(err) = lock(&self.registry).insert(record.clone()) {
@@ -431,14 +498,28 @@ impl Daemon {
     /// adopted from a previous daemon run and externally registered ones.
     pub fn check_liveness(&self) {
         let supervised = lock(&self.supervised).clone();
-        let candidates: Vec<(AgentId, Option<u32>, bool)> = lock(&self.registry)
+        let candidates: Vec<Candidate> = lock(&self.registry)
             .live()
             .filter(|a| !supervised.contains(&a.id))
-            .map(|a| (a.id.clone(), a.pid, a.managed))
+            // A managed agent stays `Created` while `run` is still
+            // spawning it; it has no pid yet and is not gone.
+            .filter(|a| !(a.managed && a.status == AgentStatus::Created))
+            .map(|a| Candidate {
+                id: a.id.clone(),
+                pid: a.pid,
+                process_started_at: a.process_started_at,
+                managed: a.managed,
+            })
             .collect();
-        for (id, pid, managed) in candidates {
+        for Candidate {
+            id,
+            pid,
+            process_started_at,
+            managed,
+        } in candidates
+        {
             let alive = match pid {
-                Some(pid) => process_exists(pid),
+                Some(pid) => process_exists(pid) && same_process(pid, process_started_at),
                 // An external agent that gave no pid can only leave by
                 // deregistering; a managed one without a pid never started.
                 None => !managed,
@@ -665,7 +746,9 @@ impl Daemon {
             Err(response) => return *response,
         };
         self.touch(&holder);
-        match lock(&self.leases).renew(lease, &holder, ttl(ttl_secs), Utc::now()) {
+        // Bind first so the lease guard is gone before persisting.
+        let result = lock(&self.leases).renew(lease, &holder, ttl(ttl_secs), Utc::now());
+        match result {
             Ok(lease) => {
                 self.persist("lease", |store| store.upsert_lease(&lease));
                 self.emit(EventKind::LeaseRenewed {
@@ -682,7 +765,8 @@ impl Daemon {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        match lock(&self.leases).release(lease, &holder) {
+        let result = lock(&self.leases).release(lease, &holder);
+        match result {
             Ok(lease) => {
                 self.persist("lease", |store| store.delete_lease(&lease.id));
                 self.emit(EventKind::LeaseReleased {
@@ -983,5 +1067,132 @@ mod tests {
             ]
         ));
         assert!(daemon.recent_events(0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_seqs_increase_and_survive_restart() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut receiver = daemon.subscribe_events();
+        register(&daemon, "a", None).await;
+        let replayed = daemon.recent_events(10);
+        assert_eq!(replayed.len(), 2);
+        assert!(replayed[0].seq < replayed[1].seq);
+        // The same event reaches a live subscriber with the same seq, which
+        // is what lets the server drop it after a replay.
+        let live = receiver.recv().await.unwrap();
+        assert_eq!(live.seq, replayed[0].seq);
+        drop(daemon);
+
+        let daemon = open(&dir);
+        register(&daemon, "b", None).await;
+        let all = daemon.recent_events(10);
+        assert_eq!(all.len(), 4);
+        assert!(all.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+    }
+
+    #[tokio::test]
+    async fn spawning_agents_are_not_reaped() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // What `run` looks like between registry insert and spawn completing.
+        let record = AgentRecord::new(spec("spawning"), true, Utc::now());
+        let id = record.id.clone();
+        lock(&daemon.registry).insert(record).unwrap();
+
+        daemon.check_liveness();
+        assert!(daemon.is_live(&id));
+    }
+
+    #[tokio::test]
+    async fn restore_retires_half_spawned_duplicates_and_orphaned_leases() {
+        let dir = TempDir::new().unwrap();
+        let now = Utc::now();
+        let first_id;
+        {
+            let store = Store::open(&dir.path().join("state.db")).unwrap();
+            let mut first = AgentRecord::new(spec("twin"), false, now);
+            first.status = AgentStatus::Running;
+            first_id = first.id.clone();
+            let mut second = AgentRecord::new(spec("twin"), false, now + Duration::seconds(1));
+            second.status = AgentStatus::Running;
+            let half_spawned = AgentRecord::new(spec("half"), true, now);
+            for record in [&first, &second, &half_spawned] {
+                store.upsert_agent(record).unwrap();
+            }
+            let lease = |id: &str, holder: AgentId, resource: &str| Lease {
+                id: LeaseId::from(id),
+                resource: ResourceKey::new(resource),
+                holder,
+                mode: LeaseMode::Exclusive,
+                acquired_at: now,
+                expires_at: now + Duration::hours(1),
+                note: None,
+            };
+            store
+                .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
+                .unwrap();
+            store
+                .upsert_lease(&lease("orphan", AgentId::from("ghost"), "task:orphan"))
+                .unwrap();
+            store
+                .upsert_lease(&lease("twin2", second.id.clone(), "task:twin2"))
+                .unwrap();
+        }
+
+        let daemon = open(&dir);
+        let agents = lock(&daemon.registry).list(true);
+        assert_eq!(agents.len(), 3, "every stored record is still listed");
+        let live: Vec<&AgentRecord> = agents.iter().filter(|a| a.status.is_live()).collect();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, first_id);
+        assert!(
+            agents
+                .iter()
+                .any(|a| a.spec.name == "half" && matches!(a.status, AgentStatus::Failed { .. }))
+        );
+
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].id, LeaseId::from("kept"));
+        drop(daemon);
+
+        // The retired records and dropped leases were written back.
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        assert_eq!(store.load_leases().unwrap().len(), 1);
+        let live_in_store = store
+            .load_agents()
+            .unwrap()
+            .into_iter()
+            .filter(|a| a.status.is_live())
+            .count();
+        assert_eq!(live_in_store, 1);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[tokio::test]
+    async fn recycled_pid_is_not_mistaken_for_the_agent() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let stale = register(&daemon, "stale", Some(std::process::id())).await;
+        // Pretend the process that registered started long before the one
+        // holding the pid now (as after a reboot).
+        lock(&daemon.registry)
+            .get_mut(&stale.id)
+            .unwrap()
+            .process_started_at = Some(Utc::now() - Duration::hours(24 * 30));
+        let fresh = register(&daemon, "fresh", Some(std::process::id())).await;
+        assert!(fresh.process_started_at.is_some());
+
+        daemon.check_liveness();
+        assert!(!daemon.is_live(&stale.id));
+        assert!(daemon.is_live(&fresh.id));
+    }
+
+    #[test]
+    fn invalid_pids_are_never_alive() {
+        assert!(!process_exists(0));
+        assert!(!process_exists(u32::MAX));
+        assert!(process_exists(std::process::id()));
     }
 }

@@ -28,9 +28,10 @@ impl Registry {
     }
 
     /// Add a record. Names must be unique among live agents; finished agents
-    /// keep their name so `logs` still works, but no longer reserve it.
+    /// keep their name so `logs` still works, but neither reserve it nor
+    /// need it free.
     pub fn insert(&mut self, record: AgentRecord) -> Result<(), RegistryError> {
-        if self.live().any(|a| a.spec.name == record.spec.name) {
+        if record.status.is_live() && self.live().any(|a| a.spec.name == record.spec.name) {
             return Err(RegistryError::NameTaken(record.spec.name));
         }
         self.agents.insert(record.id.clone(), record);
@@ -178,6 +179,13 @@ mod tests {
         reg.set_status(&first_id, AgentStatus::Exited { code: Some(0) }, Utc::now());
         reg.insert(record("worker")).unwrap();
         assert_eq!(reg.len(), 2);
+
+        // A finished record (as restored from storage) never needs the name.
+        let mut finished = record("worker");
+        finished.status = AgentStatus::Exited { code: None };
+        reg.insert(finished).unwrap();
+        assert_eq!(reg.len(), 3);
+        assert_eq!(reg.live().count(), 1);
     }
 
     #[test]
