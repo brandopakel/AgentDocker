@@ -73,6 +73,19 @@ impl Client {
     }
 }
 
+/// How adapters (MCP server, hooks) reach agentd. Abstracted so their logic
+/// can be tested without a daemon. Daemon-level errors come back as
+/// [`Response::Error`]; only transport failures are `Err`.
+pub trait Backend {
+    fn call(&self, request: Request) -> impl Future<Output = Result<Response>>;
+}
+
+impl Backend for Client {
+    async fn call(&self, request: Request) -> Result<Response> {
+        self.call_raw(&request).await
+    }
+}
+
 fn into_result(response: Response) -> Result<Response> {
     match response {
         Response::Error {
@@ -88,5 +101,50 @@ fn into_result(response: Response) -> Result<Response> {
             bail!(text)
         }
         other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+pub mod mock {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use agentdocker_core::{Request, Response};
+    use anyhow::Result;
+
+    use super::Backend;
+
+    /// Records requests and replays canned responses in order, answering
+    /// `Response::Ok` once they run out.
+    #[derive(Default)]
+    pub struct Mock {
+        pub requests: Mutex<Vec<Request>>,
+        pub responses: Mutex<VecDeque<Response>>,
+    }
+
+    impl Mock {
+        pub fn with(responses: Vec<Response>) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                responses: Mutex::new(responses.into()),
+            }
+        }
+
+        pub fn requests(&self) -> Vec<Request> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Backend for Mock {
+        fn call(&self, request: Request) -> impl Future<Output = Result<Response>> {
+            self.requests.lock().unwrap().push(request);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Response::Ok);
+            async move { Ok(response) }
+        }
     }
 }

@@ -97,6 +97,10 @@ pub enum Request {
         agent: String,
         lease: LeaseId,
     },
+    /// Release every lease an agent holds; the reply lists them.
+    ReleaseAll {
+        agent: String,
+    },
     Leases {
         #[serde(default)]
         agent: Option<String>,

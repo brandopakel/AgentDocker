@@ -2,6 +2,7 @@
 
 mod client;
 mod format;
+mod hooks;
 mod mcp;
 
 use std::collections::BTreeMap;
@@ -106,11 +107,15 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_LEASE_TTL_SECS)]
         ttl: u64,
     },
-    /// Release a lease you hold.
+    /// Release a lease you hold, or every lease with --all.
     Release {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
-        lease: String,
+        #[arg(required_unless_present = "all")]
+        lease: Option<String>,
+        /// Release every lease this agent holds.
+        #[arg(long, conflicts_with = "lease")]
+        all: bool,
     },
     /// List leases.
     Leases {
@@ -121,6 +126,8 @@ enum Command {
         #[arg(long)]
         resource: Option<String>,
     },
+    /// Host integrations: handle a hook event, or install the hook configuration.
+    Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
     /// Stream daemon events.
@@ -380,12 +387,22 @@ async fn main() -> Result<()> {
                 println!("{} expires {}", lease.id, format::until(lease.expires_at));
             }
         }
-        Command::Release { agent, lease } => {
-            let request = Request::Release {
-                agent,
-                lease: LeaseId::from(lease.as_str()),
-            };
-            client.call(&request).await?;
+        Command::Release { agent, lease, all } => {
+            if all {
+                if let Response::Leases { leases } =
+                    client.call(&Request::ReleaseAll { agent }).await?
+                {
+                    for lease in leases {
+                        println!("{}", lease.id);
+                    }
+                }
+            } else if let Some(lease) = lease {
+                let request = Request::Release {
+                    agent,
+                    lease: LeaseId::from(lease.as_str()),
+                };
+                client.call(&request).await?;
+            }
         }
         Command::Leases { agent, resource } => {
             let request = Request::Leases {
@@ -396,6 +413,7 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
+        Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::Events { replay } => {
             client
@@ -465,10 +483,15 @@ pub(crate) fn resource_key(raw: &str) -> String {
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    match PathBuf::from(value).canonicalize() {
-        Ok(absolute) => format!("path:{}", absolute.display()),
-        Err(_) => raw.to_owned(),
-    }
+    let path = PathBuf::from(value);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
+    format!("path:{}", hooks::normalize(&absolute).display())
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
@@ -480,4 +503,23 @@ fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
                 .with_context(|| format!("expected KEY=VALUE, got `{pair}`"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_keys_are_absolute_paths_unless_typed() {
+        assert_eq!(resource_key("task:ISSUE-1"), "task:ISSUE-1");
+        assert_eq!(resource_key("branch:main"), "branch:main");
+        let key = resource_key("does-not-exist-yet.rs");
+        assert!(key.starts_with("path:/"), "{key}");
+        assert!(key.ends_with("/does-not-exist-yet.rs"), "{key}");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            resource_key(&format!("path:{}", cwd.display())),
+            format!("path:{}", cwd.canonicalize().unwrap().display())
+        );
+    }
 }

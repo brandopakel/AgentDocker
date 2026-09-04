@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::client::Client;
+use crate::client::{Backend, Client};
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const LATEST_PROTOCOL: &str = "2025-06-18";
@@ -57,19 +57,6 @@ pub struct McpArgs {
     /// Pid to register for liveness checks (default: our parent, the MCP host).
     #[arg(long)]
     pub pid: Option<u32>,
-}
-
-/// How the server reaches agentd. Abstracted so the JSON-RPC layer can be
-/// tested without a daemon. Daemon-level errors come back as
-/// [`Response::Error`]; only transport failures are `Err`.
-pub trait Backend {
-    fn call(&self, request: Request) -> impl Future<Output = Result<Response>>;
-}
-
-impl Backend for Client {
-    async fn call(&self, request: Request) -> Result<Response> {
-        self.call_raw(&request).await
-    }
 }
 
 /// Who this MCP session is, from agentd's point of view.
@@ -691,42 +678,12 @@ fn tool_definitions() -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
     use agentdocker_core::AgentId;
     use chrono::Utc;
 
     use super::*;
 
-    /// Records requests and replays canned responses.
-    #[derive(Default)]
-    struct Mock {
-        requests: Mutex<Vec<Request>>,
-        responses: Mutex<VecDeque<Response>>,
-    }
-
-    impl Mock {
-        fn with(responses: Vec<Response>) -> Self {
-            Self {
-                requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(responses.into()),
-            }
-        }
-    }
-
-    impl Backend for Mock {
-        fn call(&self, request: Request) -> impl Future<Output = Result<Response>> {
-            self.requests.lock().unwrap().push(request);
-            let response = self
-                .responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Response::Ok);
-            async move { Ok(response) }
-        }
-    }
+    use crate::client::mock::Mock;
 
     fn server(responses: Vec<Response>) -> McpServer<Mock> {
         McpServer::new(

@@ -79,6 +79,24 @@ args = ["mcp", "--runtime", "codex"]
 
 Two Claude Code sessions in the same repo, both with the server configured, will refuse to edit the same file at the same time and can message each other about it — with no changes to either session's prompt.
 
+### Claude Code: hooks make it automatic
+
+The MCP server gives the model tools it *may* call. Hooks make coordination happen whether or not it thinks to:
+
+```sh
+agentdocker hook install claude-code          # writes ./.claude/settings.json (or --user for ~/.claude)
+```
+
+| Claude Code event | what the hook does |
+|---|---|
+| `SessionStart` | registers the session as agent `claude-<session>`; tells the model who else is running and hands it any queued messages |
+| `PreToolUse` on Edit/Write/MultiEdit/NotebookEdit | claims `path:<file>` first; if another agent holds it, the edit is **denied** with the holder's name and note |
+| `UserPromptSubmit`, `PostToolUse` | delivers messages from other agents as context, as they arrive |
+| `Stop` | releases every lease; if messages arrived while it was working, blocks the stop so the model reads them first (`--no-wake` disables) |
+| `SessionEnd` | releases and deregisters |
+
+The hook fails open: if `agentd` isn't running, Claude Code carries on as if the hook weren't there.
+
 ## What it solves
 
 **Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
@@ -108,14 +126,14 @@ Three crates:
 
 - `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, event stream, SQLite write-through store so state survives restarts.
-- `crates/cli` — `agentdocker`: a thin client over the same protocol, plus `agentdocker mcp`, the stdio MCP server that proxies tool calls to the daemon.
+- `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below.
 
 ## Roadmap
 
 - **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
-- **Phase 1 — adapters & persistence** *(in progress)*: ✅ SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); ✅ `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; a Claude Code hooks pack (auto-register on session start, claim files before edits, release on stop); `Agentfile` + `agentdocker up` for multi-agent teams.
+- **Phase 1 — adapters & persistence** *(in progress)*: ✅ SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); ✅ `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; ✅ `agentdocker hook`, a Claude Code hooks pack (auto-register, claim before edit, deliver messages, release on stop); `Agentfile` + `agentdocker up` for multi-agent teams.
 - **Phase 2 — shared context**: a versioned key/document store with watch notifications, and a handoff protocol so one agent can package its working context for another.
 - **Phase 3 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace.
 - **Phase 4 — policy & scheduling**: quotas, priorities, dependencies between agents, restart policies, a dashboard.

@@ -295,6 +295,7 @@ impl Daemon {
                 ttl_secs,
             } => self.renew(&agent, &lease, ttl_secs),
             Request::Release { agent, lease } => self.release(&agent, &lease),
+            Request::ReleaseAll { agent } => self.release_all(&agent),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource),
             Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
@@ -776,6 +777,21 @@ impl Daemon {
             }
             Err(err) => lease_error(err),
         }
+    }
+
+    fn release_all(&self, reference: &str) -> Response {
+        let holder = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let released = lock(&self.leases).release_all(&holder);
+        for lease in &released {
+            self.persist("lease", |store| store.delete_lease(&lease.id));
+            self.emit(EventKind::LeaseReleased {
+                lease: lease.clone(),
+            });
+        }
+        Response::Leases { leases: released }
     }
 
     fn leases(&self, agent: Option<&str>, resource: Option<String>) -> Response {

@@ -64,6 +64,25 @@ Design points:
 - **`wait_for_messages` polls the inbox** rather than holding a live subscription. A live subscription would mark the agent as online, so a message arriving between the server's last read and the socket closing would be pushed to a reader that is gone. Polling at 250 ms trades a little latency for zero loss.
 - The `instructions` field returned from `initialize` tells the model when to claim, release, and read its inbox, so hosts that surface instructions need no extra prompting.
 
+### `agentdocker hook` (`crates/cli/src/hooks.rs`)
+
+Where the MCP server offers tools the model *may* call, hooks make coordination unconditional. `agentdocker hook install claude-code` merges six entries into Claude Code's `settings.json` (idempotently — entries whose command already runs `hook claude-code` are left alone), each running `agentdocker hook claude-code`, which reads the event JSON from stdin:
+
+| event | daemon calls | output |
+|---|---|---|
+| `SessionStart` | register (or reuse) `claude-<session id prefix>`; list agents; drain inbox | `additionalContext`: who else is live, how to talk to them, queued messages |
+| `UserPromptSubmit`, `PostToolUse` | drain inbox | `additionalContext` with the messages, or nothing |
+| `PreToolUse` (Edit/Write/MultiEdit/NotebookEdit) | claim `path:<absolute file>` exclusive, 600 s, note "editing in Claude Code session …" | on conflict `permissionDecision: deny` with the holder and their note; otherwise nothing, so the user's own permission rules still apply |
+| `Stop` | release all; unless `stop_hook_active` or `--no-wake`, drain inbox | `decision: block` with the messages when any are waiting, so the model handles them before finishing |
+| `SessionEnd` | release all; deregister | nothing |
+
+Design points:
+
+- **Identity is by name.** Hooks are separate processes with no shared state, so the agent is found by name (`claude-` + the first eight characters of the session id) via the daemon's name resolution; `AGENTDOCKER_AGENT_ID` wins when the session was started by `agentdocker run`. A hook that fires for an unregistered session (hooks installed mid-session) registers it on the spot.
+- **The host pid, not the hook's.** Claude Code runs hooks under a shell, so the hook walks up the process tree past shells to find the host and registers that pid. The liveness check then cleans up a session that dies without `SessionEnd`.
+- **Fail open.** Any daemon error is written to stderr and the hook exits 0 with no output, so an unreachable `agentd` never blocks an edit or a stop.
+- **`Stop` is the delivery guarantee for chatty agents.** A session that never calls a tool again would otherwise finish without seeing replies; blocking the stop once (never when `stop_hook_active`) turns "you have messages" into the model's next instruction.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
@@ -90,6 +109,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `claim {agent, resource, mode?, ttl_secs?, note?}` | `lease` or `error(conflict)` | conflict `details.held_by` lists the blocking leases |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
+| `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality |
 | `events {replay?}` | stream of `event` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
@@ -141,7 +161,7 @@ The socket is `0600`, so only the owning user can talk to the daemon, and every 
 ### Phase 1 — adapters & persistence
 
 - ~~**MCP server.**~~ Done as `agentdocker mcp`; see above. A2A support will be evaluated later for agent-to-agent task delegation.
-- **Claude Code hooks pack.** `SessionStart` registers the session; `PreToolUse` on Edit/Write claims the path (and surfaces a conflict as a blocking message the model sees); `Stop`/`SessionEnd` releases and deregisters.
+- ~~**Claude Code hooks pack.**~~ Done as `agentdocker hook`; see above.
 - ~~**Persistence.**~~ Done: see [Persistence](#persistence).
 - **Teams.** An `Agentfile` (TOML) describing several agents and their topics, and `agentdocker up` / `down` to manage them together.
 - **`claim --wait`.** Block until the resource is free or a timeout passes.
