@@ -459,7 +459,7 @@ fn print_leases(leases: &[Lease]) {
 /// Turn a user-supplied resource into a canonical key. Bare or `path:`
 /// values that exist on disk are made absolute so two agents naming the
 /// same file differently still collide.
-fn resource_key(raw: &str) -> String {
+pub(crate) fn resource_key(raw: &str) -> String {
     let value = match raw.split_once(':') {
         Some(("path", value)) => value,
         Some(_) => return raw.to_owned(),

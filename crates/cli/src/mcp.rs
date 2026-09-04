@@ -34,6 +34,10 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 
+/// Upper bound on `wait_for_messages`: the server handles one request at a
+/// time, so a long wait blocks every other method for its duration.
+const MAX_MESSAGE_WAIT_SECS: u64 = 300;
+
 /// How long `wait_for_messages` sleeps between inbox polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -90,7 +94,15 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         identity.name, identity.id
     );
     let server = McpServer::new(client, identity);
+    // Whatever ends the session — stdin closing, or the host going away and
+    // breaking the pipe — the agent we registered must be deregistered.
+    let outcome = pump(&server).await;
+    server.shutdown().await;
+    outcome
+}
 
+/// Read requests until stdin closes or an I/O error ends the session.
+async fn pump<B: Backend>(server: &McpServer<B>) -> Result<()> {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut stdout = tokio::io::stdout();
     while let Some(line) = lines.next_line().await? {
@@ -106,17 +118,10 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
                 continue;
             }
         };
-        let messages = match incoming {
-            Value::Array(items) => items,
-            single => vec![single],
-        };
-        for message in messages {
-            if let Some(response) = server.handle(message).await {
-                write_line(&mut stdout, &response).await?;
-            }
+        if let Some(response) = server.handle_incoming(incoming).await {
+            write_line(&mut stdout, &response).await?;
         }
     }
-    server.shutdown().await;
     Ok(())
 }
 
@@ -197,6 +202,27 @@ impl<B: Backend> McpServer<B> {
                     agent: self.identity.id.clone(),
                 })
                 .await;
+        }
+    }
+
+    /// Handle one message or, for `2025-03-26` clients, a batch: a batch's
+    /// replies go back as one array with notifications (which get no reply)
+    /// left out, and an empty batch is invalid per JSON-RPC.
+    pub async fn handle_incoming(&self, incoming: Value) -> Option<Value> {
+        match incoming {
+            Value::Array(items) => {
+                if items.is_empty() {
+                    return Some(error_response(Value::Null, INVALID_REQUEST, "empty batch"));
+                }
+                let mut replies = Vec::with_capacity(items.len());
+                for item in items {
+                    if let Some(reply) = self.handle(item).await {
+                        replies.push(reply);
+                    }
+                }
+                (!replies.is_empty()).then_some(Value::Array(replies))
+            }
+            single => self.handle(single).await,
         }
     }
 
@@ -298,8 +324,10 @@ impl<B: Backend> McpServer<B> {
             }
             "wait_for_messages" => {
                 let args: WaitArgs = parse(arguments)?;
-                self.wait_for_messages(Duration::from_secs(args.timeout_secs))
-                    .await
+                self.wait_for_messages(Duration::from_secs(
+                    args.timeout_secs.min(MAX_MESSAGE_WAIT_SECS),
+                ))
+                .await
             }
             "claim" => {
                 let args: ClaimArgs = parse(arguments)?;
@@ -307,7 +335,7 @@ impl<B: Backend> McpServer<B> {
                     .backend
                     .call(Request::Claim {
                         agent: me,
-                        resource: args.resource,
+                        resource: crate::resource_key(&args.resource),
                         mode: args.mode,
                         ttl_secs: args.ttl_secs,
                         note: args.note,
@@ -356,7 +384,7 @@ impl<B: Backend> McpServer<B> {
                 let args: ListLeasesArgs = parse(arguments)?;
                 self.forward(Request::Leases {
                     agent: args.agent,
-                    resource: args.resource,
+                    resource: args.resource.as_deref().map(crate::resource_key),
                 })
                 .await
             }
@@ -599,11 +627,11 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "wait_for_messages",
-            "description": "Block until at least one message arrives for this agent, or the timeout passes. Returns and drains everything that arrived.",
+            "description": "Block until at least one message arrives for this agent, or the timeout passes (at most 300 s; nothing else is served meanwhile). Returns and drains everything that arrived.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "timeout_secs": { "type": "integer", "minimum": 0, "default": 30 }
+                    "timeout_secs": { "type": "integer", "minimum": 0, "maximum": MAX_MESSAGE_WAIT_SECS, "default": 30 }
                 },
                 "additionalProperties": false
             }
@@ -785,6 +813,78 @@ mod tests {
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
+    }
+
+    #[tokio::test]
+    async fn batches_get_one_array_reply_without_notifications() {
+        let s = server(vec![]);
+        let reply = s
+            .handle_incoming(json!([
+                rpc(1, "ping", json!({})),
+                { "jsonrpc": "2.0", "method": "notifications/initialized" },
+                rpc(2, "tools/list", json!({})),
+            ]))
+            .await
+            .unwrap();
+        let replies = reply.as_array().expect("batch reply is an array");
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[1]["id"], 2);
+
+        let only_notifications = s
+            .handle_incoming(json!([{ "jsonrpc": "2.0", "method": "notifications/x" }]))
+            .await;
+        assert!(only_notifications.is_none());
+
+        let empty = s.handle_incoming(json!([])).await.unwrap();
+        assert_eq!(empty["error"]["code"], INVALID_REQUEST);
+
+        let single = s.handle_incoming(rpc(3, "ping", json!({}))).await.unwrap();
+        assert!(single.is_object());
+        assert_eq!(single["id"], 3);
+    }
+
+    #[tokio::test]
+    async fn path_resources_are_canonicalised_like_the_cli() {
+        let s = server(vec![Response::Ok, Response::Leases { leases: vec![] }]);
+        // `src` exists relative to the test's working directory (the crate root).
+        s.handle(rpc(
+            20,
+            "tools/call",
+            json!({ "name": "claim", "arguments": { "resource": "path:src" } }),
+        ))
+        .await;
+        s.handle(rpc(
+            21,
+            "tools/call",
+            json!({ "name": "list_leases", "arguments": { "resource": "task:T-1" } }),
+        ))
+        .await;
+        let requests = s.backend.requests.lock().unwrap();
+        assert!(matches!(
+            &requests[0],
+            Request::Claim { resource, .. } if resource.starts_with("path:/") && resource.ends_with("/src")
+        ));
+        assert!(matches!(
+            &requests[1],
+            Request::Leases { resource: Some(resource), .. } if resource == "task:T-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_timeout_is_bounded_in_the_schema() {
+        let s = server(vec![]);
+        let reply = s.handle(rpc(30, "tools/list", json!({}))).await.unwrap();
+        let wait = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "wait_for_messages")
+            .unwrap();
+        assert_eq!(
+            wait["inputSchema"]["properties"]["timeout_secs"]["maximum"],
+            MAX_MESSAGE_WAIT_SECS
+        );
     }
 
     #[tokio::test]
