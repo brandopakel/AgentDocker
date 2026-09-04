@@ -4,6 +4,10 @@
 //! routes messages between agents, and arbitrates leases on shared
 //! resources. Clients talk to it over a Unix socket; see
 //! `agentdocker_core::protocol`.
+//!
+//! This is a library so that the `agentdocker` package can ship the `agentd`
+//! binary beside the CLI — one `cargo install agentdocker` gets both. The
+//! binary is [`main`] and nothing else.
 
 mod daemon;
 mod server;
@@ -15,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentdocker_core::paths;
+use agentdocker_host::lock;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
@@ -28,7 +33,7 @@ use crate::daemon::Daemon;
     version,
     about = "AgentDocker daemon: supervises agents, routes messages, arbitrates leases"
 )]
-struct Args {
+pub struct Args {
     /// Directory for the socket, logs and state.
     #[arg(long, env = "AGENTDOCKER_HOME", default_value_os_t = paths::default_home())]
     home: PathBuf,
@@ -38,18 +43,33 @@ struct Args {
     socket: Option<PathBuf>,
 }
 
+/// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
+pub fn main() -> anyhow::Result<()> {
+    run(Args::parse())
+}
+
+/// Run the daemon until SIGTERM or Ctrl-C. Exits at once, successfully,
+/// when another daemon already holds the socket's lock: clients start a
+/// daemon when they cannot connect, and two may race to do so.
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+pub async fn run(args: Args) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    let args = Args::parse();
     let socket = args
         .socket
         .unwrap_or_else(|| paths::socket_path(&args.home));
+    let lock_path = paths::lock_path(&socket);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let Some(_lock) = lock::try_exclusive(&lock_path)? else {
+        info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
+        return Ok(());
+    };
     let daemon = Arc::new(Daemon::open(args.home, socket)?);
 
     let reaper = daemon.clone();

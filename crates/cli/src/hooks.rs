@@ -92,6 +92,9 @@ pub struct HookInput {
 }
 
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
+    // A hook that has to start the daemon may wait a moment, not stall
+    // the editor: it fails open past this.
+    let client = client.with_start_timeout(Some(std::time::Duration::from_secs(1)));
     match args.command {
         HookCommand::Install(install) => install_hooks(&install),
         HookCommand::ClaudeCode(opts) => {

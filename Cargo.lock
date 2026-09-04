@@ -21,10 +21,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentdocker-cli"
+name = "agentdocker"
 version = "0.1.0"
 dependencies = [
+ "agentd",
  "agentdocker-core",
+ "agentdocker-host",
  "anyhow",
  "chrono",
  "clap",

@@ -20,3 +20,31 @@ pub fn socket_path(home: &Path) -> PathBuf {
     }
     home.join("agentd.sock")
 }
+
+/// The lock that guarantees one daemon per socket: `agentd.sock` →
+/// `agentd.lock`, beside it.
+pub fn lock_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lock")
+}
+
+/// Where a daemon started by a client writes its output.
+pub fn daemon_log(home: &Path) -> PathBuf {
+    home.join("agentd.log")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_sits_beside_the_socket() {
+        assert_eq!(
+            lock_path(Path::new("/home/me/.agentdocker/agentd.sock")),
+            PathBuf::from("/home/me/.agentdocker/agentd.lock")
+        );
+        assert_eq!(
+            lock_path(Path::new("/tmp/ad")),
+            PathBuf::from("/tmp/ad.lock")
+        );
+    }
+}

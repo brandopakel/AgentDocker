@@ -4,5 +4,6 @@
 //! and the process table are consulted. Nothing here holds state — every
 //! function answers a question about the host as it is right now.
 
+pub mod lock;
 pub mod procinfo;
 pub mod project;

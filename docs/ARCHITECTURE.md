@@ -33,7 +33,7 @@ The I/O that both binaries need but that does not belong in the daemon's state: 
 
 ### `agentd` (`crates/agentd`)
 
-One process per host. It owns:
+One process per host. It is a library crate whose `main` the `agentdocker` package wraps as the `agentd` binary, so one `cargo install agentdocker` ships both. It owns:
 
 - **Registry** — in memory, guarded by a mutex.
 - **Supervisor** — spawns managed agents with `tokio::process`, captures stdout/stderr to `<home>/logs/<id>.log` with timestamps and stream tags, and records the exit status.
@@ -59,6 +59,12 @@ Every event carries a strictly increasing `seq`, assigned by the daemon and cont
 ### `agentdocker` (`crates/cli`)
 
 A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in.
+
+### Starting the daemon
+
+Nobody has to start `agentd` by hand. A client that cannot connect — no socket file, or nothing listening — starts the daemon itself, the way `ssh-agent` and `buildkitd` are started by their clients, then waits for the socket (3 s for the CLI and the MCP server, 1 s for hooks, which fail open past that). `AGENTDOCKER_NO_AUTOSTART=1` turns this off. The daemon it starts is the `agentd` beside the client's own binary when there is one, so a build in `target/` starts the matching daemon, else `agentd` on `PATH`; it runs in its own process group with stdout and stderr appended to `<home>/agentd.log`.
+
+Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
 ### `agentdocker mcp` (`crates/cli/src/mcp.rs`)
 
@@ -196,13 +202,13 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 ### Phase 2 — native install & projects
 
-#### Native install
+#### Native install *(lazy start done; service and packaging next)*
 
 `agentd` is a native, per-user host process — never a container. It supervises processes that use the user's repositories, credentials, and editor; its liveness check signals pids; its path leases canonicalise real paths. All of that requires the same kernel and filesystem namespace as the agents, which is also why `dockerd` runs natively. Sandboxing is an *agent* concern (Phase 4 runtimes), not a daemon one, and a shared system-wide daemon for several users belongs with federation.
 
-- **Artifacts.** Static binaries per target (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) built by a release workflow; `cargo install agentdocker` (both crates published, `agentd` as a second binary of the CLI crate or its own crate); a Homebrew tap; a `curl | sh` installer that drops both binaries into `~/.local/bin` or `/usr/local/bin` and prints the service-install step.
+- **Artifacts.** Static binaries per target (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) built by a release workflow; `cargo install agentdocker` installs both binaries (done: `agentd` is a library and the `agentdocker` package ships both); a Homebrew tap; a `curl | sh` installer that drops both binaries into `~/.local/bin` or `/usr/local/bin` and prints the service-install step.
 - **Service.** `agentdocker daemon install` writes a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`, `KeepAlive`, logs to `<home>/agentd.log`) on macOS or a systemd user unit (`~/.config/systemd/user/agentd.service`, `Restart=on-failure`) on Linux; `daemon uninstall`, `daemon status`, `daemon restart`. The daemon must be safe to run without the service too, so nothing here is required.
-- **Lazy start.** When a client (CLI, hook, MCP server) cannot connect — `ENOENT` or `ECONNREFUSED` on the socket — it starts `agentd` itself, the way `ssh-agent` and `buildkitd` are started by their clients. Mechanism: the daemon holds an exclusive `flock` on `<home>/agentd.lock` for its lifetime and removes a stale socket file once it has the lock; a client that fails to connect tries the lock non-blockingly, and if it *gets* it, releases it and spawns `agentd` detached (`setsid`, stdio to `agentd.log`), then waits for the socket (up to 3 s for the CLI, 1 s for hooks, which stay fail-open). If it *cannot* get the lock a daemon is already starting, so it only waits. `AGENTDOCKER_NO_AUTOSTART=1` disables it. *Done when* the quick start no longer needs `agentd &` and a hook fired on a cold machine registers its session.
+- ~~**Lazy start.**~~ Done; see [Starting the daemon](#starting-the-daemon). The quick start no longer needs `agentd &`.
 
 #### Project identity *(done)*
 

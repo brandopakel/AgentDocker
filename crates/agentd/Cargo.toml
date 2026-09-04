@@ -1,15 +1,11 @@
 [package]
 name = "agentd"
-description = "AgentDocker daemon: supervises agents, routes messages, arbitrates leases"
+description = "AgentDocker daemon library: supervises agents, routes messages, arbitrates leases. The `agentd` binary ships with the `agentdocker` package."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-[[bin]]
-name = "agentd"
-path = "src/main.rs"
 
 [dependencies]
 agentdocker-core.workspace = true

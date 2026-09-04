@@ -10,6 +10,7 @@ repository = "https://github.com/brandopakel/AgentDocker"
 rust-version = "1.87"
 
 [workspace.dependencies]
+agentd = { path = "crates/agentd" }
 agentdocker-core = { path = "crates/core" }
 agentdocker-host = { path = "crates/host" }
 anyhow = "1"

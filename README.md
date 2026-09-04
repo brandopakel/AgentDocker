@@ -27,8 +27,8 @@ Agents don't need an SDK. Anything that can write a line of JSON to a Unix socke
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
 
-# 1. Start the daemon (listens on ~/.agentdocker/agentd.sock)
-agentd &
+# 1. There is no step 1: the first command that needs the daemon starts it
+#    (listening on ~/.agentdocker/agentd.sock, logging to ~/.agentdocker/agentd.log).
 
 # 2. Launch two agents. Any command works; here they are shell loops.
 agentdocker run --name writer   --runtime custom -- sh -c 'sleep 300'
@@ -182,7 +182,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons). Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
 
 ## License
 
