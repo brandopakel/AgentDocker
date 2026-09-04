@@ -565,7 +565,7 @@ fn print_leases(leases: &[Lease]) {
         .map(|l| {
             vec![
                 l.id.to_string(),
-                l.resource.to_string(),
+                format::resource(&l.resource),
                 l.holder.short().to_owned(),
                 l.mode.to_string(),
                 format::until(l.expires_at),

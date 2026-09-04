@@ -131,7 +131,7 @@ agentdocker down              # stops them
 
 ## What it solves
 
-**Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
+**Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it, and a path inside a project is stored by project and relative path, so the same file is the same resource from a worktree, a container, or another clone. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
 
 **Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
 

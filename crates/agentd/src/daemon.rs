@@ -152,6 +152,15 @@ async fn wait_for_release(
     }
 }
 
+/// `path` as a `file:` key of `project`, if it lies in the project's
+/// checkout (the worktree first, then the main root).
+fn file_key(project: &ProjectRef, path: &Path) -> Option<ResourceKey> {
+    [project.dir(), project.root.as_path()]
+        .into_iter()
+        .find_map(|base| path.strip_prefix(base).ok())
+        .map(|relative| ResourceKey::file(&project.id(), relative))
+}
+
 /// An unsupervised live agent whose process the reaper must check.
 struct Candidate {
     id: AgentId,
@@ -344,7 +353,7 @@ impl Daemon {
             } => self.renew(&agent, &lease, ttl_secs),
             Request::Release { agent, lease } => self.release(&agent, &lease),
             Request::ReleaseAll { agent } => self.release_all(&agent),
-            Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource),
+            Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
             Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
             }
@@ -864,7 +873,9 @@ impl Daemon {
             Err(response) => return *response,
         };
         self.touch(&holder);
-        let resource = ResourceKey::new(resource);
+        let resource = self
+            .localise(ResourceKey::new(resource), Some(&holder), true)
+            .await;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
         // Subscribe before the first attempt so a release that lands between
@@ -976,21 +987,65 @@ impl Daemon {
         Response::Leases { leases: released }
     }
 
-    fn leases(&self, agent: Option<&str>, resource: Option<String>) -> Response {
+    async fn leases(&self, agent: Option<&str>, resource: Option<String>) -> Response {
         let holder = match agent.map(|reference| self.resolve(reference)).transpose() {
             Ok(holder) => holder,
             Err(response) => return *response,
         };
-        let key = resource.map(ResourceKey::new);
+        // A path query matches both its `file:` form and, for leases held
+        // outside any project, the raw path.
+        let mut keys: Vec<ResourceKey> = Vec::new();
+        if let Some(resource) = resource {
+            let raw = ResourceKey::new(resource);
+            let local = self.localise(raw.clone(), holder.as_ref(), false).await;
+            if local != raw {
+                keys.push(local);
+            }
+            keys.push(raw);
+        }
         self.expire_leases();
         let leases: Vec<Lease> = lock(&self.leases)
             .all()
             .into_iter()
             .filter(|l| holder.as_ref().is_none_or(|h| l.holder == *h))
-            .filter(|l| key.as_ref().is_none_or(|k| l.resource.overlaps(k)))
+            .filter(|l| keys.is_empty() || keys.iter().any(|k| l.resource.overlaps(k)))
             .cloned()
             .collect();
         Response::Leases { leases }
+    }
+
+    /// Rewrite a `path:` key to its project-relative `file:` form when the
+    /// path lies in a project: the holder's own project first (so a plain
+    /// directory project still works for its members), else the repository
+    /// or Agentfile root containing the path. Anything else is left alone.
+    /// With `record`, a repository met this way counts as discovered.
+    async fn localise(
+        &self,
+        key: ResourceKey,
+        holder: Option<&AgentId>,
+        record: bool,
+    ) -> ResourceKey {
+        if key.kind() != "path" || !Path::new(key.value()).is_absolute() {
+            return key;
+        }
+        let raw = PathBuf::from(key.value());
+        let path = tokio::task::spawn_blocking(move || project::canonical(&raw))
+            .await
+            .unwrap_or_else(|_| PathBuf::from(key.value()));
+        let own =
+            holder.and_then(|id| lock(&self.registry).get(id).and_then(|a| a.project.clone()));
+        if let Some(file) = own.as_ref().and_then(|project| file_key(project, &path)) {
+            return file;
+        }
+        let parent = path.parent().map(Path::to_path_buf);
+        match self.project_for(parent, record).await {
+            Some(found)
+                if matches!(found.source, ProjectSource::Git | ProjectSource::Agentfile) =>
+            {
+                file_key(&found, &path).unwrap_or(key)
+            }
+            _ => key,
+        }
     }
 
     /// Drop leases whose TTL has passed. Called on a timer and before listing.
@@ -1745,5 +1800,78 @@ mod tests {
         assert!(!sender.wants(&envelope));
         drop(two);
         drop(three);
+    }
+
+    #[tokio::test]
+    async fn path_claims_inside_a_project_become_file_keys() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        std::fs::create_dir_all(alpha.join("src")).unwrap();
+        std::fs::write(alpha.join("Agentfile.toml"), "").unwrap();
+        let one = register_in(&daemon, "one", &alpha).await;
+        register_in(&daemon, "two", &alpha.join("src")).await;
+        register(&daemon, "outsider", None).await;
+        let project = one.project.clone().unwrap().id();
+
+        // The claimed path is under the non-canonical temp dir and the file
+        // does not exist yet; the key is still project-relative.
+        let lib = alpha.join("src/lib.rs");
+        let Response::Lease { lease } =
+            claim(&daemon, "one", &format!("path:{}", lib.display())).await
+        else {
+            panic!("claim failed");
+        };
+        assert_eq!(
+            lease.resource.as_str(),
+            format!("file:{project}/src/lib.rs")
+        );
+
+        // Everyone naming that file collides: a project mate, and an agent
+        // with no project at all (the Agentfile root is found from the path).
+        for who in ["two", "outsider"] {
+            assert!(
+                matches!(
+                    claim(&daemon, who, &format!("path:{}", lib.display())).await,
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        ..
+                    }
+                ),
+                "{who} should conflict"
+            );
+        }
+        // So does the whole project.
+        assert!(matches!(
+            claim(&daemon, "two", &format!("path:{}", alpha.display())).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+
+        // Queries by path find the translated lease.
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: Some(format!("path:{}", alpha.join("src").display())),
+            })
+            .await
+        else {
+            panic!("leases failed");
+        };
+        assert_eq!(leases.len(), 1);
+
+        // Paths outside any project keep their kind.
+        let Response::Lease { lease } =
+            claim(&daemon, "outsider", "path:/definitely/not/here/x").await
+        else {
+            panic!("claim failed");
+        };
+        assert_eq!(lease.resource.as_str(), "path:/definitely/not/here/x");
+        let Response::Lease { lease } = claim(&daemon, "outsider", "task:ISSUE-1").await else {
+            panic!("claim failed");
+        };
+        assert_eq!(lease.resource.as_str(), "task:ISSUE-1");
     }
 }
