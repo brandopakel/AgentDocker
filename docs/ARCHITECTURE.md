@@ -1,6 +1,6 @@
 # AgentDocker architecture
 
-This document describes what exists today (Phase 0) precisely, and the later phases at the level of design intent. When the two disagree, the code wins and this document has a bug.
+This document describes what exists today precisely, and the later phases at the level of design intent. When the two disagree, the code wins and this document has a bug.
 
 ## Goals
 
@@ -8,6 +8,7 @@ This document describes what exists today (Phase 0) precisely, and the later pha
 2. **Safe by default.** Nothing an agent can do to the daemon can wedge another agent. Every claim expires; every exit releases.
 3. **Familiar.** If you know Docker's mental model and CLI, you know AgentDocker's.
 4. **Local first.** One host works with no network, no accounts, no cloud. Federation is layered on top later, not baked into the core.
+5. **Observant.** The daemon derives an agent's state — what it read, holds, changed, and which branch it is on — from what hooks and adapters report, and never asks an agent to describe itself. Everything past Phase 1 is a derivation of that working set; see [The thesis](#the-thesis).
 
 ## Components
 
@@ -146,7 +147,7 @@ Three destinations:
 - **Topic** — a `/`-separated path like `repo/backend/reviews`. Subscribers give MQTT-style patterns: `+` matches one level, `#` matches the rest.
 - **Broadcast** — every live agent except the sender.
 
-**Delivery.** A message is pushed to every live subscription whose filter matches. For agent and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; durable topic subscriptions are a Phase 1 item. When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
+**Delivery.** A message is pushed to every live subscription whose filter matches. For agent and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
 Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inbox delivery is at-least-once until drained, and inboxes survive a daemon restart.
 
@@ -160,28 +161,258 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Security model (Phase 0)
 
-The socket is `0600`, so only the owning user can talk to the daemon, and every request is trusted at the level of that user. The protocol has no authentication because there is no one to authenticate yet. Federation (Phase 3) introduces per-host identities and authenticated channels; per-agent capability tokens are being considered for the same phase so a sandboxed agent can be given, say, messaging without lease control.
+The socket is `0600`, so only the owning user can talk to the daemon, and every request is trusted at the level of that user. The protocol has no authentication because there is no one to authenticate yet. Federation (Phase 6) introduces per-host identities and authenticated channels; per-agent capability tokens are being considered for the same phase so a sandboxed agent can be given, say, messaging without lease control.
 
-## Planned phases
+## Roadmap
 
-### Phase 1 — adapters & persistence (done)
+Phase 0 and the adapters in Phase 1 exist. Everything below is design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
-MCP server (`agentdocker mcp`), Claude Code hooks (`agentdocker hook`), SQLite persistence, `Agentfile.toml` with `up`/`down`, and `claim --wait` — all described above. A2A support will be evaluated later for agent-to-agent task delegation.
+### The thesis
 
-### Phase 2 — shared context
+Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly what a container could see and change. AgentDocker's equivalent is the **working set**. For every agent the daemon observes the paths it read, the resources it holds, the paths it changed, the branch it is on, and the messages it exchanged. Nothing asks an agent to describe its own state: hooks and adapters report what happened, and the daemon derives the rest. From the working set the daemon can do what no single agent can — group agents by project, tell an agent that something it read has since moved, attribute every change to whoever made it, detect two agents waiting on each other, and package a handoff. That is the proprietary layer; each item in Phases 2–5 is one of those derivations. The rule for new features: prefer deriving from what the daemon already sees over asking agents to declare it.
 
-A versioned key/document store agents can read, write, and *watch*. Writes emit change events to watchers, which is the mechanism that tells an agent its context is stale before it acts on it. A `handoff` message kind with a defined payload (task, current state, open questions, relevant resource keys) lets one agent hand work to another without a human relaying.
+### Phase 1 — adapters & persistence *(done)*
 
-### Phase 3 — federation
+[Persistence](#persistence), [`agentdocker mcp`](#agentdocker-mcp-cratesclisrcmcprs), [`agentdocker hook`](#agentdocker-hook-cratesclisrchooksrs), [`Agentfile.toml`](#agentfiletoml-and-agentdocker-up--down-cratesclisrcagentfilers-teamsrs), and `claim --wait` all exist. Two things the original design called for are deliberately deferred: a FIFO wait queue (today's waiters race when a lease clears; see [Wait queue and deadlock detection](#wait-queue-and-deadlock-detection), which needs the queue anyway) and a daemon-side notion of a team (the Agentfile is a client convenience; `list {labels?}` arrives with project filtering in Phase 2 so `ps --team` can be sugar over labels).
 
-`agentd` instances discover and authenticate each other (mTLS, or a WireGuard-style keypair exchange). Agent ids become `host/agent`; messages, leases, and events route across peers; the registry becomes a replicated view. The core primitives do not change — which is the reason for keeping them pure and host-agnostic now.
+### Phase 2 — native install & projects
 
-### Phase 4 — policy & scheduling
+#### Native install
 
-Quotas per agent or label, priorities that decide who wins a contested resource, dependencies (`start B after A exits 0`), restart policies, and a TUI/web dashboard fed by the event stream.
+`agentd` is a native, per-user host process — never a container. It supervises processes that use the user's repositories, credentials, and editor; its liveness check signals pids; its path leases canonicalise real paths. All of that requires the same kernel and filesystem namespace as the agents, which is also why `dockerd` runs natively. Sandboxing is an *agent* concern (Phase 4 runtimes), not a daemon one, and a shared system-wide daemon for several users belongs with federation.
+
+- **Artifacts.** Static binaries per target (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) built by a release workflow; `cargo install agentdocker` (both crates published, `agentd` as a second binary of the CLI crate or its own crate); a Homebrew tap; a `curl | sh` installer that drops both binaries into `~/.local/bin` or `/usr/local/bin` and prints the service-install step.
+- **Service.** `agentdocker daemon install` writes a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`, `KeepAlive`, logs to `<home>/agentd.log`) on macOS or a systemd user unit (`~/.config/systemd/user/agentd.service`, `Restart=on-failure`) on Linux; `daemon uninstall`, `daemon status`, `daemon restart`. The daemon must be safe to run without the service too, so nothing here is required.
+- **Lazy start.** When a client (CLI, hook, MCP server) cannot connect — `ENOENT` or `ECONNREFUSED` on the socket — it starts `agentd` itself, the way `ssh-agent` and `buildkitd` are started by their clients. Mechanism: the daemon holds an exclusive `flock` on `<home>/agentd.lock` for its lifetime and removes a stale socket file once it has the lock; a client that fails to connect tries the lock non-blockingly, and if it *gets* it, releases it and spawns `agentd` detached (`setsid`, stdio to `agentd.log`), then waits for the socket (up to 3 s for the CLI, 1 s for hooks, which stay fail-open). If it *cannot* get the lock a daemon is already starting, so it only waits. `AGENTDOCKER_NO_AUTOSTART=1` disables it. *Done when* the quick start no longer needs `agentd &` and a hook fired on a cold machine registers its session.
+
+#### Project identity
+
+Agents are grouped by the project they work in, and the project is **derived, never declared**. The spec already carries `workdir` (`run` defaults it to the caller's directory, the MCP adapter and hooks record theirs); `register` gains the same default.
+
+- **Derivation.** Canonicalise `workdir`, then walk up to the nearest ancestor containing `.git`. If `.git` is a file (a worktree) follow its `gitdir:` to the worktree's git directory and that directory's `commondir` to the main repository, so every worktree of one repository resolves to the same project while keeping its own path. If there is no `.git`, the nearest ancestor containing an `Agentfile` is the root; failing that, `workdir` itself.
+- **Two keys.** `ProjectRef { root: PathBuf, worktree: Option<PathBuf>, fingerprint: Option<String>, source: Git | Agentfile | Directory }`. `root` identifies the project on this host. `fingerprint` is the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable), which identifies the same repository across clones and, later, across hosts. `ProjectId` is the fingerprint when present, otherwise a hash of `root`; displayed as the root's basename plus a short id.
+- **Where it is computed.** A new crate `crates/host` (`agentdocker-host`) holds the I/O both binaries need: project discovery and process inspection (`procinfo.rs` moves there). Core stays pure and gets only the types and `Registry::by_project()`. Clients derive the project at registration and send it in the spec; the daemon derives it from `workdir` when a client omits it, and computes the fingerprint in a blocking task by shelling out to `git` (no libgit2 dependency; `None` when `git` is absent). Fingerprints are cached in a `projects` table keyed by root so the `rev-list` walk runs once per repository per host.
+- **What it buys.** `ps` groups agents under project headings, `ps --project .` (a path, resolved to the project containing it) or `--project <id>` filters, and `list {project?}` carries the filter. A new destination `project:<id>` (CLI shorthand `--to project` for the sender's own project) delivers to every live agent in the project except the sender, with inbox fallback exactly like broadcast — a proper destination rather than an implicit topic, because topics are live-only and a newcomer must not miss "heads up, I'm rewriting the parser". Leases need nothing new: `leases --resource path:<root>` already lists everything in a project by overlap, and `--project .` becomes sugar for it. The hooks' `SessionStart` orientation lists agents in the same project first and others after. `AgentRecord` gains `project: Option<ProjectRef>`, set once at creation; `agent_created` carries it, and a `project_discovered {project}` event fires the first time a project id is seen. Persistence: the record's JSON blob (no migration) plus the `projects` cache table.
+
+*Done when* two Claude Code sessions opened in two worktrees of one repository appear under one heading in `ps`, a session in another repository does not, and `send --to project` reaches exactly the first two.
+
+#### Discovery and adoption
+
+Agents that never register are still worth seeing. `agentdocker discover` enumerates processes (macOS `proc_listpids` + `proc_pidpath` + `PROC_PIDVNODEPATHINFO` for the cwd; Linux `/proc/<pid>/exe` and `/proc/<pid>/cwd`), matches the executable's basename against a table of known runtimes (`claude`, `codex`, `gemini`, `cursor-agent`, `aider`, `goose`, extensible via config), drops pids already registered, and prints them grouped by derived project. `ps` includes them as dimmed rows tagged `unadopted` unless `--no-discover`. `agentdocker adopt <pid>` registers the process (`runtime` from the table, `workdir` from its cwd, name `<runtime>-<pid>`, pid for liveness). An adopted agent runs no hooks, so it cannot claim or report reads, but it is visible, messageable (its inbox fills; nothing drains it until the human or an adapter does), and counted in its project. This is a heuristic on-ramp, documented as such.
+
+#### Branch and head
+
+`AgentRecord.vcs: Option<VcsState { branch: Option<String>, head: String, dirty: Option<bool>, updated_at }>`, reported by clients through a new `report {agent, vcs?, reads?, writes?}` request — one op that carries everything an adapter observes, so a hook fire is a single round trip. Hooks read `.git/HEAD` and the ref file directly (microseconds, no `git` process) on `SessionStart` and `PostToolUse` and report only when it changed. `ps` gains `BRANCH` and `HEAD` (short) columns so "are we even looking at the same code" is answered at a glance; `agent_vcs_changed {agent, vcs}` is emitted on change. Stored in the record blob.
+
+### Phase 3 — the working set
+
+This phase replaces the earlier plan for a separate key/document context store. Grounding staleness in the filesystem — what agents actually read and change — covers the real case with no new concept for agents to learn; a document store can be added later if a need survives this.
+
+#### Read-set tracking and staleness
+
+- **Reporting.** Hooks report reads on `PostToolUse` for `Read` (the file), `Grep` and `Glob` (the searched directory, recorded as a directory mark that covers everything beneath it), and writes for the edit tools; both go through `report`. MCP hosts expose no tool observation, so MCP agents have no read set (see the fallback below).
+- **Core.** `WorkingSet { reads: BTreeMap<RelPath, ReadMark { at, head: Option<String> }>, writes: … }` per agent, paths stored *project-relative* with the worktree noted, so marks compare across worktrees and prefix queries are short. Capacity 5,000 marks per agent, oldest evicted; a directory mark absorbs file marks beneath it. Pure `WorkingSet::stale_against(&[Change]) -> Vec<RelPath>` decides what to notify. Every rule here is unit-tested in core.
+- **Watching.** The daemon watches each project root that has at least one live agent (`notify`: FSEvents on macOS, inotify on Linux), ref-counted by live agents and dropped when the last one leaves. Raw events are debounced (100 ms), filtered through the project's `.gitignore` (the `ignore` crate's matcher) so `target/` and `node_modules/` never reach the pipeline, and `.git/` is ignored except `HEAD` and `refs/heads/`, which feed head observation (Phase 3 journal). Events become `Change { seq, project, worktree, path, kind: Created | Modified | Removed | Renamed, at, by: Attribution }`.
+- **Attribution.** In order: an agent that reported a write to the path within the last 5 s; else the holder of an exclusive lease overlapping the path; else `External` (the user's editor, `git checkout`, a build). Best-effort by construction, and labelled as such in every output.
+- **Notices.** For each live agent in the project other than the author, if the changed path is in its read set and the mark predates the change, the daemon queues a message `kind: stale` from `agentd` with `{paths: [{path, by, at}]}`. Notices are coalesced per agent over a 2 s window and merged into an undelivered `stale` message already in the inbox rather than enqueued beside it, so a noisy build produces one notice, not a thousand. Hooks surface it as `additionalContext`; a fresh `Read` of the path clears its mark. On `PreToolUse` for an edit of a stale path the hook denies once with the reason and the author's note, so the model re-reads before it writes; a second attempt after the read passes. `agent_stale {agent, paths}` is emitted; `file_changed {change}` is emitted to the live stream but persisted in the ledger, not the events table, because change volume would otherwise crowd out everything else within the 10,000-event window.
+- **Fallback for agents without a read set.** Nothing is pushed. `changes --project . --since <seq|duration>` and the digest in `SessionStart`/`UserPromptSubmit` are pull-based, so an MCP or adopted agent still learns what moved without being flooded.
+- **Persistence.** `reads (agent, project, path, at, head, PRIMARY KEY (agent, path))`, written through per `report` call in one transaction and deleted on agent exit, so a daemon restart under running agents does not silently forget what they read.
+
+*Done when* agent A reads a file, agent B edits it under a lease, and A's next hook fire hands the model a notice naming the file, B, and B's note — and an edit by A before re-reading is refused once.
+
+#### Attribution ledger
+
+The `changes` table is the ledger: `(seq INTEGER PRIMARY KEY, project, worktree, path, kind, at, by_agent, lease, head, json)` with indexes on `(project, seq)` and `(project, path, seq)`. Paths are project-relative, so "everything under `src/`" is a string prefix range (`path >= 'src/' AND path < 'src0'`), which is the query the journal needs at every lease release. `agentdocker blame <path>` lists the changes to a path with agent, lease note, and time; `agentdocker changes [--project .] [--agent X] [--since …]` lists a range; `inspect <agent>` shows the agent's changed paths. Retention: newest 100,000 rows per project, pruned once a minute like events; journal entries carry their own path lists, so pruning the ledger loses fine grain only. Attribution is best-effort and every rendering says so.
+
+#### Change journal
+
+A per-project, append-only narrative of what changed and why: coarse where the ledger is fine-grained, readable by models and humans, cheap to read incrementally, and the thing a newcomer is handed instead of the event stream. The design below was settled decision by decision on 2026-09-04 (the list is at the end) and is ready to build.
+
+**Entries.** One entry per *release request* — a `release` or `release_all` that freed at least one lease — never one per resource, so a `Stop` that drops twenty file leases yields one line, not twenty. An entry is written when the request freed a lease and either the ledger shows changes under those resources or a summary was given; a lease claimed and abandoned untouched leaves nothing.
+
+```
+JournalEntry {
+  project, seq,                    // seq is per project, assigned by the daemon
+  at, agent, agent_name,
+  branch: Option<String>, worktree: Option<RelPath>,
+  kind: Release | Note | Commit | Join | Leave | Handoff,
+  summary: String, summary_source: Explicit | Transcript | Synthesised,
+  resources: Vec<ResourceKey>,
+  paths: Vec<RelPath>,             // deduplicated, sorted, project-relative, capped at 200
+  paths_total: usize,              // the real count when the cap bit
+  head_before: Option<String>, head_after: Option<String>,
+  changes: Option<(u64, u64)>,     // ledger seq range for drill-down while those rows exist
+}
+```
+
+| kind | source | summary |
+|---|---|---|
+| `release` | `release {…, summary?}` / `release_all {…, summary?}` — the release request gains an optional summary | explicit text if given; else the tail of the transcript (below); else synthesised from the ledger: "edited 3 files under src/: parser.rs, lexer.rs, mod.rs" |
+| `note` | `journal_add {agent, summary}` — CLI `journal add "…"`, MCP `journal_note` | free text; no resources |
+| `commit` | the project watcher sees `.git/HEAD` or a `refs/heads/*` move | "committed `abc123` on `feat/x`: <subject>"; attributed to the worktree's isolated agent, else the `branch:` lease holder, else external |
+| `join` / `leave` | agent created in / exited from the project | "codex-1 joined (worktree `wt-2`, branch `feat/x`)" |
+| `handoff` | Phase 4 | task and note from the bundle |
+
+**Summaries without a model round-trip.** Claude Code's `Stop` hook receives `transcript_path`. The hook reads the last 64 KB of that JSONL file (seek from the end, so cost does not grow with the transcript), walks lines backwards to the last assistant message with text, strips markdown, takes the first paragraph, and trims to 280 characters at a word boundary. That text is sent as the `release_all` summary with `summary_source: transcript`, so renderers can quote it rather than assert it. An explicit summary — `release --summary`, `journal add`, the MCP tool — always wins; the ledger synthesis is the floor. Asking the model for a one-liner by blocking `Stop` is not done by default; it can be an opt-in hook flag later without changing the data model.
+
+**Scope and filtering.** One journal and one cursor per project. Every entry records `branch` and `worktree`, and the digest filters rather than the storage partitioning: the reader's own branch verbatim, `join`/`leave`/`handoff`/`commit` from every branch, and one trailing line counting other-branch entries ("3 entries on other branches: `agentdocker journal --all-branches`"). `--all-branches` shows everything. Entries an agent skips because of the filter still count as seen: they were summarised in the count line.
+
+**Cursors, not timestamps.** `journal_cursors (agent, project, seq, updated_at, PRIMARY KEY (agent, project))` records the last entry each agent was shown. "Since you joined" means *since your cursor*, so an agent that was heads-down for an hour is told what it missed, not what happened after an arbitrary time. A never-seen agent's cursor starts at the newer of "24 hours ago" and "20 entries back". At registration the cursor is **seeded by name**: if a finished agent with the same name exists in the same project, its cursor is copied, which is what makes a resumed Claude Code session (same session id, so the same `claude-<prefix>` name) continue where it left off instead of being told everything twice; pid-based names such as `codex-1234` are protected by the same-project rule and a 7-day limit on the finished record's age. The `user` agent has a cursor too, so `agentdocker journal --new` shows the human what they have not looked at. A cursor is written only when it moves.
+
+**Storage.** Three tables plus an index for search, all created with `IF NOT EXISTS` (no `SCHEMA_VERSION` bump):
+
+```sql
+CREATE TABLE journal (
+  id      INTEGER PRIMARY KEY,           -- rowid, needed by FTS5
+  project TEXT NOT NULL, seq INTEGER NOT NULL,
+  at TEXT NOT NULL, agent TEXT NOT NULL, branch TEXT, kind TEXT NOT NULL,
+  json    BLOB NOT NULL,                 -- the whole JournalEntry, self-contained
+  UNIQUE (project, seq)
+);
+CREATE INDEX journal_branch ON journal (project, branch, seq);
+CREATE INDEX journal_agent  ON journal (project, agent, seq);
+CREATE TABLE journal_paths (project TEXT, path TEXT, seq INTEGER, PRIMARY KEY (project, path, seq)) WITHOUT ROWID;
+CREATE VIRTUAL TABLE journal_fts USING fts5 (summary, content='', contentless_delete=1);  -- rowid = journal.id
+CREATE TABLE journal_cursors (agent TEXT, project TEXT, seq INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (agent, project)) WITHOUT ROWID;
+```
+
+The blob keeps a read to one row. `journal_paths` is the index behind `journal --path src/` — a prefix range on `path` — so path filters never scan JSON. `journal_fts` backs `--grep`; if FTS5 is missing from the SQLite build (`Store::init` checks) search falls back to `LIKE` over the blob. Entries are a few hundred bytes, a few kilobytes with a long path list; paths cost about 40 bytes each in the side table.
+
+**Ledger coupling.** An entry inlines its paths (capped at 200, with `paths_total`) *and* carries the ledger seq range. Digests therefore never touch the ledger, and `journal show <seq>` can still expand to individual changes while the ledger rows exist; once the ledger is pruned (newest 100,000 rows per project) the range dangles harmlessly and the inline list is what remains.
+
+**Write path.** In the release handler, after the lease table has dropped the leases: for each released `path:` resource, one indexed prefix-range query on the ledger bounded by `[acquired_at, now]`; union, sort, dedupe, cap; build the entry; assign `seq` from the per-project counter (loaded from `MAX(seq)` at startup, like event `seq`); write `journal`, `journal_paths`, and `journal_fts` in the *same transaction* as the lease deletions so a crash cannot leave a released lease with no entry or an entry for a lease still held; push to the ring; emit `journal_appended {entry}`. Sub-millisecond on the indexes above, and the response goes out after the write like every other mutation.
+
+**Read path.** `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` returns `journal {entries}`. With `digest: {reader, max_entries, max_chars, all_branches?, advance?}` it instead returns `digest {text, head_seq, shown, collapsed, other_branches}`: entries after the reader's cursor, filtered as above, rendered oldest to newest, one line each:
+
+```
+Since you last looked (9 entries):
+… 4 earlier entries (agentdocker journal --since 1173)
+- 1h ago   gemini-2 joined (worktree wt-2, branch feat/y)
+- 18m ago  claude-a1b2 [main] committed 3f9c1e0: "Add lease transfer"
+- 4m ago   codex-1 [feat/x] released src/parser.rs, src/lexer.rs (+3 more): "rewrote the tokenizer to handle unicode escapes"
+3 entries on other branches: agentdocker journal --all-branches
+```
+
+When the budget bites, the *oldest* entries collapse into the leading "… N earlier entries" line and the newest stay verbatim. `advance: true` moves the reader's cursor to `head_seq` in the same request — one round trip per hook fire, and nothing is marked seen unless the text was produced.
+
+**Budgets.** `SessionStart` requests up to 20 entries or 2,000 characters (about 500 tokens) with `advance`. `UserPromptSubmit` requests only what is past the cursor, at most 5 entries or 500 characters, and injects nothing when nothing is new. `PostToolUse` never carries journal text. Both budgets are hook flags (`--digest-entries`, `--digest-chars`). The CLI's `agentdocker journal` defaults to the last 50 entries of the project containing the current directory and takes `--since <seq|duration>`, `--agent`, `--branch` / `--all-branches`, `--path`, `--grep`, `--new` (since the human's cursor; `--ack` advances it), `--follow`, and `-n`.
+
+**Caching.** The daemon keeps an in-memory ring of the newest 256 entries per project, created lazily on the first read or write for a project with live agents and dropped ten minutes after its last live agent leaves. Appends write through; a digest whose cursor lies inside the ring is served without touching SQLite, which is every hook fire in practice; `--since` older than the ring, `--path`, and `--grep` go to the tables. Rendering is cheap enough that digests themselves are not cached; if that ever changes the key is `(project, cursor, head_seq, budget, branch)`. Memory cost is about 256 KB per active project.
+
+**Retention.** Entries are kept forever by default: the journal is the audit trail, a busy five-agent team writes roughly a megabyte a day at worst, and SQLite is comfortable at millions of rows. `agentdocker journal prune --before <duration|seq> [--project]` deletes on demand, and an optional `[journal] retention = "180d"` in the daemon config is applied by the once-a-minute tick, deleting `journal`, `journal_paths`, and `journal_fts` rows together in batches of 1,000 so the tick stays short; a cursor below the new floor is clamped on read. Freed pages are reused by SQLite; `agentdocker daemon vacuum` reclaims disk when someone wants it back. No roll-up summaries.
+
+**Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `claim`/`release` tools accept `summary`.
+
+**Tests.** Core: rendering under both budget limits, the collapse rule, the branch filter, and cursor seeding (same name and project, within 7 days) are pure and unit-tested. Store: round trip, path-prefix and FTS queries, prune cascades, cursor clamp. Hooks: transcript-tail extraction against sample JSONL (markdown stripped, first paragraph, 280-char word boundary). Daemon: a release under which the ledger recorded changes produces one entry with those paths in the same transaction as the lease deletion.
+
+*Done when* session A edits two files and stops; session B starting in the same project is handed one line naming both files and A's last message; A resumed sees nothing it was already shown; and `journal --path src/` returns the entry without scanning.
+
+**Decisions (settled 2026-09-04).**
+
+1. Granularity — one entry per release request; per-path lookups via `journal_paths`.
+2. Synthesis — ledger paths always; transcript tail on `Stop` when no explicit summary; no blocking round-trip by default.
+3. Cursor identity — per agent id, seeded from a same-name finished agent in the same project.
+4. Scope — one journal per project with a `branch` column and a filtered digest.
+5. Retention — keep forever; prune on demand or by an optional retention setting; no roll-ups.
+6. Ledger coupling — inline capped path list plus the ledger seq range.
+7. Digest budget — `SessionStart` 20 entries / 2,000 characters; `UserPromptSubmit` new-only, 5 / 500.
+
+### Phase 4 — layers, sandboxes & handoff
+
+#### Worktrees as the writable layer
+
+A container writes to its own layer over a shared image; an agent should write to its own worktree over a shared repository. `run --isolate [--base <ref>]` (and `isolate = true` in an `Agentfile.toml` entry) has the daemon create `git worktree add <home>/worktrees/<project id>/<agent name> -b agent/<name> <base>` (default `HEAD`), set the spec's `workdir` to it, and record `isolation: Some(Worktree { path, branch, base })` on the agent. The worktree resolves to the same project through the common git directory. It outlives the agent like a container's layer outlives a stopped container: `remove` keeps it, `remove --purge` deletes the worktree and branch.
+
+- **`agentdocker diff <agent> [--stat]`** — the worktree's changes against `base` (committed and uncommitted), rendered as a unified diff.
+- **`agentdocker commit <agent> [-m …] [--push] [--pr]`** — commits the worktree's changes on the agent's branch; `--push` pushes; `--pr` opens a pull request via `gh`. Under the hood the daemon claims `branch:<base>` exclusive for the duration so two commits onto one base cannot interleave.
+- **`agentdocker overlap [--project .]`** — pairs of agents whose ledgers touch the same project-relative path, i.e. merge conflicts before they happen. This is why the ledger stores relative paths.
+- **Leases in isolation.** Two isolated agents editing the same relative path is the *intended* parallelism, so the hooks do not claim per edit in an isolated worktree (path keys are absolute and would never collide anyway); contention moves to `commit`, which is guarded by the branch lease. Absolute `path:` keys keep their physical meaning for non-isolated agents.
+
+*Done when* two isolated agents edit the same file, `overlap` names them, each `commit` lands on its own branch, and neither was ever blocked from editing.
+
+#### Sandboxed runtimes
+
+The daemon stays on the host; the *agent* may run in a container. `--runtime docker --image <img>` has the supervisor run `docker run --rm -i -v <workdir>:/work -w /work -v <socket>:/run/agentd.sock -e AGENTDOCKER_SOCKET=/run/agentd.sock -e AGENTDOCKER_AGENT_ID=… <img> <command>`; the docker client is the supervised child, so pid, logs, and exit status work unchanged. `podman` and Apple `container` are the same shape with a different executable. Combined with `--isolate` an agent gets its own worktree *and* its own filesystem view. Nothing in core changes.
+
+#### Handoff bundles
+
+An agent handing work to another should not have to write its state down; the daemon already knows it. `handoff {from, to, task?, note?, transfer_leases?}` assembles a `HandoffBundle { task, note, from, vcs, leases, read_set (paths and the heads they were read at), changes (the sender's ledger rows since it joined), diff (for isolated senders: the patch, truncated at 64 KB with a pointer to the worktree), unread_inbox, journal (the sender's entries) }` and sends it as a message `kind: handoff` to the recipient with inbox fallback. With `transfer_leases` the sender's leases move to the recipient atomically (`LeaseTable::transfer(from, to, now)`, new event `lease_transferred {lease, from, to}`; only the holder may transfer); otherwise they are released. A `handoff` journal entry is appended, the recipient's read set is seeded from the bundle so staleness carries over, and its cursor is set to the sender's. `agentdocker handoff <from> <to> --task "…"`; `agentdocker export <agent> > bundle.json` / `import` write and read the same structure so a bundle can cross hosts by hand until federation. The bundle is a core type with a schema version of its own.
+
+### Phase 5 — arbitration, humans & policy
+
+#### Wait queue and deadlock detection
+
+`claim --wait` today is a retry loop inside the claim handler: on conflict the request waits for a release or expiry event on an overlapping resource and tries again, and when several requests wait on one resource they race. This item makes waiting a daemon-level fact and derives two things from it.
+
+- **FIFO queue.** Core `WaitQueue` (pure) records waiting requests per resource in arrival order; when a lease clears, only the oldest waiter on an overlapping resource may take it, so a newcomer cannot starve someone already waiting. `lease_waiting {resource, requester, position}` is emitted when a request starts waiting and `lease_wait_timeout {resource, requester}` when it gives up (the response stays `error(conflict)` with the blocking leases, as now). Waiters remain connection-scoped and are never persisted: a daemon restart drops every waiting client, which reconnects and re-queues.
+- **Deadlock detection.** Waiters form a graph: an edge from each waiter to every holder of a blocking lease. Core `WaitGraph` (pure, tested) maintains it and, on every new wait, searches for a cycle through the requester. If one exists the claim is refused immediately with `ErrorCode::Deadlock` and `details.cycle` listing the agents and resources, and `lease_deadlock {cycle}` is emitted; the newcomer is always the victim, which is deterministic and needs no priorities. TTLs already bound how long a deadlock can last; detection makes it instant and explains it. Priority-based victim selection stays an open question.
+
+#### The human as an agent
+
+Orchestration needs an escalation path, and it should live inside the same model rather than beside it. `agentdocker me` registers the human as a persistent agent named `user` with runtime `human` (the `from: user` convention already exists), never expired by liveness. `ask {from, to, question, timeout_secs}` sends `kind: question` and blocks the caller until an `answer` with a matching `reply_to` arrives or `ErrorCode::Timeout`; MCP exposes `ask_human`, hooks expose nothing (a model asks in prose). Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker answer <message id> "…"` replies, and the daemon raises a desktop notification (`osascript` / `terminal-notifier` on macOS, `notify-send` on Linux) for anything addressed to `user`, throttled to one per sender per minute.
+
+#### Admission policy and budgets
+
+Like Docker's authorization plugins: a policy file the daemon consults before acting. `<home>/policy.toml` and, per project, `<root>/.agentdocker/policy.toml` (project rules cannot widen host rules). Rules match agents by runtime, labels, name glob, and project, and allow or deny actions expressed as patterns: `claim:path:/repo/migrations/**`, `send:project:*`, `run:*`. Evaluation is pure (`Policy::check(agent, action) -> Allow | Deny { rule, reason }` in core) and refusals use the existing `ErrorCode::Forbidden` with the rule in `details`; a `policy_denied {agent, action, rule}` event fires. Files are reloaded on change (the same watcher) and on `SIGHUP`.
+
+Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>` with a capacity set in policy, claimed in shared mode with `amount`, so `claim quota:tokens/<project> --amount 50000` fails once the sum of live amounts would exceed capacity. This folds quotas into a mechanism that already has TTLs, release-on-exit, and events; whether amounts belong on `Lease` or in a sibling `Quota` table is decided when the policy PR lands.
+
+#### Supervision policy and dashboard
+
+`--restart no | on-failure[:max] | always` on `run` and as `restart` in `Agentfile.toml`, `depends_on` (start after the dependency is running) and `after = "A exits 0"` (start after it succeeds), and `agentdocker top`, a TUI fed by the event stream showing agents by project, their branches, held leases, waiting claims, and the latest journal entries.
+
+### Phase 6 — federation
+
+`agentd` instances discover and authenticate each other (mTLS, or a WireGuard-style keypair exchange). Agent ids become `host/agent`; messages, leases, events, and the journal route across peers; the registry becomes a replicated view. Project fingerprints are what make "the same repository on my laptop and in the cloud" one project, and handoff bundles are what move work between them. The core primitives do not change — which is the reason for keeping them pure and host-agnostic now.
+
+### Delivery order
+
+Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests together, per `CLAUDE.md`. Adding a table is not a `SCHEMA_VERSION` bump (`CREATE TABLE IF NOT EXISTS`); changing what a stored row means is.
+
+| # | PR | phase | depends on |
+|---|---|---|---|
+| 1 | `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
+| 2 | `project:` destination; hooks orient by project | 2 | 1 |
+| 3 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
+| 4 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
+| 5 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
+| 6 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 5 |
+| 7 | staleness notices; hook deny-once on stale edits | 3 | 6 |
+| 8 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 6 |
+| 9 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 6 |
+| 10 | `handoff`, lease transfer, `export` / `import` | 4 | 8, 9 |
+| 11 | `docker` / `podman` runtimes | 4 | — |
+| 12 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
+| 13 | human agent, `ask` / `answer`, notifications | 5 | 2 |
+| 14 | admission policy and quotas | 5 | 1 |
+| 15 | restart policies, `depends_on`, `top` | 5 | — |
+| 16 | federation | 6 | 10 |
+
+### Planned protocol and event additions
+
+Listed here so the wire-protocol table above stays a description of what exists.
+
+| Request | Response | Phase |
+|---|---|---|
+| `list {all?, project?, labels?}` | `agents` | 2 |
+| `claim {…}` | adds `error(deadlock)` | 5 |
+| `report {agent, vcs?, reads?, writes?}` | `ok` | 2–3 |
+| `adopt {pid}` | `agent` | 2 |
+| `release {…, summary?}`, `release_all {…, summary?}` | `lease` / `leases` | 3 |
+| `changes {project, since?, path?, agent?, limit?}` | `changes` | 3 |
+| `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | 3 |
+| `journal_add {agent, summary}` | `journal_entry` | 3 |
+| `diff {agent, stat?}` | `diff` | 4 |
+| `commit {agent, message?, push?, pr?}` | `commit` | 4 |
+| `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
+| `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
+
+New events: `project_discovered`, `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 
-- Should topic messages ever queue? Durable subscriptions solve it, but require the daemon to know about an agent's interests when it is offline.
-- Priority vs. fairness for contested leases: strict priority is simple but starves; the plan is to start with FIFO waiting in `claim --wait` and revisit.
-- Whether `from` should be verified (the socket owner is trusted today, so an agent can impersonate another). Per-agent tokens would close this; the cost is friction for shell-based agents.
+- Should topic messages ever queue? Durable subscriptions solve it, but require the daemon to know about an agent's interests when it is offline. The `project:` destination removes the most common reason to want this.
+- Priority vs. fairness for contested leases: waiters race today, and Phase 5 makes them FIFO. Whether labels or policy should ever let a claim jump the queue, and whether deadlock victims should be chosen by priority, is deferred until there is usage to look at.
+- Whether `from` should be verified (the socket owner is trusted today, so an agent can impersonate another). Per-agent tokens would close this; the cost is friction for shell-based agents. Admission policy (Phase 5) raises the stakes, so it should land with or before it.
+- Read-set capacity and eviction: 5,000 marks per agent is a guess; measure a long Claude Code session before tuning.
+- Whether isolated agents should hold *logical* file leases (project-relative, advisory) so `overlap` can warn before the edit rather than after.

@@ -130,7 +130,7 @@ agentdocker down              # stops them
 
 **Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
 
-**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. The next phase adds a shared, versioned context store with change notifications so an agent is told when something it depends on moved.
+**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
 
 **No common channel.** Messaging is direct (`--to writer`), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
@@ -161,11 +161,15 @@ Three crates:
 
 ## Roadmap
 
+The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker's is the **working set** — the daemon observes what every agent read, holds, changed, and which branch it is on, and derives from that what no single agent can: grouping, staleness, attribution, deadlock, handoff. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#roadmap) has the engineering detail for every item.
+
 - **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
-- **Phase 1 — adapters & persistence** *(done)*: SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; `agentdocker hook`, a Claude Code hooks pack (auto-register, claim before edit, deliver messages, release on stop); `Agentfile.toml` + `agentdocker up`/`down` for teams; `claim --wait`.
-- **Phase 2 — shared context**: a versioned key/document store with watch notifications, and a handoff protocol so one agent can package its working context for another.
-- **Phase 3 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace.
-- **Phase 4 — policy & scheduling**: quotas, priorities, dependencies between agents, restart policies, a dashboard.
+- **Phase 1 — adapters & persistence** *(done)*: ✅ SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); ✅ `agentdocker mcp`, an MCP server so any MCP-capable agent gets the registry, messaging, and leases as tools without integration work; ✅ `agentdocker hook`, a Claude Code hooks pack (auto-register, claim before edit, deliver messages, release on stop); ✅ `Agentfile.toml` + `agentdocker up`/`down` for multi-agent teams; ✅ `claim --wait`.
+- **Phase 2 — native install & projects**: a native per-user daemon with a launchd/systemd service and lazy start from any client; agents grouped automatically by the repository they work in (worktrees included), a `project:` message destination, discovery and adoption of agent processes that never registered, and each agent's branch in `ps`.
+- **Phase 3 — the working set**: read-set tracking and a project watcher, so an agent is told when something it read has changed and by whom; an attribution ledger (`blame`); a per-project change journal that hands newcomers a "since you joined" digest instead of the event stream.
+- **Phase 4 — layers, sandboxes & handoff**: a worktree per agent as its writable layer, with `diff`, `commit`, and `overlap` (merge conflicts before they happen); `docker`/`podman` runtimes for sandboxed agents; handoff bundles the daemon assembles from what it already knows.
+- **Phase 5 — arbitration, humans & policy**: deadlock detection on contested leases, the human as a first-class agent with `ask`/`answer` and desktop notifications, admission policy and token budgets on the lease primitive, restart policies, `depends_on`, and a `top` dashboard.
+- **Phase 6 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace; project fingerprints make one repository one project everywhere.
 
 ## Development
 
