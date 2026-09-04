@@ -3,6 +3,10 @@
 //! Locking discipline: every method locks at most one mutex at a time, so
 //! there is no lock ordering to get wrong. Locks are `std::sync::Mutex`
 //! because no lock is ever held across an `.await`.
+//!
+//! Durability: the in-memory registry, lease table, and inboxes are the
+//! source of truth for reads; every mutation is written through to the
+//! [`Store`] so a restarted daemon rebuilds the same state.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -15,12 +19,14 @@ use agentdocker_core::{
     RegistryError, Request, ResourceKey, Response, topic_matches,
 };
 use chrono::{Duration, Utc};
+use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
+use crate::store::Store;
 use crate::supervisor;
 
 /// Messages queued per agent while it has no live subscription.
@@ -28,17 +34,23 @@ const INBOX_CAPACITY: usize = 1000;
 /// Leases longer than this are clamped; a TTL is a liveness bound, not a
 /// reservation.
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Stored event history is trimmed to this many entries.
+const EVENT_HISTORY: usize = 10_000;
 
 pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
     started: Instant,
+    store: Mutex<Store>,
     registry: Mutex<Registry>,
     leases: Mutex<LeaseTable>,
     inboxes: Mutex<HashMap<AgentId, VecDeque<Envelope>>>,
     /// Number of live subscriptions per agent. Agents with one or more skip
     /// the inbox and get messages pushed directly.
     live_subscribers: Mutex<HashMap<AgentId, usize>>,
+    /// Agents whose `Child` handle a supervisor task owns. Every other live
+    /// agent with a pid is polled by [`Daemon::check_liveness`].
+    supervised: Mutex<HashSet<AgentId>>,
     bus: broadcast::Sender<Envelope>,
     events: broadcast::Sender<Event>,
 }
@@ -74,21 +86,57 @@ fn default_name(id: &AgentId) -> String {
     format!("agent-{}", &id.as_str()[..6])
 }
 
+/// Is there a process with this pid? `EPERM` means it exists but belongs to
+/// someone else, which still counts as alive.
+fn process_exists(pid: u32) -> bool {
+    match kill(Pid::from_raw(pid as i32), None) {
+        Ok(()) | Err(Errno::EPERM) => true,
+        Err(_) => false,
+    }
+}
+
 impl Daemon {
-    pub fn new(home: PathBuf, socket: PathBuf) -> Self {
+    /// Open (or create) the state database under `home` and restore state.
+    pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&home)?;
+        let store = Store::open(&home.join("state.db"))?;
+        Self::with_store(home, socket, store)
+    }
+
+    pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
+        let mut registry = Registry::new();
+        for record in store.load_agents()? {
+            if let Err(err) = registry.insert(record) {
+                warn!(%err, "skipping stored agent");
+            }
+        }
+        let mut leases = LeaseTable::new();
+        for lease in store.load_leases()? {
+            leases.restore(lease);
+        }
+        let inboxes = store.load_inboxes()?;
+        info!(
+            agents = registry.len(),
+            leases = leases.len(),
+            inboxes = inboxes.len(),
+            "state restored"
+        );
+
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
-        Self {
+        Ok(Self {
             home,
             socket,
             started: Instant::now(),
-            registry: Mutex::new(Registry::new()),
-            leases: Mutex::new(LeaseTable::new()),
-            inboxes: Mutex::new(HashMap::new()),
+            store: Mutex::new(store),
+            registry: Mutex::new(registry),
+            leases: Mutex::new(leases),
+            inboxes: Mutex::new(inboxes),
             live_subscribers: Mutex::new(HashMap::new()),
+            supervised: Mutex::new(HashSet::new()),
             bus,
             events,
-        }
+        })
     }
 
     pub fn log_path(&self, id: &AgentId) -> PathBuf {
@@ -99,8 +147,32 @@ impl Daemon {
         self.events.subscribe()
     }
 
+    /// The last `limit` stored events, oldest first.
+    pub fn recent_events(&self, limit: usize) -> Vec<Event> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        lock(&self.store)
+            .recent_events(limit)
+            .unwrap_or_else(|err| {
+                error!(%err, "failed to load event history");
+                Vec::new()
+            })
+    }
+
+    /// Run a write against the store, logging rather than propagating
+    /// failure: the in-memory state has already changed and the daemon
+    /// must keep serving.
+    fn persist(&self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+        if let Err(err) = write(&lock(&self.store)) {
+            error!(%what, %err, "failed to persist state");
+        }
+    }
+
     pub fn emit(&self, kind: EventKind) {
-        let _ = self.events.send(Event::new(kind, Utc::now()));
+        let event = Event::new(kind, Utc::now());
+        self.persist("event", |store| store.append_event(&event));
+        let _ = self.events.send(event);
     }
 
     pub fn resolve(&self, reference: &str) -> Result<AgentId, Box<Response>> {
@@ -160,7 +232,7 @@ impl Daemon {
             } => self.renew(&agent, &lease, ttl_secs),
             Request::Release { agent, lease } => self.release(&agent, &lease),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource),
-            Request::Subscribe { .. } | Request::Events | Request::Logs { .. } => {
+            Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
             }
         }
@@ -177,6 +249,7 @@ impl Daemon {
         if let Err(err) = lock(&self.registry).insert(record.clone()) {
             return registry_error(err);
         }
+        self.persist("agent", |store| store.upsert_agent(&record));
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
@@ -185,6 +258,7 @@ impl Daemon {
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
                 let pid = spawned.pid;
+                lock(&self.supervised).insert(record.id.clone());
                 let updated = {
                     let mut registry = lock(&self.registry);
                     if let Some(rec) = registry.get_mut(&record.id) {
@@ -192,6 +266,9 @@ impl Daemon {
                     }
                     registry.set_status(&record.id, AgentStatus::Running, Utc::now())
                 };
+                if let Some(rec) = &updated {
+                    self.persist("agent", |store| store.upsert_agent(rec));
+                }
                 self.emit(EventKind::AgentStarted {
                     agent: record.id.clone(),
                     pid: Some(pid),
@@ -207,11 +284,7 @@ impl Daemon {
                 let status = AgentStatus::Failed {
                     reason: format!("{err:#}"),
                 };
-                lock(&self.registry).set_status(&record.id, status.clone(), Utc::now());
-                self.emit(EventKind::AgentExited {
-                    agent: record.id,
-                    status,
-                });
+                self.mark_exited(&record.id, status);
                 Response::error(ErrorCode::Internal, format!("{err:#}"))
             }
         }
@@ -229,6 +302,7 @@ impl Daemon {
         if let Err(err) = lock(&self.registry).insert(record.clone()) {
             return registry_error(err);
         }
+        self.persist("agent", |store| store.upsert_agent(&record));
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
@@ -284,7 +358,7 @@ impl Daemon {
         } else if record.managed {
             return Response::error(ErrorCode::Internal, "managed agent has no pid");
         }
-        if record.managed {
+        if lock(&self.supervised).contains(&id) {
             // The supervisor task observes the exit and updates the record.
             return Response::Agent { agent: record };
         }
@@ -317,6 +391,7 @@ impl Daemon {
         }
         lock(&self.registry).remove(&id);
         lock(&self.inboxes).remove(&id);
+        self.persist("agent", |store| store.delete_agent(&id));
         self.emit(EventKind::AgentRemoved { agent: id });
         Response::Ok
     }
@@ -336,7 +411,11 @@ impl Daemon {
     /// Record an exit: update status, release leases, emit the event.
     pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
         let record = lock(&self.registry).set_status(id, status.clone(), Utc::now())?;
-        for lease in lock(&self.leases).release_all(id) {
+        lock(&self.supervised).remove(id);
+        self.persist("agent", |store| store.upsert_agent(&record));
+        let released = lock(&self.leases).release_all(id);
+        for lease in released {
+            self.persist("lease", |store| store.delete_lease(&lease.id));
             self.emit(EventKind::LeaseReleased { lease });
         }
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
@@ -347,8 +426,39 @@ impl Daemon {
         Some(record)
     }
 
+    /// Live agents nobody is supervising get their pid checked; a vanished
+    /// process is recorded as an exit so its leases are freed. Covers agents
+    /// adopted from a previous daemon run and externally registered ones.
+    pub fn check_liveness(&self) {
+        let supervised = lock(&self.supervised).clone();
+        let candidates: Vec<(AgentId, Option<u32>, bool)> = lock(&self.registry)
+            .live()
+            .filter(|a| !supervised.contains(&a.id))
+            .map(|a| (a.id.clone(), a.pid, a.managed))
+            .collect();
+        for (id, pid, managed) in candidates {
+            let alive = match pid {
+                Some(pid) => process_exists(pid),
+                // An external agent that gave no pid can only leave by
+                // deregistering; a managed one without a pid never started.
+                None => !managed,
+            };
+            if !alive {
+                warn!(agent = %id.short(), ?pid, "process is gone; recording exit");
+                self.mark_exited(&id, AgentStatus::Exited { code: None });
+            }
+        }
+    }
+
     fn touch(&self, id: &AgentId) {
-        lock(&self.registry).touch(id, Utc::now());
+        let record = {
+            let mut registry = lock(&self.registry);
+            registry.touch(id, Utc::now());
+            registry.get(id).cloned()
+        };
+        if let Some(record) = record {
+            self.persist("agent", |store| store.upsert_agent(&record));
+        }
     }
 
     fn send(
@@ -390,14 +500,22 @@ impl Daemon {
                 .collect()
         };
         if !offline.is_empty() {
-            let mut inboxes = lock(&self.inboxes);
-            for id in offline {
-                let queue = inboxes.entry(id).or_default();
-                if queue.len() >= INBOX_CAPACITY {
-                    queue.pop_front();
+            {
+                let mut inboxes = lock(&self.inboxes);
+                for id in &offline {
+                    let queue = inboxes.entry(id.clone()).or_default();
+                    if queue.len() >= INBOX_CAPACITY {
+                        queue.pop_front();
+                    }
+                    queue.push_back(envelope.clone());
                 }
-                queue.push_back(envelope.clone());
             }
+            self.persist("inbox", |store| {
+                for id in &offline {
+                    store.enqueue(id, &envelope, INBOX_CAPACITY)?;
+                }
+                Ok(())
+            });
         }
 
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
@@ -430,6 +548,9 @@ impl Daemon {
                     .unwrap_or_default()
             }
         };
+        if drain && !messages.is_empty() {
+            self.persist("inbox", |store| store.clear_inbox(&id));
+        }
         self.touch(&id);
         Response::Messages { messages }
     }
@@ -446,10 +567,14 @@ impl Daemon {
         let backlog = match &agent {
             Some(id) => {
                 *lock(&self.live_subscribers).entry(id.clone()).or_default() += 1;
-                lock(&self.inboxes)
+                let backlog: Vec<Envelope> = lock(&self.inboxes)
                     .remove(id)
                     .map(Vec::from)
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                if !backlog.is_empty() {
+                    self.persist("inbox", |store| store.clear_inbox(id));
+                }
+                backlog
             }
             None => Vec::new(),
         };
@@ -499,12 +624,14 @@ impl Daemon {
         );
         match result {
             Ok(Claimed::New(lease)) => {
+                self.persist("lease", |store| store.upsert_lease(&lease));
                 self.emit(EventKind::LeaseClaimed {
                     lease: lease.clone(),
                 });
                 Response::Lease { lease }
             }
             Ok(Claimed::Renewed(lease)) => {
+                self.persist("lease", |store| store.upsert_lease(&lease));
                 self.emit(EventKind::LeaseRenewed {
                     lease: lease.clone(),
                 });
@@ -540,6 +667,7 @@ impl Daemon {
         self.touch(&holder);
         match lock(&self.leases).renew(lease, &holder, ttl(ttl_secs), Utc::now()) {
             Ok(lease) => {
+                self.persist("lease", |store| store.upsert_lease(&lease));
                 self.emit(EventKind::LeaseRenewed {
                     lease: lease.clone(),
                 });
@@ -556,6 +684,7 @@ impl Daemon {
         };
         match lock(&self.leases).release(lease, &holder) {
             Ok(lease) => {
+                self.persist("lease", |store| store.delete_lease(&lease.id));
                 self.emit(EventKind::LeaseReleased {
                     lease: lease.clone(),
                 });
@@ -587,7 +716,17 @@ impl Daemon {
         let expired = lock(&self.leases).expire(Utc::now());
         for lease in expired {
             info!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "lease expired");
+            self.persist("lease", |store| store.delete_lease(&lease.id));
             self.emit(EventKind::LeaseExpired { lease });
+        }
+    }
+
+    /// Trim stored event history. Called occasionally from the reaper.
+    pub fn prune_events(&self) {
+        match lock(&self.store).prune_events(EVENT_HISTORY) {
+            Ok(0) => {}
+            Ok(removed) => info!(removed, "pruned event history"),
+            Err(err) => error!(%err, "failed to prune event history"),
         }
     }
 }
@@ -631,5 +770,218 @@ impl Drop for Subscription {
         if let Some(agent) = &self.agent {
             self.daemon.unsubscribe(agent);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn open(dir: &TempDir) -> Arc<Daemon> {
+        let home = dir.path().to_path_buf();
+        Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap())
+    }
+
+    fn spec(name: &str) -> AgentSpec {
+        AgentSpec {
+            name: name.to_owned(),
+            ..AgentSpec::default()
+        }
+    }
+
+    async fn register(daemon: &Arc<Daemon>, name: &str, pid: Option<u32>) -> AgentRecord {
+        match daemon
+            .handle(Request::Register {
+                spec: spec(name),
+                pid,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
+        daemon
+            .handle(Request::Claim {
+                agent: agent.to_owned(),
+                resource: resource.to_owned(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+            })
+            .await
+    }
+
+    async fn list_leases(daemon: &Arc<Daemon>) -> Vec<Lease> {
+        match daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: None,
+            })
+            .await
+        {
+            Response::Leases { leases } => leases,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    async fn inbox(daemon: &Arc<Daemon>, agent: &str, drain: bool) -> Vec<Envelope> {
+        match daemon
+            .handle(Request::Inbox {
+                agent: agent.to_owned(),
+                drain,
+            })
+            .await
+        {
+            Response::Messages { messages } => messages,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A pid that certainly no longer exists: a child we already reaped.
+    fn dead_pid() -> u32 {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        let mut child = child;
+        child.wait().unwrap();
+        pid
+    }
+
+    #[tokio::test]
+    async fn state_survives_restart() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        assert!(matches!(
+            claim(&daemon, "alpha", "task:1").await,
+            Response::Lease { .. }
+        ));
+        daemon
+            .handle(Request::Send {
+                from: "user".into(),
+                to: "alpha".into(),
+                kind: "chat".into(),
+                payload: json!({ "text": "hello" }),
+                reply_to: None,
+            })
+            .await;
+        drop(daemon);
+
+        let daemon = open(&dir);
+        let agents = lock(&daemon.registry).list(true);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, alpha.id);
+        assert!(agents[0].status.is_live());
+
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].holder, alpha.id);
+        // The restored lease still blocks others.
+        assert!(matches!(
+            register(&daemon, "beta", None).await.status,
+            AgentStatus::Running
+        ));
+        assert!(matches!(
+            claim(&daemon, "beta", "task:1").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+
+        let queued = inbox(&daemon, "alpha", true).await;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].payload["text"], "hello");
+        drop(daemon);
+
+        // Draining was persisted too.
+        let daemon = open(&dir);
+        assert!(inbox(&daemon, "alpha", false).await.is_empty());
+        // Our own pid is alive, so the liveness check leaves alpha alone.
+        daemon.check_liveness();
+        assert!(daemon.is_live(&alpha.id));
+    }
+
+    #[tokio::test]
+    async fn vanished_process_is_recorded_as_exited_and_freed() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let ghost = register(&daemon, "ghost", Some(dead_pid())).await;
+        assert!(matches!(
+            claim(&daemon, "ghost", "path:/tmp/x").await,
+            Response::Lease { .. }
+        ));
+        // Without a pid there is nothing to poll, so this one stays live.
+        let quiet = register(&daemon, "quiet", None).await;
+
+        daemon.check_liveness();
+
+        assert!(!daemon.is_live(&ghost.id));
+        assert!(daemon.is_live(&quiet.id));
+        assert!(list_leases(&daemon).await.is_empty());
+        drop(daemon);
+
+        let daemon = open(&dir);
+        assert!(!daemon.is_live(&ghost.id));
+        assert!(lock(&daemon.leases).is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_forgets_agent_and_inbox() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let done = register(&daemon, "done", None).await;
+        daemon
+            .handle(Request::Send {
+                from: "user".into(),
+                to: "done".into(),
+                kind: "chat".into(),
+                payload: json!({ "text": "late" }),
+                reply_to: None,
+            })
+            .await;
+        daemon
+            .handle(Request::Deregister {
+                agent: "done".into(),
+            })
+            .await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Remove {
+                    agent: "done".into()
+                })
+                .await,
+            Response::Ok
+        ));
+        drop(daemon);
+
+        let daemon = open(&dir);
+        assert!(lock(&daemon.registry).get(&done.id).is_none());
+        assert!(lock(&daemon.inboxes).is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_are_stored_for_replay() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "a", None).await;
+        let recent = daemon.recent_events(10);
+        assert!(matches!(
+            recent.as_slice(),
+            [
+                Event {
+                    kind: EventKind::AgentCreated { .. },
+                    ..
+                },
+                Event {
+                    kind: EventKind::AgentStarted { .. },
+                    ..
+                }
+            ]
+        ));
+        assert!(daemon.recent_events(0).is_empty());
     }
 }

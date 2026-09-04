@@ -35,8 +35,17 @@ One process per host. It owns:
 - **Inboxes** — per-agent queues for messages that arrive while the agent has no live subscription. Capped at 1000; oldest dropped first.
 - **Lease table** — the core `LeaseTable`, plus a 1-second reaper that expires leases and emits events.
 - **Events** — a second broadcast channel carrying `Event`s.
+- **Store** — SQLite at `<home>/state.db`; see [Persistence](#persistence).
 
 Locking discipline: no method holds more than one mutex at a time, and no lock is held across an `.await`. There is therefore no lock ordering to get wrong.
+
+## Persistence
+
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build.
+
+On startup the daemon reloads agents, leases, and inboxes. Leases keep their original expiry, so a restart never extends anyone's claim. Agents that were live when the previous daemon stopped are *adopted*: the new daemon has no `Child` handle for them, so a once-per-second liveness check sends signal 0 to every unsupervised live agent that reported a pid and records an exit (releasing its leases) when the process is gone. The same check covers externally registered agents, which is what makes a Claude Code session that dies without deregistering harmless. An external agent that registered without a pid can only leave by deregistering.
+
+Events are appended to the store as they are emitted and trimmed to the newest 10,000 once a minute; `agentdocker events --replay N` shows the last N before streaming. A persistence failure is logged and does not fail the request — the in-memory state has already moved, and a daemon that keeps serving beats one that halts on a full disk.
 
 ### `agentdocker` (`crates/cli`)
 
@@ -69,7 +78,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality |
-| `events` | stream of `event` | until the client disconnects |
+| `events {replay?}` | stream of `event` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
@@ -100,7 +109,7 @@ Three destinations:
 
 **Delivery.** A message is pushed to every live subscription whose filter matches. For agent and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; durable topic subscriptions are a Phase 1 item. When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
-Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inbox delivery is at-least-once until drained. Nothing survives a daemon restart yet.
+Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inbox delivery is at-least-once until drained, and inboxes survive a daemon restart.
 
 ## Events
 
@@ -120,7 +129,7 @@ The socket is `0600`, so only the owning user can talk to the daemon, and every 
 
 - **MCP server.** `agentd` exposes an MCP endpoint offering `list_agents`, `send_message`, `read_inbox`, `claim`, `renew`, `release`, `list_leases`. Nearly every current agent runtime speaks MCP, so this single adapter makes them all first-class participants with no bespoke integration. A2A support will be evaluated alongside it for agent-to-agent task delegation.
 - **Claude Code hooks pack.** `SessionStart` registers the session; `PreToolUse` on Edit/Write claims the path (and surfaces a conflict as a blocking message the model sees); `Stop`/`SessionEnd` releases and deregisters.
-- **Persistence.** SQLite under `<home>/state.db` for agents, leases, inboxes, and a bounded event history, so a daemon restart is boring.
+- ~~**Persistence.**~~ Done: see [Persistence](#persistence).
 - **Teams.** An `Agentfile` (TOML) describing several agents and their topics, and `agentdocker up` / `down` to manage them together.
 - **`claim --wait`.** Block until the resource is free or a timeout passes.
 

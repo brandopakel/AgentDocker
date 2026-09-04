@@ -71,7 +71,9 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
             Request::Subscribe { agent, topics } => {
                 return stream_messages(&daemon, agent, topics, &mut reader, &mut writer).await;
             }
-            Request::Events => return stream_events(&daemon, &mut reader, &mut writer).await,
+            Request::Events { replay } => {
+                return stream_events(&daemon, replay, &mut reader, &mut writer).await;
+            }
             Request::Logs {
                 agent,
                 follow,
@@ -137,10 +139,14 @@ async fn stream_messages(
 
 async fn stream_events(
     daemon: &Arc<Daemon>,
+    replay: usize,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
     let mut receiver = daemon.subscribe_events();
+    for event in daemon.recent_events(replay) {
+        write(writer, &Response::Event { event }).await?;
+    }
     loop {
         tokio::select! {
             () = client_closed(reader) => break,

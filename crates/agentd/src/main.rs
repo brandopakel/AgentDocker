@@ -7,6 +7,7 @@
 
 mod daemon;
 mod server;
+mod store;
 mod supervisor;
 
 use std::path::PathBuf;
@@ -49,14 +50,20 @@ async fn main() -> anyhow::Result<()> {
     let socket = args
         .socket
         .unwrap_or_else(|| paths::socket_path(&args.home));
-    let daemon = Arc::new(Daemon::new(args.home, socket));
+    let daemon = Arc::new(Daemon::open(args.home, socket)?);
 
     let reaper = daemon.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
             reaper.expire_leases();
+            reaper.check_liveness();
+            ticks += 1;
+            if ticks % 60 == 0 {
+                reaper.prune_events();
+            }
         }
     });
 

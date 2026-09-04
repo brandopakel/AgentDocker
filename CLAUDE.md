@@ -5,7 +5,7 @@ Docker-style control plane for AI agents: a per-host daemon (`agentd`) plus a CL
 ## Layout
 
 - `crates/core` — `agentdocker-core`: data model, wire protocol, pure coordination logic. No I/O, no async, no clocks (pass `now`). All semantics are unit-tested here.
-- `crates/agentd` — the daemon. `daemon.rs` state + handlers, `server.rs` socket loop + streaming, `supervisor.rs` process spawning + log capture.
+- `crates/agentd` — the daemon. `daemon.rs` state + handlers, `server.rs` socket loop + streaming, `supervisor.rs` process spawning + log capture, `store.rs` SQLite write-through persistence (JSON blobs; bump `SCHEMA_VERSION` only when a stored meaning changes).
 - `crates/cli` — `agentdocker`. `client.rs` talks the protocol, `format.rs` renders output.
 
 ## Commands
