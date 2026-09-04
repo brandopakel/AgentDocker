@@ -248,6 +248,12 @@ impl LeaseTable {
         Ok(Claimed::New(lease))
     }
 
+    /// Put back a lease loaded from durable storage, without conflict
+    /// checks: it was valid when it was saved. Expiry still applies.
+    pub fn restore(&mut self, lease: Lease) {
+        self.leases.insert(lease.id.clone(), lease);
+    }
+
     pub fn renew(
         &mut self,
         id: &LeaseId,
@@ -601,6 +607,33 @@ mod tests {
             t.release(&lease.id, &agent("a")),
             Err(LeaseError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn restored_leases_behave_like_claimed_ones() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        t.restore(Lease {
+            id: LeaseId::from("saved"),
+            resource: key("task:1"),
+            holder: agent("a"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            expires_at: now + ttl(),
+            note: None,
+        });
+        assert!(
+            t.claim(
+                key("task:1"),
+                agent("b"),
+                LeaseMode::Exclusive,
+                ttl(),
+                None,
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(t.expire(now + ttl()).len(), 1);
     }
 
     #[test]

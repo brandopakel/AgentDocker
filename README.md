@@ -88,15 +88,15 @@ An agent you did not start through the daemon (an interactive Claude Code sessio
 Three crates:
 
 - `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
-- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, event stream.
+- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below.
 
 ## Roadmap
 
-- **Phase 0 — local control plane** *(now)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
-- **Phase 1 — adapters & persistence**: an MCP server exposed by `agentd` so any MCP-capable agent gets `list_agents`, `send_message`, `read_inbox`, `claim`, `release` as tools without integration work; a Claude Code hooks pack (auto-register on session start, claim files before edits, release on stop); SQLite-backed state so leases, inboxes, and history survive daemon restarts; `Agentfile` + `agentdocker up` for multi-agent teams.
+- **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
+- **Phase 1 — adapters & persistence** *(in progress)*: ✅ SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts (`events --replay`); an MCP server exposed by `agentd` so any MCP-capable agent gets `list_agents`, `send_message`, `read_inbox`, `claim`, `release` as tools without integration work; a Claude Code hooks pack (auto-register on session start, claim files before edits, release on stop); `Agentfile` + `agentdocker up` for multi-agent teams.
 - **Phase 2 — shared context**: a versioned key/document store with watch notifications, and a handoff protocol so one agent can package its working context for another.
 - **Phase 3 — federation**: `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace.
 - **Phase 4 — policy & scheduling**: quotas, priorities, dependencies between agents, restart policies, a dashboard.

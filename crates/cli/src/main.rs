@@ -121,7 +121,11 @@ enum Command {
         resource: Option<String>,
     },
     /// Stream daemon events.
-    Events,
+    Events {
+        /// Show this many stored events before streaming new ones.
+        #[arg(long, default_value_t = 0)]
+        replay: usize,
+    },
 }
 
 #[derive(Args)]
@@ -389,9 +393,9 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
-        Command::Events => {
+        Command::Events { replay } => {
             client
-                .stream(&Request::Events, |response| {
+                .stream(&Request::Events { replay }, |response| {
                     if let Response::Event { event } = response {
                         println!("{}", format::event_line(&event));
                     }

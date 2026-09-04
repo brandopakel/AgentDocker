@@ -104,8 +104,12 @@ pub enum Request {
         resource: Option<String>,
     },
 
-    /// Stream daemon events until the connection closes.
-    Events,
+    /// Replay the last `replay` stored events, then stream new ones until
+    /// the connection closes.
+    Events {
+        #[serde(default)]
+        replay: usize,
+    },
     /// Replay the last `tail` log lines of an agent, then keep streaming
     /// while `follow` and the agent is alive.
     Logs {
@@ -227,5 +231,11 @@ mod tests {
             serde_json::to_string(&Response::End).unwrap(),
             r#"{"type":"end"}"#
         );
+    }
+
+    #[test]
+    fn struct_variants_accept_missing_defaults() {
+        let req: Request = serde_json::from_str(r#"{"op":"events"}"#).unwrap();
+        assert_eq!(req, Request::Events { replay: 0 });
     }
 }
