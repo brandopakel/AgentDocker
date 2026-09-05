@@ -323,6 +323,17 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         digest: Option<DigestRequest>,
     },
+    /// Paths changed in more than one physical checkout of a project:
+    /// what will collide when the branches meet. With `agent`, only the
+    /// overlaps involving that agent's checkout; an empty `project` then
+    /// means the agent's own.
+    Overlap {
+        project: String,
+        #[serde(default)]
+        since_seq: Option<u64>,
+        #[serde(default)]
+        agent: Option<String>,
+    },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
         project: String,
@@ -452,6 +463,9 @@ pub enum Response {
     },
     Changes {
         changes: Vec<Change>,
+    },
+    Overlap {
+        overlaps: Vec<crate::Overlap>,
     },
     /// `subscribers` is how many live subscriptions were notified; queued
     /// inbox delivery is not counted.

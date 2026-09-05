@@ -158,6 +158,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         workdir,
         env: BTreeMap::new(),
         labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
+        isolate: false,
     };
     match client
         .call(&Request::Register {
@@ -309,6 +310,15 @@ impl<B: Backend> McpServer<B> {
                     _ => "validations",
                 };
                 self.forward(tagged_request(arguments, op, &me)?).await
+            }
+            "overlap" => {
+                let args: OverlapArgs = parse(arguments)?;
+                self.forward(Request::Overlap {
+                    project: String::new(),
+                    since_seq: args.since,
+                    agent: Some(me),
+                })
+                .await
             }
             "handoff" | "list_handoffs" => {
                 let op = if name == "handoff" {
@@ -567,6 +577,12 @@ struct JournalNoteArgs {
 }
 
 #[derive(Deserialize, Default)]
+struct OverlapArgs {
+    #[serde(default)]
+    since: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
 struct ReadJournalArgs {
     #[serde(default)]
     since: Option<u64>,
@@ -652,6 +668,7 @@ fn render(response: Response) -> Value {
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
         Response::Handoff { bundle } => text_result(&json!(bundle), false),
+        Response::Overlap { overlaps } => text_result(&json!({ "overlaps": overlaps }), false),
         Response::Handoffs { bundles } => text_result(&json!({ "handoffs": bundles }), false),
         Response::Ok => text_result(&json!({ "ok": true }), false),
         other => text_result(&json!(other), false),
@@ -681,6 +698,15 @@ fn tool_definitions() -> Vec<Value> {
                     "key": { "type": "string", "description": "Retries with the same key return the same bundle." }
                 },
                 "required": ["to"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "overlap",
+            "description": "Paths this agent's checkout and another checkout of the same repository have both changed, from the ledger: what will collide when the branches meet. Coordinate before integrating.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "since": { "type": "integer", "minimum": 0, "description": "Only ledger entries after this sequence number." } },
                 "additionalProperties": false
             }
         }),
@@ -935,6 +961,7 @@ mod tests {
                 "resume_checkpoint",
                 "list_checkpoints",
                 "handoff",
+                "overlap",
                 "list_handoffs",
                 "validate",
                 "validation_results",

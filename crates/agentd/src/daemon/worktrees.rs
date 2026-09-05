@@ -22,6 +22,52 @@ fn failure(e: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Invalid, e.to_string())
 }
 
+/// `git worktree add -b <branch> <path> HEAD` in `root`, for a new path
+/// outside the checkout and a branch name git accepts. Shared by
+/// `worktree-create` and `run --isolate`.
+pub(super) async fn add_worktree(
+    root: PathBuf,
+    path: &Path,
+    branch: &str,
+) -> Result<(), Box<Response>> {
+    if path.exists() || path.starts_with(&root) {
+        return Err(Box::new(failure(
+            "worktree path must be new and outside the current checkout",
+        )));
+    }
+    match git(
+        root.clone(),
+        vec![
+            "check-ref-format".into(),
+            "--branch".into(),
+            branch.to_owned(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success && !branch.starts_with('-') => {}
+        _ => return Err(Box::new(failure("invalid branch name"))),
+    }
+    match git(
+        root,
+        vec![
+            "worktree".into(),
+            "add".into(),
+            "-b".into(),
+            branch.to_owned(),
+            "--".into(),
+            path.to_string_lossy().into_owned(),
+            "HEAD".into(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => Ok(()),
+        Ok(output) => Err(Box::new(failure(output.text))),
+        Err(e) => Err(Box::new(failure(e))),
+    }
+}
+
 impl Daemon {
     pub(super) async fn worktree_create(
         &self,
@@ -37,42 +83,14 @@ impl Daemon {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
-        if path.exists() || path.starts_with(&root) {
-            return failure("worktree path must be new and outside the current checkout");
+        if let Err(response) = add_worktree(root, &path, &branch).await {
+            return *response;
         }
-        match git(
-            root.clone(),
-            vec!["check-ref-format".into(), "--branch".into(), branch.clone()],
-        )
-        .await
-        {
-            Ok(output) if output.success && !branch.starts_with('-') => {}
-            _ => return failure("invalid branch name"),
-        }
-        match git(
-            root,
-            vec![
-                "worktree".into(),
-                "add".into(),
-                "-b".into(),
-                branch.clone(),
-                "--".into(),
-                path.to_string_lossy().into_owned(),
-                "HEAD".into(),
-            ],
-        )
-        .await
-        {
-            Ok(output) if output.success => {
-                lock(&self.state).emit(EventKind::WorktreeCreated {
-                    agent,
-                    path: path.clone(),
-                });
-                Response::Worktree { path, branch }
-            }
-            Ok(output) => failure(output.text),
-            Err(e) => failure(e),
-        }
+        lock(&self.state).emit(EventKind::WorktreeCreated {
+            agent,
+            path: path.clone(),
+        });
+        Response::Worktree { path, branch }
     }
 
     pub(super) async fn worktree_diff(&self, reference: &str) -> Response {

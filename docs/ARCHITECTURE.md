@@ -167,7 +167,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
 | `authenticate {token}` | `ok` | restricted endpoint only; precedes one scoped request |
 | `ping` | `pong` | version, uptime |
-| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
+| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; with `spec.isolate` the agent first gets its own linked worktree under `<home>/worktrees/<project>/<name>` on branch `agent/<name>` (its id appended when that is taken) and runs there |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
 | `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
@@ -189,6 +189,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `import {agent, bundle}` | `handoff {bundle}` | a bundle exported on another host, re-homed to the agent's checkout and addressed to it, to accept with `resume` |
 | `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
 | `validations {agent}` | `validations` | evidence for one session |
+| `overlap {project, since_seq?, agent?}` | `overlap {overlaps: Overlap[]}` | paths changed in more than one physical checkout of the project, from the newest 50,000 ledger rows: per path, each checkout with the agents attributed there, the count, the last change and its HEAD; with `agent`, only overlaps involving its checkout, and an empty `project` means its own |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
@@ -407,7 +408,11 @@ When the budget bites, the *oldest* entries collapse into the leading "… N ear
 
 Implemented commands are `worktree-create --as <agent> <new-path> --branch <new-branch>`, `worktree-diff --as <agent>`, and `integrate --as <target-agent> <source-path> --validation <id> [--apply]`. Worktree creation uses the current HEAD and keeps existing files. Register or run the source session in the new checkout separately. Independent physical checkouts have independent write leases even when their relative paths overlap.
 
-Integration requires linked worktrees, clean source/target trees and passing validation whose content identity and HEAD still match the source. Preview returns a diff; `--apply` claims the physical target checkout and runs a no-commit, no-fast-forward merge. The target lease stays held for review, including conflicts. The caller uses Git to inspect, commit or abort, then releases the lease. No automatic commit, force reset, branch deletion or worktree purge is performed. Automated `run --isolate`, cross-branch semantic overlap analysis and purge are future extensions.
+Integration requires linked worktrees, clean source/target trees and passing validation whose content identity and HEAD still match the source. Preview returns a diff; `--apply` claims the physical target checkout and runs a no-commit, no-fast-forward merge. The target lease stays held for review, including conflicts. The caller uses Git to inspect, commit or abort, then releases the lease. No automatic commit, force reset, branch deletion or worktree purge is performed.
+
+`run --isolate` (or `isolate = true` in an `Agentfile.toml` entry) gives a managed agent its own writable layer without a separate command: before the process is spawned the daemon adds a linked worktree of the repository the working directory is in, under `<home>/worktrees/<project>/<name>` on branch `agent/<name>` — with the agent's id appended to both when an earlier run left them behind — points the agent's working directory at it, and announces `worktree_created`. The agent is grouped with the repository like any worktree, its `join` line names the worktree and branch, and the worktree stays after the agent exits so its work can be integrated; purging is still by hand.
+
+`overlap` is the ledger read across checkouts: paths that more than one physical checkout of the project changed, each with the agents attributed there, how often, and the last change and its HEAD, newest checkout first — merge conflicts before they happen, without diffing. `agentdocker overlap [--project] [--since N] [--as AGENT]` and the MCP `overlap` tool (this agent's checkout against the others). Semantic overlap — the same symbol touched from two sides — is a future extension.
 
 #### Sandboxes and container engines
 
@@ -470,7 +475,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
-| 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
+| 10 | ✅ `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | per-agent tokens; `docker` / `podman` / `container` runtimes with closed defaults | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |

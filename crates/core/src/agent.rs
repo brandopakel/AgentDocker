@@ -76,6 +76,10 @@ pub struct AgentSpec {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// `run` gives the agent its own linked worktree and branch instead of
+    /// the checkout it was pointed at, so its edits are a layer of their own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub isolate: bool,
 }
 
 /// Which branch and commit an agent's checkout is on, as last observed —
