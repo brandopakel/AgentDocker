@@ -141,6 +141,20 @@ pub fn event_line(event: &Event) -> String {
         EventKind::HandoffAccepted { agent, checkpoint } => {
             format!("{agent} accepted handoff {checkpoint}")
         }
+        EventKind::HandoffSent { from, to, handoff } => match to {
+            Some(to) => format!("{} handed off {handoff} to {}", from.short(), to.short()),
+            None => format!("{} exported handoff {handoff}", from.short()),
+        },
+        EventKind::HandoffImported { agent, handoff } => {
+            format!("{} imported handoff {handoff}", agent.short())
+        }
+        EventKind::LeaseTransferred { lease, from, to } => format!(
+            "lease moved      {} {} from {} to {}",
+            lease.id,
+            resource(&lease.resource),
+            from.short(),
+            to.short()
+        ),
         EventKind::ValidationStarted { agent, validation } => {
             format!("{agent} started validation {validation}")
         }

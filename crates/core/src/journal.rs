@@ -157,8 +157,7 @@ impl JournalEntry {
                 }
             }
             JournalKind::Note => format!("{who} noted: \"{}\"", self.summary),
-            JournalKind::Handoff => format!("{who} handed off: \"{}\"", self.summary),
-            JournalKind::Commit | JournalKind::Join | JournalKind::Leave => {
+            JournalKind::Commit | JournalKind::Join | JournalKind::Leave | JournalKind::Handoff => {
                 format!("{who} {}", self.summary)
             }
         }

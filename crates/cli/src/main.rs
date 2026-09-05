@@ -125,6 +125,52 @@ enum Command {
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
     },
+    /// Hand this agent's work to another: a checkpoint addressed to it, with leases, reads, changes, diff, unread messages and journal bundled around it.
+    Handoff {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// The recipient: id, name or unique prefix.
+        to: String,
+        #[arg(long)]
+        /// What the recipient should continue.
+        task: Option<String>,
+        #[arg(long)]
+        /// Anything the daemon does not already know.
+        note: Option<String>,
+        #[arg(long)]
+        /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
+        transfer_leases: bool,
+        #[arg(long)]
+        /// Retries with the same key return the same bundle.
+        key: Option<String>,
+    },
+    /// List handoff bundles sent by or addressed to an agent; all of them without --as.
+    Handoffs {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix.
+        agent: Option<String>,
+    },
+    /// Write this agent's work as a bundle nobody is addressed to yet, as JSON on stdout, to carry to another host.
+    Export {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        #[arg(long)]
+        /// What whoever imports it should continue.
+        task: Option<String>,
+        #[arg(long)]
+        /// Anything the daemon does not already know.
+        note: Option<String>,
+    },
+    /// Bring an exported bundle here for an agent, from a file or stdin; it is then accepted with `resume`.
+    Import {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Bundle JSON file (default: stdin).
+        file: Option<PathBuf>,
+    },
     /// Execute a check and retain its command, log, and before/after code fingerprints.
     Validate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -550,6 +596,61 @@ async fn main() -> Result<()> {
         )?,
         Command::Checkpoints { agent } => {
             print_json(&client.call(&Request::Checkpoints { agent }).await?)?
+        }
+        Command::Handoff {
+            agent,
+            to,
+            task,
+            note,
+            transfer_leases,
+            key,
+        } => {
+            let request = Request::Handoff {
+                agent,
+                to: Some(to),
+                task,
+                note,
+                transfer_leases,
+                key,
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => println!("{}", bundle.id),
+                other => bail!("unexpected reply to handoff: {other:?}"),
+            }
+        }
+        Command::Handoffs { agent } => {
+            print_json(&client.call(&Request::Handoffs { agent }).await?)?
+        }
+        Command::Export { agent, task, note } => {
+            let request = Request::Handoff {
+                agent,
+                to: None,
+                task,
+                note,
+                transfer_leases: false,
+                key: None,
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => print_json(&bundle)?,
+                other => bail!("unexpected reply to export: {other:?}"),
+            }
+        }
+        Command::Import { agent, file } => {
+            let raw = match &file {
+                Some(path) => std::fs::read_to_string(path)
+                    .with_context(|| format!("cannot read {}", path.display()))?,
+                None => std::io::read_to_string(std::io::stdin())?,
+            };
+            let bundle: agentdocker_core::HandoffBundle =
+                serde_json::from_str(&raw).context("not a handoff bundle")?;
+            let request = Request::Import {
+                agent,
+                bundle: Box::new(bundle),
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => println!("{}", bundle.id),
+                other => bail!("unexpected reply to import: {other:?}"),
+            }
         }
         Command::Validations { agent } => {
             print_json(&client.call(&Request::Validations { agent }).await?)?

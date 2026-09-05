@@ -38,6 +38,7 @@ use agentdocker_host::{procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod handoff;
 mod recovery;
 mod working;
 mod worktrees;
@@ -662,6 +663,19 @@ impl Daemon {
                 acknowledge,
             } => self.resume(&agent, &checkpoint, acknowledge).await,
             Request::Checkpoints { agent } => self.checkpoints(agent.as_deref()),
+            Request::Handoff {
+                agent,
+                to,
+                task,
+                note,
+                transfer_leases,
+                key,
+            } => {
+                self.handoff(&agent, to.as_deref(), task, note, transfer_leases, key)
+                    .await
+            }
+            Request::Handoffs { agent } => self.handoffs(agent.as_deref()),
+            Request::Import { agent, bundle } => self.import(&agent, *bundle).await,
             Request::Validate {
                 agent,
                 command,

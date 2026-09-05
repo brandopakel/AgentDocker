@@ -35,6 +35,24 @@ pub enum EventKind {
         agent: crate::AgentId,
         checkpoint: String,
     },
+    /// A handoff bundle was made; `to` is absent for an export.
+    HandoffSent {
+        from: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<AgentId>,
+        handoff: String,
+    },
+    /// A bundle from another host was brought here for `agent`.
+    HandoffImported {
+        agent: AgentId,
+        handoff: String,
+    },
+    /// A lease moved to a handoff's recipient at acceptance.
+    LeaseTransferred {
+        lease: Lease,
+        from: AgentId,
+        to: AgentId,
+    },
     ValidationStarted {
         agent: AgentId,
         validation: String,

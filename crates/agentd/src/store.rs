@@ -179,19 +179,61 @@ impl Store {
         Ok(())
     }
 
+    /// Commit acceptance, the inherited read set, any leases that moved
+    /// to the recipient, and every event announcing it, in one
+    /// transaction.
     pub fn accept_handoff(
         &self,
         checkpoint: &agentdocker_core::Checkpoint,
         agent: &AgentId,
         reads: &[agentdocker_core::ReadMark],
-        event: &Event,
+        transferred: &[Lease],
+        events: &[Event],
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
         self.put_document("reads", agent.as_str(), &reads)?;
+        for lease in transferred {
+            self.upsert_lease(lease)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Store a bundle brought from elsewhere with the checkpoint that
+    /// `resume` will accept it under, and the event, together.
+    pub fn import_handoff(
+        &self,
+        checkpoint: &agentdocker_core::Checkpoint,
+        bundle: &agentdocker_core::HandoffBundle,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
+        self.put_document("handoff", &bundle.id, bundle)?;
         self.append_event(event)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Bundles an agent sent or is addressed to; all of them without one.
+    /// Oldest first.
+    pub fn handoffs(
+        &self,
+        agent: Option<&AgentId>,
+    ) -> Result<Vec<agentdocker_core::HandoffBundle>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='handoff'
+             AND (?1 IS NULL OR json_extract(json, '$.from') = ?1 OR json_extract(json, '$.to') = ?1)
+             ORDER BY json_extract(json, '$.created_at'), id",
+        )?;
+        let rows = stmt.query_map(params![agent.map(AgentId::as_str)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     /// Return recovery documents in stable id order.

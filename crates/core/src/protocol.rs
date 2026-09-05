@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::handoff::HandoffBundle;
 use crate::journal::{Digest, SummarySource};
 use crate::{
     AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
@@ -86,6 +87,36 @@ pub enum Request {
     Checkpoints {
         #[serde(default)]
         agent: Option<String>,
+    },
+    /// Hand work to another agent: a checkpoint addressed to `to` with the
+    /// sender's state bundled around it, announced to `to` as a `handoff`
+    /// message. Without `to` the bundle is an export nobody is addressed
+    /// to yet. Leases are released unless `transfer_leases`, which moves
+    /// them at acceptance instead.
+    Handoff {
+        agent: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        task: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        transfer_leases: bool,
+        /// Retries with the same key return the same bundle.
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// Bundles sent by or addressed to an agent; every bundle without one.
+    Handoffs {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// Bring a bundle exported on another host here, addressed to `agent`
+    /// and re-homed to its checkout; `resume` then accepts it as usual.
+    Import {
+        agent: String,
+        bundle: Box<HandoffBundle>,
     },
     Validate {
         agent: String,
@@ -381,6 +412,12 @@ pub enum Response {
     },
     Checkpoints {
         checkpoints: Vec<crate::Checkpoint>,
+    },
+    Handoff {
+        bundle: HandoffBundle,
+    },
+    Handoffs {
+        bundles: Vec<HandoffBundle>,
     },
     Recovery {
         recovery: crate::Recovery,
