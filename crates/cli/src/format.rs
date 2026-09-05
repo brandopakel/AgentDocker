@@ -166,6 +166,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),
+        EventKind::RestrictedEndpointListening { socket } => {
+            format!("container endpoint at {}", socket.display())
+        }
         EventKind::RestrictedEndpointUnavailable { reason } => {
             format!("container endpoint off ({reason})")
         }

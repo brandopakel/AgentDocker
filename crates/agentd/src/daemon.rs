@@ -1287,7 +1287,8 @@ impl Daemon {
 
     /// The restricted endpoint is serving on `socket`.
     pub fn restricted_listening(&self, socket: PathBuf) {
-        *lock(&self.restricted) = RestrictedEndpoint::On(socket);
+        *lock(&self.restricted) = RestrictedEndpoint::On(socket.clone());
+        self.emit(EventKind::RestrictedEndpointListening { socket });
     }
 
     /// The restricted endpoint could not be served; grants are refused

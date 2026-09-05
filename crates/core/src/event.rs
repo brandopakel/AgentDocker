@@ -75,6 +75,10 @@ pub enum EventKind {
     WatcherUnavailable {
         reason: String,
     },
+    /// The restricted container endpoint is serving on this socket.
+    RestrictedEndpointListening {
+        socket: std::path::PathBuf,
+    },
     /// The restricted container endpoint could not be served; the host
     /// socket keeps working and new grants are refused.
     RestrictedEndpointUnavailable {

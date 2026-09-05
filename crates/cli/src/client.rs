@@ -281,15 +281,39 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
         .with_context(|| format!("cannot start {}", exe.display()))
 }
 
+/// How much of the daemon log's end is read for an error message.
+const LOG_TAIL_BYTES: u64 = 16 * 1024;
+
 /// The last `lines` of the daemon log, for an error message; empty when
-/// there is no log.
+/// there is no log. Only the log's last [`LOG_TAIL_BYTES`] are read, so a
+/// log that grew for months costs nothing here.
 fn log_tail(path: &Path, lines: usize) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
         return String::new();
     };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(LOG_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if start > 0 {
+        // The window opened mid-line; that fragment is not a line.
+        match text.find('\n') {
+            Some(cut) => {
+                text.drain(..=cut);
+            }
+            None => return String::new(),
+        }
+    }
     let all: Vec<&str> = text.lines().collect();
-    let start = all.len().saturating_sub(lines);
-    all[start..]
+    let first = all.len().saturating_sub(lines);
+    all[first..]
         .iter()
         .map(|line| format!("  {line}"))
         .collect::<Vec<_>>()
@@ -466,6 +490,29 @@ mod stream_tests {
             .unwrap()
             .unwrap_err();
         assert!(error.to_string().contains("lost 3 events"));
+    }
+
+    #[test]
+    fn log_tail_reads_only_the_end_and_whole_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("agentd.log");
+        let body: String = (0..5000)
+            .map(|i| format!("line {i} {}\n", "x".repeat(20)))
+            .collect();
+        assert!(body.len() as u64 > LOG_TAIL_BYTES);
+        std::fs::write(&log, &body).unwrap();
+        let tail = log_tail(&log, 3);
+        let lines: Vec<&str> = tail.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("  line 4997 "), "{tail}");
+        assert!(lines[2].starts_with("  line 4999 "), "{tail}");
+        assert!(
+            lines.iter().all(|l| l.ends_with(&"x".repeat(20))),
+            "whole lines only"
+        );
+        assert_eq!(log_tail(&tmp.path().join("missing"), 3), "");
+        std::fs::write(&log, "one\ntwo\n").unwrap();
+        assert_eq!(log_tail(&log, 5), "  one\n  two");
     }
 
     #[tokio::test]

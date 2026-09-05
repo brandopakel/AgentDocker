@@ -4,9 +4,10 @@
 //! macOS and the BSDs, 108 on Linux — while a home directory can be as long
 //! as anyone likes. The rules here keep the two apart: a home whose path
 //! leaves no room for `container.sock` gets its sockets in a short private
-//! directory under the user's runtime directory instead, named by a stable
-//! hash of the home, so the daemon and every client agree on the place
-//! without a pointer file or a running daemon to ask.
+//! directory instead — under `$XDG_RUNTIME_DIR` where a session manager
+//! provides one, else `/tmp` — named by a stable hash of the home's own
+//! bytes, so the daemon and every client, whatever their environment,
+//! agree on the place without a pointer file or a running daemon to ask.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -40,27 +41,29 @@ pub fn fits_socket(path: &Path) -> bool {
 
 /// Where a home's sockets live: the home itself when both socket names fit
 /// there, else `agentdocker-<hash of the home>` under the runtime directory
-/// (`$XDG_RUNTIME_DIR`, else `$TMPDIR`, else `/tmp`). Deterministic, so
-/// the daemon and its clients compute the same place independently.
+/// (`$XDG_RUNTIME_DIR`, else `/tmp` — never a per-shell `$TMPDIR`, which
+/// would let two environments of one user disagree). The hash is over the
+/// path's own bytes, so two homes that differ only outside UTF-8 still get
+/// two directories. Deterministic, so the daemon and its clients compute
+/// the same place independently.
 pub fn socket_dir(home: &Path) -> PathBuf {
     if fits_socket(&home.join(CONTAINER_SOCKET)) && fits_socket(&home.join(HOST_SOCKET)) {
         return home.to_path_buf();
     }
     let hash = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
-        home.to_string_lossy().as_bytes(),
+        home.as_os_str().as_encoded_bytes(),
     )
     .simple()
     .to_string();
     runtime_dir().join(format!("agentdocker-{}", &hash[..12]))
 }
 
-/// The user's runtime directory for short-lived, private files.
+/// The user's runtime directory for short-lived, private files: the
+/// session manager's when it names one, else `/tmp`.
 fn runtime_dir() -> PathBuf {
-    ["XDG_RUNTIME_DIR", "TMPDIR"]
-        .iter()
-        .filter_map(env::var_os)
-        .find(|dir| !dir.is_empty())
+    env::var_os("XDG_RUNTIME_DIR")
+        .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
@@ -121,6 +124,26 @@ mod tests {
         );
         assert_eq!(container_socket(&long), dir.join(CONTAINER_SOCKET));
         assert_ne!(container_socket(&long), dir.join(HOST_SOCKET));
+
+        // Homes that differ only in bytes that are not UTF-8 are still
+        // two homes.
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let mut a = b"/".to_vec();
+            a.extend(std::iter::repeat_n(b'x', SOCKET_PATH_MAX));
+            let mut b = a.clone();
+            a.push(0xff);
+            b.push(0xfe);
+            let a = PathBuf::from(OsStr::from_bytes(&a));
+            let b = PathBuf::from(OsStr::from_bytes(&b));
+            assert_eq!(
+                a.to_string_lossy(),
+                b.to_string_lossy(),
+                "lossy text agrees"
+            );
+            assert_ne!(socket_dir(&a), socket_dir(&b), "the directories do not");
+        }
 
         // Exactly at the limit still fits; one more byte does not.
         let edge = PathBuf::from(format!("/{}", "a".repeat(SOCKET_PATH_MAX - 1)));

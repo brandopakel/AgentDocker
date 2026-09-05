@@ -634,9 +634,21 @@ mod tests {
         ));
         endpoint.abort();
 
-        // A socket that fits is served and reported.
+        // A socket that fits is served, announced, and reported.
         let good = tmp.path().join("container.sock");
+        let mut events = daemon.subscribe_events();
         let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone()));
+        let announced = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(event) = events.recv().await
+                    && matches!(&event.kind, EventKind::RestrictedEndpointListening { socket } if *socket == good)
+                {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(announced.is_ok(), "restricted_endpoint_listening announced");
         let up = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if matches!(daemon.handle(Request::Ping).await, Response::Pong { restricted: Some(ref s), .. } if *s == good) {
