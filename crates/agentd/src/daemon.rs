@@ -732,7 +732,7 @@ impl Daemon {
                 summary,
                 summary_source,
             } => {
-                self.flush_watcher().await;
+                self.flush_release_watcher(&agent, Some(&lease)).await;
                 lock(&self.state).release(&agent, &lease, summary, summary_source)
             }
             Request::ReleaseAll {
@@ -740,7 +740,7 @@ impl Daemon {
                 summary,
                 summary_source,
             } => {
-                self.flush_watcher().await;
+                self.flush_release_watcher(&agent, None).await;
                 lock(&self.state).release_all(&agent, summary, summary_source)
             }
             Request::JournalAdd { agent, summary } => {
@@ -1019,19 +1019,39 @@ impl Daemon {
         *lock(&self.watcher_flush) = Some(sender);
     }
 
-    /// The release barrier: have the watcher record whatever it is still
-    /// debouncing, so a release entry sees the changes made just before it.
-    /// Bounded, and a no-op when no watcher runs.
-    pub(super) async fn flush_watcher(&self) {
+    /// Only path leases need pending filesystem observations for their summary.
+    /// Select under the state lock, then await the watcher with no guard held.
+    pub(super) async fn flush_release_watcher(&self, reference: &str, lease: Option<&LeaseId>) {
+        let needs_flush = {
+            let state = lock(&self.state);
+            state
+                .registry
+                .resolve(reference)
+                .ok()
+                .is_some_and(|holder| {
+                    state.leases.all().into_iter().any(|held| {
+                        held.holder == holder
+                            && held.resource.kind() == "path"
+                            && lease.is_none_or(|id| held.id == *id)
+                    })
+                })
+        };
+        if !needs_flush {
+            return;
+        }
         let sender = lock(&self.watcher_flush).clone();
         let Some(sender) = sender else {
             return;
         };
-        let (ack, done) = oneshot::channel();
-        if sender.send(ack).await.is_err() {
-            return;
-        }
-        let _ = tokio::time::timeout(WATCHER_FLUSH_TIMEOUT, done).await;
+        // Bound both queue admission and acknowledgement: a full channel must
+        // never leave a release waiting indefinitely for the watcher.
+        let _ = tokio::time::timeout(WATCHER_FLUSH_TIMEOUT, async {
+            let (ack, done) = oneshot::channel();
+            if sender.send(ack).await.is_ok() {
+                let _ = done.await;
+            }
+        })
+        .await;
     }
 
     /// An absolute path made relative to the checkout containing it;
@@ -5126,5 +5146,81 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].paths, [PathBuf::from("new")]);
         assert_eq!(entries[0].changes, Some((2, 2)));
+    }
+    #[tokio::test]
+    async fn task_release_skips_watcher_and_path_release_waits_for_pending_changes() {
+        let dir = TempDir::new().unwrap();
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let daemon = open(&dir);
+        let agent = register_in(&daemon, "owner", &checkout).await;
+        let project = agent.project.unwrap();
+        let (sender, mut receiver) = mpsc::channel(1);
+        daemon.set_watcher_flush(sender);
+        claim(&daemon, "owner", "task:unrelated").await;
+        let release = || Request::ReleaseAll {
+            agent: "owner".into(),
+            summary: None,
+            summary_source: SummarySource::Explicit,
+        };
+        assert!(matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                daemon.handle(release())
+            )
+            .await
+            .unwrap(),
+            Response::Leases { .. }
+        ));
+        assert!(receiver.try_recv().is_err());
+        claim(&daemon, "owner", &format!("path:{}", checkout.display())).await;
+        let worker = daemon.clone();
+        let task = tokio::spawn(async move { worker.handle(release()).await });
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // Flush processing must be able to acquire state before release builds its summary.
+        lock(&daemon.state)
+            .store
+            .append_change(&Change {
+                seq: 0,
+                project: project.id(),
+                checkout: Some(project.dir().to_path_buf()),
+                worktree: None,
+                path: "pending.rs".into(),
+                kind: ChangeKind::Modified,
+                at: Utc::now(),
+                by: Attribution::External,
+                head: None,
+            })
+            .unwrap();
+        ack.send(()).unwrap();
+        assert!(matches!(task.await.unwrap(), Response::Leases { .. }));
+        let entries = journal_of(&daemon, &checkout, Some("release"), None, None).await;
+        assert_eq!(entries[0].paths, [PathBuf::from("pending.rs")]);
+    }
+
+    #[tokio::test]
+    async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register_in(&daemon, "owner", dir.path()).await;
+        claim(&daemon, "owner", &format!("path:{}", dir.path().display())).await;
+        let (sender, _receiver) = mpsc::channel(1);
+        let (ack, _done) = oneshot::channel();
+        sender.try_send(ack).unwrap();
+        daemon.set_watcher_flush(sender);
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            daemon.handle(Request::ReleaseAll {
+                agent: "owner".into(),
+                summary: None,
+                summary_source: SummarySource::Explicit,
+            }),
+        )
+        .await
+        .expect("queue admission must share the flush timeout");
+        assert!(matches!(response, Response::Leases { .. }));
     }
 }

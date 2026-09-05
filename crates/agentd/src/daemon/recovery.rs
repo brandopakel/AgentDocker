@@ -64,7 +64,7 @@ impl Daemon {
             // The release barrier, passed before any lock is taken: changes
             // the watcher is still debouncing reach the ledger first, so the
             // release entry written under the lock below sees them.
-            self.flush_watcher().await;
+            self.flush_release_watcher(reference, None).await;
         }
         let id = format!("{}:{key}", agent.as_str());
         {
