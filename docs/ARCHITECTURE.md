@@ -49,7 +49,7 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 ## Persistence
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 2 upgrades schema 1 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 2, including its new `stopping` status.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 3 upgrades schemas 1 and 2 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 3, including dedicated process-group tracking and `stopping` status.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -161,6 +161,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `observe {agent, paths}` | `reads {reads: ReadMark[]}` | capture content immediately before reading |
 | `reads {agent}` | `reads {reads: ReadMark[]}` | durable observations |
 | `stale {agent, paths?}` | `stale {stale: StalePath[]}` | compare current content; querying never clears staleness |
+| `checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` | `checkpoint` | persist context before optional release; retries are idempotent |
+| `resume {agent,checkpoint,acknowledge?}` | `recovery` | verify and optionally accept a same-checkout handoff |
+| `checkpoints {agent?}` | `checkpoints` | list durable handoffs |
+| `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
+| `validations {agent}` | `validations` | evidence for one session |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes` | the ledger, newest `limit` entries oldest first |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
@@ -507,3 +512,5 @@ Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a 
 ### Continuous verification workstream
 
 The [testing and benchmarking plan](TESTING-AND-BENCHMARKS.md) runs alongside every delivery step: nextest, Proptest, coverage, Criterion/Bencher, native protocol load tests, bounded fuzzing and real Docker/Podman checks. Acceptance centers on stale-context detection and verified recovery; benchmark provenance must identify the exact code, environment and image tested.
+
+Managed commands run in a dedicated process group. Stop signals that group only while the leader's recorded identity can be verified; after the leader exits, supervision terminates remaining group members (TERM, then KILL after two seconds) and retains leases until the group is gone. After restart, live orphan group members retain stopping state and protection even if the leader is gone; unverifiable groups are not blindly signalled. Legacy records without a group retain PID-only supervision. Processes deliberately escaping into another session/group are outside this cooperative process-group boundary. Schema 3 prevents older daemons from ignoring group lifetime.

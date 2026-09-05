@@ -13,7 +13,7 @@ use agentdocker_core::{AgentId, AgentRecord, Change, Envelope, Event, Lease, Lea
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS documents (
     json TEXT NOT NULL,
     PRIMARY KEY (kind, id)
 );
+CREATE INDEX IF NOT EXISTS documents_agent ON documents (kind, json_extract(json, '$.agent'));
+CREATE INDEX IF NOT EXISTS documents_author ON documents (kind, json_extract(json, '$.from'));
+CREATE INDEX IF NOT EXISTS documents_version ON documents (kind, json_extract(json, '$.checkout'), json_extract(json, '$.before'));
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -99,11 +102,36 @@ impl Store {
     }
 
     /// Return recovery documents in stable id order.
-    pub fn documents<T: serde::de::DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
+    pub fn documents<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        agent: Option<&AgentId>,
+    ) -> Result<Vec<T>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT json FROM documents WHERE kind=?1 ORDER BY id")?;
-        let rows = stmt.query_map([kind], |row| row.get::<_, String>(0))?;
+            .prepare("SELECT json FROM documents WHERE kind=?1 AND (?2 IS NULL OR json_extract(json, '$.agent') = ?2 OR json_extract(json, '$.from') = ?2) ORDER BY id")?;
+        let rows = stmt.query_map(params![kind, agent.map(AgentId::as_str)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// Select only passing evidence for the checkpoint's exact content scope.
+    pub fn matching_validations(
+        &self,
+        checkout: &Path,
+        version: &str,
+    ) -> Result<Vec<agentdocker_core::Validation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='validation'
+            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2
+            AND json_extract(json, '$.exit_code')=0 AND json_extract(json, '$.timed_out')=0
+            AND json_extract(json, '$.descendants_survived')=0
+            AND json_extract(json, '$.after')=json_extract(json, '$.before') ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![checkout.to_string_lossy(), version], |row| {
+            row.get::<_, String>(0)
+        })?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
@@ -163,9 +191,10 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1)) => {
-                // v2 adds stopping status and physical lease identities. The
-                // daemon idempotently maps any remaining legacy file keys on load.
+            Some(Ok(1 | 2)) => {
+                // v2 adds stopping status and physical lease identities; v3
+                // records dedicated process groups. Legacy groups default to
+                // None. The daemon maps legacy file keys idempotently on load.
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     params![SCHEMA_VERSION.to_string()],
@@ -252,6 +281,7 @@ impl Store {
 
     /// Queue a message for an agent, keeping only the newest `capacity`.
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
             "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
             params![
@@ -266,6 +296,7 @@ impl Store {
              )",
             params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -510,6 +541,40 @@ mod tests {
             None,
             Utc::now(),
         )
+    }
+
+    #[test]
+    #[ignore = "manual filesystem durability benchmark"]
+    fn durability_write_benchmark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("state.db")).unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            store
+                .enqueue(&AgentId::from("reader"), &envelope("message"), 1000)
+                .unwrap();
+        }
+        let inbox = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            store
+                .append_change(&agentdocker_core::Change {
+                    seq: 0,
+                    project: ProjectId::from("project"),
+                    checkout: Some(tmp.path().into()),
+                    worktree: None,
+                    path: "file".into(),
+                    kind: agentdocker_core::ChangeKind::Modified,
+                    at: Utc::now(),
+                    by: agentdocker_core::Attribution::External,
+                    head: None,
+                })
+                .unwrap();
+        }
+        eprintln!(
+            "FULL durability, 200 operations each: enqueue={inbox:?}, append_change={:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

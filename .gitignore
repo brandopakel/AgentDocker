@@ -5,3 +5,8 @@
 
 __pycache__/
 *.pyc
+
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/artifacts/
