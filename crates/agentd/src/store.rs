@@ -57,6 +57,11 @@ pub struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn reject_writes_for_test(&self) {
+        self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
@@ -228,6 +233,7 @@ impl Store {
         &self,
         agent: &AgentId,
         messages: &[agentdocker_core::MessageId],
+        event: &Event,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for message in messages {
@@ -236,6 +242,7 @@ impl Store {
                 params![agent.as_str(), message.as_str()],
             )?;
         }
+        self.append_event(event)?;
         tx.commit()?;
         Ok(())
     }

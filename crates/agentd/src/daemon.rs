@@ -58,6 +58,7 @@ pub struct Daemon {
 /// Host I/O and waits are performed before or after this guard, never across await.
 struct State {
     store: Store,
+    storage_error: Option<String>,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
@@ -250,9 +251,9 @@ impl Daemon {
     fn stop(&self, reference: &str, force: bool) -> Response {
         let record = {
             let mut state = lock(&self.state);
-            let id = match state.resolve(reference) {
+            let id = match state.registry.resolve(reference) {
                 Ok(id) => id,
-                Err(e) => return *e,
+                Err(e) => return registry_error(e),
             };
             let record = state.registry.get(&id).unwrap().clone();
             if !record.status.is_live() {
@@ -469,6 +470,7 @@ impl Daemon {
             started: Instant::now(),
             state: Mutex::new(State {
                 store,
+                storage_error: None,
                 registry,
                 leases,
                 inboxes,
@@ -512,6 +514,21 @@ impl Daemon {
 
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        // A failed write makes the in-memory projection unsafe to serve. Keep
+        // the daemon unavailable until restart reloads durable state; never
+        // acknowledge a mutation or grant new protection from that projection.
+        if matches!(request, Request::Shutdown) {
+            self.shutdown.notify_one();
+            return Response::Ok;
+        }
+        if let Some(error) = lock(&self.state).storage_failure() {
+            return error;
+        }
+        let response = self.handle_healthy(request).await;
+        lock(&self.state).storage_failure().unwrap_or(response)
+    }
+
+    async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -975,6 +992,9 @@ impl Daemon {
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
+                if let Some(error) = state.storage_failure() {
+                    return error;
+                }
                 state.touch(&holder);
                 let now = Utc::now();
                 state.expire_leases_at(now);
@@ -1111,21 +1131,42 @@ impl Daemon {
 }
 
 impl State {
-    fn persist(&self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+    fn storage_failure(&self) -> Option<Response> {
+        self.storage_error.as_ref().map(|error| {
+            Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("storage failed ({error}); coordination disabled until daemon restart"),
+            )
+        })
+    }
+
+    fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+        if self.storage_error.is_some() {
+            return;
+        }
         if let Err(err) = write(&self.store) {
-            error!(%what, %err, "failed to persist state");
+            error!(%what, %err, "storage failed; disabling coordination until restart");
+            self.storage_error = Some(format!("{what}: {err}"));
         }
     }
 
     pub fn emit(&mut self, kind: EventKind) {
+        if self.storage_error.is_some() {
+            return;
+        }
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
         self.next_seq += 1;
         self.persist("event", |store| store.append_event(&event));
-        let _ = self.events.send(event);
+        if self.storage_error.is_none() {
+            let _ = self.events.send(event);
+        }
     }
 
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
         self.registry
             .resolve(reference)
             .map_err(|err| Box::new(registry_error(err)))
@@ -1252,16 +1293,25 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        if let Err(err) = self.store.ack_inbox(&id, messages) {
-            return Response::error(ErrorCode::Internal, err.to_string());
+        let mut event = Event::new(
+            EventKind::InboxAcknowledged {
+                agent: id.clone(),
+                messages: messages.to_vec(),
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        self.persist("inbox acknowledgement", |store| {
+            store.ack_inbox(&id, messages, &event)
+        });
+        if let Some(error) = self.storage_failure() {
+            return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
             queue.retain(|message| !messages.contains(&message.id));
         }
-        self.emit(EventKind::InboxAcknowledged {
-            agent: id,
-            messages: messages.to_vec(),
-        });
+        self.next_seq += 1;
+        let _ = self.events.send(event);
         Response::Ok
     }
 
@@ -1433,6 +1483,9 @@ impl State {
             });
         }
 
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
         self.emit(EventKind::MessageSent {
             message: envelope.id.clone(),
@@ -1448,6 +1501,9 @@ impl State {
     }
 
     fn insert_record(&mut self, mut record: AgentRecord) -> Response {
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -1475,7 +1531,8 @@ impl State {
                 pid: record.pid,
             });
         }
-        Response::Agent { agent: record }
+        self.storage_failure()
+            .unwrap_or(Response::Agent { agent: record })
     }
 }
 
@@ -2698,6 +2755,49 @@ mod tests {
         .await
         .unwrap();
         assert!(!supervisor::group_exists(agent.pid.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn failed_storage_never_acknowledges_or_serves_new_coordination() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "owner", None).await;
+        register(&daemon, "other", None).await;
+        let Response::Lease { lease } = claim(&daemon, "owner", "task:durable").await else {
+            panic!()
+        };
+        let before = daemon.recent_events(100).len();
+        lock(&daemon.state).store.reject_writes_for_test();
+        let failed = daemon
+            .handle(Request::Release {
+                agent: "owner".into(),
+                lease: lease.id,
+            })
+            .await;
+        assert!(matches!(
+            failed,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(daemon.recent_events(100).len(), before);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
