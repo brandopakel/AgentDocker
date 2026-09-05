@@ -1,5 +1,8 @@
 //! Process supervision for managed agents.
 
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
+use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -35,11 +38,13 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command.as_std_mut().process_group(0);
     if let Some(workdir) = &record.spec.workdir {
         command.current_dir(workdir);
     }
 
     let log_path = daemon.log_path(&record.id);
+    tokio::fs::create_dir_all(log_path.parent().expect("log path has a parent")).await?;
     let log = File::create(&log_path)
         .await
         .with_context(|| format!("cannot create {}", log_path.display()))?;
@@ -69,6 +74,19 @@ pub fn supervise(daemon: Arc<Daemon>, id: AgentId, mut spawned: Spawned) {
                 reason: err.to_string(),
             },
         };
+        // A managed command owns its process group. Descendants must stop
+        // before the agent's leases can be released, even on a normal exit.
+        let group = Pid::from_raw(-(spawned.pid as i32));
+        if group_exists(spawned.pid) {
+            let _ = kill(group, Signal::SIGTERM);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            while group_exists(spawned.pid) {
+                if tokio::time::Instant::now() >= deadline {
+                    let _ = kill(group, Signal::SIGKILL);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
         daemon.mark_exited(&id, status);
     });
 }
@@ -94,4 +112,17 @@ async fn write_log(mut log: File, mut rx: mpsc::Receiver<String>) {
         }
     }
     let _ = log.flush().await;
+}
+
+/// Whether a validated dedicated group still has any processes. Uncertainty
+/// retains protection rather than reporting a running writer as exited.
+pub(crate) fn group_exists(group: u32) -> bool {
+    let Ok(group) = i32::try_from(group) else {
+        return false;
+    };
+    group > 0
+        && matches!(
+            kill(Pid::from_raw(-group), None),
+            Ok(()) | Err(nix::errno::Errno::EPERM)
+        )
 }
