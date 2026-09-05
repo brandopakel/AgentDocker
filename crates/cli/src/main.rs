@@ -74,6 +74,7 @@ enum Command {
     /// List persisted checkpoints, including finished sessions.
     Checkpoints {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
     },
     /// Execute a check and retain its command, log, and before/after code fingerprints.
@@ -87,6 +88,7 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
+    /// List retained validation evidence for a session.
     Validations {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]

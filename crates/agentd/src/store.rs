@@ -140,15 +140,18 @@ impl Store {
     ) -> Result<Vec<agentdocker_core::Validation>> {
         let mut stmt = self.conn.prepare(
             "SELECT json FROM documents WHERE kind='validation'
-            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2
-            AND json_extract(json, '$.exit_code')=0 AND json_extract(json, '$.timed_out')=0
-            AND json_extract(json, '$.descendants_survived')=0
-            AND json_extract(json, '$.after')=json_extract(json, '$.before') ORDER BY id",
+            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![checkout.to_string_lossy(), version], |row| {
             row.get::<_, String>(0)
         })?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let validations: Vec<agentdocker_core::Validation> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        Ok(validations
+            .into_iter()
+            .filter(agentdocker_core::Validation::passed)
+            .collect())
     }
 
     /// Atomically persist a typed recovery document before publishing its event.
@@ -182,6 +185,13 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_validation_finish_for_test(&self) {
+        self.conn.execute_batch("CREATE TEMP TRIGGER reject_validation_finish
+            BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'validation_finished'
+            BEGIN SELECT RAISE(FAIL, 'injected validation event failure'); END;").unwrap();
     }
 
     pub fn open(path: &Path) -> Result<Self> {
