@@ -2,11 +2,12 @@
 
 use std::io::{self, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentdocker_core::{ErrorCode, Request, Response};
+use agentdocker_core::{ErrorCode, Request, Response, paths};
+use agentdocker_host::dirs;
 use anyhow::Context;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, Lines};
@@ -21,9 +22,8 @@ type Reader = Lines<BufReader<OwnedReadHalf>>;
 
 pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
     std::fs::create_dir_all(daemon.home.join("logs"))?;
-    if let Some(parent) = daemon.socket.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    require_fits(&daemon.socket)?;
+    prepare_socket_parent(&daemon.home, &daemon.socket)?;
     if daemon.socket.exists() {
         if UnixStream::connect(&daemon.socket).await.is_ok() {
             anyhow::bail!(
@@ -274,19 +274,37 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
 }
 
 /// A distinct socket prevents optional-token bypass through the host endpoint.
-pub async fn serve_restricted(daemon: Arc<Daemon>) -> anyhow::Result<()> {
-    let socket = agentdocker_core::paths::container_socket(&daemon.home);
+/// The restricted endpoint is optional: when it cannot be served the daemon
+/// says so, marks container access off so new grants are refused, and
+/// keeps serving the host socket. Never returns.
+pub async fn restricted_endpoint(daemon: Arc<Daemon>, socket: PathBuf) {
+    if let Err(err) = serve_restricted(daemon.clone(), socket.clone()).await {
+        tracing::error!(%err, socket = %socket.display(), "restricted endpoint unavailable; container access is off");
+        daemon.restricted_unavailable(format!("{err:#}"));
+    }
+    std::future::pending::<()>().await;
+}
+
+/// Serve the restricted endpoint on `socket`. Returns only on failure; the
+/// daemon's main treats that as "container access is off", not as a
+/// reason to stop serving the host socket.
+pub async fn serve_restricted(daemon: Arc<Daemon>, socket: PathBuf) -> anyhow::Result<()> {
     if socket == daemon.socket {
         anyhow::bail!("restricted and host sockets must differ");
     }
+    require_fits(&socket)?;
+    prepare_socket_parent(&daemon.home, &socket)?;
     if socket.exists() {
         if UnixStream::connect(&socket).await.is_ok() {
             anyhow::bail!("restricted endpoint is already listening");
         }
         std::fs::remove_file(&socket)?;
     }
-    let listener = UnixListener::bind(&socket)?;
+    let listener =
+        UnixListener::bind(&socket).with_context(|| format!("cannot bind {}", socket.display()))?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    info!(socket = %socket.display(), "restricted endpoint listening");
+    daemon.restricted_listening(socket.clone());
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -299,6 +317,35 @@ pub async fn serve_restricted(daemon: Arc<Daemon>) -> anyhow::Result<()> {
             .await;
         });
     }
+}
+
+/// A socket path the kernel would refuse is refused here first, with the
+/// limit and the way out spelled out.
+fn require_fits(socket: &Path) -> anyhow::Result<()> {
+    if paths::fits_socket(socket) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "socket path {} is {} bytes; this OS allows {} — set AGENTDOCKER_SOCKET to a shorter path or use a shorter AGENTDOCKER_HOME",
+        socket.display(),
+        socket.as_os_str().len(),
+        paths::SOCKET_PATH_MAX
+    )
+}
+
+/// The socket's directory, created: the home's own is simply made, the
+/// short fallback under the runtime directory must be ours alone.
+fn prepare_socket_parent(home: &Path, socket: &Path) -> anyhow::Result<()> {
+    let Some(parent) = socket.parent() else {
+        return Ok(());
+    };
+    if parent == paths::socket_dir(home) && parent != home {
+        dirs::ensure_private_dir(parent)
+            .with_context(|| format!("socket directory {} is unusable", parent.display()))?;
+    } else {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
 }
 
 async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {
@@ -519,5 +566,87 @@ mod tests {
         assert!(
             matches!(daemon.handle(Request::Leases{agent:Some("waiter".into()),resource:None}).await,Response::Leases{leases} if leases.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn a_restricted_endpoint_that_cannot_bind_turns_container_access_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "worker".into(),
+                    workdir: Some(root),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+            })
+            .await;
+        // Too long for the kernel: refused up front, with the limit named.
+        let long = PathBuf::from(format!("/tmp/{}.sock", "x".repeat(paths::SOCKET_PATH_MAX)));
+        let err = serve_restricted(daemon.clone(), long.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("bytes"), "{err}");
+        assert!(!long.exists());
+
+        // Through the daemon's wrapper the host side keeps going: the
+        // failure is announced, pinged as "off", and grants are refused.
+        let mut events = daemon.subscribe_events();
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), long));
+        let announced = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(event) = events.recv().await
+                    && matches!(event.kind, EventKind::RestrictedEndpointUnavailable { .. })
+                {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(
+            announced.is_ok(),
+            "restricted_endpoint_unavailable announced"
+        );
+        assert!(matches!(
+            daemon.handle(Request::Ping).await,
+            Response::Pong {
+                restricted: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::GrantAccess {
+                    agent: "worker".into(),
+                    container_root: "/workspace".into(),
+                    ttl_secs: 60,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Unavailable,
+                ..
+            }
+        ));
+        endpoint.abort();
+
+        // A socket that fits is served and reported.
+        let good = tmp.path().join("container.sock");
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone()));
+        let up = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(daemon.handle(Request::Ping).await, Response::Pong { restricted: Some(ref s), .. } if *s == good) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(up.is_ok(), "restricted endpoint reported once serving");
+        endpoint.abort();
     }
 }

@@ -1,6 +1,7 @@
 //! Restricted endpoint credentials are hashed, scoped to one agent/checkout,
 //! checked on every request, and never accepted on the host control endpoint.
 use super::*;
+use agentdocker_core::paths;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -31,6 +32,18 @@ impl Daemon {
         let (agent, host_root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
+        };
+        // A grant names the socket the container will use; without the
+        // endpoint there is nothing to grant access to.
+        let socket = match self.restricted() {
+            RestrictedEndpoint::On(socket) => socket,
+            RestrictedEndpoint::Starting => paths::container_socket(&self.home),
+            RestrictedEndpoint::Off(reason) => {
+                return Response::error(
+                    ErrorCode::Unavailable,
+                    format!("the container endpoint is off: {reason}"),
+                );
+            }
         };
         let container_root = PathBuf::from(container_root);
         if !container_root.is_absolute()
@@ -67,7 +80,7 @@ impl Daemon {
         Response::Access {
             grant: id,
             token,
-            socket: agentdocker_core::paths::container_socket(&self.home),
+            socket,
             expires_at,
         }
     }

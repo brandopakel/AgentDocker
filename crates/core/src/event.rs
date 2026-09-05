@@ -75,6 +75,11 @@ pub enum EventKind {
     WatcherUnavailable {
         reason: String,
     },
+    /// The restricted container endpoint could not be served; the host
+    /// socket keeps working and new grants are refused.
+    RestrictedEndpointUnavailable {
+        reason: String,
+    },
     ReadsObserved {
         agent: crate::AgentId,
         paths: Vec<std::path::PathBuf>,

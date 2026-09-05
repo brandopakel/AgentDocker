@@ -200,7 +200,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
 
 ## License
 

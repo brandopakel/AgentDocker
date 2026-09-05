@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Request, Response, paths};
-use agentdocker_host::lock;
+use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -50,6 +50,14 @@ impl Client {
     }
 
     async fn connect(&self, request: &Request) -> Result<BufReader<UnixStream>> {
+        if !paths::fits_socket(&self.socket) {
+            bail!(
+                "socket path {} is {} bytes; this OS allows {} — set AGENTDOCKER_SOCKET to a shorter path or use a shorter AGENTDOCKER_HOME",
+                self.socket.display(),
+                self.socket.as_os_str().len(),
+                paths::SOCKET_PATH_MAX
+            );
+        }
         let stream = match UnixStream::connect(&self.socket).await {
             Ok(stream) => stream,
             Err(err) if absent(&err) && self.autostart.is_some() => {
@@ -97,29 +105,50 @@ impl Client {
     /// starting, so only the wait is needed. Two clients racing here may
     /// both spawn a daemon; the loser exits when it finds the lock taken.
     async fn start_daemon(&self, timeout: Duration) -> Result<UnixStream> {
+        let home = paths::default_home();
         let lock_path = paths::lock_path(&self.socket);
         if let Some(parent) = lock_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            if parent == paths::socket_dir(&home) && parent != home {
+                dirs::ensure_private_dir(parent).with_context(|| {
+                    format!("socket directory {} is unusable", parent.display())
+                })?;
+            } else {
+                std::fs::create_dir_all(parent)?;
+            }
         }
         let vacant = lock::try_exclusive(&lock_path)
             .with_context(|| format!("cannot take {}", lock_path.display()))?
             .is_some();
-        if vacant {
-            spawn_agentd(&self.socket)?;
-        }
+        let log_path = paths::daemon_log(&home);
+        // Our own child, when we started one: its exit is known at once,
+        // so a daemon that dies on startup fails this call in milliseconds
+        // with its last words, not after the whole timeout.
+        let mut child = if vacant {
+            Some(spawn_agentd(&self.socket, &home)?)
+        } else {
+            None
+        };
         let deadline = Instant::now() + timeout;
         loop {
             match UnixStream::connect(&self.socket).await {
                 Ok(stream) => return Ok(stream),
                 Err(err) if absent(&err) && Instant::now() < deadline => {
+                    if let Some(status) = child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+                        bail!(
+                            "agentd exited ({status}) before listening on {}:\n{}",
+                            self.socket.display(),
+                            log_tail(&log_path, 6)
+                        );
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(err) => {
                     return Err(err).with_context(|| {
                         format!(
-                            "agentd did not come up at {} within {timeout:?} (see {})",
+                            "agentd did not come up at {} within {timeout:?} (see {}):\n{}",
                             self.socket.display(),
-                            paths::daemon_log(&paths::default_home()).display()
+                            log_path.display(),
+                            log_tail(&log_path, 6)
                         )
                     });
                 }
@@ -228,15 +257,14 @@ fn absent(err: &std::io::Error) -> bool {
 /// Launch `agentd` detached: its own process group, stdio on the daemon
 /// log, the same home as this client. The binary beside ours is preferred
 /// so a build in `target/` starts the matching daemon; else `PATH`.
-fn spawn_agentd(socket: &Path) -> Result<()> {
+fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
     let exe = std::env::current_exe()
         .ok()
         .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
         .filter(|sibling| sibling.is_file())
         .unwrap_or_else(|| PathBuf::from("agentd"));
-    let home = paths::default_home();
-    std::fs::create_dir_all(&home)?;
-    let log_path = paths::daemon_log(&home);
+    std::fs::create_dir_all(home)?;
+    let log_path = paths::daemon_log(home);
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -250,8 +278,22 @@ fn spawn_agentd(socket: &Path) -> Result<()> {
         .stderr(log)
         .process_group(0)
         .spawn()
-        .with_context(|| format!("cannot start {}", exe.display()))?;
-    Ok(())
+        .with_context(|| format!("cannot start {}", exe.display()))
+}
+
+/// The last `lines` of the daemon log, for an error message; empty when
+/// there is no log.
+fn log_tail(path: &Path, lines: usize) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let all: Vec<&str> = text.lines().collect();
+    let start = all.len().saturating_sub(lines);
+    all[start..]
+        .iter()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// How adapters (MCP server, hooks) reach agentd. Abstracted so their logic
@@ -424,5 +466,19 @@ mod stream_tests {
             .unwrap()
             .unwrap_err();
         assert!(error.to_string().contains("lost 3 events"));
+    }
+
+    #[tokio::test]
+    async fn a_socket_path_too_long_for_the_os_fails_fast_and_says_why() {
+        let long = PathBuf::from(format!("/tmp/{}.sock", "x".repeat(paths::SOCKET_PATH_MAX)));
+        let client = Client::new(Some(long));
+        let started = Instant::now();
+        let err = client.call(&Request::Ping).await.unwrap_err().to_string();
+        assert!(err.contains("bytes"), "{err}");
+        assert!(err.contains("AGENTDOCKER_SOCKET"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "no daemon was waited for"
+        );
     }
 }

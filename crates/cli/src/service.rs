@@ -416,6 +416,7 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
         if let Ok(Response::Pong {
             version,
             uptime_secs,
+            ..
         }) = client.call(&Request::Ping).await
         {
             println!("agentd {version} up {}", format::span_secs(uptime_secs));
@@ -506,15 +507,30 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
                 Ok(Response::Pong {
                     version,
                     uptime_secs,
-                }) => println!(
-                    "daemon    agentd {version} up {} at {}",
-                    format::span_secs(uptime_secs),
-                    socket.display()
-                ),
-                _ => println!(
-                    "daemon    not running (clients start it on demand at {})",
-                    socket.display()
-                ),
+                    restricted,
+                }) => {
+                    println!(
+                        "daemon    agentd {version} up {} at {}",
+                        format::span_secs(uptime_secs),
+                        socket.display()
+                    );
+                    match restricted {
+                        Some(path) => println!("container {}", path.display()),
+                        None => println!(
+                            "container endpoint off (see the daemon log); grants are refused"
+                        ),
+                    }
+                }
+                _ => {
+                    println!(
+                        "daemon    not running (clients start it on demand at {})",
+                        socket.display()
+                    );
+                    println!(
+                        "container {}",
+                        paths::container_socket(&layout.home).display()
+                    );
+                }
             }
             println!("log       {}", layout.log().display());
         }
