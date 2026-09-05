@@ -145,7 +145,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
-| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | a `path:` inside a project is stored as `file:<project id>/<relative>`; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
+| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
 | `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
@@ -457,3 +457,9 @@ New events: `file_changed`, `agent_stale`, `journal_appended`, `lease_transferre
 
 
 Implementation order after hardening: complete read/content-version observations and staleness; add durable journal and acknowledged recovery with validation evidence tied to exact code; then worktree integration and authenticated container transport. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
+
+### Delivery and request boundaries
+
+Clients await each unary response before sending the next request. Additional input while a claim is pending cancels the claim and closes that connection. `ack_inbox {agent, messages: MessageId[]}` idempotently acknowledges specific delivered messages and returns `ok`. Hooks peek rather than drain and acknowledge after flushing their output; a timeout can cause redelivery, not discard unread input.
+
+`lagged {skipped: u64}` reports dropped live stream items. Event subscribers can request retained history with `events --replay`; message subscribers must reconnect to resume and ask senders to resend missing payloads. Live message payloads have no replay guarantee.

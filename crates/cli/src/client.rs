@@ -139,9 +139,17 @@ impl Client {
             }
             match into_result(serde_json::from_str(&line)?)? {
                 Response::End => return Ok(()),
-                Response::Lagged { skipped } => eprintln!(
-                    "agentdocker: stream skipped {skipped} items; use events --replay to recover event history"
-                ),
+                Response::Lagged { skipped } => {
+                    if matches!(request, Request::Events { .. }) {
+                        eprintln!(
+                            "agentdocker: skipped {skipped} events; use events --replay to recover retained event history"
+                        );
+                    } else {
+                        eprintln!(
+                            "agentdocker: skipped {skipped} live messages; reconnect to resume delivery and ask senders to resend missing payloads (live messages cannot be replayed)"
+                        );
+                    }
+                }
                 response => {
                     if !on_response(response)? {
                         return Ok(());

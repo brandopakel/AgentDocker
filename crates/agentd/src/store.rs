@@ -222,6 +222,23 @@ impl Store {
         Ok(inboxes)
     }
 
+    /// Acknowledge a delivered message without removing later arrivals.
+    pub fn ack_inbox(
+        &self,
+        agent: &AgentId,
+        messages: &[agentdocker_core::MessageId],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for message in messages {
+            tx.execute(
+                "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
+                params![agent.as_str(), message.as_str()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ----- projects -------------------------------------------------------
 
     /// Remember a repository's fingerprint so `git` walks its history once

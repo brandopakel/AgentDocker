@@ -102,13 +102,11 @@ async fn write(writer: &mut OwnedWriteHalf, response: &Response) -> io::Result<(
     writer.write_all(line.as_bytes()).await
 }
 
-/// Observe EOF without consuming a pipelined next request. When input is already
-/// buffered, preserve it for the normal request loop after this claim completes.
+/// A pending claim owns the connection. EOF or additional input cancels it;
+/// clients must await its response before sending another request. This also
+/// bounds memory and cancels a peer that closes after sending partial input.
 async fn claim_eof(reader: &mut Reader) {
-    match reader.get_mut().fill_buf().await {
-        Ok([]) | Err(_) => {}
-        Ok(_) => std::future::pending::<()>().await,
-    }
+    let _ = reader.get_mut().fill_buf().await;
 }
 
 /// Resolves when the client closes its side (or sends garbage).
@@ -309,6 +307,8 @@ mod tests {
             events.recv().await.unwrap().kind,
             EventKind::LeaseConflict { .. }
         ) {}
+        // Partial pipelined input must not hide the subsequent disconnect.
+        client.write_all(b"{\"op\":").await.unwrap();
         drop(client);
         tokio::time::timeout(Duration::from_secs(1), running)
             .await

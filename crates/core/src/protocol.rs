@@ -107,6 +107,12 @@ pub enum Request {
         drain: bool,
     },
 
+    /// Idempotently remove only messages that a consumer has delivered.
+    AckInbox {
+        agent: String,
+        messages: Vec<MessageId>,
+    },
+
     Claim {
         agent: String,
         resource: String,
