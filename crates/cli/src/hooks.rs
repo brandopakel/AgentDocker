@@ -18,7 +18,7 @@
 //! were not there (an edit is allowed rather than denied).
 
 use std::cell::RefCell;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 
@@ -113,7 +113,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
             };
-            let output = match bounded_claude_code(&delivery, &input, &opts).await {
+            let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
                 Ok(output) => output,
                 Err(err) => {
                     eprintln!("agentdocker hook ({}): {err:#}", input.hook_event_name);
@@ -121,10 +121,12 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             if let Some(output) = output {
-                let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "{output}")?;
-                stdout.flush()?;
-                drop(stdout);
+                if let Err(error) =
+                    write_output_before(1, format!("{output}\n").as_bytes(), deadline)
+                {
+                    eprintln!("agentdocker hook: output delivery failed: {error}");
+                    return Ok(());
+                }
                 // Lost acknowledgements cause duplicates, never lost messages.
                 let pending = delivery.pending.take();
                 for request in pending {
@@ -166,17 +168,88 @@ impl<B: Backend> Backend for HookDelivery<'_, B> {
 }
 
 /// Bound the entire hook, including reads from a listening but unresponsive daemon.
+#[cfg(test)]
 async fn bounded_claude_code<B: Backend>(
     backend: &B,
     input: &HookInput,
     opts: &ClaudeCodeArgs,
 ) -> Result<Option<Value>> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        claude_code(backend, input, opts),
+    bounded_claude_code_at(
+        backend,
+        input,
+        opts,
+        tokio::time::Instant::now() + std::time::Duration::from_secs(1),
     )
     .await
-    .context("coordination exceeded the one-second hook budget")?
+}
+
+async fn bounded_claude_code_at<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    opts: &ClaudeCodeArgs,
+    deadline: tokio::time::Instant,
+) -> Result<Option<Value>> {
+    tokio::time::timeout_at(deadline, claude_code(backend, input, opts))
+        .await
+        .context("coordination exceeded the one-second hook budget")?
+}
+
+/// Deliver output on a nonblocking descriptor within the same hook deadline.
+/// A partial/failed delivery is never acknowledged, permitting safe redelivery.
+fn write_output_before(
+    fd: i32,
+    mut bytes: &[u8],
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    struct Restore(i32, i32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe {
+                libc::fcntl(self.0, libc::F_SETFL, self.1);
+            }
+        }
+    }
+    // SAFETY: fd remains borrowed for this call; flags are restored on every exit.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let _restore = Restore(fd, flags);
+    while !bytes.is_empty() {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        // SAFETY: bytes is valid for its length, and no ownership of fd is taken.
+        let count = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if count > 0 {
+            bytes = &bytes[count as usize..];
+            continue;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let milliseconds = i32::try_from(remaining.as_millis())
+            .unwrap_or(i32::MAX)
+            .max(1);
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one initialized descriptor lives throughout this bounded poll.
+        unsafe {
+            libc::poll(&mut pollfd, 1, milliseconds);
+        }
+    }
+    Ok(())
 }
 
 fn read_event() -> Result<HookInput> {
@@ -1114,6 +1187,24 @@ mod tests {
                 .unwrap();
         assert_eq!(again, 0);
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn full_output_pipe_respects_delivery_deadline() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut descriptors = [0; 2];
+        // SAFETY: successful pipe initializes two owned file descriptors.
+        assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+        let _read = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
+        let write = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
+        let start = tokio::time::Instant::now();
+        let result = write_output_before(
+            write.as_raw_fd(),
+            &vec![b'x'; 4 * 1024 * 1024],
+            start + std::time::Duration::from_millis(30),
+        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[tokio::test]

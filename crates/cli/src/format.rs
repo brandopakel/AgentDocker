@@ -123,6 +123,9 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::InboxAcknowledged { agent, messages } => {
+            format!("{agent} acknowledged {} messages", messages.len())
+        }
         EventKind::AgentCreated {
             agent,
             name,

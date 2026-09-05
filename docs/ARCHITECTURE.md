@@ -145,6 +145,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
+| `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
@@ -463,3 +464,5 @@ Implementation order after hardening: complete read/content-version observations
 Clients await each unary response before sending the next request. Additional input while a claim is pending cancels the claim and closes that connection. `ack_inbox {agent, messages: MessageId[]}` idempotently acknowledges specific delivered messages and returns `ok`. Hooks peek rather than drain and acknowledge after flushing their output; a timeout can cause redelivery, not discard unread input.
 
 `lagged {skipped: u64}` reports dropped live stream items. Event subscribers can request retained history with `events --replay`; message subscribers must reconnect to resume and ask senders to resend missing payloads. Live message payloads have no replay guarantee.
+
+Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a tag protection/ruleset before publishing; an unprotected tag intentionally skips release. Credentials are limited to upload/download steps and checkout does not persist them. Critical physical-key paths use fallible normalization and reject unavailable cwd resolution; display/discovery callers retain the best-effort helper.

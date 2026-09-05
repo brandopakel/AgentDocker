@@ -20,6 +20,7 @@ agentd.workspace = true
 agentdocker-core.workspace = true
 agentdocker-host.workspace = true
 anyhow.workspace = true
+libc.workspace = true
 chrono.workspace = true
 clap.workspace = true
 indexmap.workspace = true
