@@ -93,6 +93,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     });
 
+    daemon.expect_watcher();
     watcher::spawn(daemon.clone());
 
     let result = tokio::select! {

@@ -66,6 +66,7 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
         Ok(watcher) => watcher,
         Err(err) => {
             error!(%err, "cannot start the project watcher; the ledger and branch tracking are off");
+            daemon.watcher_off();
             return;
         }
     };

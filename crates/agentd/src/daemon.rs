@@ -30,7 +30,7 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
-use tokio::sync::{Notify, broadcast, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 use tracing::{debug, error, info, warn};
 
 use agentdocker_host::{procinfo, project, vcs};
@@ -85,8 +85,19 @@ pub struct Daemon {
     watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
     /// Asks the watcher to reconcile its watches now, so a checkout is
     /// covered from the moment its first agent is registered rather than
-    /// from the next tick.
-    watcher_attach: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
+    /// from the next tick. Starts `Off`; the daemon's main says when a
+    /// watcher is coming so registrations wait for it instead.
+    watcher_attach: watch::Sender<WatcherLink>,
+}
+
+/// Whether registrations can ask the watcher to cover their checkout.
+#[derive(Clone)]
+enum WatcherLink {
+    /// No watcher runs: tests, or it failed to start.
+    Off,
+    /// One is being spawned; wait for it rather than skip it.
+    Starting,
+    On(mpsc::Sender<oneshot::Sender<()>>),
 }
 
 /// One synchronous transition owns memory, persistence and publication.
@@ -582,7 +593,7 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
-            watcher_attach: Mutex::new(None),
+            watcher_attach: watch::channel(WatcherLink::Off).0,
         })
     }
 
@@ -1046,9 +1057,21 @@ impl Daemon {
         *lock(&self.watcher_flush) = Some(sender);
     }
 
+    /// A watcher is about to be spawned: registrations arriving before it
+    /// has handed over its channel wait for it, within the same bound,
+    /// instead of taking startup for no watcher at all.
+    pub fn expect_watcher(&self) {
+        self.watcher_attach.send_replace(WatcherLink::Starting);
+    }
+
     /// Let the watcher hand us its reconcile channel.
     pub fn set_watcher_attach(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
-        *lock(&self.watcher_attach) = Some(sender);
+        self.watcher_attach.send_replace(WatcherLink::On(sender));
+    }
+
+    /// The watcher could not start after all; stop waiting for it.
+    pub fn watcher_off(&self) {
+        self.watcher_attach.send_replace(WatcherLink::Off);
     }
 
     /// Have the watcher cover every checkout a live agent works in, now:
@@ -1056,11 +1079,18 @@ impl Daemon {
     /// the gap before the next reconcile tick. Bounded, and a no-op when no
     /// watcher runs.
     async fn ensure_watched(&self) {
-        let sender = lock(&self.watcher_attach).clone();
-        let Some(sender) = sender else {
-            return;
-        };
         let _ = tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
+            let mut link = self.watcher_attach.subscribe();
+            let sender = match link
+                .wait_for(|link| !matches!(link, WatcherLink::Starting))
+                .await
+            {
+                Ok(link) => match &*link {
+                    WatcherLink::On(sender) => sender.clone(),
+                    _ => return,
+                },
+                Err(_) => return,
+            };
             let (ack, done) = oneshot::channel();
             if sender.send(ack).await.is_ok() {
                 let _ = done.await;
@@ -4348,13 +4378,15 @@ mod tests {
         ));
         let daemon = open(&dir);
         // A reconcile tick that never comes during the test: only the
-        // registration's own nudge can attach the watch.
+        // registration's own nudge can attach the watch. The watcher is
+        // spawned and the agent registered at once, with no time for the
+        // spawned task to have run: startup is waited for, not skipped.
+        daemon.expect_watcher();
         tokio::spawn(crate::watcher::run(
             daemon.clone(),
             std::time::Duration::from_secs(60),
             std::time::Duration::from_millis(50),
         ));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         register_in(&daemon, "a", &repo).await;
         let lib = repo.join("src/lib.rs");
         std::fs::write(&lib, "fn a() {}\n").unwrap();
