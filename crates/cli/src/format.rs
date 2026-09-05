@@ -123,6 +123,18 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::WorktreeCreated { agent, path } => {
+            format!("{agent} created worktree {}", path.display())
+        }
+        EventKind::IntegrationPrepared {
+            agent,
+            source_head,
+            clean,
+        } => format!("{agent} prepared integration of {source_head}, clean={clean}"),
+        EventKind::AccessGranted { agent, grant } => {
+            format!("{agent} received restricted access {grant}")
+        }
+        EventKind::AccessRevoked { grant } => format!("restricted access {grant} revoked"),
         EventKind::CheckpointSaved { agent, checkpoint } => {
             format!("{agent} saved checkpoint {checkpoint}")
         }

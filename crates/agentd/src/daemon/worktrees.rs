@@ -1,0 +1,368 @@
+//! Explicit worktree creation and verified, uncommitted integration.
+use super::*;
+use agentdocker_core::Validation;
+use agentdocker_host::{command, content};
+
+async fn git(root: PathBuf, args: Vec<String>) -> anyhow::Result<command::Output> {
+    tokio::task::spawn_blocking(move || {
+        let argv = std::iter::once("git".to_owned())
+            .chain(args)
+            .collect::<Vec<_>>();
+        command::run(&root, &argv, std::time::Duration::from_secs(30))
+    })
+    .await?
+    .map_err(Into::into)
+}
+fn failure(e: impl std::fmt::Display) -> Response {
+    Response::error(ErrorCode::Invalid, e.to_string())
+}
+
+impl Daemon {
+    pub(super) async fn worktree_create(
+        &self,
+        reference: &str,
+        path: String,
+        branch: String,
+    ) -> Response {
+        let (agent, root, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        let path = match project::try_canonical(Path::new(&path)) {
+            Ok(p) => p,
+            Err(e) => return failure(e),
+        };
+        if path.exists() || path.starts_with(&root) {
+            return failure("worktree path must be new and outside the current checkout");
+        }
+        match git(
+            root.clone(),
+            vec!["check-ref-format".into(), "--branch".into(), branch.clone()],
+        )
+        .await
+        {
+            Ok(output) if output.success && !branch.starts_with('-') => {}
+            _ => return failure("invalid branch name"),
+        }
+        match git(
+            root,
+            vec![
+                "worktree".into(),
+                "add".into(),
+                "-b".into(),
+                branch.clone(),
+                "--".into(),
+                path.to_string_lossy().into_owned(),
+                "HEAD".into(),
+            ],
+        )
+        .await
+        {
+            Ok(output) if output.success => {
+                lock(&self.state).emit(EventKind::WorktreeCreated {
+                    agent,
+                    path: path.clone(),
+                });
+                Response::Worktree { path, branch }
+            }
+            Ok(output) => failure(output.text),
+            Err(e) => failure(e),
+        }
+    }
+
+    pub(super) async fn worktree_diff(&self, reference: &str) -> Response {
+        let (_, root, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        match git(
+            root,
+            vec![
+                "diff".into(),
+                "--no-ext-diff".into(),
+                "--stat".into(),
+                "--patch".into(),
+                "HEAD".into(),
+                "--".into(),
+            ],
+        )
+        .await
+        {
+            Ok(output) if output.success => Response::Diff { text: output.text },
+            Ok(output) => failure(output.text),
+            Err(e) => failure(e),
+        }
+    }
+
+    pub(super) async fn integrate(
+        &self,
+        reference: &str,
+        source: String,
+        validation: String,
+        apply: bool,
+    ) -> Response {
+        let (agent, target, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        let source = match project::try_canonical(Path::new(&source)) {
+            Ok(p) => p,
+            Err(e) => return failure(e),
+        };
+        if source == target {
+            return failure("source and target must be distinct checkouts");
+        }
+        let same_repository = vcs::git_dirs(&source)
+            .zip(vcs::git_dirs(&target))
+            .is_some_and(|((_, a), (_, b))| project::canonical(&a) == project::canonical(&b));
+        if !same_repository {
+            return failure("integration requires linked worktrees of the same repository");
+        }
+        let evidence = match lock(&self.state)
+            .store
+            .document::<Validation>("validation", &validation)
+        {
+            Ok(Some(v)) if v.passed() && v.checkout == source => v,
+            _ => return failure("a passing validation from the source checkout is required"),
+        };
+        for root in [&source, &target] {
+            match git(
+                root.clone(),
+                vec![
+                    "status".into(),
+                    "--porcelain".into(),
+                    "--untracked-files=all".into(),
+                ],
+            )
+            .await
+            {
+                Ok(output) if output.success && output.text.is_empty() => {}
+                _ => {
+                    return failure(
+                        "both checkouts must be clean; commit source changes and validate the committed code first",
+                    );
+                }
+            }
+        }
+        let root = source.clone();
+        if !tokio::task::spawn_blocking(move || content::fingerprint(&root))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .is_some_and(|v| v == evidence.before)
+        {
+            return failure("source content changed after validation");
+        }
+        let head = match vcs::state(&source).and_then(|v| v.head) {
+            Some(v) if Some(&v) == evidence.head.as_ref() => v,
+            _ => return failure("source HEAD changed after validation"),
+        };
+        if !apply {
+            return match git(
+                target,
+                vec![
+                    "diff".into(),
+                    "--no-ext-diff".into(),
+                    "--stat".into(),
+                    format!("HEAD...{head}"),
+                    "--".into(),
+                ],
+            )
+            .await
+            {
+                Ok(output) if output.success => Response::Integration {
+                    source_head: head,
+                    applied: false,
+                    clean: true,
+                    text: output.text,
+                },
+                Ok(output) => failure(output.text),
+                Err(e) => failure(e),
+            };
+        }
+        // The integration lease remains until the caller reviews/commits and
+        // explicitly releases it. A failed merge also retains this protection.
+        match self
+            .claim(
+                reference,
+                format!("path:{}", target.display()),
+                LeaseMode::Exclusive,
+                600,
+                Some(format!("integrating verified source {head}")),
+                0,
+            )
+            .await
+        {
+            Response::Lease { .. } => {}
+            other => return other,
+        }
+        // Verify target cleanliness again after acquiring the physical lease.
+        match git(
+            target.clone(),
+            vec![
+                "status".into(),
+                "--porcelain".into(),
+                "--untracked-files=all".into(),
+            ],
+        )
+        .await
+        {
+            Ok(o) if o.success && o.text.is_empty() => {}
+            _ => {
+                return failure("target changed before integration; lease retained for inspection");
+            }
+        }
+        match git(
+            target,
+            vec![
+                "merge".into(),
+                "--no-commit".into(),
+                "--no-ff".into(),
+                head.clone(),
+            ],
+        )
+        .await
+        {
+            Ok(output) => {
+                lock(&self.state).emit(EventKind::IntegrationPrepared {
+                    agent,
+                    source_head: head.clone(),
+                    clean: output.success,
+                });
+                Response::Integration {
+                    source_head: head,
+                    applied: true,
+                    clean: output.success,
+                    text: output.text,
+                }
+            }
+            Err(e) => failure(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn integration_requires_matching_validation_and_leaves_merge_uncommitted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            assert!(
+                git(root.clone(), args.into_iter().map(String::from).collect())
+                    .await
+                    .unwrap()
+                    .success
+            );
+        }
+        std::fs::write(root.join("file"), "one").unwrap();
+        assert!(
+            git(root.clone(), vec!["add".into(), "file".into()])
+                .await
+                .unwrap()
+                .success
+        );
+        assert!(
+            git(
+                root.clone(),
+                vec!["commit".into(), "-qm".into(), "initial".into()]
+            )
+            .await
+            .unwrap()
+            .success
+        );
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "target".into(),
+                    workdir: Some(root.clone()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+            })
+            .await;
+        let branch = tmp.path().join("branch");
+        assert!(matches!(
+            daemon
+                .worktree_create(
+                    "target",
+                    branch.to_string_lossy().into_owned(),
+                    "feature".into()
+                )
+                .await,
+            Response::Worktree { .. }
+        ));
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "source".into(),
+                    workdir: Some(branch.clone()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+            })
+            .await;
+        std::fs::write(branch.join("file"), "two").unwrap();
+        assert!(
+            git(
+                branch.clone(),
+                vec!["commit".into(), "-qam".into(), "change".into()]
+            )
+            .await
+            .unwrap()
+            .success
+        );
+        daemon.refresh_vcs(None).await;
+        let Response::Validation {
+            validation,
+            passed: true,
+        } = daemon
+            .validate(
+                "source",
+                vec!["sh".into(), "-c".into(), "test -f file".into()],
+                5,
+            )
+            .await
+        else {
+            panic!()
+        };
+        let source = branch.to_string_lossy().into_owned();
+        assert!(matches!(
+            daemon
+                .integrate("target", source.clone(), validation.id.clone(), false)
+                .await,
+            Response::Integration { applied: false, .. }
+        ));
+        std::fs::write(branch.join("file"), "three").unwrap();
+        assert!(matches!(
+            daemon
+                .integrate("target", source.clone(), validation.id.clone(), true)
+                .await,
+            Response::Error { .. }
+        ));
+        std::fs::write(branch.join("file"), "two").unwrap();
+        assert!(matches!(
+            daemon
+                .integrate("target", source, validation.id, true)
+                .await,
+            Response::Integration {
+                applied: true,
+                clean: true,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read_to_string(root.join("file")).unwrap(), "two");
+        assert!(
+            root.join(".git/MERGE_HEAD").exists(),
+            "review and commit remain explicit"
+        );
+    }
+}

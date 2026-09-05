@@ -1,0 +1,3 @@
+FROM docker.io/library/python:3.13-alpine
+COPY client.py /client.py
+ENTRYPOINT ["python3", "/client.py"]

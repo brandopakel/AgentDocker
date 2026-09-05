@@ -61,6 +61,10 @@ pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     };
+    normalize_absolute(&absolute, &mut 0)
+}
+
+fn normalize_absolute(absolute: &Path, links: &mut usize) -> std::io::Result<PathBuf> {
     let mut result = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -70,8 +74,22 @@ pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
             std::path::Component::CurDir => {}
             component => result.push(component.as_os_str()),
         }
-        if let Ok(resolved) = result.canonicalize() {
-            result = resolved;
+        match std::fs::symlink_metadata(&result) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                *links += 1;
+                if *links > 40 {
+                    return Err(std::io::Error::other("too many symbolic links"));
+                }
+                let target = std::fs::read_link(&result)?;
+                let expanded = if target.is_absolute() {
+                    target
+                } else {
+                    result.parent().unwrap_or(Path::new("/")).join(target)
+                };
+                result = normalize_absolute(&expanded, links)?;
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
         }
     }
     Ok(result)

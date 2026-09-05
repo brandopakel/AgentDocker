@@ -30,8 +30,9 @@ pub struct Client {
 impl Client {
     pub fn new(socket: Option<PathBuf>) -> Self {
         let socket = socket.unwrap_or_else(|| paths::socket_path(&paths::default_home()));
-        let disabled = std::env::var_os("AGENTDOCKER_NO_AUTOSTART")
-            .is_some_and(|value| !value.is_empty() && value != "0");
+        let disabled = std::env::var_os("AGENTDOCKER_TOKEN_FILE").is_some()
+            || std::env::var_os("AGENTDOCKER_NO_AUTOSTART")
+                .is_some_and(|value| !value.is_empty() && value != "0");
         Self {
             socket,
             autostart: if disabled { None } else { Some(START_TIMEOUT) },
@@ -48,7 +49,7 @@ impl Client {
     }
 
     async fn connect(&self, request: &Request) -> Result<BufReader<UnixStream>> {
-        let mut stream = match UnixStream::connect(&self.socket).await {
+        let stream = match UnixStream::connect(&self.socket).await {
             Ok(stream) => stream,
             Err(err) if absent(&err) && self.autostart.is_some() => {
                 self.start_daemon(self.autostart.unwrap_or(START_TIMEOUT))
@@ -63,10 +64,24 @@ impl Client {
                 });
             }
         };
+        let mut reader = BufReader::new(stream);
+        if let Some(path) = std::env::var_os("AGENTDOCKER_TOKEN_FILE") {
+            let token = std::fs::read_to_string(path)
+                .context("cannot read restricted endpoint token file")?;
+            let auth = serde_json::to_string(&Request::Authenticate {
+                token: token.trim().to_owned(),
+            })? + "\n";
+            reader.get_mut().write_all(auth.as_bytes()).await?;
+            let mut response = String::new();
+            reader.read_line(&mut response).await?;
+            if !matches!(serde_json::from_str::<Response>(&response)?, Response::Ok) {
+                bail!("restricted endpoint authentication failed");
+            }
+        }
         let mut line = serde_json::to_string(request)?;
         line.push('\n');
-        stream.write_all(line.as_bytes()).await?;
-        Ok(BufReader::new(stream))
+        reader.get_mut().write_all(line.as_bytes()).await?;
+        Ok(reader)
     }
 
     /// Start `agentd` for this socket if nobody has, then wait for it to

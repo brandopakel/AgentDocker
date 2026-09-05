@@ -291,6 +291,22 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(request).await
             }
+            "create_worktree" | "worktree_diff" | "integrate_worktree" => {
+                let op = match name {
+                    "create_worktree" => "worktree_create",
+                    "worktree_diff" => "worktree_diff",
+                    _ => "integrate",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".into()))?;
+                object.insert("op".into(), json!(op));
+                object.insert("agent".into(), json!(me));
+                let request: Request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
             "save_checkpoint" | "resume_checkpoint" | "list_checkpoints" | "validate"
             | "validation_results" => {
                 let op = match name {
@@ -603,6 +619,9 @@ fn tool_definitions() -> Vec<Value> {
     let resource_doc = "Resource key `kind:value`, e.g. `path:/abs/file`, `path:/abs/dir` \
                         (covers everything beneath), `branch:name`, `task:ID`.";
     vec![
+        json!({"name":"create_worktree","description":"Host endpoint only: create a new linked checkout and branch from this session's HEAD; existing files are preserved.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"branch":{"type":"string"}},"required":["path","branch"],"additionalProperties":false}}),
+        json!({"name":"worktree_diff","description":"Host endpoint only: show tracked uncommitted changes in this session's physical checkout.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({"name":"integrate_worktree","description":"Host endpoint only: preview validated committed source from a linked checkout. apply=true prepares an uncommitted merge and retains a target-checkout lease for review; it never commits automatically.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"validation":{"type":"string"},"apply":{"type":"boolean"}},"required":["source","validation"],"additionalProperties":false}}),
         json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
         json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session without transferring leases.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
         json!({"name":"list_checkpoints","description":"List this agent's durable checkpoints.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
@@ -810,6 +829,9 @@ mod tests {
         assert_eq!(
             names,
             [
+                "create_worktree",
+                "worktree_diff",
+                "integrate_worktree",
                 "save_checkpoint",
                 "resume_checkpoint",
                 "list_checkpoints",

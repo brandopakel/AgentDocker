@@ -229,3 +229,9 @@ agentdocker resume --as replacement <checkpoint-id> --acknowledge
 ```
 
 Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. It never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+
+## Worktrees and authenticated containers
+
+Use `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
+
+`agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Managed Docker/Podman lifecycle and image-build provenance are the next engine-adapter work; this endpoint supports externally managed containers now. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).

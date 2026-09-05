@@ -140,6 +140,12 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 
 | Request | Response | Notes |
 |---|---|---|
+| `worktree_create {agent, path, branch}` | `worktree {path, branch}` | host-only; new linked checkout at HEAD |
+| `worktree_diff {agent}` | `diff {text}` | host-only tracked diff |
+| `integrate {agent, source, validation, apply?}` | `integration {source_head, applied, clean, text}` | validated source; apply leaves merge uncommitted and target lease held |
+| `grant_access {agent, container_root, ttl_secs?}` | `access {grant, token, socket, expires_at}` | host-only; TTL 1–86400 seconds, default 3600; CLI writes token privately and prints grant ID |
+| `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
+| `authenticate {token}` | `ok` | restricted endpoint only; precedes one scoped request |
 | `ping` | `pong` | version, uptime |
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
@@ -178,7 +184,7 @@ Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidd
 
 A **resource key** is `kind:value`. The daemon interprets two kinds, `path` and `file`, which overlap hierarchically — `path:/repo/src` overlaps `path:/repo/src/lib.rs` and `path:/repo` — so claiming a directory protects everything under it. Every other kind (`branch:`, `task:`, `db:`, or anything you invent) overlaps only on exact match.
 
-**Physical protection and logical overlap.** Write leases use canonical absolute `path:` keys independently of the holder's project. A directory claim covers its physical descendants, including files claimed by agents outside the project. Canonicalization resolves existing symlinks and normalizes missing suffixes, including `..`. An explicit `file:<project id>/<relative path>` input is an alias only when `agent` identifies a matching checkout; unsafe relative paths are rejected. Queries use the same normalization. Linked worktrees and clones can edit independently because they are different physical checkouts. Project id plus relative path describes logical overlap for the Phase 3 ledger and Phase 4 integration; it is not a second write-lock namespace. Containers will require an authenticated mount mapping before their paths can participate.
+**Physical protection and logical overlap.** Write leases use canonical absolute `path:` keys independently of the holder's project. A directory claim covers its physical descendants, including files claimed by agents outside the project. Canonicalization resolves existing symlinks and normalizes missing suffixes, including `..`. An explicit `file:<project id>/<relative path>` input is an alias only when `agent` identifies a matching checkout; unsafe relative paths are rejected. Queries use the same normalization. Linked worktrees and clones can edit independently because they are different physical checkouts. Project id plus relative path describes logical overlap for the Phase 3 ledger and Phase 4 integration; it is not a second write-lock namespace. Containers use an authenticated mount mapping before their paths participate.
 
 Two **modes**: `exclusive` conflicts with any lease on an overlapping resource held by someone else; `shared` conflicts only with exclusive leases held by someone else. An agent never conflicts with itself, and re-claiming a resource you hold in the same mode renews it instead of failing.
 
@@ -213,13 +219,13 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 `run` spawns the command with stdin closed and stdout/stderr piped into a log writer that prefixes each line with an ISO timestamp and `[out]`/`[err]`. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
 
-## Security model (Phase 0)
+## Security model
 
-The socket is `0600`, so only the owning user can talk to the daemon, and every request is trusted at the level of that user. The protocol has no authentication because there is no one to authenticate yet. Federation (Phase 6) introduces per-host identities and authenticated channels; per-agent capability tokens and a separate authenticated transport boundary are required before Phase 4 container support.
+The host control socket is mode `0600` and trusts the owning user. The separate `container.sock` also has mode `0600` but requires a scoped token: first `authenticate`, then exactly one operation, then close. Frames are bounded to 1 MiB and connections time out after 30 seconds. Tokens are stored hashed, scoped to one running agent and physical checkout, and checked for revocation/expiry on every operation. Only mapped path claims/reads, own inbox/lease operations, inspection and direct project-peer messaging are allowed. Host process control, validation execution and credential administration are unavailable. Missing tokens never fall back to host authority. Existing leases survive revocation until normal release/expiry/observed exit. Engine sockets and the host control socket are never container mounts.
 
 ## Roadmap
 
-Phases 0–2 are implemented in the feature stack; merge and public release status are tracked in GitHub. Phases 3–6 below are design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
+Phases 0–2 are implemented in the feature stack; merge and public release status are tracked in GitHub. Phase 3 read tracking and durable recovery are implemented in the stack, with explicit worktree integration and scoped container transport added next. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
 ### The thesis
 
@@ -365,29 +371,25 @@ When the budget bites, the *oldest* entries collapse into the leading "… N ear
 
 ### Phase 4 — layers, sandboxes & handoff
 
-#### Worktrees as the writable layer
+#### Worktree integration
 
-A container writes to its own layer over a shared image; an agent should write to its own worktree over a shared repository. `run --isolate [--base <ref>]` (and `isolate = true` in an `Agentfile.toml` entry) has the daemon create `git worktree add <home>/worktrees/<project id>/<agent name> -b agent/<name> <base>` (default `HEAD`), set the spec's `workdir` to it, and record `isolation: Some(Worktree { path, branch, base })` on the agent. The worktree resolves to the same project through the common git directory. It outlives the agent like a container's layer outlives a stopped container: `remove` keeps it, `remove --purge` deletes the worktree and branch.
+Implemented commands are `worktree-create --as <agent> <new-path> --branch <new-branch>`, `worktree-diff --as <agent>`, and `integrate --as <target-agent> <source-path> --validation <id> [--apply]`. Worktree creation uses the current HEAD and keeps existing files. Register or run the source session in the new checkout separately. Independent physical checkouts have independent write leases even when their relative paths overlap.
 
-- **`agentdocker diff <agent> [--stat]`** — the worktree's changes against `base` (committed and uncommitted), rendered as a unified diff.
-- **`agentdocker commit <agent> [-m …] [--push] [--pr]`** — commits the worktree's changes on the agent's branch; `--push` pushes; `--pr` opens a pull request via `gh`. Under the hood the daemon claims `branch:<base>` exclusive for the duration so two commits onto one base cannot interleave.
-- **`agentdocker overlap [--project .]`** — pairs of agents whose ledgers touch the same project-relative path, i.e. merge conflicts before they happen. This is why the ledger stores relative paths.
-- **Leases in isolation.** Two isolated agents editing the same relative path is intended parallelism. Hooks still claim the physical file, protecting against a second agent accidentally using that same checkout. Cross-checkout overlap is advisory until integration. A project-scoped branch lease guards integration into a shared target; committing independently on private branches does not require serializing unrelated commits.
+Integration requires linked worktrees, clean source/target trees and passing validation whose content identity and HEAD still match the source. Preview returns a diff; `--apply` claims the physical target checkout and runs a no-commit, no-fast-forward merge. The target lease stays held for review, including conflicts. The caller uses Git to inspect, commit or abort, then releases the lease. No automatic commit, force reset, branch deletion or worktree purge is performed. Automated `run --isolate`, cross-branch semantic overlap analysis and purge are future extensions.
 
-*Done when* two isolated agents edit the same file, `overlap` names them, each `commit` lands on its own branch, and neither was ever blocked from editing.
+#### Sandboxes and container engines
 
-#### Sandboxes
+Docker and Podman are equal targets for the container workstream. AgentDocker remains a native host daemon. It delegates image builds and container execution to an installed engine; its own responsibility is physical checkout identity, observed working state, authentication, and verified recovery. The agent runtime (`codex`, `claude-code`, or another adapter) is separate from the container engine (`docker` or `podman`). Apple's `container` remains a future adapter, pending equivalent capability and lifecycle tests.
 
-Settled on 2026-09-04. **The daemon is never sandboxed; the sandbox is a property of the agent's runtime**, the way Docker's `--runtime` picks runc, gVisor, or Kata. It supervises processes that use the user's repositories and credentials, signals pids, and canonicalises paths, so it lives in the host's namespace, and AgentDocker builds no sandbox engine of its own. Three layers compose:
+The current implementation provides worktree operations and a separate authenticated container endpoint. Engine-managed launch/build and VM transport are the next integration steps, not completed features. The delivery and acceptance plan is [CONTAINER-ENGINES.md](CONTAINER-ENGINES.md).
 
-1. **Runtime-native sandboxes.** Claude Code and Codex ship their own (seatbelt on macOS, bubblewrap or landlock on Linux). The hooks and the MCP server run as children of the host process, *outside* that sandbox, so they always reach the daemon; nothing to build.
-2. **Worktree isolation** (above) sandboxes the filesystem layer with no process isolation.
-3. **Container runtimes.** `--runtime docker --image <img>` (likewise `podman`, and Apple's `container`) has the supervisor run the agent's command inside a container; the docker client is the supervised child, so pid, logs, and exit status work unchanged. Defaults are closed: `--network none`, the checkout bind-mounted read-write at `/work`, the daemon socket mounted at `/run/agentd.sock` with `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_PROJECT_ROOT=/work` set, and no host environment passed through; the spec opts into network, extra mounts, and `-e` values. Combined with `--isolate` an agent gets its own worktree *and* its own filesystem view.
+The shared engine interface will cover availability/capability discovery, image build and inspection, container create/start/inspect/stop/remove, logs, and wait. Implementations invoke the selected engine with structured arguments. Engine selection is explicit and persisted; a failed engine must never silently switch to another engine or the host. Record the engine, container ID, resolved image ID/digest and platform with the agent. A client process exiting does not prove the container stopped: engine inspection must establish termination before releasing its protection. An unavailable engine leaves status uncertain and protection governed by existing lease TTLs.
 
-Two consequences were pulled forward because sandboxes depend on them:
+Build support uses a common Dockerfile/Containerfile and explicit context, with per-engine handling for unsupported features. Podman accepts both formats, but its `buildx` compatibility does not cover all Docker Buildx features ([Podman build reference](https://docs.podman.io/en/latest/markdown/podman-build.1.html)). Build provenance must record the source content identity, build recipe, engine/version, target platform, and resulting immutable image identity. Build success is distinct from test success; validation evidence also needs the image identity and command before it can be reused across container sessions.
 
-- **Project-relative resources** (done; [Leases](#leases)). Inside a container the same file has a different absolute path, so leases — and, in Phase 3, read sets and the ledger — name files by project id and relative path. The daemon translates; sandboxed clients still send whatever path they see.
-- **Per-agent tokens.** The socket is the one deliberate hole in a sandbox, so a sandboxed agent must not be able to impersonate another sender or stop other agents. `run` and `register` mint a token, returned in the response and passed to managed agents as `AGENTDOCKER_TOKEN`; a request carrying `token` is bound to that agent id (its `agent`/`from` must match) and may only act on itself. Sandboxed runtimes always get one and the daemon requires it from them; local shells and hooks use a host-only endpoint. Containers receive only an authenticated endpoint or identity-bound proxy; omitting a token never falls back to host authority. Registered mount mappings translate container paths into the bound physical checkout before authorization and resource lookup. Tokens are stored hashed beside the record and revoked when the agent exits. This is the identity admission policy (Phase 5) binds rules to, and it closes the `from` open question for the case that matters.
+The host control socket is never mounted in a container. `grant-access` creates an expiring credential scoped to one running agent and one physical checkout, writes the secret to a private token file, and supplies only `container.sock`. The CLI uses `AGENTDOCKER_TOKEN_FILE`; the endpoint requires authentication and rechecks identity, expiry and revocation for each operation. Container `/work` paths translate to canonical host paths before lease and read-set lookup. Token revocation denies new requests but does not free a running writer's leases. Runtime-native sandboxes may need their own transport configuration; hooks and MCP are not assumed to run outside every sandbox.
+
+Engine adapters must handle rootless ownership and VM mount reachability explicitly. A host Unix socket is not presumed usable through a macOS VM bind mount. The VM bridge may expose only the authenticated endpoint, with a tested path mapping; no privileged engine socket is made available to an agent. Default container policy is no network, no inherited host environment, no engine socket, and only the selected checkout plus the scoped endpoint and token mounts. Network access and additional mounts are explicit configuration. Worktrees isolate edits; container engines provide the process/filesystem boundary.
 
 #### Handoff bundles
 
@@ -501,3 +503,7 @@ The ledger now includes `checkout` (absent for legacy entries). A watcher change
 
 Evidence covers the ignore-aware snapshot scope described above, not ignored dependencies, environment reproducibility or adversarial change-and-revert during execution. Commands run in the live checkout: callers should hold leases for code under test and avoid concurrent mutation. A check or accepted handoff is point-in-time evidence; external writers can invalidate it afterward. Recovery displays task assumptions for the replacement to assess, not as proven facts.
 Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a tag protection/ruleset before publishing; an unprotected tag intentionally skips release. Credentials are limited to upload/download steps and checkout does not persist them. Critical physical-key paths use fallible normalization and reject unavailable cwd resolution; display/discovery callers retain the best-effort helper.
+
+### Continuous verification workstream
+
+The [testing and benchmarking plan](TESTING-AND-BENCHMARKS.md) runs alongside every delivery step: nextest, Proptest, coverage, Criterion/Bencher, native protocol load tests, bounded fuzzing and real Docker/Podman checks. Acceptance centers on stale-context detection and verified recovery; benchmark provenance must identify the exact code, environment and image tested.
