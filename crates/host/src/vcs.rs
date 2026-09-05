@@ -51,7 +51,7 @@ pub fn state(dir: &Path) -> Option<VcsState> {
 
 /// `(git directory of this checkout, common git directory)`: equal for a
 /// main checkout, distinct for a linked worktree.
-fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let start = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     for ancestor in start.ancestors() {
         let dot_git = ancestor.join(".git");

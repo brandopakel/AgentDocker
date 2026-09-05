@@ -42,13 +42,14 @@ One process per host. It is a library crate whose `main` the `agentdocker` packa
 - **Lease table** — the core `LeaseTable`, plus a 1-second reaper that expires leases and emits events.
 - **Events** — a second broadcast channel carrying `Event`s.
 - **Projects** — the fingerprint cache per repository root; see [Projects](#projects).
+- **Watcher** — one `notify` watcher over every checkout a live agent works in, feeding the ledger and branch refreshes; see [Watching and the ledger](#watching-and-the-ledger).
 - **Store** — SQLite at `<home>/state.db`; see [Persistence](#persistence).
 
 Locking discipline: one synchronous state mutex owns the registry, leases, inboxes, subscriptions, store and event sequence. A transition mutates memory, writes SQLite and publishes its events before releasing that guard. Host filesystem work and waits run outside the guard; no guard crosses an `.await`. This prevents older snapshots from overwriting newer state and keeps live event order aligned with persistence.
 
 ## Persistence
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 2 upgrades schema 1 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 2, including its new `stopping` status.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 2 upgrades schema 1 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 2, including its new `stopping` status.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -118,6 +119,16 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 **What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `BRANCH` and `HEAD` say what each agent's checkout is on; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Write leases use canonical physical paths (see [Leases](#leases)); `leases --resource <root>` lists protection in that physical checkout. Logical project-relative paths remain the basis for cross-checkout change and overlap analysis.
 
+## Watching and the ledger
+
+The daemon watches the filesystem of every checkout a live agent works in and keeps a ledger of what changed and who held it. This is the substrate for staleness notices and the change journal (Phase 3), and it is what makes branch tracking event-driven.
+
+**Watching.** One `notify` watcher (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second, so an agent joining or leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
+
+**The ledger.** Each surviving change becomes a `Change`: project, worktree, checkout-relative path, kind (created, modified, removed, renamed), time, the checkout's HEAD, and an **attribution** — the holder of a lease overlapping the file's `file:` key at that moment (exclusive first), else `external`: the user's editor, a git command, a build. Attribution is best-effort by construction and every rendering says so. Entries are persisted in the `changes` table (`seq`, indexed by project and by project + path, so "everything under `src/`" is a prefix range) and announced live as `file_changed`, which is deliberately *not* kept in the event history: change volume would crowd out everything else in that 10,000-event window. The newest 100,000 entries per project are kept, pruned once a minute.
+
+**Reading it.** `changes {project, since_seq?, path?, agent?, limit?}` returns the newest `limit` entries oldest first; `agentdocker changes [--project .] [--since N] [--path P] [--agent A] [-n N]` prints them with agent names, and `agentdocker blame <path>` is the same query for one file. An absolute path in a query is made relative to the checkout containing it, so callers need not know the root.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
@@ -141,6 +152,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
 | `report {agent, vcs?}` | `ok` | what an adapter observed; a changed `vcs` is stored and announced |
+| `changes {project, since_seq?, path?, agent?, limit?}` | `changes` | the ledger, newest `limit` entries oldest first |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
@@ -250,9 +262,9 @@ This phase replaces the earlier plan for a separate key/document context store. 
 
 *Done when* agent A reads a file, agent B edits it under a lease, and A's next hook fire hands the model a notice naming the file, B, and B's note — and an edit by A before re-reading is refused once.
 
-#### Attribution ledger
+#### Attribution ledger *(done)*
 
-The `changes` table is the ledger: `(seq INTEGER PRIMARY KEY, project, worktree, path, kind, at, by_agent, lease, head, json)` with indexes on `(project, seq)` and `(project, path, seq)`. Paths are project-relative, so "everything under `src/`" is a string prefix range (`path >= 'src/' AND path < 'src0'`), which is the query the journal needs at every lease release. `agentdocker blame <path>` lists the changes to a path with agent, lease note, and time; `agentdocker changes [--project .] [--agent X] [--since …]` lists a range; `inspect <agent>` shows the agent's changed paths. Retention: newest 100,000 rows per project, pruned once a minute like events; journal entries carry their own path lists, so pruning the ledger loses fine grain only. Attribution is best-effort and every rendering says so.
+See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering, attribution through leases, the `changes` table, and `changes`/`blame` all exist; attribution through reported writes arrives with read sets.
 
 #### Change journal
 
@@ -416,8 +428,8 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
-| 7 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 3, 6 |
-| 8 | staleness notices; hook deny-once on stale edits | 3 | 7 |
+| 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), branch refresh from the watcher instead of a poll | 3 | 3, 6 |
+| 8 | read sets (`report` reads and writes), staleness notices, hook deny-once on stale edits | 3 | 7 |
 | 9 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 7 |
 | 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
 | 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9, 10 |
@@ -437,7 +449,6 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `claim {…}` | adds `error(deadlock)` | 5 |
 | `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
 | `release {…, summary?}`, `release_all {…, summary?}` | `lease` / `leases` | 3 |
-| `changes {project, since?, path?, agent?, limit?}` | `changes` | 3 |
 | `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | 3 |
 | `journal_add {agent, summary}` | `journal_entry` | 3 |
 | `diff {agent, stat?}` | `diff` | 4 |
@@ -457,3 +468,5 @@ New events: `file_changed`, `agent_stale`, `journal_appended`, `lease_transferre
 
 
 Implementation order after hardening: complete read/content-version observations and staleness; add durable journal and acknowledged recovery with validation evidence tied to exact code; then worktree integration and authenticated container transport. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
+
+The integrated watcher attributes a change only to an unexpired exclusive lease on its physical checkout path; a reader's shared lease is not authorship evidence. Watcher-triggered VCS refreshes retain the five-second poll as a fallback. `file_changed` uses its ledger sequence (`change.seq`), and its event envelope has `seq: 0`; event replay filtering does not suppress these live ledger notifications.

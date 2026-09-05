@@ -197,6 +197,18 @@ pub fn event_line(event: &Event) -> String {
             project.root.display(),
             project.name()
         ),
+        EventKind::FileChanged { change } => {
+            let by = change
+                .by
+                .agent()
+                .map_or_else(|| "external".to_owned(), |a| a.short().to_owned());
+            format!(
+                "file {:<9} {} by {by} [{}]",
+                change.kind.to_string(),
+                change.path.display(),
+                change.project.short()
+            )
+        }
         EventKind::AgentVcsChanged { agent, vcs } => {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }
