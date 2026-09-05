@@ -963,7 +963,10 @@ impl Daemon {
         };
         match lock(&self.state).store.changes(&query) {
             Ok(changes) => Response::Changes { changes },
-            Err(err) => Response::error(ErrorCode::Internal, format!("ledger query failed: {err}")),
+            Err(err) => Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("ledger query failed: {err}"),
+            ),
         }
     }
 
