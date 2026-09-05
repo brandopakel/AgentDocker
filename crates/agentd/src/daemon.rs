@@ -25,7 +25,7 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tracing::{error, info, warn};
 
 use agentdocker_host::{procinfo, project};
@@ -68,6 +68,8 @@ pub struct Daemon {
     next_seq: AtomicU64,
     bus: broadcast::Sender<Envelope>,
     events: broadcast::Sender<Event>,
+    /// Fired by a `shutdown` request; the main loop waits on it.
+    shutdown: Notify,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -250,6 +252,7 @@ impl Daemon {
             next_seq: AtomicU64::new(next_seq),
             bus,
             events,
+            shutdown: Notify::new(),
         })
     }
 
@@ -259,6 +262,11 @@ impl Daemon {
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// Resolves once a client has asked the daemon to exit.
+    pub async fn shutdown_requested(&self) {
+        self.shutdown.notified().await;
     }
 
     /// The last `limit` stored events, oldest first.
@@ -327,6 +335,11 @@ impl Daemon {
                 }
                 Err(response) => *response,
             },
+            Request::Shutdown => {
+                info!("shutdown requested by a client");
+                self.shutdown.notify_one();
+                Response::Ok
+            }
             Request::Send {
                 from,
                 to,

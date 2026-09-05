@@ -5,6 +5,7 @@ mod client;
 mod format;
 mod hooks;
 mod mcp;
+mod service;
 mod teams;
 
 use std::collections::BTreeMap;
@@ -135,6 +136,8 @@ enum Command {
         #[arg(long)]
         resource: Option<String>,
     },
+    /// Run agentd as a login service, or start, stop, and inspect it.
+    Daemon(service::DaemonArgs),
     /// Host integrations: handle a hook event, or install the hook configuration.
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
@@ -257,6 +260,7 @@ struct ClaimArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let socket = cli.socket.clone();
     let client = Client::new(cli.socket);
 
     match cli.command {
@@ -460,6 +464,7 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
+        Command::Daemon(args) => service::run(client, socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,

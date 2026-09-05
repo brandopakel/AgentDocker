@@ -54,6 +54,10 @@ pub enum EventKind {
     ProjectDiscovered {
         project: ProjectRef,
     },
+    /// The daemon is about to exit; `reason` is `signal` or `request`.
+    DaemonStopping {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

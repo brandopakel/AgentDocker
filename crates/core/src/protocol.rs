@@ -61,6 +61,8 @@ pub enum Request {
     Heartbeat {
         agent: String,
     },
+    /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
+    Shutdown,
 
     /// Publish a message. `to` uses [`crate::Destination::parse`] shorthand.
     Send {

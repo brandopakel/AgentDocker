@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/setup-cross-toolchain-action@v1
+        if: runner.os == 'Linux'
+        with:
+          target: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # Archives are named without the version so the installer can fetch
+      # .../releases/latest/download/agentdocker-<target>.tar.gz; versioned
+      # downloads go through .../releases/download/<tag>/....
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: agentdocker,agentd
+          target: ${{ matrix.target }}
+          archive: agentdocker-$target
+          tar: unix
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}

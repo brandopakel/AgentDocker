@@ -180,6 +180,7 @@ pub fn event_line(event: &Event) -> String {
             project.root.display(),
             project.name()
         ),
+        EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
     };
     format!("{}  {body}", clock(event.at))
 }

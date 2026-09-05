@@ -21,6 +21,16 @@ Coding agents are cheap to start and easy to lose track of. Run three of them ag
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh   # release binaries into ~/.local/bin
+cargo install agentdocker                                                                  # or build from source: both binaries
+agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
+```
+
+The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running.
+
 ## Quick start
 
 ```sh

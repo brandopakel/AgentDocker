@@ -66,6 +66,10 @@ Nobody has to start `agentd` by hand. A client that cannot connect — no socket
 
 Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
+**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux. Both restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+
+**Installing.** `cargo install agentdocker` builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb` is a formula for a tap, with a `brew services` block that runs the daemon. The release workflow builds and uploads the archives with SHA-256 checksums on every `v*` tag.
+
 ### `agentdocker mcp` (`crates/cli/src/mcp.rs`)
 
 The universal adapter. An MCP host spawns `agentdocker mcp` as a stdio server; the server registers the host as an agent (pid = the host's, so the liveness check cleans up after a crash) and translates tool calls into daemon requests. The JSON-RPC surface is deliberately minimal — `initialize`, `ping`, `tools/list`, `tools/call`, notifications ignored — and hand-rolled, because that is a few hundred lines with tests versus a dependency on a fast-moving SDK. Supported protocol versions: `2025-06-18`, `2025-03-26`, `2024-11-05` (the client's choice is echoed when supported).
@@ -130,6 +134,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `list {all?, project?, labels?}` | `agents` | live only unless `all`; `project` is an id prefix or an absolute path inside it; `labels` must all match |
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
+| `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
@@ -178,7 +183,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_created` (with the project id), `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_created` (with the project id), `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 ## Process supervision
 
@@ -202,12 +207,12 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 ### Phase 2 — native install & projects
 
-#### Native install *(lazy start done; service and packaging next)*
+#### Native install *(done)*
 
 `agentd` is a native, per-user host process — never a container. It supervises processes that use the user's repositories, credentials, and editor; its liveness check signals pids; its path leases canonicalise real paths. All of that requires the same kernel and filesystem namespace as the agents, which is also why `dockerd` runs natively. Sandboxing is an *agent* concern (Phase 4 runtimes), not a daemon one, and a shared system-wide daemon for several users belongs with federation.
 
-- **Artifacts.** Static binaries per target (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) built by a release workflow; `cargo install agentdocker` installs both binaries (done: `agentd` is a library and the `agentdocker` package ships both); a Homebrew tap; a `curl | sh` installer that drops both binaries into `~/.local/bin` or `/usr/local/bin` and prints the service-install step.
-- **Service.** `agentdocker daemon install` writes a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`, `KeepAlive`, logs to `<home>/agentd.log`) on macOS or a systemd user unit (`~/.config/systemd/user/agentd.service`, `Restart=on-failure`) on Linux; `daemon uninstall`, `daemon status`, `daemon restart`. The daemon must be safe to run without the service too, so nothing here is required.
+- ~~**Artifacts.**~~ Done: the release workflow, `install.sh`, and the Homebrew formula (the tap repository itself, and publishing to crates.io, are release-time steps for the maintainer).
+- ~~**Service.**~~ Done; see [Starting the daemon](#starting-the-daemon).
 - ~~**Lazy start.**~~ Done; see [Starting the daemon](#starting-the-daemon). The quick start no longer needs `agentd &`.
 
 #### Project identity *(done)*
@@ -401,7 +406,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
-| 4 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
+| 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 5 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 3, 6 |

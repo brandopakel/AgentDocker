@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentdocker_core::paths;
+use agentdocker_core::{EventKind, paths};
 use agentdocker_host::lock;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
@@ -90,7 +90,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let result = tokio::select! {
         served = server::serve(daemon.clone()) => served,
         () = shutdown_signal() => {
-            info!("shutting down");
+            info!("shutting down on signal");
+            daemon.emit(EventKind::DaemonStopping { reason: "signal".to_owned() });
+            Ok(())
+        }
+        () = daemon.shutdown_requested() => {
+            info!("shutting down on request");
+            daemon.emit(EventKind::DaemonStopping { reason: "request".to_owned() });
             Ok(())
         }
     };
