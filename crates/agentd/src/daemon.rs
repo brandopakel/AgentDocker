@@ -41,6 +41,7 @@ mod access;
 mod containers;
 mod images;
 mod recovery;
+mod transport;
 mod working;
 mod worktrees;
 
@@ -98,6 +99,7 @@ struct State {
     live_subscribers: HashMap<AgentId, usize>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     container_busy: HashSet<AgentId>,
+    transports: HashMap<AgentId, transport::Transport>,
     projects: HashMap<PathBuf, Option<String>>,
     next_seq: u64,
     bus: broadcast::Sender<Envelope>,
@@ -584,6 +586,7 @@ impl Daemon {
                 live_subscribers: HashMap::new(),
                 supervised: HashMap::new(),
                 container_busy: HashSet::new(),
+                transports: HashMap::new(),
                 projects,
                 next_seq,
                 bus,
@@ -700,7 +703,11 @@ impl Daemon {
                 uptime_secs: self.started.elapsed().as_secs(),
             },
             Request::Run { spec } => self.run(spec).await,
-            Request::RunContainer { spec, build } => self.run_container(spec, build).await,
+            Request::RunContainer {
+                spec,
+                build,
+                options,
+            } => self.run_container(spec, build, options).await,
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid } => self.register(spec, pid).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),

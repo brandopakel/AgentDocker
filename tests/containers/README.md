@@ -14,3 +14,12 @@ On native Linux the engine socket path is the daemon home's `container.sock`. Th
 On macOS, bind mounting a host Unix socket through the VM filesystem is not assumed to work. The development check used a dedicated Podman VM and an SSH reverse Unix-socket forward of **only** `container.sock` to `/tmp/ad-container-e2e.sock` in that VM. The checkout/token paths were under Podman's shared `/private` directory. Use `podman machine inspect` for that machine's SSH port/key and `ssh -N -R <vm-socket>:<host-container.sock> ...` with a verified host key and `ExitOnForwardFailure=yes`. Keep the bridge alive for the test and close it afterward. Never forward `host.sock`.
 
 September 5, 2026 local result: Podman 6.1.1, rootless Linux arm64 in the macOS VM, all scenarios passed. Fixture image ID: `54a2fa1cd8bdd568099ef6ecc826826a4a15690e95aabca5801045dd7534da4c`. This is protocol interoperability evidence; it does not claim managed container lifecycle or immutable container validation support. Docker has a separate Linux CI matrix entry and is reported independently.
+
+
+`workspace.py` owns a managed workspace fixture and verifies authenticated mounted requests, identity/admin/traversal rejection, physical alias conflicts, stale rereads, daemon-crash reconnects, read-only validation in the image, durable validation deadlines, source/image recovery checks and revocation. Linux CI runs it independently for Docker and rootless Podman:
+
+```sh
+python3 tests/containers/workspace.py --engine podman --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root /tmp/ad-workspace-new --result /tmp/workspace-result.json
+```
+
+On macOS, add `--machine NAME` for a running rootless Podman machine whose connection matches the build. Use a short fixture root because Unix sockets have pathname limits. The fixture exercises AgentDocker's managed SSH forward; SSH credentials and control files never enter the container. It removes only fixture-owned, label-verified containers and stops its daemon. It retains test files/logs and cached images; the caller owns VM startup/shutdown. Docker Desktop transport is unsupported.

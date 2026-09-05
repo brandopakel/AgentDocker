@@ -85,5 +85,97 @@ pub struct ManagedContainer {
     pub intent: ContainerIntent,
     /// Written before invoking start, including when its response is lost.
     pub start_attempted: bool,
+    /// Legacy records may already exist in the engine; new runs begin with false.
+    #[serde(default = "legacy_create_attempted")]
+    pub create_attempted: bool,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub options: ContainerRunOptions,
+    #[serde(default)]
+    pub workspace: Option<ContainerWorkspace>,
+    /// Validation runners are killed after this durable deadline, including after recovery.
+    #[serde(default)]
+    pub deadline: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerRunOptions {
+    #[serde(default)]
+    pub mount_checkout: bool,
+    #[serde(default)]
+    pub podman_machine: Option<String>,
+    #[serde(default)]
+    pub network: ContainerNetwork,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerNetwork {
+    #[default]
+    None,
+    Bridge,
+}
+impl ContainerNetwork {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Bridge => "bridge",
+        }
+    }
+}
+
+/// Persisted mount and UID mapping. Credentials themselves never enter the registry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerWorkspace {
+    pub checkout: PathBuf,
+    pub user: String,
+    pub keep_id: bool,
+    pub read_only: bool,
+    pub access: Option<WorkspaceAccess>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceAccess {
+    pub grant: String,
+    pub directory: PathBuf,
+    pub socket_directory: PathBuf,
+    pub vm: Option<PodmanVm>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PodmanVm {
+    pub machine: String,
+    pub port: u16,
+    pub identity: PathBuf,
+    pub user: String,
+}
+
+/// Checks are reusable only in this same image and execution configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerEnvironment {
+    pub image_id: String,
+    pub build: String,
+    pub engine: ContainerEngine,
+    pub connection: Option<String>,
+    pub network: ContainerNetwork,
+    pub user: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+impl ContainerEnvironment {
+    pub fn of(record: &crate::AgentRecord) -> Option<Self> {
+        let c = record.container.as_ref()?;
+        Some(Self {
+            image_id: c.image_id.clone(),
+            build: c.build.clone(),
+            engine: c.engine,
+            connection: c.connection.clone(),
+            network: c.options.network,
+            user: c.workspace.as_ref().map(|w| w.user.clone()),
+            env: record.spec.env.clone(),
+        })
+    }
+}
+
+fn legacy_create_attempted() -> bool {
+    true
 }

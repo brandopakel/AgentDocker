@@ -50,6 +50,9 @@ fn prefix(record: &AgentRecord) -> Vec<String> {
         );
         argv.push(connection.clone());
     }
+    if c.engine == ContainerEngine::Podman && c.connection.is_none() && c.workspace.is_some() {
+        argv.push("--remote=false".into());
+    }
     argv
 }
 
@@ -112,6 +115,45 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
     let status = data.pointer("/State/Status").and_then(Value::as_str);
     let running = data.pointer("/State/Running").and_then(Value::as_bool);
     let restarting = data.pointer("/State/Restarting").and_then(Value::as_bool);
+    if let Some(w) = &c.workspace {
+        if data.pointer("/Config/User").and_then(Value::as_str) != Some(&w.user)
+            || data.pointer("/Config/WorkingDir").and_then(Value::as_str) != Some("/workspace")
+            || data
+                .pointer("/HostConfig/NetworkMode")
+                .and_then(Value::as_str)
+                != Some(c.options.network.as_str())
+            || data.pointer("/HostConfig/Privileged") != Some(&Value::Bool(false))
+        {
+            return Err(ContainerError(
+                "container user, workdir, networking or privilege policy differs".into(),
+            ));
+        }
+        let mounts = data
+            .get("Mounts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ContainerError("container omitted mount evidence".into()))?;
+        let mut expected = vec![(&w.checkout, "/workspace", !w.read_only)];
+        if let Some(a) = &w.access {
+            expected.extend([
+                (&a.directory, "/run/agentdocker-auth", false),
+                (&a.socket_directory, "/run/agentdocker", false),
+            ]);
+        }
+        if mounts.len() != expected.len()
+            || expected.iter().any(|(source, dest, rw)| {
+                !mounts.iter().any(|m| {
+                    m.get("Type").and_then(Value::as_str) == Some("bind")
+                        && m.get("Source").and_then(Value::as_str) == source.to_str()
+                        && m.get("Destination").and_then(Value::as_str) == Some(*dest)
+                        && m.get("RW").and_then(Value::as_bool) == Some(*rw)
+                })
+            })
+        {
+            return Err(ContainerError(
+                "container mounts differ from the authorized checkout and endpoint".into(),
+            ));
+        }
+    }
     let state = if running == Some(true) || restarting == Some(true) {
         ContainerState::Running
     } else if running == Some(false)
@@ -152,7 +194,6 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
         "create",
         "--pull=never",
         "--restart=no",
-        "--network=none",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--name",
@@ -160,6 +201,7 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
     .map(str::to_owned)
     .into();
     args.push(c.name.clone());
+    args.push(format!("--network={}", c.options.network.as_str()));
     for (key, value) in [
         ("owner", c.owner.as_str()),
         ("agent", record.id.as_str()),
@@ -169,6 +211,43 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
     }
     for (key, value) in &record.spec.env {
         args.extend(["--env".into(), format!("{key}={value}")]);
+    }
+    if let Some(w) = &c.workspace {
+        // The scoped host/SSH socket is outside container SELinux process labels.
+        // Keep UID isolation, private mounts, dropped capabilities and no-new-privileges.
+        args.push("--security-opt=label=disable".into());
+        args.extend([
+            "--user".into(),
+            w.user.clone(),
+            "--workdir=/workspace".into(),
+        ]);
+        if w.keep_id {
+            args.push("--userns=keep-id".into());
+        }
+        args.extend([
+            "--mount".into(),
+            format!(
+                "type=bind,src={},dst=/workspace{}",
+                w.checkout.display(),
+                if w.read_only { ",readonly" } else { "" }
+            ),
+        ]);
+        if let Some(a) = &w.access {
+            args.extend([
+                "--mount".into(),
+                format!(
+                    "type=bind,src={},dst=/run/agentdocker-auth,readonly",
+                    a.directory.display()
+                ),
+                "--mount".into(),
+                format!(
+                    "type=bind,src={},dst=/run/agentdocker,readonly",
+                    a.socket_directory.display()
+                ),
+                "--env=AGENTDOCKER_SOCKET=/run/agentdocker/endpoint.sock".into(),
+                "--env=AGENTDOCKER_TOKEN_FILE=/run/agentdocker-auth/token".into(),
+            ]);
+        }
     }
     args.extend([
         "--env".into(),
@@ -290,7 +369,11 @@ mod tests {
             id: Some("b".repeat(64)),
             intent: ContainerIntent::Run,
             start_attempted: false,
+            create_attempted: false,
             last_error: None,
+            options: Default::default(),
+            workspace: None,
+            deadline: None,
         });
         r
     }
@@ -334,6 +417,59 @@ mod tests {
         );
         assert!(parse_inspection(&r, "[]").is_err());
     }
+    #[test]
+    fn workspace_inspection_rejects_added_mounts_wrong_users_and_networks() {
+        use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
+        let mut record = record(ContainerEngine::Docker);
+        record.container.as_mut().unwrap().workspace = Some(ContainerWorkspace {
+            checkout: "/checkout".into(),
+            user: "1000:1000".into(),
+            keep_id: false,
+            read_only: false,
+            access: Some(WorkspaceAccess {
+                grant: "grant".into(),
+                directory: "/private-auth".into(),
+                socket_directory: "/scoped-socket".into(),
+                vm: None,
+            }),
+        });
+        let mut raw = inspect_json(&record);
+        raw[0]["Config"]["User"] = json!("1000:1000");
+        raw[0]["Config"]["WorkingDir"] = json!("/workspace");
+        raw[0]["HostConfig"]["NetworkMode"] = json!("none");
+        raw[0]["HostConfig"]["Privileged"] = json!(false);
+        raw[0]["Mounts"] = json!([
+            {"Type":"bind","Source":"/checkout","Destination":"/workspace","RW":true},
+            {"Type":"bind","Source":"/private-auth","Destination":"/run/agentdocker-auth","RW":false},
+            {"Type":"bind","Source":"/scoped-socket","Destination":"/run/agentdocker","RW":false},
+        ]);
+        assert!(parse_inspection(&record, &raw.to_string()).is_ok());
+        for (path, value) in [
+            ("/0/Config/User", json!("0")),
+            ("/0/HostConfig/NetworkMode", json!("host")),
+            ("/0/HostConfig/Privileged", json!(true)),
+            ("/0/Mounts/0/Source", json!("/")),
+            ("/0/Mounts/1/RW", json!(true)),
+        ] {
+            let mut bad = raw.clone();
+            *bad.pointer_mut(path).unwrap() = value;
+            assert!(
+                parse_inspection(&record, &bad.to_string()).is_err(),
+                "{path}"
+            );
+        }
+        raw[0]["Mounts"].as_array_mut().unwrap().push(
+            json!({"Type":"bind","Source":"/engine.sock","Destination":"/engine.sock","RW":true}),
+        );
+        assert!(parse_inspection(&record, &raw.to_string()).is_err());
+        let args = create_args(&record);
+        assert!(
+            args.iter()
+                .any(|a| a == "type=bind,src=/private-auth,dst=/run/agentdocker-auth,readonly")
+        );
+        assert!(!args.iter().any(|a| a.contains("grant")));
+    }
+
     #[test]
     fn adapters_select_engine_and_create_without_automatic_restart_or_host_mounts() {
         for (engine, flag) in [

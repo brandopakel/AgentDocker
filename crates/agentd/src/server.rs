@@ -328,6 +328,20 @@ pub async fn serve_restricted(daemon: Arc<Daemon>) -> anyhow::Result<()> {
     }
 }
 
+/// A directory-mounted proxy reconnects to the restricted socket after daemon restart.
+pub(crate) async fn serve_workspace(listener: UnixListener, target: std::path::PathBuf) {
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let target = target.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_secs(30), async move {
+                let mut upstream = UnixStream::connect(target).await?;
+                tokio::io::copy_bidirectional(&mut stream, &mut upstream).await
+            })
+            .await;
+        });
+    }
+}
+
 async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {
     let mut line = String::new();
     (&mut *reader)
