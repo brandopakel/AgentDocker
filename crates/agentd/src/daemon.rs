@@ -67,7 +67,7 @@ struct State {
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
     live_subscribers: HashMap<AgentId, usize>,
-    supervised: HashSet<AgentId>,
+    supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     projects: HashMap<PathBuf, Option<String>>,
     next_seq: u64,
     bus: broadcast::Sender<Envelope>,
@@ -215,7 +215,7 @@ impl Daemon {
             state
                 .registry
                 .live()
-                .filter(|a| !state.supervised.contains(&a.id))
+                .filter(|a| !state.supervised.contains_key(&a.id))
                 .filter(|a| !(a.managed && a.status == AgentStatus::Created))
                 .cloned()
                 .collect()
@@ -232,7 +232,7 @@ impl Daemon {
                 .process_group
                 .is_some_and(supervisor::group_exists);
             let mut state = lock(&self.state);
-            if !state.supervised.contains(&candidate.id)
+            if !state.supervised.contains_key(&candidate.id)
                 && state.registry.get(&candidate.id).is_some_and(|a| {
                     a.status.is_live()
                         && a.pid == candidate.pid
@@ -257,7 +257,7 @@ impl Daemon {
             }
         }
     }
-    pub fn stop_all(&self) {
+    pub async fn stop_all(&self) {
         let managed: Vec<_> = lock(&self.state)
             .registry
             .live()
@@ -268,6 +268,16 @@ impl Daemon {
             if let response @ Response::Error { .. } = self.stop(id.as_str(), false) {
                 warn!(agent = %id, ?response, "managed agent did not stop during shutdown");
             }
+        }
+        // Keep supervision alive during shutdown so owned children are reaped
+        // and their groups stop before durable protection is released.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !lock(&self.state).supervised.is_empty() {
+            if tokio::time::Instant::now() >= deadline {
+                warn!("managed groups did not finish shutdown; durable protection retained");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }
 
@@ -281,6 +291,18 @@ impl Daemon {
             let record = state.registry.get(&id).unwrap().clone();
             if !record.status.is_live() {
                 return Response::error(ErrorCode::Invalid, "agent has already finished");
+            }
+            if let Some(control) = state.supervised.get(&id) {
+                // The supervisor still owns the Child. Route signals through
+                // that handle even when process start-time inspection fails.
+                control.send_modify(|pending| *pending = Some(force || pending.unwrap_or(false)));
+                let agent = state
+                    .registry
+                    .set_status(&id, AgentStatus::Stopping, Utc::now())
+                    .unwrap();
+                state.persist("agent", |store| store.upsert_agent(&agent));
+                state.emit(EventKind::AgentStopping { agent: id, force });
+                return Response::Agent { agent };
             }
             if record.pid.is_none() {
                 if record.managed {
@@ -494,7 +516,7 @@ impl Daemon {
                 leases,
                 inboxes,
                 live_subscribers: HashMap::new(),
-                supervised: HashSet::new(),
+                supervised: HashMap::new(),
                 projects,
                 next_seq,
                 bus,
@@ -665,7 +687,9 @@ impl Daemon {
                 let process_started_at = procinfo::start_time(pid);
                 let updated = {
                     let mut state = lock(&self.state);
-                    state.supervised.insert(record.id.clone());
+                    state
+                        .supervised
+                        .insert(record.id.clone(), spawned.control.clone());
                     if let Some(rec) = state.registry.get_mut(&record.id) {
                         rec.pid = Some(pid);
                         rec.process_started_at = process_started_at;
@@ -1756,14 +1780,17 @@ impl State {
         if let Some(error) = self.storage_failure() {
             return error;
         }
-        let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
+        self.touch(&AgentId::from(envelope.from.as_str()));
         self.emit(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
             to: envelope.to.clone(),
             kind: envelope.kind.clone(),
         });
-        self.touch(&AgentId::from(envelope.from.as_str()));
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
         Response::Sent {
             message: envelope.id,
             subscribers,
@@ -3085,6 +3112,72 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_message_event_never_reaches_a_live_subscriber() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "sender", None).await;
+        let recipient = register(&daemon, "recipient", None).await;
+        let (_subscription, mut messages) = daemon.subscribe(Some("recipient"), vec![]).unwrap();
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).next_seq -= 1;
+        let response = lock(&daemon.state).send(
+            "sender".into(),
+            Destination::Agent(recipient.id),
+            "chat".into(),
+            json!({"text": "must not be delivered"}),
+            None,
+        );
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(messages.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_shutdown_uses_owned_child_when_start_time_is_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("owned");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "trap '' TERM; echo ready > ready; while :; do sleep 0.05; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("launch failed");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !dir.path().join("ready").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        claim(&daemon, "owned", "task:shutdown").await;
+        lock(&daemon.state)
+            .registry
+            .get_mut(&agent.id)
+            .unwrap()
+            .process_started_at = None;
+        let response = daemon.stop("owned", false);
+        let held_while_stopping = list_leases(&daemon).await.len();
+        daemon.stop_all().await;
+        assert!(
+            matches!(response, Response::Agent { agent } if agent.status == AgentStatus::Stopping)
+        );
+        assert_eq!(held_while_stopping, 1);
+        assert!(!supervisor::group_exists(agent.pid.unwrap()));
+        assert!(list_leases(&daemon).await.is_empty());
+        assert!(!daemon.is_live(&agent.id));
     }
 
     #[tokio::test]

@@ -108,7 +108,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    daemon.stop_all();
+    daemon.stop_all().await;
     let _ = std::fs::remove_file(&daemon.socket);
     result
 }
