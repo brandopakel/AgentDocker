@@ -327,6 +327,7 @@ impl Store {
 
     /// Append a ledger entry and return its `seq`.
     pub fn append_change(&self, change: &Change) -> Result<u64> {
+        let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
             "INSERT INTO changes (project, path, by_agent, at, json) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -348,6 +349,7 @@ impl Store {
                 i64::try_from(seq).unwrap_or(i64::MAX)
             ],
         )?;
+        tx.commit()?;
         Ok(seq)
     }
 

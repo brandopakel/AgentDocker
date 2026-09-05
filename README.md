@@ -148,7 +148,7 @@ agentdocker down              # stops them
 
 **Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it, and file protection uses canonical physical paths, so aliases and agents from different projects cannot obtain separate exclusive claims on one checkout. Separate worktrees can edit independently; logical project-relative paths support cross-worktree overlap analysis. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases held leases when exit is observed. A stop request reports `stopping` and retains protection until then. A refused claim tells the requester exactly who holds what and the note they left.
 
-**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible — and `ps` also lists agent processes nobody registered (a Claude Code or Codex session started by hand), which `adopt <pid>` brings in; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen; and the daemon watches every checkout agents work in, keeping a ledger of which files changed and who held them (`changes`, `blame`). Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
+**Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. Generic adopted processes are not automatically observed.
 
 **No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
@@ -204,7 +204,7 @@ Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point 
 
 MIT — see [LICENSE](LICENSE).
 
-### Detect stale context
+## Detect stale context
 
 Before reading files, record what you are about to inspect:
 

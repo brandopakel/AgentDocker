@@ -289,6 +289,24 @@ mod tests {
         ));
     }
     #[tokio::test]
+    async fn rereading_specific_file_shadows_old_directory_for_that_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file"), "one").unwrap();
+        let daemon = setup(&tmp.path().join("state"), &root, "reader").await;
+        daemon.observe("reader", vec![".".into()]).await;
+        std::fs::write(root.join("file"), "two").unwrap();
+        daemon.observe("reader", vec!["file".into()]).await;
+        assert!(
+            matches!(daemon.stale("reader", vec!["file".into()]).await, Response::Stale { stale } if stale.is_empty())
+        );
+        assert!(
+            matches!(daemon.stale("reader", vec![".".into()]).await, Response::Stale { stale } if !stale.is_empty())
+        );
+    }
+
+    #[tokio::test]
     async fn separate_checkouts_do_not_stale_each_other() {
         let tmp = tempfile::tempdir().unwrap();
         let first = tmp.path().join("first");

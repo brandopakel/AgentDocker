@@ -277,6 +277,7 @@ impl Daemon {
             }
         }
         let mut leases = LeaseTable::new();
+        let mut restored_events = Vec::new();
         for mut lease in store.load_leases()? {
             if lease.is_expired(Utc::now())
                 || !registry
@@ -284,6 +285,15 @@ impl Daemon {
                     .is_some_and(|a| a.status.is_live())
             {
                 store.delete_lease(&lease.id)?;
+                restored_events.push(if lease.is_expired(Utc::now()) {
+                    EventKind::LeaseExpired {
+                        lease: lease.clone(),
+                    }
+                } else {
+                    EventKind::LeaseReleased {
+                        lease: lease.clone(),
+                    }
+                });
                 continue;
             }
             if lease.resource.kind() == "file" {
@@ -295,7 +305,7 @@ impl Daemon {
                     anyhow::anyhow!("cannot migrate lease {} without its checkout", lease.id)
                 })?;
                 lease.resource =
-                    ResourceKey::new(format!("path:{}", project::canonical(&path).display()));
+                    ResourceKey::new(format!("path:{}", project::try_canonical(&path)?.display()));
                 store.upsert_lease(&lease)?;
             }
             if leases.holders_of(&lease.resource).iter().any(|held| {
@@ -315,7 +325,13 @@ impl Daemon {
             .into_iter()
             .map(|(root, fingerprint)| (root, Some(fingerprint)))
             .collect();
-        let next_seq = store.max_event_seq()? + 1;
+        let mut next_seq = store.max_event_seq()? + 1;
+        for kind in restored_events {
+            let mut event = Event::new(kind, Utc::now());
+            event.seq = next_seq;
+            next_seq += 1;
+            store.append_event(&event)?;
+        }
         info!(
             agents = registry.len(),
             leases = leases.len(),
@@ -1104,9 +1120,16 @@ impl Daemon {
         } else {
             return Ok(key);
         };
-        let path = tokio::task::spawn_blocking(move || project::canonical(&path))
+        let path = tokio::task::spawn_blocking(move || project::try_canonical(&path))
             .await
-            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?;
+            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?
+            .map_err(|err| Box::new(Response::error(ErrorCode::Invalid, err.to_string())))?;
+        if !path.is_absolute() {
+            return Err(Box::new(Response::error(
+                ErrorCode::Invalid,
+                "physical paths must be absolute",
+            )));
+        }
         Ok(ResourceKey::new(format!("path:{}", path.display())))
     }
 }
@@ -1388,6 +1411,10 @@ impl State {
         if let Some(queue) = self.inboxes.get_mut(&id) {
             queue.retain(|message| !messages.contains(&message.id));
         }
+        self.emit(EventKind::InboxAcknowledged {
+            agent: id,
+            messages: messages.to_vec(),
+        });
         Response::Ok
     }
 
@@ -2980,7 +3007,15 @@ mod tests {
         // Queries narrow by path (absolute, made relative by the daemon).
         let by_path = ledger(&daemon, &repo, Some(&lib.to_string_lossy())).await;
         assert!(!by_path.is_empty() && by_path.iter().all(|c| c.path == Path::new("src/lib.rs")));
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::fs::write(repo.join("watcher-marker"), "processed").unwrap();
+        eventually(async || {
+            ledger(&daemon, &repo, None)
+                .await
+                .iter()
+                .any(|c| c.path == Path::new("watcher-marker"))
+                .then_some(())
+        })
+        .await;
         assert!(
             ledger(&daemon, &repo, None)
                 .await

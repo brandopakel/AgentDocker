@@ -22,6 +22,10 @@ pub enum EventKind {
         agent: crate::AgentId,
         paths: Vec<std::path::PathBuf>,
     },
+    InboxAcknowledged {
+        agent: crate::AgentId,
+        messages: Vec<crate::MessageId>,
+    },
     AgentCreated {
         agent: AgentId,
         name: String,
