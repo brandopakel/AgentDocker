@@ -829,10 +829,10 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
                     let ours = entry["hooks"].as_array().is_some_and(|hs| {
                         !hs.is_empty()
                             && hs.iter().all(|h| {
-                            h["command"]
-                                .as_str()
-                                .is_some_and(|c| c.contains("hook claude-code"))
-                        })
+                                h["command"]
+                                    .as_str()
+                                    .is_some_and(|c| c.contains("hook claude-code"))
+                            })
                     });
                     if ours && entry["matcher"] != json!(EDIT_MATCHER) {
                         entry["matcher"] = json!(EDIT_MATCHER);

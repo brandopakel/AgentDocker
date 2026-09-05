@@ -60,6 +60,12 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
+        if release {
+            // The release barrier, passed before any lock is taken: changes
+            // the watcher is still debouncing reach the ledger first, so the
+            // release entry written under the lock below sees them.
+            self.flush_watcher().await;
+        }
         let id = format!("{}:{key}", agent.as_str());
         {
             let state = lock(&self.state);

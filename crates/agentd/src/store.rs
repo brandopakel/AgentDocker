@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS journal (
     agent   TEXT,
     branch  TEXT,
     kind    TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
     json    TEXT NOT NULL,
     UNIQUE (project, seq)
 );
@@ -240,10 +241,31 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
+    /// Behave as if the SQLite build lacked FTS5, to exercise the fallback.
+    #[cfg(test)]
+    pub fn without_fts(mut self) -> Self {
+        self.fts = false;
+        self
+    }
+
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
+        // A journal written before `summary` had its own column gets one,
+        // filled from the blob, so the LIKE fallback searches the same text
+        // as FTS. Idempotent: the column is checked for, not the version.
+        let has_summary = conn
+            .prepare("PRAGMA table_info(journal)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "summary");
+        if !has_summary {
+            conn.execute_batch(
+                "ALTER TABLE journal ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+                 UPDATE journal SET summary = COALESCE(json_extract(json, '$.summary'), '')",
+            )?;
+        }
 
         let version: Option<String> = conn
             .query_row(
@@ -583,8 +605,8 @@ impl Store {
 
     fn insert_journal(&self, entry: &JournalEntry) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO journal (project, seq, at, agent, branch, kind, json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO journal (project, seq, at, agent, branch, kind, summary, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 entry.project.as_str(),
                 i64::try_from(entry.seq).unwrap_or(i64::MAX),
@@ -592,6 +614,7 @@ impl Store {
                 entry.agent.as_ref().map(AgentId::as_str),
                 entry.branch,
                 entry.kind.to_string(),
+                entry.summary,
                 serde_json::to_string(entry)?,
             ],
         )?;
@@ -661,8 +684,14 @@ impl Store {
                     args.len()
                 ));
             } else {
-                args.push(Box::new(format!("%{grep}%")));
-                sql.push_str(&format!(" AND json LIKE ?{}", args.len()));
+                // Same text as the FTS branch, and user text is never a
+                // pattern: `%` and `_` are matched literally.
+                let escaped = grep
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                args.push(Box::new(format!("%{escaped}%")));
+                sql.push_str(&format!(" AND summary LIKE ?{} ESCAPE '\\'", args.len()));
             }
         }
         args.push(Box::new(
@@ -1170,5 +1199,84 @@ mod tests {
             Vec::<u64>::new(),
             "search rows pruned too"
         );
+    }
+
+    #[test]
+    fn like_fallback_searches_only_summaries_and_takes_text_literally() {
+        use agentdocker_core::{JournalEntry, JournalKind, ProjectId, SummarySource};
+        let project = ProjectId::from("p1");
+        let entry = |seq: u64, summary: &str| JournalEntry {
+            project: project.clone(),
+            seq,
+            at: Utc::now(),
+            agent: Some(AgentId::from("agent-one")),
+            agent_name: "codex-1".to_owned(),
+            branch: Some("feat/lexer".to_owned()),
+            checkout: None,
+            worktree: None,
+            kind: JournalKind::Note,
+            summary: summary.to_owned(),
+            summary_source: SummarySource::Explicit,
+            resources: Vec::new(),
+            paths: vec!["src/lexer.rs".into()],
+            paths_total: 1,
+            head_before: None,
+            head_after: None,
+            changes: None,
+        };
+
+        // A database from before the column existed: the blob is the only
+        // copy of the summary until `init` adds and fills the column.
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE journal (
+                    id INTEGER PRIMARY KEY, project TEXT NOT NULL, seq INTEGER NOT NULL,
+                    at TEXT NOT NULL, agent TEXT, branch TEXT, kind TEXT NOT NULL,
+                    json TEXT NOT NULL, UNIQUE (project, seq))",
+            )
+            .unwrap();
+        let old = entry(1, "rewrote the parser");
+        legacy
+            .execute(
+                "INSERT INTO journal (project, seq, at, agent, branch, kind, json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    "p1",
+                    1,
+                    old.at.to_rfc3339(),
+                    "agent-one",
+                    "feat/lexer",
+                    "note",
+                    serde_json::to_string(&old).unwrap()
+                ],
+            )
+            .unwrap();
+        let store = Store::init(legacy).unwrap().without_fts();
+        store.append_journal(&entry(2, "100% of a_b done")).unwrap();
+
+        let q = |grep: &str| {
+            let mut query = JournalQuery::new(project.clone(), 50);
+            query.grep = Some(grep.to_owned());
+            store
+                .journal(&query)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(q("parser"), [1], "backfilled from the blob");
+        assert_eq!(q("PARSER"), [1], "LIKE is case-insensitive like FTS");
+        assert_eq!(q("a_b"), [2]);
+        assert_eq!(q("100%"), [2]);
+        assert_eq!(q("aXb"), Vec::<u64>::new(), "`_` is not a wildcard");
+        assert_eq!(q("100"), [2]);
+        for not_summary in ["agent-one", "codex-1", "feat/lexer", "lexer.rs", "note"] {
+            assert_eq!(
+                q(not_summary),
+                Vec::<u64>::new(),
+                "{not_summary} is not summary text"
+            );
+        }
     }
 }

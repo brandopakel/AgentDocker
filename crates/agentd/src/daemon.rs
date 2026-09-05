@@ -948,7 +948,7 @@ impl Daemon {
     /// The release barrier: have the watcher record whatever it is still
     /// debouncing, so a release entry sees the changes made just before it.
     /// Bounded, and a no-op when no watcher runs.
-    async fn flush_watcher(&self) {
+    pub(super) async fn flush_watcher(&self) {
         let sender = lock(&self.watcher_flush).clone();
         let Some(sender) = sender else {
             return;
@@ -1756,6 +1756,18 @@ impl State {
         summary: Option<String>,
     ) -> Vec<Lease> {
         if released.is_empty() {
+            // Nothing was freed, but an explicit summary is still something
+            // said: record it rather than drop the agent's text silently.
+            let explicit = summary
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            if let (Some(text), Some(record)) = (explicit, self.registry.get(holder).cloned()) {
+                if let Some(entry) =
+                    self.plain_entry(&record, JournalKind::Release, text, SummarySource::Explicit)
+                {
+                    self.append_journal(entry);
+                }
+            }
             return released;
         }
         let entry = self
@@ -2012,27 +2024,31 @@ impl State {
                 self.registry.get(&holder).cloned()
             }),
         };
-        let mut entry = match &attributed {
-            Some(agent) => self.plain_entry(
+        let attributed_entry = attributed.as_ref().and_then(|agent| {
+            self.plain_entry(
                 agent,
+                JournalKind::Commit,
+                summary.clone(),
+                SummarySource::Synthesised,
+            )
+        });
+        // The branch holder may work outside any project; the move is then
+        // recorded against the observed checkout and attributed to nobody.
+        let Some(mut entry) = attributed_entry.or_else(|| {
+            self.plain_entry(
+                &record,
                 JournalKind::Commit,
                 summary,
                 SummarySource::Synthesised,
-            ),
-            None => self
-                .plain_entry(
-                    &record,
-                    JournalKind::Commit,
-                    summary,
-                    SummarySource::Synthesised,
-                )
-                .map(|mut e| {
-                    e.agent = None;
-                    e.agent_name = "external".to_owned();
-                    e
-                }),
-        }
-        .unwrap_or_else(|| unreachable!("record has a project"));
+            )
+            .map(|mut e| {
+                e.agent = None;
+                e.agent_name = "external".to_owned();
+                e
+            })
+        }) else {
+            return;
+        };
         entry.branch = new.branch.clone();
         entry.head_before = old.and_then(|o| o.head.clone());
         entry.head_after = Some(head);
@@ -2051,7 +2067,9 @@ impl State {
             let ring = self.ring(&query.project);
             let oldest = ring.entries.front().map(|e| e.seq).unwrap_or(u64::MAX);
             let covers = ring.entries.len() < JOURNAL_RING
-                || query.since_seq.is_some_and(|since| since + 1 >= oldest);
+                || query
+                    .since_seq
+                    .is_some_and(|since| since.saturating_add(1) >= oldest);
             if covers {
                 let entries: Vec<JournalEntry> = ring
                     .entries
@@ -3859,6 +3877,20 @@ mod tests {
                 .len(),
             2
         );
+
+        // Nothing held, but something said: the words are kept.
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: Some("  reviewed the plan, no edits  ".to_owned()),
+            })
+            .await;
+        let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
+        assert_eq!(entries.len(), 3);
+        let said = &entries[2];
+        assert_eq!(said.summary, "reviewed the plan, no edits");
+        assert_eq!(said.summary_source, SummarySource::Explicit);
+        assert!(said.paths.is_empty() && said.resources.is_empty());
 
         // Notes, and the filters.
         let Response::JournalEntry { entry: note } = daemon

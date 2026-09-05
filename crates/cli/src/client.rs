@@ -5,6 +5,7 @@
 //! `AGENTDOCKER_NO_AUTOSTART` is set. See [`Client::with_start_timeout`].
 
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -130,7 +131,25 @@ impl Client {
         request: &Request,
         mut on_response: impl FnMut(Response) -> Result<bool>,
     ) -> Result<()> {
+        self.stream_after(request, async { Ok(()) }, |(), response| {
+            on_response(response)
+        })
+        .await
+    }
+
+    /// Like [`Client::stream`], but runs `then` once the subscription has
+    /// been sent and before the first response is read, handing its result
+    /// to every `on_response` call. A snapshot taken in `then` and the live
+    /// tail that follows it cannot have a gap: whatever the daemon emits
+    /// in between waits in the stream's socket.
+    pub async fn stream_after<T>(
+        &self,
+        request: &Request,
+        then: impl Future<Output = Result<T>>,
+        mut on_response: impl FnMut(&T, Response) -> Result<bool>,
+    ) -> Result<()> {
         let mut reader = self.connect(request).await?;
+        let snapshot = then.await?;
         let mut line = String::new();
         loop {
             line.clear();
@@ -151,7 +170,7 @@ impl Client {
                     }
                 }
                 response => {
-                    if !on_response(response)? {
+                    if !on_response(&snapshot, response)? {
                         return Ok(());
                     }
                 }

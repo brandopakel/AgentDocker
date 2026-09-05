@@ -158,6 +158,66 @@ impl JournalEntry {
     }
 }
 
+/// The filters a listing applies, for use where the daemon's query cannot
+/// be: entries arriving on a followed stream are matched with this so
+/// `journal --kind note --follow` keeps showing only notes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JournalFilter {
+    /// An agent id, id prefix, or name.
+    pub agent: Option<String>,
+    pub branch: Option<String>,
+    pub kind: Option<JournalKind>,
+    /// Checkout-relative, or absolute when the entry's checkout is known;
+    /// a directory matches anything beneath it.
+    pub path: Option<PathBuf>,
+    /// Case-insensitive substring of the summary.
+    pub grep: Option<String>,
+    pub until_seq: Option<u64>,
+}
+
+impl JournalFilter {
+    pub fn matches(&self, entry: &JournalEntry) -> bool {
+        if self.until_seq.is_some_and(|until| entry.seq > until) {
+            return false;
+        }
+        if let Some(agent) = &self.agent {
+            let by_id = entry
+                .agent
+                .as_ref()
+                .is_some_and(|id| id.as_str().starts_with(agent.as_str()));
+            if !by_id && entry.agent_name != *agent {
+                return false;
+            }
+        }
+        if let Some(branch) = &self.branch {
+            if entry.branch.as_deref() != Some(branch.as_str()) {
+                return false;
+            }
+        }
+        if self.kind.is_some_and(|kind| kind != entry.kind) {
+            return false;
+        }
+        if let Some(wanted) = &self.path {
+            let relative: &Path = match (wanted.is_absolute(), &entry.checkout) {
+                (true, Some(checkout)) => match wanted.strip_prefix(checkout) {
+                    Ok(relative) => relative,
+                    Err(_) => return false,
+                },
+                _ => wanted.as_path(),
+            };
+            if !entry.paths.iter().any(|p| p.starts_with(relative)) {
+                return false;
+            }
+        }
+        if let Some(grep) = &self.grep {
+            if !entry.summary.to_lowercase().contains(&grep.to_lowercase()) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// "4m ago", "2h ago", "3d ago".
 pub fn ago(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
     let secs = (now - then).num_seconds().max(0);
@@ -337,6 +397,47 @@ mod tests {
             "edited 7 files under src/: f0.rs, f1.rs, f2.rs, f3.rs, f4.rs and 2 more"
         );
         assert_eq!(synthesise_summary(&[], 0), "released leases");
+    }
+
+    #[test]
+    fn filters_match_followed_entries_like_the_query_would() {
+        let mut e = entry(JournalKind::Note, "Parser is next", SummarySource::Explicit);
+        e.checkout = Some(PathBuf::from("/repo"));
+        let f = |f: &dyn Fn(&mut JournalFilter)| {
+            let mut filter = JournalFilter::default();
+            f(&mut filter);
+            filter
+        };
+        assert!(f(&|_| {}).matches(&e));
+        assert!(f(&|x| x.until_seq = Some(1)).matches(&e));
+        assert!(!f(&|x| x.until_seq = Some(0)).matches(&e));
+        assert!(f(&|x| x.agent = Some("a1".into())).matches(&e), "by id");
+        assert!(
+            f(&|x| x.agent = Some("a".into())).matches(&e),
+            "by id prefix"
+        );
+        assert!(
+            f(&|x| x.agent = Some("codex-1".into())).matches(&e),
+            "by name"
+        );
+        assert!(!f(&|x| x.agent = Some("codex-2".into())).matches(&e));
+        assert!(f(&|x| x.branch = Some("feat/x".into())).matches(&e));
+        assert!(!f(&|x| x.branch = Some("main".into())).matches(&e));
+        assert!(f(&|x| x.kind = Some(JournalKind::Note)).matches(&e));
+        assert!(!f(&|x| x.kind = Some(JournalKind::Release)).matches(&e));
+        assert!(f(&|x| x.path = Some("src".into())).matches(&e), "directory");
+        assert!(f(&|x| x.path = Some("src/b.rs".into())).matches(&e));
+        assert!(!f(&|x| x.path = Some("docs".into())).matches(&e));
+        assert!(
+            f(&|x| x.path = Some("/repo/src/a.rs".into())).matches(&e),
+            "absolute, under the entry's checkout"
+        );
+        assert!(!f(&|x| x.path = Some("/elsewhere/src/a.rs".into())).matches(&e));
+        assert!(
+            f(&|x| x.grep = Some("parser".into())).matches(&e),
+            "case-insensitive"
+        );
+        assert!(!f(&|x| x.grep = Some("lexer".into())).matches(&e));
     }
 
     #[test]

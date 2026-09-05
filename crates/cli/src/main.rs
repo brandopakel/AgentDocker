@@ -358,6 +358,7 @@ struct JournalArgs {
     /// Full-text search over summaries.
     #[arg(long)]
     grep: Option<String>,
+    /// How many of the newest matching entries to show.
     #[arg(short = 'n', long, default_value_t = 50)]
     limit: usize,
     /// Keep printing entries as they are appended.
@@ -375,8 +376,10 @@ enum JournalAction {
     },
     /// Drop entries below a sequence number.
     Prune {
+        /// Delete every entry whose sequence number is below this.
         #[arg(long)]
         before: u64,
+        /// Project: an id prefix or a path inside it (default: current directory).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
     },
@@ -838,7 +841,7 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             if let Response::JournalEntry { entry } =
                 client.call(&Request::JournalAdd { agent, summary }).await?
             {
-                println!("{:>6}  {}", entry.seq, entry.line());
+                println!("{}", entry.seq);
             }
         }
         Some(JournalAction::Prune { before, project }) => {
@@ -851,51 +854,77 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             }
         }
         None => {
+            let path = args.path.as_deref().map(absolute_path);
             let request = Request::Journal {
                 project: project_selector(args.project.as_deref().unwrap_or(".")),
                 since_seq: args.since,
                 until_seq: args.until,
-                agent: args.agent,
-                branch: args.branch,
-                kind: args.kind,
-                path: args.path.as_deref().map(absolute_path),
-                grep: args.grep,
+                agent: args.agent.clone(),
+                branch: args.branch.clone(),
+                kind: args.kind.clone(),
+                path: path.clone(),
+                grep: args.grep.clone(),
                 limit: args.limit,
             };
-            let Response::Journal { project, entries } = client.call(&request).await? else {
-                return Ok(());
-            };
-            let mut last = 0;
-            for entry in &entries {
+            let print = |entry: &agentdocker_core::JournalEntry| {
                 println!(
                     "{:>6}  {}  {}",
                     entry.seq,
                     format::clock(entry.at),
                     entry.line()
                 );
-                last = entry.seq;
+            };
+            // The snapshot, and where its tail starts.
+            let snapshot = async {
+                let Response::Journal { project, entries } = client.call(&request).await? else {
+                    return Ok(None);
+                };
+                entries.iter().for_each(print);
+                let last = entries.last().map_or(0, |e| e.seq);
+                Ok(Some((project, last)))
+            };
+            if !args.follow {
+                snapshot.await?;
+                return Ok(());
             }
-            if args.follow {
-                client
-                    .stream(&Request::Events { replay: 0 }, |response| {
+            // Subscribe before the snapshot so nothing appended in between
+            // is lost; the replay covers a subscription the daemon registers
+            // late, and the seq bound drops what the snapshot already showed.
+            let filter = agentdocker_core::JournalFilter {
+                agent: args.agent,
+                branch: args.branch,
+                kind: args
+                    .kind
+                    .as_deref()
+                    .and_then(agentdocker_core::JournalKind::parse),
+                path: path.map(PathBuf::from),
+                grep: args.grep,
+                until_seq: args.until,
+            };
+            client
+                .stream_after(
+                    &Request::Events { replay: 64 },
+                    snapshot,
+                    |seen, response| {
+                        let Some((project, last)) = seen else {
+                            return Ok(false);
+                        };
                         if let Response::Event { event } = response {
                             if let agentdocker_core::EventKind::JournalAppended { entry } =
                                 event.kind
                             {
-                                if entry.project == project && entry.seq > last {
-                                    println!(
-                                        "{:>6}  {}  {}",
-                                        entry.seq,
-                                        format::clock(entry.at),
-                                        entry.line()
-                                    );
+                                if entry.project == *project
+                                    && entry.seq > *last
+                                    && filter.matches(&entry)
+                                {
+                                    print(&entry);
                                 }
                             }
                         }
                         Ok(true)
-                    })
-                    .await?;
-            }
+                    },
+                )
+                .await?;
         }
     }
     Ok(())
