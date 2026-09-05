@@ -30,6 +30,7 @@ jobs:
           fi
       - run: cargo build --locked --bin agentd
       - name: Build fixture and test real engine
+        shell: bash
         env:
           TEST_ENGINE: ${{ matrix.engine }}
         run: |

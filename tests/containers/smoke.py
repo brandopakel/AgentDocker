@@ -47,7 +47,12 @@ with os.fdopen(fd, 'w') as output:
 
 def container(request, authenticated=True):
     argv = [args.engine, 'run', '--rm', '--network=none', '--security-opt=no-new-privileges',
-            '--cap-drop=ALL', '--security-opt=label=disable',
+            '--cap-drop=ALL', '--security-opt=label=disable']
+    if args.engine == 'docker':
+        # Rootful Docker needs the fixture owner's UID after dropping DAC overrides.
+        # Rootless Podman already maps its container root to that host identity.
+        argv += ['--user', f'{os.getuid()}:{os.getgid()}']
+    argv += [
             '-v', f'{args.engine_socket}:/run/agentdocker.sock:ro',
             '-v', f'{token}:/run/agentdocker.token:ro',
             '-v', f'{checkout}:/workspace:rw', args.image,
