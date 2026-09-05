@@ -31,3 +31,6 @@ pub use working_set::{ReadMark, StalePath};
 
 pub mod recovery;
 pub use recovery::{Checkpoint, Recovery, Validation};
+
+pub mod handoff;
+pub use handoff::{HandoffBundle, HandoffDiff};

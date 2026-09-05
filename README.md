@@ -230,7 +230,19 @@ agentdocker resume --as replacement <checkpoint-id>
 agentdocker resume --as replacement <checkpoint-id> --acknowledge
 ```
 
-Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. It never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. A plain checkpoint never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+
+## Hand work to another agent
+
+```sh
+agentdocker handoff reviewer --as worker --task "Finish the parser" --note "tests are in src/parser.rs" --transfer-leases
+agentdocker handoffs --as reviewer
+agentdocker resume --as reviewer <handoff-id> --acknowledge
+agentdocker export --as worker > bundle.json      # carry it to another host by hand
+agentdocker import --as replacement < bundle.json
+```
+
+A handoff is a checkpoint addressed to someone, with everything the daemon already knows about the sender bundled around it: the leases it holds, what it read and at which versions, the changes it made, its uncommitted diff when it worked in a worktree, the messages it never read, and its journal entries. The recipient is told by message and accepts with `resume --acknowledge`; that is when ownership moves — leases transfer if the sender asked, the read set is seeded so staleness carries over, and the recipient continues reading the project journal where the sender stopped. An exported bundle imported on another host is accepted the same way, once the content matches; leases never cross hosts.
 
 ## Worktrees and authenticated containers
 
