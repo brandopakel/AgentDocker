@@ -224,6 +224,15 @@ impl Store {
         Ok(())
     }
 
+    /// A removed lease and its replay evidence must survive or roll back together.
+    pub fn delete_lease_with_event(&self, id: &LeaseId, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.delete_lease(id)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn load_leases(&self) -> Result<Vec<Lease>> {
         let mut stmt = self.conn.prepare("SELECT json FROM leases")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -531,6 +540,37 @@ mod tests {
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
         store.delete_lease(&lease.id).unwrap();
         assert!(store.load_leases().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_removal_event_rolls_back_lease_deletion() {
+        let store = Store::in_memory().unwrap();
+        let now = Utc::now();
+        let lease = Lease {
+            id: LeaseId::generate(),
+            resource: ResourceKey::new("task:atomic"),
+            holder: AgentId::from("a"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            expires_at: now + Duration::seconds(30),
+            note: None,
+        };
+        store.upsert_lease(&lease).unwrap();
+        let mut event = Event::new(
+            EventKind::LeaseReleased {
+                lease: lease.clone(),
+            },
+            now,
+        );
+        event.seq = 1;
+        store.append_event(&event).unwrap();
+        assert!(store.delete_lease_with_event(&lease.id, &event).is_err());
+        assert_eq!(store.load_leases().unwrap(), std::slice::from_ref(&lease));
+        assert_eq!(store.recent_events(100).unwrap().len(), 1);
+        event.seq = 2;
+        store.delete_lease_with_event(&lease.id, &event).unwrap();
+        assert!(store.load_leases().unwrap().is_empty());
+        assert_eq!(store.recent_events(100).unwrap().last(), Some(&event));
     }
 
     #[test]
