@@ -55,14 +55,18 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
             child.reaped = true;
             break status;
         }
-        if started.elapsed() >= timeout
-            || log
-                .metadata()?
-                .len()
-                .saturating_add(errors.metadata()?.len())
-                > 4 * 1024 * 1024
+        if started.elapsed() >= timeout {
+            return Err(io::Error::other(format!(
+                "command timed out after {timeout:?}"
+            )));
+        }
+        if log
+            .metadata()?
+            .len()
+            .saturating_add(errors.metadata()?.len())
+            > 4 * 1024 * 1024
         {
-            return Err(io::Error::other("command exceeded time or output limit"));
+            return Err(io::Error::other("command output exceeded 4 MiB"));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -85,4 +89,29 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         text: format!("{stdout}{}", String::from_utf8_lossy(&stderr)),
         stdout,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn time_and_output_limits_report_distinct_causes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let timeout = run(
+            tmp.path(),
+            &["sh".into(), "-c".into(), "sleep 10".into()],
+            Duration::from_millis(20),
+        )
+        .err()
+        .unwrap();
+        assert!(timeout.to_string().contains("timed out"));
+        let output = run(
+            tmp.path(),
+            &["sh".into(), "-c".into(), "head -c 5000000 /dev/zero".into()],
+            Duration::from_secs(5),
+        )
+        .err()
+        .unwrap();
+        assert!(output.to_string().contains("output exceeded"));
+    }
 }

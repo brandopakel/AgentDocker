@@ -19,7 +19,9 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("invalid build input: {0}")]
-    Input(#[from] io::Error),
+    Input(io::Error),
+    #[error("host I/O failed: {0}")]
+    Host(#[from] io::Error),
     #[error("container engine unavailable: {0}")]
     Unavailable(String),
     #[error("container build failed: {0}")]
@@ -30,6 +32,14 @@ pub enum EngineError {
 
 /// Run the explicitly selected engine; never try another engine on failure.
 pub fn build(spec: ImageBuildSpec, id: String) -> Result<ImageBuild, EngineError> {
+    if spec.engine == ContainerEngine::Docker
+        && std::env::var("DOCKER_BUILDKIT").as_deref() == Ok("0")
+    {
+        return Err(EngineError::Build(
+            "Docker image builds require Buildx; DOCKER_BUILDKIT=0 disables the supported builder"
+                .into(),
+        ));
+    }
     build_with(spec, id, &mut |root, argv, timeout| {
         command::run(root, argv, timeout)
     })
@@ -47,10 +57,9 @@ fn build_with(
             .as_ref()
             .is_some_and(|c| c.is_empty() || c.starts_with('-'))
     {
-        return Err(io::Error::other(
+        return Err(EngineError::Input(io::Error::other(
             "timeout must be 1–3600 seconds and connection must be a nonempty name",
-        )
-        .into());
+        )));
     }
     if spec.recipe.as_os_str().is_empty()
         || spec
@@ -58,14 +67,15 @@ fn build_with(
             .components()
             .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
     {
-        return Err(io::Error::other(
+        return Err(EngineError::Input(io::Error::other(
             "recipe must be relative to the build context without parent traversal",
-        )
-        .into());
+        )));
     }
-    let context = spec.context.canonicalize()?;
+    let context = spec.context.canonicalize().map_err(EngineError::Input)?;
     if !context.is_dir() {
-        return Err(io::Error::other("build context must be a directory").into());
+        return Err(EngineError::Input(io::Error::other(
+            "build context must be a directory",
+        )));
     }
     let mut prefix = vec![spec.engine.to_string()];
     if let Some(connection) = &spec.connection {
@@ -113,12 +123,28 @@ fn build_with(
         .pointer("/Server/Version")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if spec.engine == ContainerEngine::Docker {
+        let builder = execute(
+            vec!["buildx".into(), "inspect".into(), "--bootstrap".into()],
+            Duration::from_secs(30),
+            run,
+        )
+        .map_err(|e| EngineError::Build(format!("Buildx builder unavailable: {e}")))?;
+        if !builder.success {
+            return Err(EngineError::Build(format!(
+                "Buildx builder unavailable: {}",
+                builder.text
+            )));
+        }
+    }
     let captured_at = Utc::now();
     let snapshot = capture(&context)?;
     let recipe = snapshot.dir.path().join(&spec.recipe);
-    let metadata = fs::symlink_metadata(&recipe)?;
+    let metadata = fs::symlink_metadata(&recipe).map_err(EngineError::Input)?;
     if !metadata.is_file() {
-        return Err(io::Error::other("recipe must be a regular captured file").into());
+        return Err(EngineError::Input(io::Error::other(
+            "recipe must be a regular captured file",
+        )));
     }
     let recipe_version = digest(&fs::read(&recipe)?);
     let output_dir = tempfile::tempdir()?;
@@ -131,6 +157,7 @@ fn build_with(
         recipe.to_string_lossy().into_owned(),
     ];
     if spec.engine == ContainerEngine::Docker {
+        args.insert(0, "buildx".into());
         args.push("--load".into());
     }
     args.push(snapshot.dir.path().to_string_lossy().into_owned());
@@ -139,7 +166,11 @@ fn build_with(
     if !output.success {
         return Err(EngineError::Build(output.text));
     }
-    let image_id = image_id(fs::read_to_string(&iidfile)?.trim())?;
+    let image_id = image_id(
+        fs::read_to_string(&iidfile)
+            .map_err(|e| EngineError::Evidence(format!("image ID could not be read: {e}")))?
+            .trim(),
+    )?;
     let inspected = execute(
         vec!["image".into(), "inspect".into(), image_id.clone()],
         Duration::from_secs(15),
@@ -212,7 +243,7 @@ struct Captured {
 }
 /// Capture actual bytes consumed by the engine, including files ignored by Git.
 /// Engine-specific ignore files are preserved and interpreted by that engine.
-fn capture(root: &Path) -> io::Result<Captured> {
+fn capture(root: &Path) -> Result<Captured, EngineError> {
     let dir = tempfile::tempdir()?;
     let mut entries = BTreeMap::<PathBuf, Vec<u8>>::new();
     let mut budget = MAX_BYTES;
@@ -229,9 +260,9 @@ fn capture(root: &Path) -> io::Result<Captured> {
             continue;
         }
         if entries.len() >= MAX_FILES {
-            return Err(io::Error::other(
+            return Err(EngineError::Input(io::Error::other(
                 "build context exceeds 20000 entries; choose a smaller context",
-            ));
+            )));
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         let out = dir.path().join(relative);
@@ -244,7 +275,9 @@ fn capture(root: &Path) -> io::Result<Captured> {
             if target.is_absolute()
                 || !crate::project::try_canonical(entry.path())?.starts_with(root)
             {
-                return Err(io::Error::other("build context symlink escapes its root"));
+                return Err(EngineError::Input(io::Error::other(
+                    "build context symlink escapes its root",
+                )));
             }
             std::os::unix::fs::symlink(&target, &out)?;
             let mut record = b"symlink:".to_vec();
@@ -257,9 +290,9 @@ fn capture(root: &Path) -> io::Result<Captured> {
                 .open(entry.path())?;
             let before = input.metadata()?;
             if !before.is_file() || before.len() > budget {
-                return Err(io::Error::other(
+                return Err(EngineError::Input(io::Error::other(
                     "build context needs regular files within 256 MiB",
-                ));
+                )));
             }
             let mut data = Vec::new();
             Read::by_ref(&mut input)
@@ -276,9 +309,9 @@ fn capture(root: &Path) -> io::Result<Captured> {
                 || before.ctime() != after.ctime()
                 || before.ctime_nsec() != after.ctime_nsec()
             {
-                return Err(io::Error::other(
+                return Err(EngineError::Input(io::Error::other(
                     "build input changed during capture; retry",
-                ));
+                )));
             }
             let mode = before.permissions().mode() & 0o777;
             let mut file = OpenOptions::new()
@@ -312,7 +345,7 @@ fn capture(root: &Path) -> io::Result<Captured> {
             )
         } != 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(io::Error::last_os_error().into());
         }
     }
     let mut hash = Sha256::new();
@@ -401,7 +434,9 @@ mod tests {
                     assert_eq!(argv[2], "test-engine");
                     let text = if argv[3] == "version" {
                         json!({"Client":{"Version":"1"},"Server":{"Version":"2"}}).to_string()
-                    } else if argv[3] == "build" {
+                    } else if argv[3] == "buildx" && argv[4] == "inspect" {
+                        "Driver: docker".into()
+                    } else if argv.iter().any(|arg| arg == "--iidfile") {
                         assert_eq!(
                             argv.iter().any(|s| s == "--load"),
                             engine == ContainerEngine::Docker
@@ -423,7 +458,14 @@ mod tests {
                         text: format!("{text}\nengine warning on stderr"),
                     })
                 });
-                assert_eq!(calls, 3);
+                assert_eq!(
+                    calls,
+                    if engine == ContainerEngine::Docker {
+                        4
+                    } else {
+                        3
+                    }
+                );
                 if mismatched {
                     assert!(matches!(result, Err(EngineError::Evidence(_))));
                 } else {
@@ -456,5 +498,27 @@ mod tests {
             Err(EngineError::Input(_))
         ));
         assert_eq!(calls, 1);
+    }
+    #[test]
+    fn unsupported_docker_builder_is_rejected_before_build_execution() {
+        let (_dir, spec) = fixture(ContainerEngine::Docker);
+        let mut calls = 0;
+        let result = build_with(spec, "id".into(), &mut |_, argv, _| {
+            calls += 1;
+            assert!(!argv.iter().any(|arg| arg == "--iidfile"));
+            let (success, stdout) = if argv[3] == "version" {
+                (true, json!({"Client":{"Version":"1"}}).to_string())
+            } else {
+                assert_eq!(argv[3..], ["buildx", "inspect", "--bootstrap"]);
+                (false, "Buildx is unavailable".into())
+            };
+            Ok(command::Output {
+                success,
+                text: stdout.clone(),
+                stdout,
+            })
+        });
+        assert!(matches!(result, Err(EngineError::Build(_))));
+        assert_eq!(calls, 2);
     }
 }

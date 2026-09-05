@@ -58,6 +58,9 @@ enum Command {
         #[arg(long, default_value_t = 600)]
         /// Engine build timeout in seconds (1–3600).
         timeout: u64,
+        #[arg(long)]
+        /// Print the complete JSON record instead of only its ID.
+        json: bool,
     },
     /// List retained image build records, including finished sessions.
     Images,
@@ -522,6 +525,7 @@ async fn main() -> Result<()> {
             context,
             file,
             timeout,
+            json,
         } => {
             let context = std::env::current_dir()?.join(context);
             let response = client
@@ -535,7 +539,11 @@ async fn main() -> Result<()> {
                     },
                 })
                 .await?;
-            print_json(&response)?;
+            match response {
+                Response::ImageBuild { build } if !json => println!("{}", build.id),
+                response @ Response::ImageBuild { .. } => print_json(&response)?,
+                _ => bail!("unexpected image build response"),
+            }
         }
         Command::Images => print_json(&client.call(&Request::Images).await?)?,
         Command::Observe { agent, paths } => {

@@ -12,6 +12,7 @@ impl Daemon {
             Ok(Err(error)) => {
                 let code = match &error {
                     EngineError::Input(_) => ErrorCode::Invalid,
+                    EngineError::Host(_) => ErrorCode::StorageUnavailable,
                     EngineError::Unavailable(_) => ErrorCode::EngineUnavailable,
                     EngineError::Build(_) | EngineError::Evidence(_) => ErrorCode::BuildFailed,
                 };
