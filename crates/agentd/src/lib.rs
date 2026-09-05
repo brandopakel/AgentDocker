@@ -73,6 +73,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
     let daemon = Arc::new(Daemon::open(args.home, socket)?);
 
+    let containers = daemon.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            containers.reconcile_containers();
+        }
+    });
+
     let reaper = daemon.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));

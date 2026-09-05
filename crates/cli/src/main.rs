@@ -252,6 +252,8 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Replace a managed container after confirming exit; print the new agent ID.
+    Restart { agent: String },
     /// Forget a finished agent.
     Rm { agent: String },
     /// Show everything known about an agent, as JSON.
@@ -358,6 +360,9 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Run inside this recorded image build, without host mounts or network access.
+    #[arg(long)]
+    image_build: Option<String>,
     /// Agent name (default: generated).
     #[arg(long)]
     name: Option<String>,
@@ -810,7 +815,11 @@ async fn main() -> Result<()> {
                 env: parse_pairs(&args.env)?,
                 labels: parse_pairs(&args.labels)?,
             };
-            if let Response::Agent { agent } = client.call(&Request::Run { spec }).await? {
+            let request = match args.image_build {
+                Some(build) => Request::RunContainer { spec, build },
+                None => Request::Run { spec },
+            };
+            if let Response::Agent { agent } = client.call(&request).await? {
                 println!("{}", agent.id);
             }
         }
@@ -842,6 +851,13 @@ async fn main() -> Result<()> {
         }
         Command::Stop { agent, force } => {
             if let Response::Agent { agent } = client.call(&Request::Stop { agent, force }).await? {
+                println!("{}", agent.id);
+            }
+        }
+        Command::Restart { agent } => {
+            if let Response::Agent { agent } =
+                client.call(&Request::RestartContainer { agent }).await?
+            {
                 println!("{}", agent.id);
             }
         }

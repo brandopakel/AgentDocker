@@ -204,6 +204,33 @@ async fn stream_logs(
         Ok(id) => id,
         Err(response) => return write(writer, &response).await,
     };
+    if let Some(record) = daemon.container_record(&id) {
+        if follow {
+            return write(
+                writer,
+                &Response::error(
+                    ErrorCode::Invalid,
+                    "container logs currently support snapshots; omit --follow",
+                ),
+            )
+            .await;
+        }
+        match daemon.container_logs(record, tail).await {
+            Ok(text) => {
+                for line in text.lines() {
+                    write(writer, &Response::Log { line: line.into() }).await?;
+                }
+                return write(writer, &Response::End).await;
+            }
+            Err(e) => {
+                return write(
+                    writer,
+                    &Response::error(ErrorCode::EngineUnavailable, e.to_string()),
+                )
+                .await;
+            }
+        }
+    }
     let path = daemon.log_path(&id);
     let (mut offset, existing) = read_from(&path, 0).await;
     let lines: Vec<&str> = existing.lines().collect();

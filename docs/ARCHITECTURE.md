@@ -51,7 +51,7 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 A failed SQLite write latches `storage_unavailable`: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported.
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 3 upgrades schemas 1 and 2 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 3, including dedicated process-group tracking and `stopping` status.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 4 upgrades schemas 1, 2 and 3 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 4, which preserves container lifetime independently of host PIDs; process-group tracking and `stopping` status remain supported.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -170,6 +170,8 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
+| `run_container {spec, build}` | `agent` | host-only; command in retained image, no host bind mounts/network; durable container identity and intent; `spec.workdir` associates a host project |
+| `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
 | `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
@@ -203,7 +205,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `journal_prune {project, before_seq}` | `pruned` | drops entries below `before_seq` |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; `file:` inputs resolve through the same physical checkout alias |
 | `events {replay?,ready?}` | optional `events_ready`, then stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
-| `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
+| `logs {agent, follow?, tail?}` | stream of `log`, then `end` | containers: verified engine snapshot, max 10,000 lines/4 MiB, no follow |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
 
@@ -494,7 +496,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-Shipped events include `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 Planned events: `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
@@ -559,3 +561,5 @@ New leases retain `change_seq`, the last assigned change sequence at acquisition
 Scoped container clients may add notes as their bound agent and read the mapped checkout journal. A digest may advance only that agent's cursor. Other checkout roots, cursor impersonation and journal pruning remain forbidden on the restricted endpoint.
 
 Journal grep ignores empty/whitespace-only filters. Punctuation-only filters use literal substring matching with or without FTS5. The FTS completion marker forces a transactional rebuild after fallback writes or loss of the index. Journal display escapes stored control characters before adding structural digest newlines. `journal --new` defaults its reader to AGENTDOCKER_AGENT_ID when set, otherwise user.
+
+Managed container records add optional `container: {build, engine, connection, image_id, name, owner, id, intent, start_attempted, last_error}` to `AgentRecord`; legacy records omit it. Engine observations decide their lifetime, independent of any local CLI PID. See [managed container commands](CONTAINER-ENGINES.md#managed-container-commands) for intent persistence, recovery, shutdown and mount limitations.

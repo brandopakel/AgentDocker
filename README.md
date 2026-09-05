@@ -71,7 +71,7 @@ agentdocker logs -f writer
 agentdocker stop writer
 ```
 
-Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
+Host processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
 
 ```sh
 agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
@@ -236,6 +236,6 @@ Review the returned assumptions, stale paths, and matching validation evidence b
 
 Use `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
 
-`agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Managed Docker/Podman lifecycle and image-build provenance are the next engine-adapter work; this endpoint supports externally managed containers now. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
+`agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Docker/Podman image builds and managed lifecycle recovery are implemented: `image-build --engine docker|podman`, `run --image-build BUILD -- COMMAND`, `stop`, and `restart`. Managed commands currently run inside the image without host bind mounts or networking; this scoped endpoint supports externally managed containers while automatic mounts and VM bridges remain planned. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
 
 Development verification uses `bash scripts/verify.sh check`. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md) for nextest, coverage, Criterion/Bencher, native socket load tests and bounded fuzzing.

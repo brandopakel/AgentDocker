@@ -123,6 +123,7 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::ContainerUpdated { agent } => format!("{agent} container state updated"),
         EventKind::ImageBuilt {
             build,
             engine,

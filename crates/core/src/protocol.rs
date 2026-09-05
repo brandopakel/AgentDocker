@@ -119,6 +119,15 @@ pub enum Request {
     Run {
         spec: crate::AgentSpec,
     },
+    /// Launch a command inside a retained immutable image, without host mounts.
+    RunContainer {
+        spec: crate::AgentSpec,
+        build: String,
+    },
+    /// Replace a managed container after observing its exit; returns a new agent ID.
+    RestartContainer {
+        agent: String,
+    },
     /// Announce an already-running process (e.g. a Claude Code session).
     Register {
         spec: crate::AgentSpec,
