@@ -116,6 +116,8 @@ fn main() -> Result<()> {
                         let reply = request(
                             &socket,
                             &Request::Release {
+                                summary: None,
+                                summary_source: agentdocker_core::SummarySource::Explicit,
                                 agent: agent.clone(),
                                 lease: lease.id,
                             },

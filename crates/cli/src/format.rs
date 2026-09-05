@@ -249,6 +249,21 @@ pub fn event_line(event: &Event) -> String {
                 change.project.short()
             )
         }
+        EventKind::JournalAppended { entry } => format!(
+            "journal          {} #{} {}",
+            entry.project.short(),
+            entry.seq,
+            entry.line()
+        ),
+        EventKind::JournalRead {
+            reader,
+            project,
+            seq,
+        } => format!(
+            "journal read     {} by {} up to #{seq}",
+            project.short(),
+            reader.get(..12).unwrap_or(reader)
+        ),
         EventKind::AgentVcsChanged { agent, vcs } => {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }

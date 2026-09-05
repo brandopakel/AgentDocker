@@ -57,6 +57,13 @@ def container(request, authenticated=True):
 try:
     expect(container({'op':'ping'}, False), 'error', 'forbidden')
     expect(container({'op':'shutdown'}), 'error', 'forbidden')
+    expect(container({'op':'journal_add','agent':reader,'summary':'container note'}), 'journal_entry')
+    digest = {'op':'journal','project':'/workspace','digest':{'reader':reader,'max_entries':20,'max_chars':2000,'advance':True}}
+    assert 'container note' in expect(container(digest), 'digest')['digest']['text']
+    assert not expect(container(digest), 'digest')['digest']['text']
+    expect(container(dict(digest, project='/outside')), 'error', 'forbidden')
+    expect(container(dict(digest, digest=dict(digest['digest'], reader=writer))), 'error', 'forbidden')
+    expect(container({'op':'journal_prune','project':'/workspace','before_seq':10}), 'error', 'forbidden')
     expect(container({'op':'observe','agent':writer,'paths':['/workspace/file.rs']}), 'error', 'forbidden')
     expect(container({'op':'observe','agent':reader,'paths':['/workspace/../escape']}), 'error', 'forbidden')
     expect(container({'op':'observe','agent':reader,'paths':['/workspace/file.rs']}), 'reads')
@@ -73,7 +80,7 @@ try:
     expect(host({'op':'claim','agent':writer,'resource':'path:' + str(source)}), 'error', 'conflict')
     image = subprocess.check_output([args.engine, 'image', 'inspect', args.image, '--format', '{{.Id}}'], text=True).strip()
     print(json.dumps({'engine':args.engine,'image_id':image,'result':'passed',
-                      'scenarios':['authentication','identity','traversal','host-admin denial','read/change/stale/reread','physical alias conflict','revocation retains leases']}))
+                      'scenarios':['authentication','identity','traversal','host-admin denial','journal digest/cursor isolation','read/change/stale/reread','physical alias conflict','revocation retains leases']}))
 finally:
     host({'op':'revoke_access','grant':grant['grant']})
     for agent in agents:

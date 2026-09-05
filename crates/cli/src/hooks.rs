@@ -6,11 +6,11 @@
 //!
 //! | event              | effect                                                                 |
 //! |--------------------|------------------------------------------------------------------------|
-//! | `SessionStart`     | register the session as an agent; tell the model who else is running and hand it queued messages |
-//! | `UserPromptSubmit` | hand the model queued messages as context                              |
+//! | `SessionStart`     | register the session as an agent; tell the model who else is running, hand it queued messages and the project journal since it last looked |
+//! | `UserPromptSubmit` | hand the model queued messages and new journal entries as context      |
 //! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit; deny the edit on conflict |
 //! | `PostToolUse`      | hand the model queued messages as context                              |
-//! | `Stop`             | release every lease; if messages are waiting, block the stop so the model handles them |
+//! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
 //! | `SessionEnd`       | release every lease and deregister                                     |
 //!
 //! The hook never breaks a session: if agentd is unreachable it prints a
@@ -22,7 +22,11 @@ use std::io::Read;
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::{AgentRecord, AgentSpec, Envelope, ErrorCode, LeaseMode, Request, Response};
+use agentdocker_core::journal::transcript_summary;
+use agentdocker_core::{
+    AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, Request, Response,
+    SummarySource,
+};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -32,6 +36,8 @@ use crate::client::{Backend, Client};
 use crate::format;
 
 const RUNTIME: &str = "claude-code";
+/// How much of a transcript's end is read for the `Stop` summary.
+const TRANSCRIPT_TAIL: u64 = 64 * 1024;
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 const EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh"];
@@ -58,6 +64,18 @@ pub struct ClaudeCodeArgs {
     /// Let the session stop even when other agents' messages are waiting.
     #[arg(long)]
     pub no_wake: bool,
+    /// Journal entries a starting session is handed at most.
+    #[arg(long, default_value_t = 20)]
+    pub digest_entries: usize,
+    /// Characters of journal a starting session is handed at most.
+    #[arg(long, default_value_t = 2000)]
+    pub digest_chars: usize,
+    /// New journal entries handed over with a prompt at most.
+    #[arg(long, default_value_t = 5)]
+    pub prompt_digest_entries: usize,
+    /// Characters of new journal handed over with a prompt at most.
+    #[arg(long, default_value_t = 500)]
+    pub prompt_digest_chars: usize,
 }
 
 #[derive(Args, Debug)]
@@ -90,6 +108,9 @@ pub struct HookInput {
     pub tool_input: Option<Value>,
     #[serde(default)]
     pub stop_hook_active: bool,
+    /// The session's JSONL transcript; its tail is the `Stop` summary.
+    #[serde(default)]
+    pub transcript_path: Option<PathBuf>,
 }
 
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
@@ -270,10 +291,13 @@ pub async fn claude_code<B: Backend>(
             let agents = all_agents(backend).await?;
             let inbox = drain_inbox(backend, &me).await?;
             report_vcs(backend, &me, input).await;
-            Ok(Some(context_output(
-                "SessionStart",
-                orientation(&me, &agents, &inbox),
-            )))
+            let mut text = orientation(&me, &agents, &inbox);
+            let digest = journal_digest(backend, &me, opts.digest_entries, opts.digest_chars).await;
+            if !digest.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&journal_text(&digest));
+            }
+            Ok(Some(context_output("SessionStart", text)))
         }
         "UserPromptSubmit" | "PostToolUse" => {
             let me = ensure_registered(backend, input).await?;
@@ -289,15 +313,36 @@ pub async fn claude_code<B: Backend>(
             }
             let inbox = drain_inbox(backend, &me).await?;
             report_vcs(backend, &me, input).await;
-            if inbox.is_empty() {
+            // Only a prompt carries journal text; a tool result never does.
+            let digest = if input.hook_event_name == "UserPromptSubmit" {
+                journal_digest(
+                    backend,
+                    &me,
+                    opts.prompt_digest_entries,
+                    opts.prompt_digest_chars,
+                )
+                .await
+            } else {
+                String::new()
+            };
+            if inbox.is_empty() && digest.is_empty() {
                 return Ok(None);
             }
-            let agents = all_agents(backend).await?;
-            let text = format!(
-                "AgentDocker: {} new message(s) from other agents:\n{}",
-                inbox.len(),
-                messages_text(&inbox, &agents)
-            );
+            let mut text = String::new();
+            if !inbox.is_empty() {
+                let agents = all_agents(backend).await?;
+                text = format!(
+                    "AgentDocker: {} new message(s) from other agents:\n{}",
+                    inbox.len(),
+                    messages_text(&inbox, &agents)
+                );
+            }
+            if !digest.is_empty() {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(&journal_text(&digest));
+            }
             Ok(Some(context_output(&input.hook_event_name, text)))
         }
         "PreToolUse" => {
@@ -365,7 +410,13 @@ pub async fn claude_code<B: Backend>(
             let Some(me) = current_agent(backend, input).await? else {
                 return Ok(None);
             };
-            release_all(backend, &me).await?;
+            // What the model last said is what the release entry quotes.
+            let summary = input
+                .transcript_path
+                .as_deref()
+                .and_then(transcript_tail)
+                .and_then(|tail| transcript_summary(&tail));
+            release_all(backend, &me, summary).await?;
             if opts.no_wake || input.stop_hook_active {
                 return Ok(None);
             }
@@ -386,7 +437,7 @@ pub async fn claude_code<B: Backend>(
         }
         "SessionEnd" => {
             if let Some(me) = current_agent(backend, input).await? {
-                release_all(backend, &me).await?;
+                release_all(backend, &me, None).await?;
                 backend
                     .call(Request::Deregister {
                         agent: me.id.to_string(),
@@ -588,13 +639,92 @@ async fn drain_inbox<B: Backend>(backend: &B, me: &AgentRecord) -> Result<Vec<En
     }
 }
 
-async fn release_all<B: Backend>(backend: &B, me: &AgentRecord) -> Result<()> {
+/// Release everything; a summary here is a quoted transcript tail, never
+/// something the model typed for the journal.
+async fn release_all<B: Backend>(
+    backend: &B,
+    me: &AgentRecord,
+    summary: Option<String>,
+) -> Result<()> {
+    let summary_source = if summary.is_some() {
+        SummarySource::Transcript
+    } else {
+        SummarySource::Explicit
+    };
     backend
         .call(Request::ReleaseAll {
             agent: me.id.to_string(),
+            summary,
+            summary_source,
         })
         .await?;
     Ok(())
+}
+
+/// The project journal since this agent last looked, marked as seen.
+/// Empty when nothing is new, when the agent is in no project, or when
+/// the daemon could not say: a hook fails open.
+async fn journal_digest<B: Backend>(
+    backend: &B,
+    me: &AgentRecord,
+    max_entries: usize,
+    max_chars: usize,
+) -> String {
+    if me.project.is_none() || max_entries == 0 || max_chars == 0 {
+        return String::new();
+    }
+    let request = Request::Journal {
+        project: String::new(),
+        since_seq: None,
+        until_seq: None,
+        agent: None,
+        branch: None,
+        kind: None,
+        path: None,
+        grep: None,
+        limit: max_entries,
+        digest: Some(DigestRequest {
+            reader: me.id.to_string(),
+            max_entries,
+            max_chars,
+            all_branches: false,
+            advance: true,
+        }),
+    };
+    match backend.call(request).await {
+        Ok(Response::Digest { digest, .. }) => digest.text,
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("agentdocker hook: journal digest failed: {message}");
+            String::new()
+        }
+        Ok(_) => String::new(),
+        Err(err) => {
+            eprintln!("agentdocker hook: journal digest failed: {err:#}");
+            String::new()
+        }
+    }
+}
+
+fn journal_text(digest: &str) -> String {
+    format!("AgentDocker journal (what changed in this project and why):\n{digest}")
+}
+
+/// The last [`TRANSCRIPT_TAIL`] bytes of a transcript, minus the line the
+/// cut fell in. Cost does not grow with the transcript.
+fn transcript_tail(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TRANSCRIPT_TAIL);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if start > 0 {
+        let cut = text.find('\n')?;
+        text.drain(..=cut);
+    }
+    Some(text)
 }
 
 fn context_output(event: &str, text: String) -> Value {
@@ -912,7 +1042,192 @@ mod tests {
         ClaudeCodeArgs {
             ttl: 600,
             no_wake: false,
+            digest_entries: 20,
+            digest_chars: 2000,
+            prompt_digest_entries: 5,
+            prompt_digest_chars: 500,
         }
+    }
+
+    fn digest_reply(text: &str) -> Response {
+        use agentdocker_core::{Digest, ProjectRef};
+        Response::Digest {
+            project: ProjectRef::directory("/work/alpha").id(),
+            digest: Digest {
+                text: text.to_owned(),
+                head_seq: 9,
+                shown: usize::from(!text.is_empty()),
+                collapsed: 0,
+                other_branches: 0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn session_start_and_prompts_carry_the_journal_digest() {
+        use agentdocker_core::ProjectRef;
+        let mut me = agent("claude-01234567", true);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Agents {
+                agents: vec![me.clone()],
+            },
+            Response::Messages {
+                messages: Vec::new(),
+            },
+            digest_reply(
+                "Since you last looked (1 entry):\n- 4m ago   codex-1 [main] noted: \"parser is next\"\n",
+            ),
+        ]);
+        let out = claude_code(&backend, &input("SessionStart"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("agent `claude-01234567`"), "{text}");
+        assert!(text.contains("AgentDocker journal"), "{text}");
+        assert!(text.contains("parser is next"), "{text}");
+        assert!(matches!(
+            &backend.requests()[3],
+            Request::Journal { project, digest: Some(d), .. }
+                if project.is_empty() && d.reader == me.id.as_str() && d.advance
+                    && d.max_entries == 20 && d.max_chars == 2000
+        ));
+
+        // A prompt: the digest alone is worth speaking for, within the
+        // smaller budget.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Messages {
+                messages: Vec::new(),
+            },
+            digest_reply(
+                "Since you last looked (1 entry):\n- 1m ago   codex-1 [main] noted: \"lexer done\"\n",
+            ),
+        ]);
+        let out = claude_code(&backend, &input("UserPromptSubmit"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.starts_with("AgentDocker journal"), "{text}");
+        assert!(text.contains("lexer done"), "{text}");
+        assert!(matches!(
+            &backend.requests()[2],
+            Request::Journal { digest: Some(d), .. } if d.max_entries == 5 && d.max_chars == 500
+        ));
+
+        // Messages and journal together, messages first.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Messages {
+                messages: vec![message("someone", "hi")],
+            },
+            digest_reply(
+                "Since you last looked (1 entry):\n- 1m ago   codex-1 [main] noted: \"x\"\n",
+            ),
+            Response::Agents { agents: vec![] },
+        ]);
+        let out = claude_code(&backend, &input("UserPromptSubmit"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.find("new message").unwrap() < text.find("AgentDocker journal").unwrap());
+
+        // Nothing new and no messages: silence.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Messages {
+                messages: Vec::new(),
+            },
+            digest_reply(""),
+        ]);
+        assert!(
+            claude_code(&backend, &input("UserPromptSubmit"), &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // No project: the journal is not even asked for.
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("claude-01234567", true),
+            },
+            Response::Messages {
+                messages: Vec::new(),
+            },
+        ]);
+        assert!(
+            claude_code(&backend, &input("UserPromptSubmit"), &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(backend.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stop_quotes_the_transcript_tail_as_the_release_summary() {
+        let me = agent("claude-01234567", true);
+        let path = std::env::temp_dir().join(format!(
+            "agentdocker-hook-test-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Old.\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Rewrote the **tokenizer**.\\n\\nMore later.\"}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":\"thanks\"}}\n",
+            ),
+        )
+        .unwrap();
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+        ]);
+        let mut ev = input("Stop");
+        ev.stop_hook_active = true;
+        ev.transcript_path = Some(path.clone());
+        claude_code(&backend, &ev, &opts()).await.unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!(
+            matches!(
+                &backend.requests()[1],
+                Request::ReleaseAll { summary: Some(s), summary_source: SummarySource::Transcript, .. }
+                    if s == "Rewrote the tokenizer."
+            ),
+            "{:?}",
+            backend.requests()[1]
+        );
+
+        // No transcript, or an unreadable one: a plain release.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+        ]);
+        ev.transcript_path = Some(path);
+        claude_code(&backend, &ev, &opts()).await.unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReleaseAll {
+                summary: None,
+                summary_source: SummarySource::Explicit,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1231,7 +1546,7 @@ mod tests {
         );
         assert!(matches!(
             &backend.requests()[1],
-            Request::ReleaseAll { agent } if agent == me.id.as_str()
+            Request::ReleaseAll { agent, .. } if agent == me.id.as_str()
         ));
     }
 
@@ -1442,6 +1757,10 @@ mod tests {
         let opts = ClaudeCodeArgs {
             ttl: 600,
             no_wake: false,
+            digest_entries: 20,
+            digest_chars: 2000,
+            prompt_digest_entries: 5,
+            prompt_digest_chars: 500,
         };
         let result = bounded_claude_code(&Never, &input, &opts).await;
         assert!(result.unwrap_err().to_string().contains("hook budget"));

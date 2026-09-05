@@ -71,8 +71,8 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
             Request::Subscribe { agent, topics } => {
                 return stream_messages(&daemon, agent, topics, &mut reader, &mut writer).await;
             }
-            Request::Events { replay } => {
-                return stream_events(&daemon, replay, &mut reader, &mut writer).await;
+            Request::Events { replay, ready } => {
+                return stream_events(&daemon, replay, ready, &mut reader, &mut writer).await;
             }
             Request::Logs {
                 agent,
@@ -156,10 +156,14 @@ async fn stream_messages(
 async fn stream_events(
     daemon: &Arc<Daemon>,
     replay: usize,
+    ready: bool,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
     let mut receiver = daemon.subscribe_events();
+    if ready {
+        write(writer, &Response::EventsReady).await?;
+    }
     // Subscribe first so nothing is missed, then drop live events the replay
     // already covered: seqs are strictly increasing.
     let replayed = daemon.recent_events(replay);
@@ -508,6 +512,8 @@ mod tests {
         daemon
             .handle(Request::ReleaseAll {
                 agent: "holder".into(),
+                summary: None,
+                summary_source: agentdocker_core::SummarySource::Explicit,
             })
             .await;
         assert!(

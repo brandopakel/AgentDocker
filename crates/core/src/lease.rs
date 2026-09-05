@@ -149,6 +149,9 @@ pub struct Lease {
     pub holder: AgentId,
     pub mode: LeaseMode,
     pub acquired_at: DateTime<Utc>,
+    /// Last ledger sequence at acquisition; absent for legacy leases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_seq: Option<u64>,
     pub expires_at: DateTime<Utc>,
     /// Free text for humans and other agents: what the holder is doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +269,7 @@ impl LeaseTable {
             holder,
             mode,
             acquired_at: now,
+            change_seq: None,
             expires_at: now + ttl,
             note,
         };
@@ -672,6 +676,7 @@ mod tests {
             holder: agent("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            change_seq: None,
             expires_at: now + ttl(),
             note: None,
         });

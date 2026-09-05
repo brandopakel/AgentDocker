@@ -98,6 +98,11 @@ impl Registry {
         self.agents.values().filter(|a| a.status.is_live())
     }
 
+    /// Every record, finished ones included, in no particular order.
+    pub fn all(&self) -> impl Iterator<Item = &AgentRecord> {
+        self.agents.values()
+    }
+
     /// Every agent, grouped by project. `all = false` hides finished ones.
     pub fn list(&self, all: bool) -> Vec<AgentRecord> {
         self.matching(all, None, &BTreeMap::new())
