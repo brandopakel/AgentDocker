@@ -277,6 +277,7 @@ pub enum ErrorCode {
     Forbidden,
     Invalid,
     Internal,
+    StorageUnavailable,
 }
 
 // A response is built once and serialised at once, so the size gap between

@@ -114,13 +114,22 @@ impl Daemon {
             accepted_by: None,
             release_leases: release,
         };
-        if let Err(e) = state.store.put_document("checkpoint", &id, &checkpoint) {
-            return internal(e);
-        }
-        state.emit(EventKind::CheckpointSaved {
-            agent: agent.clone(),
-            checkpoint: id,
+        let mut event = Event::new(
+            EventKind::CheckpointSaved {
+                agent: agent.clone(),
+                checkpoint: id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        state.persist("checkpoint", |store| {
+            store.put_document_with_event("checkpoint", &id, &checkpoint, &event)
         });
+        if let Some(error) = state.storage_failure() {
+            return error;
+        }
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         if release {
             state.release_all(agent.as_str());
         }
@@ -211,17 +220,27 @@ impl Daemon {
                     );
                 }
                 checkpoint.accepted_by = Some(agent.clone());
-                if let Err(e) = state.store.accept_handoff(
-                    &checkpoint,
-                    &agent,
-                    &reads.into_values().collect::<Vec<_>>(),
-                ) {
-                    return internal(e);
-                }
-                state.emit(EventKind::HandoffAccepted {
-                    agent,
-                    checkpoint: id.into(),
+                let mut event = Event::new(
+                    EventKind::HandoffAccepted {
+                        agent: agent.clone(),
+                        checkpoint: id.into(),
+                    },
+                    Utc::now(),
+                );
+                event.seq = state.next_seq;
+                state.persist("handoff acceptance", |store| {
+                    store.accept_handoff(
+                        &checkpoint,
+                        &agent,
+                        &reads.into_values().collect::<Vec<_>>(),
+                        &event,
+                    )
                 });
+                if let Some(error) = state.storage_failure() {
+                    return error;
+                }
+                state.next_seq += 1;
+                let _ = state.events.send(event);
             }
         }
         let validations = match state
@@ -320,7 +339,7 @@ impl Daemon {
             log,
         };
         {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             if !state
                 .registry
                 .get(&agent)
@@ -331,8 +350,11 @@ impl Daemon {
                     "agent stopped before validation started",
                 );
             }
-            if let Err(e) = state.store.put_document("validation", &id, &validation) {
-                return internal(e);
+            state.persist("validation start", |store| {
+                store.put_document("validation", &id, &validation)
+            });
+            if let Some(error) = state.storage_failure() {
+                return error;
             }
         }
         let mut cmd = tokio::process::Command::new(&command[0]);
@@ -371,14 +393,23 @@ impl Daemon {
             .and_then(Result::ok);
         let passed = validation.passed();
         let mut state = lock(&self.state);
-        if let Err(e) = state.store.put_document("validation", &id, &validation) {
-            return internal(e);
-        }
-        state.emit(EventKind::ValidationFinished {
-            agent,
-            validation: id,
-            passed,
+        let mut event = Event::new(
+            EventKind::ValidationFinished {
+                agent,
+                validation: id.clone(),
+                passed,
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        state.persist("validation finish", |store| {
+            store.put_document_with_event("validation", &id, &validation, &event)
         });
+        if let Some(error) = state.storage_failure() {
+            return error;
+        }
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         Response::Validation { validation, passed }
     }
 }
@@ -517,6 +548,138 @@ mod tests {
             matches!(daemon.validations("original"), Response::Validations { validations } if validations.len() == 3)
         );
     }
+    #[tokio::test]
+    async fn failed_checkpoint_event_rolls_back_checkpoint_and_preserves_leases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        daemon
+            .handle(Request::Claim {
+                agent: "original".into(),
+                resource: "task:atomic".into(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        let next = lock(&daemon.state).next_seq;
+        lock(&daemon.state).next_seq = next - 1; // Force a unique-index failure at event insertion.
+        let mut events = daemon.subscribe_events();
+        let result = daemon
+            .checkpoint(
+                "original",
+                "rollback".into(),
+                "task".into(),
+                vec![],
+                vec![],
+                true,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(
+            events.try_recv().is_err(),
+            "a failed checkpoint publishes nothing"
+        );
+        let state = lock(&daemon.state);
+        let owner = state.registry.resolve("original").unwrap();
+        assert!(
+            state
+                .store
+                .document::<Checkpoint>("checkpoint", &format!("{owner}:rollback"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.leases.by_holder(&owner).len(), 1);
+        assert!(state.storage_failure().is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_acceptance_event_rolls_back_recipient_and_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Checkpoint { checkpoint } = daemon
+            .checkpoint(
+                "original",
+                "accept-rollback".into(),
+                "task".into(),
+                vec![],
+                vec![],
+                false,
+            )
+            .await
+        else {
+            panic!()
+        };
+        let next = lock(&daemon.state).next_seq;
+        lock(&daemon.state).next_seq = next - 1;
+        let mut events = daemon.subscribe_events();
+        assert!(matches!(
+            daemon.resume("replacement", &checkpoint.id, true).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(
+            events.try_recv().is_err(),
+            "a failed acceptance publishes nothing"
+        );
+        let state = lock(&daemon.state);
+        assert!(
+            state
+                .store
+                .document::<Checkpoint>("checkpoint", &checkpoint.id)
+                .unwrap()
+                .unwrap()
+                .accepted_by
+                .is_none()
+        );
+        let recipient = state.registry.resolve("replacement").unwrap();
+        assert!(
+            state
+                .store
+                .document::<Vec<ReadMark>>("reads", recipient.as_str())
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.storage_failure().is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_validation_event_does_not_store_or_publish_passing_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        lock(&daemon.state).next_seq -= 1;
+        let mut events = daemon.subscribe_events();
+        assert!(matches!(
+            daemon.validate("original", vec!["true".into()], 5).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(events.try_recv().is_err());
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        let Response::Validations { validations } = daemon.validations("original") else {
+            panic!("validation history unavailable");
+        };
+        assert_eq!(
+            validations.len(),
+            1,
+            "the initial incomplete record survives"
+        );
+        assert!(!validations[0].passed());
+        assert!(validations[0].exit_code.is_none());
+    }
+
     #[tokio::test]
     async fn checkpoint_is_journalled_before_releasing_leases() {
         let tmp = tempfile::tempdir().unwrap();
