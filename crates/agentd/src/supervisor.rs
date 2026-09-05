@@ -12,13 +12,15 @@ use chrono::Utc;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::daemon::Daemon;
 
 pub struct Spawned {
     pub pid: u32,
     child: Child,
+    pub control: watch::Sender<Option<bool>>,
+    stop: watch::Receiver<Option<bool>>,
 }
 
 /// Launch the agent's command with its output captured to a log file.
@@ -62,13 +64,41 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         tokio::spawn(pump(stderr, "err", tx));
     }
 
-    Ok(Spawned { pid, child })
+    let (control, stop) = watch::channel(None);
+    Ok(Spawned {
+        pid,
+        child,
+        control,
+        stop,
+    })
 }
 
 /// Wait for the child in the background and record how it ended.
 pub fn supervise(daemon: Arc<Daemon>, id: AgentId, mut spawned: Spawned) {
     tokio::spawn(async move {
-        let status = match spawned.child.wait().await {
+        let group = Pid::from_raw(-(spawned.pid as i32));
+        let mut stopping = false;
+        let mut deadline = tokio::time::Instant::now();
+        let result = loop {
+            tokio::select! {
+                biased;
+                result = spawned.child.wait() => break result,
+                Ok(()) = spawned.stop.changed() => {
+                    if let Some(force) = *spawned.stop.borrow_and_update() {
+                        let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
+                        if !stopping {
+                            deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                            stopping = true;
+                        }
+                    }
+                }
+                () = tokio::time::sleep_until(deadline), if stopping => {
+                    let _ = kill(group, Signal::SIGKILL);
+                    stopping = false;
+                }
+            }
+        };
+        let status = match result {
             Ok(exit) => AgentStatus::Exited { code: exit.code() },
             Err(err) => AgentStatus::Failed {
                 reason: err.to_string(),
