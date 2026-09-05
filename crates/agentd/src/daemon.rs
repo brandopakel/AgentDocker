@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
+use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
     Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
@@ -23,6 +24,7 @@ use agentdocker_core::{
     journal::{cap_paths, synthesise_summary},
     topic_matches,
 };
+use agentdocker_core::{DigestBudget, DigestRequest};
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
@@ -62,6 +64,11 @@ const RING_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 const WATCHER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 /// Ledger rows examined per released resource when building an entry.
 const RELEASE_SCAN: usize = 10_000;
+/// Entries after a cursor a digest reads from the store at most; older
+/// ones beyond that are not counted.
+const DIGEST_SCAN: usize = 1_000;
+/// The human's cursor key: `journal --new` reads as this.
+const USER_READER: &str = "user";
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -94,6 +101,9 @@ struct State {
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
+    /// Readers' journal cursors, loaded from the store on first use and
+    /// written through when they move.
+    journal_cursors: HashMap<(String, ProjectId), u64>,
 }
 
 struct JournalRing {
@@ -536,6 +546,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 last_head: HashMap::new(),
+                journal_cursors: HashMap::new(),
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
@@ -664,13 +675,18 @@ impl Daemon {
                 agent,
                 lease,
                 summary,
+                summary_source,
             } => {
                 self.flush_watcher().await;
-                lock(&self.state).release(&agent, &lease, summary)
+                lock(&self.state).release(&agent, &lease, summary, summary_source)
             }
-            Request::ReleaseAll { agent, summary } => {
+            Request::ReleaseAll {
+                agent,
+                summary,
+                summary_source,
+            } => {
                 self.flush_watcher().await;
-                lock(&self.state).release_all(&agent, summary)
+                lock(&self.state).release_all(&agent, summary, summary_source)
             }
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
@@ -685,9 +701,10 @@ impl Daemon {
                 path,
                 grep,
                 limit,
+                digest,
             } => {
                 self.journal(
-                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit,
+                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit, digest,
                 )
                 .await
             }
@@ -992,7 +1009,11 @@ impl Daemon {
         path: Option<String>,
         grep: Option<String>,
         limit: usize,
+        digest: Option<DigestRequest>,
     ) -> Response {
+        if let Some(request) = digest {
+            return self.journal_digest(project, since_seq, request).await;
+        }
         let project = match self.resolve_project(project).await {
             Ok(id) => id,
             Err(response) => return *response,
@@ -1027,6 +1048,57 @@ impl Daemon {
             limit: limit.clamp(1, 10_000),
         };
         lock(&self.state).journal_query(query)
+    }
+
+    /// The digest form of `journal`: who is reading decides the cursor and
+    /// the branch filter. An empty project means the reader's own.
+    async fn journal_digest(
+        &self,
+        project: &str,
+        since_seq: Option<u64>,
+        request: DigestRequest,
+    ) -> Response {
+        let (key, name, branch, own_project) = if request.reader == USER_READER {
+            (USER_READER.to_owned(), USER_READER.to_owned(), None, None)
+        } else {
+            let id = match self.resolve(&request.reader) {
+                Ok(id) => id,
+                Err(response) => return *response,
+            };
+            let Some(record) = lock(&self.state).registry.get(&id).cloned() else {
+                return Response::error(ErrorCode::NotFound, "agent vanished");
+            };
+            (
+                id.as_str().to_owned(),
+                record.spec.name.clone(),
+                record.vcs.as_ref().and_then(|v| v.branch.clone()),
+                record.project.as_ref().map(ProjectRef::id),
+            )
+        };
+        let project = if project.is_empty() {
+            match own_project {
+                Some(id) => id,
+                None => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "the reader is in no project; name one",
+                    );
+                }
+            }
+        } else {
+            match self.resolve_project(project).await {
+                Ok(id) => id,
+                Err(response) => return *response,
+            }
+        };
+        lock(&self.state).journal_digest(
+            project,
+            &key,
+            &name,
+            branch.as_deref(),
+            since_seq,
+            &request,
+        )
     }
 
     /// What the watcher saw in one debounced batch: file changes become
@@ -1595,6 +1667,8 @@ impl State {
         }
         self.registry.remove(&id);
         self.inboxes.remove(&id);
+        self.journal_cursors
+            .retain(|(reader, _), _| reader != id.as_str());
         self.persist("agent", |store| store.delete_agent(&id));
         self.emit(EventKind::AgentRemoved { agent: id });
         Response::Ok
@@ -1620,7 +1694,7 @@ impl State {
         self.supervised.remove(id);
         self.persist("agent", |store| store.upsert_agent(&record));
         let released = self.leases.release_all(id);
-        self.finish_release(id, released, None);
+        self.finish_release(id, released, None, SummarySource::Explicit);
         self.journal_event(&record, JournalKind::Leave, format!("left ({status})"));
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         self.emit(EventKind::AgentExited {
@@ -1720,14 +1794,20 @@ impl State {
         }
     }
 
-    fn release(&mut self, reference: &str, lease: &LeaseId, summary: Option<String>) -> Response {
+    fn release(
+        &mut self,
+        reference: &str,
+        lease: &LeaseId,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
         match self.leases.release(lease, &holder) {
             Ok(lease) => {
-                let mut released = self.finish_release(&holder, vec![lease], summary);
+                let mut released = self.finish_release(&holder, vec![lease], summary, source);
                 Response::Lease {
                     lease: released.remove(0),
                 }
@@ -1736,13 +1816,18 @@ impl State {
         }
     }
 
-    fn release_all(&mut self, reference: &str, summary: Option<String>) -> Response {
+    fn release_all(
+        &mut self,
+        reference: &str,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
         let released = self.leases.release_all(&holder);
-        let released = self.finish_release(&holder, released, summary);
+        let released = self.finish_release(&holder, released, summary, source);
         Response::Leases { leases: released }
     }
 
@@ -1754,11 +1839,20 @@ impl State {
         holder: &AgentId,
         released: Vec<Lease>,
         summary: Option<String>,
+        source: SummarySource,
     ) -> Vec<Lease> {
+        // A summary the agent typed is explicit whatever a client claims;
+        // only a quoted transcript is not.
+        let source = match source {
+            SummarySource::Transcript => SummarySource::Transcript,
+            _ => SummarySource::Explicit,
+        };
         if released.is_empty() {
             // Nothing was freed, but an explicit summary is still something
-            // said: record it rather than drop the agent's text silently.
+            // said: record it rather than drop the agent's text silently. A
+            // transcript tail only ever describes leases actually released.
             let explicit = summary
+                .filter(|_| source == SummarySource::Explicit)
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty());
             if let (Some(text), Some(record)) = (explicit, self.registry.get(holder).cloned()) {
@@ -1771,7 +1865,7 @@ impl State {
             return released;
         }
         let entry = self
-            .release_entry(holder, &released, summary)
+            .release_entry(holder, &released, summary, source)
             .map(|mut entry| {
                 entry.seq = self.next_journal_seq(&entry.project);
                 entry
@@ -1800,6 +1894,7 @@ impl State {
         holder: &AgentId,
         released: &[Lease],
         summary: Option<String>,
+        source: SummarySource,
     ) -> Option<JournalEntry> {
         let record = self.registry.get(holder)?.clone();
         let project = record.project.clone()?;
@@ -1842,7 +1937,7 @@ impl State {
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
         {
-            Some(text) => (text, SummarySource::Explicit),
+            Some(text) => (text, source),
             None if paths.is_empty() => return None,
             None => (
                 synthesise_summary(&paths, paths_total),
@@ -2093,6 +2188,93 @@ impl State {
         }
     }
 
+    /// Entries after the reader's cursor (or `since_seq`), rendered within
+    /// the budget; with `advance`, the cursor moves to the head when text
+    /// was produced. Served from the ring when the cursor lies inside it.
+    fn journal_digest(
+        &mut self,
+        project: ProjectId,
+        key: &str,
+        name: &str,
+        branch: Option<&str>,
+        since_seq: Option<u64>,
+        request: &DigestRequest,
+    ) -> Response {
+        let now = Utc::now();
+        let cursor = match since_seq.or_else(|| self.cursor(key, &project)) {
+            Some(cursor) => cursor,
+            None => initial_cursor(self.ring(&project).entries.make_contiguous(), now),
+        };
+        let entries: Vec<JournalEntry> = {
+            let ring = self.ring(&project);
+            let oldest = ring.entries.front().map(|e| e.seq).unwrap_or(u64::MAX);
+            if ring.entries.len() < JOURNAL_RING || cursor.saturating_add(1) >= oldest {
+                ring.entries
+                    .iter()
+                    .filter(|e| e.seq > cursor)
+                    .cloned()
+                    .collect()
+            } else {
+                let mut query = JournalQuery::new(project.clone(), DIGEST_SCAN);
+                query.since_seq = Some(cursor);
+                self.store_op("journal", |store| store.journal(&query))
+                    .unwrap_or_default()
+            }
+        };
+        let reader = Reader {
+            name,
+            branch,
+            all_branches: request.all_branches,
+        };
+        let budget = DigestBudget {
+            max_entries: request.max_entries,
+            max_chars: request.max_chars,
+        };
+        let digest = render_digest(&entries, cursor, &reader, budget, now);
+        if request.advance && !digest.text.is_empty() {
+            self.move_cursor(key, &project, digest.head_seq);
+        }
+        Response::Digest { project, digest }
+    }
+
+    /// A reader's cursor, from the cache or the store; `None` for a reader
+    /// that has never been shown anything in the project.
+    fn cursor(&mut self, key: &str, project: &ProjectId) -> Option<u64> {
+        let cache_key = (key.to_owned(), project.clone());
+        if let Some(seq) = self.journal_cursors.get(&cache_key) {
+            return Some(*seq);
+        }
+        let found = self
+            .store_op("journal", |store| store.journal_cursor(key, project))
+            .flatten();
+        if let Some(seq) = found {
+            self.journal_cursors.insert(cache_key, seq);
+        }
+        found
+    }
+
+    /// Record what a reader has been shown. Only ever forward, and written
+    /// only when it moves.
+    fn move_cursor(&mut self, key: &str, project: &ProjectId, seq: u64) {
+        if self
+            .cursor(key, project)
+            .is_some_and(|current| current >= seq)
+        {
+            return;
+        }
+        let now = Utc::now();
+        self.persist("journal", |store| {
+            store.set_journal_cursor(key, project, seq, now)
+        });
+        self.journal_cursors
+            .insert((key.to_owned(), project.clone()), seq);
+        self.emit(EventKind::JournalRead {
+            reader: key.to_owned(),
+            project: project.clone(),
+            seq,
+        });
+    }
+
     /// The project's ring, loaded from the store on first use.
     fn ring(&mut self, project: &ProjectId) -> &mut JournalRing {
         if !self.journal_rings.contains_key(project) {
@@ -2274,6 +2456,17 @@ impl State {
             if !details.is_empty() {
                 what.push_str(&format!(" ({})", details.join(", ")));
             }
+            // Seed the newcomer's cursor: a finished namesake's, so a resumed
+            // session continues where it left off, else recent history.
+            let now = Utc::now();
+            let project_id = project.id();
+            let donor = cursor_donor(self.registry.all(), &record.spec.name, &project_id, now)
+                .map(|donor| donor.id.as_str().to_owned());
+            let seed = match donor.and_then(|donor| self.cursor(&donor, &project_id)) {
+                Some(seq) => seq,
+                None => initial_cursor(self.ring(&project_id).entries.make_contiguous(), now),
+            };
+            self.move_cursor(record.id.as_str(), &project_id, seed);
             self.journal_event(&record, JournalKind::Join, what);
         }
         Response::Agent { agent: record }
@@ -2746,6 +2939,7 @@ mod tests {
                 agent: "a".into(),
                 lease: lease.id,
                 summary: None,
+                summary_source: SummarySource::Explicit,
             })
             .await;
         let response = waiter.await.unwrap();
@@ -3387,6 +3581,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "holder".into(),
                 summary: None,
+                summary_source: SummarySource::Explicit,
             })
             .await;
         assert!(matches!(
@@ -3751,6 +3946,7 @@ mod tests {
                 path: path.map(str::to_owned),
                 grep: grep.map(str::to_owned),
                 limit: 50,
+                digest: None,
             })
             .await
         {
@@ -3808,6 +4004,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "a".to_owned(),
                 summary: None,
+                summary_source: SummarySource::Explicit,
             })
             .await
         else {
@@ -3843,6 +4040,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "a".to_owned(),
                 summary: Some("rewrote the parser".to_owned()),
+                summary_source: SummarySource::Explicit,
             })
             .await
         else {
@@ -3869,6 +4067,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "a".to_owned(),
                 summary: None,
+                summary_source: SummarySource::Explicit,
             })
             .await;
         assert_eq!(
@@ -3883,6 +4082,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "a".to_owned(),
                 summary: Some("  reviewed the plan, no edits  ".to_owned()),
+                summary_source: SummarySource::Explicit,
             })
             .await;
         let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -3928,6 +4128,7 @@ mod tests {
                     path: None,
                     grep: None,
                     limit: 50,
+                    digest: None,
                 })
                 .await,
             Response::Error {
@@ -3969,6 +4170,273 @@ mod tests {
         let after = journal_of(&daemon, &repo, None, None, None).await;
         assert_eq!(after.last().map(|e| e.kind), Some(JournalKind::Join));
         assert_eq!(after.last().map(|e| e.seq), Some(seqs.len() as u64 + 1));
+    }
+
+    async fn digest_for(
+        daemon: &Arc<Daemon>,
+        project: &str,
+        reader: &str,
+        since: Option<u64>,
+        budget: DigestBudget,
+        advance: bool,
+    ) -> agentdocker_core::Digest {
+        match daemon
+            .handle(Request::Journal {
+                project: project.to_owned(),
+                since_seq: since,
+                until_seq: None,
+                agent: None,
+                branch: None,
+                kind: None,
+                path: None,
+                grep: None,
+                limit: 50,
+                digest: Some(DigestRequest {
+                    reader: reader.to_owned(),
+                    max_entries: budget.max_entries,
+                    max_chars: budget.max_chars,
+                    all_branches: false,
+                    advance,
+                }),
+            })
+            .await
+        {
+            Response::Digest { digest, .. } => digest,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    async fn note(daemon: &Arc<Daemon>, agent: &str, text: &str) -> u64 {
+        match daemon
+            .handle(Request::JournalAdd {
+                agent: agent.to_owned(),
+                summary: text.to_owned(),
+            })
+            .await
+        {
+            Response::JournalEntry { entry } => entry.seq,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn digests_follow_cursors_that_are_seeded_by_name() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        let daemon = open(&dir);
+        let repo_ref = repo.to_string_lossy().into_owned();
+        register_in(&daemon, "a", &repo).await;
+        for i in 0..25 {
+            note(&daemon, "a", &format!("note {i}")).await;
+        }
+
+        // A newcomer is told the twenty newest entries, not its own join.
+        let b = register_in(&daemon, "b", &repo).await;
+        let first = digest_for(
+            &daemon,
+            &repo_ref,
+            "b",
+            None,
+            DigestBudget::SESSION_START,
+            true,
+        )
+        .await;
+        assert_eq!(
+            (first.shown, first.collapsed, first.other_branches),
+            (20, 0, 0),
+            "{}",
+            first.text
+        );
+        assert!(
+            first
+                .text
+                .starts_with("Since you last looked (20 entries):\n")
+        );
+        assert!(first.text.contains("noted: \"note 24\""));
+        assert!(!first.text.contains("noted: \"note 4\""), "{}", first.text);
+        assert!(
+            !first.text.contains("b [") || !first.text.contains("joined"),
+            "{}",
+            first.text
+        );
+
+        // Advanced: nothing new until something happens, then only that.
+        let again = digest_for(
+            &daemon,
+            &repo_ref,
+            "b",
+            None,
+            DigestBudget::SESSION_START,
+            true,
+        )
+        .await;
+        assert_eq!(again.text, "");
+        assert_eq!(again.head_seq, first.head_seq);
+        let seq = note(&daemon, "a", "parser is next").await;
+        let prompt = digest_for(&daemon, &repo_ref, "b", None, DigestBudget::PROMPT, true).await;
+        assert_eq!((prompt.shown, prompt.head_seq), (1, seq), "{}", prompt.text);
+        assert!(prompt.text.contains("parser is next"));
+
+        // An empty project means the reader's own; a since overrides the
+        // cursor without losing it.
+        let own = digest_for(
+            &daemon,
+            "",
+            "b",
+            Some(0),
+            DigestBudget::SESSION_START,
+            false,
+        )
+        .await;
+        assert_eq!(
+            own.collapsed + own.shown,
+            27,
+            "a's join and notes: {}",
+            own.text
+        );
+        assert_eq!(
+            digest_for(&daemon, &repo_ref, "b", None, DigestBudget::PROMPT, true)
+                .await
+                .text,
+            ""
+        );
+
+        // The human has a cursor too.
+        let user = digest_for(
+            &daemon,
+            &repo_ref,
+            "user",
+            None,
+            DigestBudget::SESSION_START,
+            true,
+        )
+        .await;
+        assert_eq!(user.shown, 20, "{}", user.text);
+        note(&daemon, "a", "for the human").await;
+        let user = digest_for(
+            &daemon,
+            &repo_ref,
+            "user",
+            None,
+            DigestBudget::SESSION_START,
+            false,
+        )
+        .await;
+        assert_eq!(user.shown, 1);
+        assert!(user.text.contains("for the human"));
+
+        // b leaves and comes back under the same name: its cursor carries
+        // over, so it is not told what it already saw, nor its own leave.
+        daemon
+            .handle(Request::Deregister {
+                agent: "b".to_owned(),
+            })
+            .await;
+        note(&daemon, "a", "while b was away").await;
+        let b2 = register_in(&daemon, "b", &repo).await;
+        assert_ne!(b2.id, b.id);
+        let resumed = digest_for(
+            &daemon,
+            &repo_ref,
+            "b",
+            None,
+            DigestBudget::SESSION_START,
+            true,
+        )
+        .await;
+        assert_eq!(resumed.shown, 2, "{}", resumed.text);
+        assert!(resumed.text.contains("for the human"));
+        assert!(resumed.text.contains("while b was away"));
+        assert!(!resumed.text.contains("left"), "{}", resumed.text);
+
+        // A stranger's name inherits nothing, and neither does a namesake
+        // in another project.
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(git(dir.path(), &other, &["init", "-q"]));
+        register_in(&daemon, "c", &other).await;
+        note(&daemon, "c", "elsewhere").await;
+        daemon
+            .handle(Request::Deregister {
+                agent: "c".to_owned(),
+            })
+            .await;
+        register_in(&daemon, "c", &repo).await;
+        let fresh = digest_for(
+            &daemon,
+            &repo_ref,
+            "c",
+            None,
+            DigestBudget::SESSION_START,
+            false,
+        )
+        .await;
+        assert_eq!(
+            fresh.shown, 20,
+            "seeded from history, not from c's other-project cursor"
+        );
+
+        // A transcript tail describes released leases only: with none
+        // held it writes nothing, unlike an explicit summary.
+        let before = journal_of(&daemon, &repo, Some("release"), None, None)
+            .await
+            .len();
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: Some("I finished the parser.".to_owned()),
+                summary_source: SummarySource::Transcript,
+            })
+            .await;
+        assert_eq!(
+            journal_of(&daemon, &repo, Some("release"), None, None)
+                .await
+                .len(),
+            before
+        );
+        let src = repo.join("src.rs");
+        assert!(matches!(
+            claim(&daemon, "a", &format!("path:{}", src.display())).await,
+            Response::Lease { .. }
+        ));
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: Some("I finished the parser.".to_owned()),
+                summary_source: SummarySource::Transcript,
+            })
+            .await;
+        let releases = journal_of(&daemon, &repo, Some("release"), None, None).await;
+        assert_eq!(releases.len(), before + 1);
+        assert_eq!(
+            releases.last().unwrap().summary_source,
+            SummarySource::Transcript
+        );
+        assert_eq!(releases.last().unwrap().summary, "I finished the parser.");
+
+        // Cursors survive a restart.
+        drop(daemon);
+        let daemon = open(&dir);
+        let after = digest_for(
+            &daemon,
+            &repo_ref,
+            "user",
+            None,
+            DigestBudget::SESSION_START,
+            false,
+        )
+        .await;
+        assert_eq!(after.shown, 6, "{}", after.text);
+        assert!(
+            !after.text.contains("note 24"),
+            "already shown: {}",
+            after.text
+        );
     }
 
     #[tokio::test]

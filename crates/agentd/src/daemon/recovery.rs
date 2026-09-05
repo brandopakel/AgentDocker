@@ -128,7 +128,11 @@ impl Daemon {
             checkpoint: id,
         });
         if release {
-            state.release_all(agent.as_str(), None);
+            state.release_all(
+                agent.as_str(),
+                None,
+                agentdocker_core::SummarySource::Explicit,
+            );
         }
         Response::Checkpoint { checkpoint }
     }

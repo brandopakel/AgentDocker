@@ -364,6 +364,19 @@ struct JournalArgs {
     /// Keep printing entries as they are appended.
     #[arg(long)]
     follow: bool,
+    /// Only what the reader has not been shown yet: the human's cursor,
+    /// or an agent's with --as.
+    #[arg(long, conflicts_with = "follow")]
+    new: bool,
+    /// With --new: mark what was shown as seen.
+    #[arg(long, requires = "new")]
+    ack: bool,
+    /// With --new: show entries from every branch instead of counting them.
+    #[arg(long, requires = "new")]
+    all_branches: bool,
+    /// With --new: read as this agent (id, prefix, or name) instead of as the human.
+    #[arg(long = "as", value_name = "AGENT", requires = "new")]
+    reader: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -753,9 +766,12 @@ async fn main() -> Result<()> {
             summary,
         } => {
             if all {
-                if let Response::Leases { leases } =
-                    client.call(&Request::ReleaseAll { agent, summary }).await?
-                {
+                let request = Request::ReleaseAll {
+                    agent,
+                    summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
+                };
+                if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
                         println!("{}", lease.id);
                     }
@@ -765,6 +781,7 @@ async fn main() -> Result<()> {
                     agent,
                     lease: LeaseId::from(lease.as_str()),
                     summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
                 };
                 client.call(&request).await?;
             }
@@ -853,6 +870,33 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                 println!("removed {removed} entries");
             }
         }
+        None if args.new => {
+            let request = Request::Journal {
+                project: project_selector(args.project.as_deref().unwrap_or(".")),
+                since_seq: args.since,
+                until_seq: None,
+                agent: None,
+                branch: None,
+                kind: None,
+                path: None,
+                grep: None,
+                limit: args.limit,
+                digest: Some(agentdocker_core::DigestRequest {
+                    reader: args.reader.unwrap_or_else(|| "user".to_owned()),
+                    max_entries: args.limit,
+                    max_chars: 100_000,
+                    all_branches: args.all_branches,
+                    advance: args.ack,
+                }),
+            };
+            if let Response::Digest { digest, .. } = client.call(&request).await? {
+                if digest.text.is_empty() {
+                    println!("Nothing new.");
+                } else {
+                    print!("{}", digest.text);
+                }
+            }
+        }
         None => {
             let path = args.path.as_deref().map(absolute_path);
             let request = Request::Journal {
@@ -865,6 +909,7 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                 path: path.clone(),
                 grep: args.grep.clone(),
                 limit: args.limit,
+                digest: None,
             };
             let print = |entry: &agentdocker_core::JournalEntry| {
                 println!(

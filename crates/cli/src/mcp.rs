@@ -407,6 +407,30 @@ impl<B: Backend> McpServer<B> {
                     agent: me,
                     lease: LeaseId::from(args.lease.as_str()),
                     summary: args.summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
+                })
+                .await
+            }
+            "read_journal" => {
+                let args: ReadJournalArgs = parse(arguments)?;
+                let budget = agentdocker_core::DigestBudget::SESSION_START;
+                self.forward(Request::Journal {
+                    project: String::new(),
+                    since_seq: args.since,
+                    until_seq: None,
+                    agent: None,
+                    branch: None,
+                    kind: None,
+                    path: None,
+                    grep: None,
+                    limit: budget.max_entries,
+                    digest: Some(agentdocker_core::DigestRequest {
+                        reader: me,
+                        max_entries: budget.max_entries,
+                        max_chars: budget.max_chars,
+                        all_branches: args.all_branches,
+                        advance: true,
+                    }),
                 })
                 .await
             }
@@ -535,6 +559,14 @@ struct JournalNoteArgs {
 }
 
 #[derive(Deserialize, Default)]
+struct ReadJournalArgs {
+    #[serde(default)]
+    since: Option<u64>,
+    #[serde(default)]
+    all_branches: bool,
+}
+
+#[derive(Deserialize, Default)]
 struct ListLeasesArgs {
     #[serde(default)]
     agent: Option<String>,
@@ -610,6 +642,7 @@ fn render(response: Response) -> Value {
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
+        Response::Digest { digest, .. } => text_result(&json!(digest), false),
         Response::Ok => text_result(&json!({ "ok": true }), false),
         other => text_result(&json!(other), false),
     }
@@ -744,6 +777,18 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "read_journal",
+            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading marks it seen; `since` re-reads from a sequence number instead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "minimum": 0, "description": "Sequence number to read from instead of this agent's cursor." },
+                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "list_leases",
             "description": "Current leases, optionally filtered by holder or by overlap with a resource.",
             "inputSchema": {
@@ -857,6 +902,7 @@ mod tests {
                 "renew",
                 "release",
                 "journal_note",
+                "read_journal",
                 "list_leases"
             ]
         );
