@@ -1,0 +1,52 @@
+name: Container protocol
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install Podman
+        if: matrix.engine == 'podman'
+        run: |
+          if ! command -v podman; then
+            sudo apt-get update
+            sudo apt-get install -y podman
+          fi
+      - run: cargo build --locked --bin agentd
+      - name: Build fixture and test real engine
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          "$TEST_ENGINE" version
+          "$TEST_ENGINE" build -t agentdocker-protocol-test:ci -f tests/containers/Containerfile tests/containers
+          fixture=$(mktemp -d /tmp/ad-container-XXXXXX)
+          mkdir -p artifacts
+          target/debug/agentd --home "$fixture/state" --socket "$fixture/host.sock" > artifacts/container-daemon.log 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" || true' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$fixture/state/container.sock" && break
+            sleep 0.1
+          done
+          python3 tests/containers/smoke.py --engine "$TEST_ENGINE" --host-socket "$fixture/host.sock" --engine-socket "$fixture/state/container.sock" --root "$fixture" --image agentdocker-protocol-test:ci | tee artifacts/container-result.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: container-${{ matrix.engine }}
+          path: artifacts/

@@ -10,3 +10,5 @@ pub mod project;
 pub mod vcs;
 
 pub mod content;
+
+pub mod command;

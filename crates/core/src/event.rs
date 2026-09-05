@@ -11,6 +11,22 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    WorktreeCreated {
+        agent: crate::AgentId,
+        path: std::path::PathBuf,
+    },
+    IntegrationPrepared {
+        agent: crate::AgentId,
+        source_head: String,
+        clean: bool,
+    },
+    AccessGranted {
+        agent: crate::AgentId,
+        grant: String,
+    },
+    AccessRevoked {
+        grant: String,
+    },
     CheckpointSaved {
         agent: crate::AgentId,
         checkpoint: String,

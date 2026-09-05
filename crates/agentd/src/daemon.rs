@@ -32,8 +32,10 @@ use agentdocker_host::{procinfo, project, vcs};
 
 use crate::store::{ChangesQuery, Store};
 use crate::supervisor;
+mod access;
 mod recovery;
 mod working;
+mod worktrees;
 
 /// Messages queued per agent while it has no live subscription.
 const INBOX_CAPACITY: usize = 1000;
@@ -597,6 +599,28 @@ impl Daemon {
                 timeout_secs,
             } => self.validate(&agent, command, timeout_secs).await,
             Request::Validations { agent } => self.validations(&agent),
+            Request::WorktreeCreate {
+                agent,
+                path,
+                branch,
+            } => self.worktree_create(&agent, path, branch).await,
+            Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
+            Request::Integrate {
+                agent,
+                source,
+                validation,
+                apply,
+            } => self.integrate(&agent, source, validation, apply).await,
+            Request::Authenticate { .. } => Response::error(
+                ErrorCode::Forbidden,
+                "authenticate only on the restricted endpoint",
+            ),
+            Request::GrantAccess {
+                agent,
+                container_root,
+                ttl_secs,
+            } => self.grant_access(&agent, container_root, ttl_secs),
+            Request::RevokeAccess { grant } => self.revoke_access(&grant),
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),

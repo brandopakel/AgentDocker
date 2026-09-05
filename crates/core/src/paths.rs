@@ -21,6 +21,11 @@ pub fn socket_path(home: &Path) -> PathBuf {
     home.join("agentd.sock")
 }
 
+/// The restricted authenticated endpoint, separate from the host control socket.
+pub fn container_socket(home: &Path) -> PathBuf {
+    home.join("container.sock")
+}
+
 /// The lock that guarantees one daemon per socket: `agentd.sock` →
 /// `agentd.lock`, beside it.
 pub fn lock_path(socket: &Path) -> PathBuf {

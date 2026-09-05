@@ -42,6 +42,54 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Create a new linked checkout and branch without changing existing files.
+    WorktreeCreate {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// New checkout path, which becomes its physical identifier.
+        path: String,
+        #[arg(long)]
+        /// Name of the new branch.
+        branch: String,
+    },
+    /// Show tracked changes in this agent's checkout.
+    WorktreeDiff {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+    },
+    /// Preview or prepare an uncommitted merge of validated source code.
+    Integrate {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Source worktree path containing the validated commit.
+        source: String,
+        #[arg(long)]
+        /// Passing validation identifier for the source checkout.
+        validation: String,
+        #[arg(long)]
+        /// Prepare an uncommitted merge and retain the target lease for review.
+        apply: bool,
+    },
+    /// Issue a scoped container credential; the secret is written to a new private file.
+    GrantAccess {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        #[arg(long, default_value = "/workspace")]
+        /// Checkout mount path inside the container.
+        container_root: String,
+        #[arg(long, default_value_t = 3600)]
+        /// Credential lifetime in seconds (1–86400).
+        ttl: u64,
+        #[arg(long)]
+        /// New private file in which to store the credential.
+        token_file: PathBuf,
+    },
+    /// Revoke container access without prematurely releasing a live writer's leases.
+    RevokeAccess { grant: String },
     /// Persist task context and content identity before an optional lease release.
     Checkpoint {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -452,6 +500,94 @@ async fn main() -> Result<()> {
                 bail!(
                     "validation did not pass for unchanged content; inspect its log and evidence"
                 );
+            }
+        }
+        Command::WorktreeCreate {
+            agent,
+            path,
+            branch,
+        } => {
+            match client
+                .call(&Request::WorktreeCreate {
+                    agent,
+                    path,
+                    branch,
+                })
+                .await?
+            {
+                Response::Worktree { path, .. } => println!("{}", path.display()),
+                _ => bail!("unexpected worktree response"),
+            }
+        }
+        Command::WorktreeDiff { agent } => {
+            print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
+        }
+        Command::Integrate {
+            agent,
+            source,
+            validation,
+            apply,
+        } => {
+            let response = client
+                .call(&Request::Integrate {
+                    agent,
+                    source,
+                    validation,
+                    apply,
+                })
+                .await?;
+            print_json(&response)?;
+            if matches!(
+                response,
+                Response::Integration {
+                    applied: true,
+                    clean: false,
+                    ..
+                }
+            ) {
+                bail!(
+                    "merge has conflicts; integration lease retained, inspect and resolve or abort with Git"
+                );
+            }
+        }
+        Command::RevokeAccess { grant } => {
+            print_json(&client.call(&Request::RevokeAccess { grant }).await?)?
+        }
+        Command::GrantAccess {
+            agent,
+            container_root,
+            ttl,
+            token_file,
+        } => {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Reserve the private output before creating a credential.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&token_file)?;
+            let response = client
+                .call(&Request::GrantAccess {
+                    agent,
+                    container_root,
+                    ttl_secs: ttl,
+                })
+                .await?;
+            if let Response::Access {
+                grant,
+                token,
+                socket: _,
+                expires_at: _,
+            } = response
+            {
+                if let Err(error) = writeln!(file, "{token}").and_then(|_| file.sync_all()) {
+                    let _ = client.call(&Request::RevokeAccess { grant }).await;
+                    return Err(error.into());
+                }
+                println!("{grant}");
+            } else {
+                bail!("unexpected access response");
             }
         }
         Command::Ping => {

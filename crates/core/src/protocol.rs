@@ -22,6 +22,34 @@ pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    WorktreeCreate {
+        agent: String,
+        path: String,
+        branch: String,
+    },
+    WorktreeDiff {
+        agent: String,
+    },
+    Integrate {
+        agent: String,
+        source: String,
+        validation: String,
+        #[serde(default)]
+        apply: bool,
+    },
+    /// Only accepted as the first frame on the separate restricted endpoint.
+    Authenticate {
+        token: String,
+    },
+    GrantAccess {
+        agent: String,
+        container_root: String,
+        #[serde(default = "access_ttl")]
+        ttl_secs: u64,
+    },
+    RevokeAccess {
+        grant: String,
+    },
     Checkpoint {
         agent: String,
         key: String,
@@ -259,6 +287,26 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    Worktree {
+        path: std::path::PathBuf,
+        branch: String,
+    },
+    Diff {
+        text: String,
+    },
+    Integration {
+        source_head: String,
+        applied: bool,
+        clean: bool,
+        text: String,
+    },
+    Access {
+        grant: String,
+        token: String,
+        socket: std::path::PathBuf,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
+
     Checkpoint {
         checkpoint: crate::Checkpoint,
     },
@@ -350,6 +398,10 @@ impl Response {
 
 fn validation_timeout() -> u64 {
     300
+}
+
+fn access_ttl() -> u64 {
+    3600
 }
 
 #[cfg(test)]

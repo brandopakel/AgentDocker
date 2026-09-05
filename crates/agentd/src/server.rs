@@ -269,10 +269,200 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
     (read, String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A distinct socket prevents optional-token bypass through the host endpoint.
+pub async fn serve_restricted(daemon: Arc<Daemon>) -> anyhow::Result<()> {
+    let socket = agentdocker_core::paths::container_socket(&daemon.home);
+    if socket == daemon.socket {
+        anyhow::bail!("restricted and host sockets must differ");
+    }
+    if socket.exists() {
+        if UnixStream::connect(&socket).await.is_ok() {
+            anyhow::bail!("restricted endpoint is already listening");
+        }
+        std::fs::remove_file(&socket)?;
+    }
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let daemon = daemon.clone();
+        tokio::spawn(async move {
+            // Bounded admission also limits unauthenticated, idle connections.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(30),
+                restricted_connection(daemon, stream),
+            )
+            .await;
+        });
+    }
+}
+
+async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {
+    let mut line = String::new();
+    (&mut *reader)
+        .take(1024 * 1024 + 1)
+        .read_line(&mut line)
+        .await?;
+    if line.len() > 1024 * 1024 || !line.ends_with('\n') {
+        return Err(io::Error::other("invalid frame length"));
+    }
+    serde_json::from_str(&line).map_err(io::Error::other)
+}
+async fn restricted_reply(
+    reader: &mut BufReader<UnixStream>,
+    response: &Response,
+) -> io::Result<()> {
+    let mut line = serde_json::to_vec(response).map_err(io::Error::other)?;
+    line.push(b'\n');
+    reader.get_mut().write_all(&line).await
+}
+
+async fn restricted_connection(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
+    let mut reader = BufReader::new(stream);
+    let token = match restricted_frame(&mut reader).await? {
+        Request::Authenticate { token } => token,
+        _ => {
+            return restricted_reply(
+                &mut reader,
+                &Response::error(ErrorCode::Forbidden, "authentication required"),
+            )
+            .await;
+        }
+    };
+    if let Err(response) = daemon.restricted_request(&token, Request::Ping) {
+        return restricted_reply(&mut reader, &response).await;
+    }
+    restricted_reply(&mut reader, &Response::Ok).await?;
+    let request = match daemon.restricted_request(&token, restricted_frame(&mut reader).await?) {
+        Ok(request) => request,
+        Err(response) => return restricted_reply(&mut reader, &response).await,
+    };
+    let response = daemon.handle(request).await;
+    restricted_reply(&mut reader, &response).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn restricted_socket_requires_auth_and_rechecks_revocation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "worker".into(),
+                    workdir: Some(root),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+            })
+            .await;
+        let Response::Access { token, grant, .. } = daemon
+            .handle(Request::GrantAccess {
+                agent: "worker".into(),
+                container_root: "/workspace".into(),
+                ttl_secs: 60,
+            })
+            .await
+        else {
+            panic!()
+        };
+        let (client, server) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(restricted_connection(daemon.clone(), server));
+        let mut client = BufReader::new(client);
+        client
+            .get_mut()
+            .write_all(b"{\"op\":\"ping\"}\n")
+            .await
+            .unwrap();
+        let mut line = String::new();
+        client.read_line(&mut line).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        task.await.unwrap().unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(restricted_connection(daemon.clone(), server));
+        let mut client = BufReader::new(client);
+        let auth = serde_json::to_string(&Request::Authenticate {
+            token: token.clone(),
+        })
+        .unwrap()
+            + "\n";
+        client.get_mut().write_all(auth.as_bytes()).await.unwrap();
+        line.clear();
+        client.read_line(&mut line).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::Ok
+        );
+        // A valid credential must not allow an oversized operation through the
+        // frame reader. The connection closes without acquiring its lease.
+        let (oversized, server) = UnixStream::pair().unwrap();
+        let oversized_task = tokio::spawn(restricted_connection(daemon.clone(), server));
+        let mut oversized = BufReader::new(oversized);
+        oversized
+            .get_mut()
+            .write_all(auth.as_bytes())
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        oversized.read_line(&mut reply).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&reply).unwrap(),
+            Response::Ok
+        ));
+        let frame = serde_json::to_string(&Request::Claim {
+            agent: "worker".into(),
+            resource: "path:/workspace/oversized".into(),
+            mode: LeaseMode::Exclusive,
+            ttl_secs: 60,
+            wait_secs: 0,
+            note: Some("x".repeat(1024 * 1024)),
+        })
+        .unwrap()
+            + "\n";
+        let _ = oversized.get_mut().write_all(frame.as_bytes()).await;
+        reply.clear();
+        let closed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            oversized.read_line(&mut reply),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(closed, Ok(0) | Err(_)));
+        assert!(oversized_task.await.unwrap().is_err());
+        assert!(
+            matches!(daemon.handle(Request::Leases { agent: Some("worker".into()), resource: None }).await, Response::Leases { leases } if leases.is_empty())
+        );
+
+        daemon.handle(Request::RevokeAccess { grant }).await;
+        client
+            .get_mut()
+            .write_all(b"{\"op\":\"ping\"}\n")
+            .await
+            .unwrap();
+        line.clear();
+        client.read_line(&mut line).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        task.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn disconnected_waiter_never_acquires_after_release() {
