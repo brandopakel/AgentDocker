@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Destination, Lease, MessageId, ProjectId, ProjectRef, ResourceKey,
-    VcsState,
+    AgentId, AgentStatus, Change, Destination, Lease, MessageId, ProjectId, ProjectRef,
+    ResourceKey, VcsState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +54,12 @@ pub enum EventKind {
     /// A repository was seen for the first time on this host.
     ProjectDiscovered {
         project: ProjectRef,
+    },
+    /// The project watcher saw a file change; the ledger keeps it. Emitted
+    /// to the live stream only — persisted in the `changes` table, not the
+    /// event history, which change volume would otherwise crowd out.
+    FileChanged {
+        change: Change,
     },
     /// An agent's checkout moved to another branch or commit.
     AgentVcsChanged {

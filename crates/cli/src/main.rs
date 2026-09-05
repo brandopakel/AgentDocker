@@ -11,11 +11,11 @@ mod teams;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agentdocker_core::ProjectRef;
 use agentdocker_core::{
     AgentRecord, AgentSpec, DiscoveredProcess, Lease, LeaseId, LeaseMode, MessageId, Request,
     Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
 };
+use agentdocker_core::{Change, ProjectRef};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
@@ -60,6 +60,29 @@ enum Command {
     },
     /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
     Discover,
+    /// The ledger: file changes seen in a project, with who held each file.
+    Changes {
+        /// Project: an id prefix or a path inside it (default: current directory).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only entries after this sequence number.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only this file, or everything beneath a directory.
+        #[arg(long)]
+        path: Option<String>,
+        /// Only changes attributed to this agent.
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Who changed a file, oldest first.
+    Blame {
+        path: String,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Register a running process found by `discover`, by pid.
     Adopt {
         pid: u32,
@@ -317,6 +340,41 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Command::Changes {
+            project,
+            since,
+            path,
+            agent,
+            limit,
+        } => {
+            let request = Request::Changes {
+                project: project_selector(project.as_deref().unwrap_or(".")),
+                since_seq: since,
+                path: path.as_deref().map(absolute_path),
+                agent,
+                limit,
+            };
+            if let Response::Changes { changes } = client.call(&request).await? {
+                print_changes(&client, &changes).await?;
+            }
+        }
+        Command::Blame { path, limit } => {
+            let absolute = absolute_path(&path);
+            let project = PathBuf::from(&absolute)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| absolute.clone());
+            let request = Request::Changes {
+                project,
+                since_seq: None,
+                path: Some(absolute),
+                agent: None,
+                limit,
+            };
+            if let Response::Changes { changes } = client.call(&request).await? {
+                print_changes(&client, &changes).await?;
+            }
+        }
         Command::Discover => {
             if let Response::Processes { processes } = client.call(&Request::Discover).await? {
                 print_processes(&processes);
@@ -559,6 +617,71 @@ pub(crate) fn project_selector(raw: &str) -> String {
         .unwrap_or(absolute)
         .to_string_lossy()
         .into_owned()
+}
+
+/// Absolute, with as much of it canonical as exists.
+fn absolute_path(raw: &str) -> String {
+    let path = PathBuf::from(raw);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
+    agentdocker_host::project::canonical(&absolute)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Ledger rows, with agent ids turned into names.
+async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
+    let names: BTreeMap<String, String> = match client
+        .call(&Request::List {
+            all: true,
+            project: None,
+            labels: BTreeMap::new(),
+        })
+        .await
+    {
+        Ok(Response::Agents { agents }) => agents
+            .into_iter()
+            .map(|a| (a.id.to_string(), a.spec.name))
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    let rows: Vec<Vec<String>> = changes
+        .iter()
+        .map(|c| {
+            let (by, note) = match &c.by {
+                agentdocker_core::Attribution::Agent { agent, note, .. } => (
+                    names
+                        .get(agent.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| agent.short().to_owned()),
+                    note.clone().unwrap_or_default(),
+                ),
+                agentdocker_core::Attribution::External => ("external".to_owned(), String::new()),
+            };
+            vec![
+                c.seq.to_string(),
+                format::clock(c.at),
+                c.kind.to_string(),
+                c.path.display().to_string(),
+                by,
+                c.head
+                    .as_deref()
+                    .map(|h| h.chars().take(7).collect())
+                    .unwrap_or_else(|| "-".to_owned()),
+                note,
+            ]
+        })
+        .collect();
+    format::table(
+        &["SEQ", "WHEN", "KIND", "PATH", "BY", "HEAD", "NOTE"],
+        &rows,
+    );
+    Ok(())
 }
 
 /// `repo` for the main checkout, `repo@wt` inside a linked worktree.

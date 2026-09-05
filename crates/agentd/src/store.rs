@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::{AgentId, AgentRecord, Envelope, Event, Lease, LeaseId};
+use agentdocker_core::{AgentId, AgentRecord, Change, Envelope, Event, Lease, LeaseId, ProjectId};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -50,10 +50,31 @@ CREATE TABLE IF NOT EXISTS projects (
     fingerprint TEXT NOT NULL,
     computed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS changes (
+    seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+    project  TEXT NOT NULL,
+    path     TEXT NOT NULL,
+    by_agent TEXT,
+    at       TEXT NOT NULL,
+    json     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS changes_project_seq ON changes (project, seq);
+CREATE INDEX IF NOT EXISTS changes_project_path ON changes (project, path, seq);
 ";
 
 pub struct Store {
     conn: Connection,
+}
+
+/// A ledger query; see [`Store::changes`].
+#[derive(Debug, Clone)]
+pub struct ChangesQuery {
+    pub project: ProjectId,
+    pub since_seq: Option<u64>,
+    /// Relative to the checkout.
+    pub path: Option<String>,
+    pub agent: Option<AgentId>,
+    pub limit: usize,
 }
 
 impl Store {
@@ -247,6 +268,92 @@ impl Store {
         .collect()
     }
 
+    // ----- changes (the ledger) ------------------------------------------
+
+    /// Append a ledger entry and return its `seq`.
+    pub fn append_change(&self, change: &Change) -> Result<u64> {
+        self.conn.execute(
+            "INSERT INTO changes (project, path, by_agent, at, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                change.project.as_str(),
+                change.path.to_string_lossy(),
+                change.by.agent().map(AgentId::as_str),
+                change.at.to_rfc3339(),
+                serde_json::to_string(change)?,
+            ],
+        )?;
+        let seq = u64::try_from(self.conn.last_insert_rowid()).unwrap_or(0);
+        // The blob carries its own seq so a row reads back complete.
+        let mut stored = change.clone();
+        stored.seq = seq;
+        self.conn.execute(
+            "UPDATE changes SET json = ?1 WHERE seq = ?2",
+            params![
+                serde_json::to_string(&stored)?,
+                i64::try_from(seq).unwrap_or(i64::MAX)
+            ],
+        )?;
+        Ok(seq)
+    }
+
+    /// The newest `limit` entries matching the query, oldest first. A path
+    /// matches itself and, as a directory, everything beneath it.
+    pub fn changes(&self, query: &ChangesQuery) -> Result<Vec<Change>> {
+        let mut sql = String::from("SELECT json FROM changes WHERE project = ?1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(query.project.as_str().to_owned())];
+        if let Some(since) = query.since_seq {
+            args.push(Box::new(i64::try_from(since).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq > ?{}", args.len()));
+        }
+        if let Some(path) = &query.path {
+            let path = path.trim_end_matches('/');
+            args.push(Box::new(path.to_owned()));
+            let exact = args.len();
+            args.push(Box::new(format!("{path}/")));
+            let lower = args.len();
+            args.push(Box::new(format!("{path}0")));
+            let upper = args.len();
+            sql.push_str(&format!(
+                " AND (path = ?{exact} OR (path >= ?{lower} AND path < ?{upper}))"
+            ));
+        }
+        if let Some(agent) = &query.agent {
+            args.push(Box::new(agent.as_str().to_owned()));
+            sql.push_str(&format!(" AND by_agent = ?{}", args.len()));
+        }
+        args.push(Box::new(i64::try_from(query.limit).unwrap_or(i64::MAX)));
+        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut changes: Vec<Change> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        changes.reverse();
+        Ok(changes)
+    }
+
+    /// Keep only the newest `keep` entries per project. Returns how many went.
+    pub fn prune_changes(&self, keep: usize) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT project FROM changes")?;
+        let projects: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut removed = 0;
+        for project in projects {
+            removed += self.conn.execute(
+                "DELETE FROM changes WHERE project = ?1 AND seq NOT IN (
+                     SELECT seq FROM changes WHERE project = ?1 ORDER BY seq DESC LIMIT ?2
+                 )",
+                params![project, i64::try_from(keep).unwrap_or(i64::MAX)],
+            )?;
+        }
+        Ok(removed)
+    }
+
     // ----- events ---------------------------------------------------------
 
     /// Append an event under its `seq`; a `seq` of 0 lets SQLite pick the
@@ -426,5 +533,121 @@ mod tests {
         assert_eq!(projects.len(), 2);
         assert_eq!(projects[Path::new("/repo")], "ccc");
         assert_eq!(projects[Path::new("/other")], "bbb");
+    }
+
+    #[test]
+    fn ledger_queries_by_path_prefix_agent_and_seq_then_prunes() {
+        use agentdocker_core::{Attribution, Change, ChangeKind, ProjectId};
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        let entry = |path: &str, agent: Option<&str>| Change {
+            seq: 0,
+            project: project.clone(),
+            worktree: None,
+            path: path.into(),
+            kind: ChangeKind::Modified,
+            at: Utc::now(),
+            by: match agent {
+                Some(a) => Attribution::Agent {
+                    agent: AgentId::from(a),
+                    lease: agentdocker_core::LeaseId::from("l"),
+                    note: None,
+                },
+                None => Attribution::External,
+            },
+            head: None,
+        };
+        let s1 = store
+            .append_change(&entry("src/lib.rs", Some("a1")))
+            .unwrap();
+        let s2 = store.append_change(&entry("src/main.rs", None)).unwrap();
+        let s3 = store
+            .append_change(&entry("srcs/other.rs", Some("a1")))
+            .unwrap();
+        let s4 = store
+            .append_change(&entry("README.md", Some("a2")))
+            .unwrap();
+        assert!(s1 < s2 && s2 < s3 && s3 < s4);
+        let other = Change {
+            project: ProjectId::from("p2"),
+            ..entry("src/lib.rs", None)
+        };
+        store.append_change(&other).unwrap();
+
+        let query = |path: Option<&str>, agent: Option<&str>, since: Option<u64>, limit: usize| {
+            store
+                .changes(&ChangesQuery {
+                    project: project.clone(),
+                    since_seq: since,
+                    path: path.map(str::to_owned),
+                    agent: agent.map(AgentId::from),
+                    limit,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|c| (c.seq, c.path.to_string_lossy().into_owned()))
+                .collect::<Vec<_>>()
+        };
+        let paths = |rows: Vec<(u64, String)>| rows.into_iter().map(|r| r.1).collect::<Vec<_>>();
+        assert_eq!(
+            paths(query(None, None, None, 50)),
+            ["src/lib.rs", "src/main.rs", "srcs/other.rs", "README.md"]
+        );
+        assert_eq!(
+            paths(query(Some("src"), None, None, 50)),
+            ["src/lib.rs", "src/main.rs"],
+            "prefix, not srcs/"
+        );
+        assert_eq!(
+            paths(query(Some("src/"), None, None, 50)),
+            ["src/lib.rs", "src/main.rs"]
+        );
+        assert_eq!(
+            paths(query(Some("src/lib.rs"), None, None, 50)),
+            ["src/lib.rs"]
+        );
+        assert_eq!(
+            paths(query(None, Some("a1"), None, 50)),
+            ["src/lib.rs", "srcs/other.rs"]
+        );
+        assert_eq!(
+            paths(query(None, None, Some(s2), 50)),
+            ["srcs/other.rs", "README.md"]
+        );
+        assert_eq!(
+            paths(query(None, None, None, 2)),
+            ["srcs/other.rs", "README.md"],
+            "newest two, oldest first"
+        );
+        let stored = store
+            .changes(&ChangesQuery {
+                project: project.clone(),
+                since_seq: None,
+                path: Some("README.md".into()),
+                agent: None,
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(stored[0].seq, s4, "the blob carries its seq");
+
+        assert_eq!(store.prune_changes(2).unwrap(), 2);
+        assert_eq!(
+            paths(query(None, None, None, 50)),
+            ["srcs/other.rs", "README.md"]
+        );
+        assert_eq!(
+            store
+                .changes(&ChangesQuery {
+                    project: ProjectId::from("p2"),
+                    since_seq: None,
+                    path: None,
+                    agent: None,
+                    limit: 50
+                })
+                .unwrap()
+                .len(),
+            1,
+            "other projects untouched"
+        );
     }
 }

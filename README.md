@@ -46,6 +46,8 @@ agentdocker run --name reviewer --runtime custom -- sh -c 'sleep 300'
 agentdocker ps                    # grouped by project, with each agent's branch and head
 agentdocker ps --project .        # only agents in this project
 agentdocker discover              # agent processes running outside AgentDocker; `adopt <pid>` registers one
+agentdocker changes               # the ledger: files that changed in this project, and who held each
+agentdocker blame src/parser.rs   # the same for one file
 
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"
@@ -144,7 +146,7 @@ agentdocker down              # stops them
 
 **Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it, and a path inside a project is stored by project and relative path, so the same file is the same resource from a worktree, a container, or another clone. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
 
-**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible — and `ps` also lists agent processes nobody registered (a Claude Code or Codex session started by hand), which `adopt <pid>` brings in; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
+**Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible — and `ps` also lists agent processes nobody registered (a Claude Code or Codex session started by hand), which `adopt <pid>` brings in; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen; and the daemon watches every checkout agents work in, keeping a ledger of which files changed and who held them (`changes`, `blame`). Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
 
 **No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 

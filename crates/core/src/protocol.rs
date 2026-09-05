@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentRecord, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId, VcsState,
+    AgentRecord, Change, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId,
+    VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -79,6 +80,22 @@ pub enum Request {
         agent: String,
         #[serde(default)]
         vcs: Option<VcsState>,
+    },
+    /// Ledger entries for a project: newest `limit`, oldest first.
+    Changes {
+        /// A project id (any unique prefix), or an absolute path inside it.
+        project: String,
+        #[serde(default)]
+        since_seq: Option<u64>,
+        /// A path (absolute, or relative to the checkout); a directory
+        /// matches everything beneath it.
+        #[serde(default)]
+        path: Option<String>,
+        /// Only changes attributed to this agent.
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default = "default_changes_limit")]
+        limit: usize,
     },
     /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
     Shutdown,
@@ -167,6 +184,10 @@ fn default_tail() -> usize {
     100
 }
 
+fn default_changes_limit() -> usize {
+    50
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -198,6 +219,9 @@ pub enum Response {
     },
     Processes {
         processes: Vec<DiscoveredProcess>,
+    },
+    Changes {
+        changes: Vec<Change>,
     },
     /// `subscribers` is how many live subscriptions were notified; queued
     /// inbox delivery is not counted.
