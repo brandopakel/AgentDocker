@@ -13,7 +13,7 @@ use agentdocker_core::{AgentId, AgentRecord, Envelope, Event, Lease, LeaseId};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -89,9 +89,10 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1)) => {
-                // v2 adds stopping status and physical lease identities. The
-                // daemon idempotently maps any remaining legacy file keys on load.
+            Some(Ok(1 | 2)) => {
+                // v2 adds stopping status and physical lease identities; v3
+                // records dedicated process groups. Legacy groups default to
+                // None. The daemon maps legacy file keys idempotently on load.
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     params![SCHEMA_VERSION.to_string()],
