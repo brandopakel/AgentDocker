@@ -8,3 +8,5 @@ pub mod lock;
 pub mod procinfo;
 pub mod project;
 pub mod vcs;
+
+pub mod content;

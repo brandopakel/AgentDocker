@@ -11,6 +11,17 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    WatcherGap {
+        reason: String,
+    },
+    ReadsObserved {
+        agent: crate::AgentId,
+        paths: Vec<std::path::PathBuf>,
+    },
+    AgentStale {
+        agent: crate::AgentId,
+        paths: Vec<std::path::PathBuf>,
+    },
     AgentCreated {
         agent: AgentId,
         name: String,

@@ -65,6 +65,9 @@ pub struct Change {
     #[serde(default)]
     pub seq: u64,
     pub project: ProjectId,
+    /// Physical checkout identity; absent only in legacy ledger entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<PathBuf>,
     /// The linked worktree the change happened in, if not the main checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<PathBuf>,
@@ -88,6 +91,7 @@ mod tests {
         let change = Change {
             seq: 7,
             project: ProjectId::from("abc"),
+            checkout: None,
             worktree: None,
             path: PathBuf::from("src/lib.rs"),
             kind: ChangeKind::Modified,

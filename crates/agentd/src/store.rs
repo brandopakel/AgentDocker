@@ -16,6 +16,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS documents (
+    kind TEXT NOT NULL,
+    id TEXT NOT NULL,
+    json TEXT NOT NULL,
+    PRIMARY KEY (kind, id)
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -78,6 +84,30 @@ pub struct ChangesQuery {
 }
 
 impl Store {
+    /// Atomically persist a typed recovery document before publishing its event.
+    pub fn put_document<T: serde::Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
+        self.conn.execute("INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+            params![kind,id,serde_json::to_string(value)?])?;
+        Ok(())
+    }
+    /// Load a durable observation or recovery document.
+    pub fn document<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<T>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json FROM documents WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
@@ -568,6 +598,7 @@ mod tests {
         let entry = |path: &str, agent: Option<&str>| Change {
             seq: 0,
             project: project.clone(),
+            checkout: None,
             worktree: None,
             path: path.into(),
             kind: ChangeKind::Modified,

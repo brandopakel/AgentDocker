@@ -203,3 +203,16 @@ Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Detect stale context
+
+Before reading files, record what you are about to inspect:
+
+```sh
+agentdocker observe --as reader src/lib.rs
+# Read src/lib.rs with your normal tool.
+agentdocker stale --as reader src/lib.rs
+agentdocker reads --as reader
+```
+
+`stale` exits unsuccessfully when recorded content changed, including uncommitted edits that leave HEAD unchanged. Observe and reread the reported paths before editing. Claude hooks automate these steps for supported tools after rerunning `agentdocker hook install claude-code`; MCP clients use `observe_paths` and `check_stale` explicitly. Read sets persist across daemon restarts and stay specific to the agent's physical checkout.

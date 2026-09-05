@@ -33,7 +33,7 @@ use crate::format;
 
 const RUNTIME: &str = "claude-code";
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-const EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit";
+const EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh"];
 
 #[derive(Args, Debug)]
@@ -204,6 +204,16 @@ pub async fn claude_code<B: Backend>(
         }
         "UserPromptSubmit" | "PostToolUse" => {
             let me = ensure_registered(backend, input).await?;
+            if input.hook_event_name == "PostToolUse" {
+                if let Some(path) = edited_path(input) {
+                    backend
+                        .call(Request::Observe {
+                            agent: me.id.to_string(),
+                            paths: vec![path.to_string_lossy().into_owned()],
+                        })
+                        .await?;
+                }
+            }
             let inbox = drain_inbox(backend, &me).await?;
             report_vcs(backend, &me, input).await;
             if inbox.is_empty() {
@@ -218,10 +228,38 @@ pub async fn claude_code<B: Backend>(
             Ok(Some(context_output(&input.hook_event_name, text)))
         }
         "PreToolUse" => {
+            if let Some(path) = read_path(input) {
+                let me = ensure_registered(backend, input).await?;
+                backend
+                    .call(Request::Observe {
+                        agent: me.id.to_string(),
+                        paths: vec![path.to_string_lossy().into_owned()],
+                    })
+                    .await?;
+                return Ok(None);
+            }
             let Some(path) = edited_path(input) else {
                 return Ok(None);
             };
             let me = ensure_registered(backend, input).await?;
+            match backend
+                .call(Request::Stale {
+                    agent: me.id.to_string(),
+                    paths: vec![path.to_string_lossy().into_owned()],
+                })
+                .await?
+            {
+                Response::Stale { stale } if !stale.is_empty() => {
+                    return Ok(Some(json!({
+                        "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                            "permissionDecisionReason": format!("AgentDocker: your context is stale. Read {} again before editing. {}", path.display(), stale.iter().map(|s| s.reason.as_str()).collect::<Vec<_>>().join("; ")) }
+                    })));
+                }
+                Response::Error { message, .. } => {
+                    return Err(anyhow::anyhow!("staleness check failed: {message}"));
+                }
+                _ => {}
+            }
             let response = backend
                 .call(Request::Claim {
                     agent: me.id.to_string(),
@@ -298,6 +336,20 @@ pub fn session_name(session_id: &str) -> String {
 
 /// The path an editing tool is about to touch, made absolute and canonical
 /// so it lines up with what other agents claim.
+fn read_path(input: &HookInput) -> Option<PathBuf> {
+    let tool = input.tool_name.as_deref()?;
+    if !["Read", "Grep", "Glob"].contains(&tool) {
+        return None;
+    }
+    let value = input.tool_input.as_ref();
+    let raw = value
+        .and_then(|v| v.get("file_path").or_else(|| v.get("path")))
+        .and_then(Value::as_str)
+        .unwrap_or(".");
+    let base = input.cwd.clone().or_else(|| std::env::current_dir().ok())?;
+    Some(agentdocker_host::project::canonical(&base.join(raw)))
+}
+
 pub fn edited_path(input: &HookInput) -> Option<PathBuf> {
     let tool = input.tool_name.as_deref()?;
     if !EDIT_TOOLS.contains(&tool) {
@@ -688,6 +740,19 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
             })
         });
         if present {
+            if *event == "PreToolUse" {
+                for entry in entries.iter_mut() {
+                    if entry["hooks"].as_array().is_some_and(|hs| {
+                        hs.iter().all(|h| {
+                            h["command"]
+                                .as_str()
+                                .is_some_and(|c| c.contains("hook claude-code"))
+                        })
+                    }) {
+                        entry["matcher"] = json!(EDIT_MATCHER);
+                    }
+                }
+            }
             continue;
         }
         let mut entry = json!({
@@ -783,10 +848,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_read_observes_and_stale_edit_is_denied_before_claiming() {
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: agent("reader", true),
+            },
+            Response::Reads { reads: vec![] },
+        ]);
+        let mut event = input("PreToolUse");
+        event.tool_name = Some("Read".into());
+        event.tool_input = Some(json!({"file_path": "file.rs"}));
+        assert!(
+            claude_code(&backend, &event, &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            matches!(&backend.requests()[1], Request::Observe { paths, .. } if paths.len() == 1)
+        );
+        event.tool_name = Some("Edit".into());
+        for _ in 0..2 {
+            let backend = Mock::with(vec![
+                Response::Agent {
+                    agent: agent("reader", true),
+                },
+                Response::Stale {
+                    stale: vec![agentdocker_core::StalePath {
+                        path: "file.rs".into(),
+                        observed: "old".into(),
+                        current: Some("new".into()),
+                        reason: "changed".into(),
+                    }],
+                },
+            ]);
+            let output = claude_code(&backend, &event, &opts())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+            assert!(
+                !backend
+                    .requests()
+                    .iter()
+                    .any(|r| matches!(r, Request::Claim { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn pre_tool_use_denies_on_conflict() {
         let me = agent("claude-01234567", true);
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
             Response::Error {
                 code: ErrorCode::Conflict,
                 message: "held by reviewer".into(),
@@ -806,7 +921,7 @@ mod tests {
 
         let requests = backend.requests();
         assert!(matches!(
-            &requests[1],
+            &requests[2],
             Request::Claim { agent, resource, ttl_secs: 600, .. }
                 if agent == me.id.as_str() && resource.starts_with("path:/")
         ));
@@ -818,6 +933,7 @@ mod tests {
             Response::Agent {
                 agent: agent("claude-01234567", true),
             },
+            Response::Stale { stale: vec![] },
             Response::Ok, // stands in for Response::Lease
         ]);
         let mut ev = input("PreToolUse");

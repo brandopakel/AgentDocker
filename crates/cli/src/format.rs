@@ -123,6 +123,16 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::WatcherGap { reason } => {
+            format!("watcher coverage gap: {reason}; verify content with stale")
+        }
+        EventKind::ReadsObserved { agent, paths } => {
+            format!("{agent} observed {} paths", paths.len())
+        }
+        EventKind::AgentStale { agent, paths } => format!(
+            "{agent} has stale context for {} paths; reread",
+            paths.len()
+        ),
         EventKind::AgentCreated {
             agent,
             name,

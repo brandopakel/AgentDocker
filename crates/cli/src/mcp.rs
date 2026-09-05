@@ -276,6 +276,21 @@ impl<B: Backend> McpServer<B> {
     async fn tool(&self, name: &str, arguments: Value) -> Result<Value, (i64, String)> {
         let me = self.identity.id.clone();
         match name {
+            "observe_paths" | "check_stale" | "read_set" => {
+                let paths: Vec<String> = arguments
+                    .get("paths")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?
+                    .unwrap_or_default();
+                let request = match name {
+                    "observe_paths" => Request::Observe { agent: me, paths },
+                    "check_stale" => Request::Stale { agent: me, paths },
+                    _ => Request::Reads { agent: me },
+                };
+                self.forward(request).await
+            }
             "whoami" => self.forward(Request::Inspect { agent: me }).await,
             "list_agents" => {
                 let args: ListAgentsArgs = parse(arguments)?;
@@ -569,6 +584,9 @@ fn tool_definitions() -> Vec<Value> {
     let resource_doc = "Resource key `kind:value`, e.g. `path:/abs/file`, `path:/abs/dir` \
                         (covers everything beneath), `branch:name`, `task:ID`.";
     vec![
+        json!({"name":"observe_paths","description":"Record content immediately BEFORE reading files or searching a directory. Do not report old tool results as fresh observations.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"],"additionalProperties":false}}),
+        json!({"name":"check_stale","description":"Compare retained reads to current content. Reread changed paths before editing; checking repeatedly never clears staleness.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}),
+        json!({"name":"read_set","description":"Show this session's durable content observations.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({
             "name": "whoami",
             "description": "This agent's own record in AgentDocker: id, name, runtime, status.",
@@ -768,6 +786,9 @@ mod tests {
         assert_eq!(
             names,
             [
+                "observe_paths",
+                "check_stale",
+                "read_set",
                 "whoami",
                 "list_agents",
                 "inspect_agent",

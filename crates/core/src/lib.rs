@@ -22,3 +22,6 @@ pub use message::{Destination, Envelope, MessageId, topic_matches};
 pub use project::{ProjectId, ProjectRef, ProjectSource};
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
+
+pub mod working_set;
+pub use working_set::{ReadMark, StalePath};

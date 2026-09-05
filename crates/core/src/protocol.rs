@@ -22,6 +22,20 @@ pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    /// Record content immediately before reading these paths (not after a delayed tool result).
+    Observe {
+        agent: String,
+        paths: Vec<String>,
+    },
+    /// Compare retained reads with current content. Querying never clears staleness.
+    Stale {
+        agent: String,
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    Reads {
+        agent: String,
+    },
 
     /// Spawn `spec.command` and supervise it.
     Run {
@@ -213,6 +227,13 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    Reads {
+        reads: Vec<crate::ReadMark>,
+    },
+    Stale {
+        stale: Vec<crate::StalePath>,
+    },
+
     Pong {
         version: String,
         uptime_secs: u64,

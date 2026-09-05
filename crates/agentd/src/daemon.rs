@@ -32,6 +32,7 @@ use agentdocker_host::{procinfo, project, vcs};
 
 use crate::store::{ChangesQuery, Store};
 use crate::supervisor;
+mod working;
 
 /// Messages queued per agent while it has no live subscription.
 const INBOX_CAPACITY: usize = 1000;
@@ -374,6 +375,9 @@ impl Daemon {
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
         match request {
+            Request::Observe { agent, paths } => self.observe(&agent, paths).await,
+            Request::Stale { agent, paths } => self.stale(&agent, paths).await,
+            Request::Reads { agent } => self.reads(&agent),
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),
@@ -661,9 +665,6 @@ impl Daemon {
             .collect()
     }
 
-    /// Who holds the file right now: the holder of a lease overlapping its
-    /// `file:` key, exclusive first, else nobody the daemon knows of.
-
     /// What the watcher saw in one debounced batch: file changes become
     /// ledger entries (persisted in `changes`, announced live as
     /// `file_changed`), and checkouts whose HEAD moved get their agents'
@@ -692,11 +693,12 @@ impl Daemon {
             kind,
         } in observed
         {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             let by = state.attribute(&checkout, &path);
             let mut change = Change {
                 seq: 0,
                 project: checkout.project.clone(),
+                checkout: Some(checkout.dir.clone()),
                 worktree: checkout.worktree.clone(),
                 path,
                 kind,
@@ -708,6 +710,7 @@ impl Daemon {
                 continue;
             };
             change.seq = seq;
+            state.warn_readers(&change);
             debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
             let _ = state
                 .events

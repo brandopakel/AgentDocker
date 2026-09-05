@@ -42,6 +42,24 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Record content immediately before reading files or searching a directory.
+    Observe {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Verify retained observations against current physical content.
+    Stale {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        paths: Vec<String>,
+    },
+    /// Show durable read observations for a session.
+    Reads {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+    },
     /// List agents (live ones by default), grouped by project.
     Ps {
         /// Include finished agents.
@@ -303,6 +321,19 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.socket);
 
     match cli.command {
+        Command::Observe { agent, paths } => {
+            print_json(&client.call(&Request::Observe { agent, paths }).await?)?;
+        }
+        Command::Stale { agent, paths } => {
+            let response = client.call(&Request::Stale { agent, paths }).await?;
+            print_json(&response)?;
+            if matches!(response, Response::Stale { stale } if !stale.is_empty()) {
+                bail!("context is stale; reread the reported paths");
+            }
+        }
+        Command::Reads { agent } => {
+            print_json(&client.call(&Request::Reads { agent }).await?)?;
+        }
         Command::Ping => {
             if let Response::Pong {
                 version,
@@ -846,6 +877,11 @@ fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
                 .with_context(|| format!("expected KEY=VALUE, got `{pair}`"))
         })
         .collect()
+}
+
+fn print_json(value: &impl serde::Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 #[cfg(test)]

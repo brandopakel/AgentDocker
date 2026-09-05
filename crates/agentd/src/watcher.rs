@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agentdocker_core::ChangeKind;
@@ -43,13 +44,20 @@ pub fn spawn(daemon: Arc<Daemon>) {
 
 /// The watcher loop; intervals are parameters so tests can run it fast.
 pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Duration) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<notify::Event>();
+    let (tx, mut rx) = mpsc::channel::<notify::Event>(4096);
+    let gap = Arc::new(AtomicBool::new(false));
+    let callback_gap = gap.clone();
     let mut watcher = match notify::recommended_watcher(
         move |result: notify::Result<notify::Event>| match result {
             Ok(event) => {
-                let _ = tx.send(event);
+                if kind_of(&event.kind).is_some() && tx.try_send(event).is_err() {
+                    callback_gap.store(true, Ordering::Relaxed);
+                }
             }
-            Err(err) => warn!(%err, "watcher error"),
+            Err(err) => {
+                callback_gap.store(true, Ordering::Relaxed);
+                warn!(%err, "watcher error");
+            }
         },
     ) {
         Ok(watcher) => watcher,
@@ -65,8 +73,14 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     loop {
         tokio::select! {
             _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched),
-            Some(event) = rx.recv() => pending.push(event),
+            Some(event) = rx.recv() => {
+                if pending.len() < 4096 { pending.push(event); }
+                else { gap.store(true, Ordering::Relaxed); }
+            },
             _ = flush.tick() => {
+                if gap.swap(false, Ordering::Relaxed) {
+                    daemon.emit(agentdocker_core::EventKind::WatcherGap { reason: "event overflow or operating-system watcher error; ledger may be incomplete".into() });
+                }
                 if pending.is_empty() {
                     continue;
                 }
