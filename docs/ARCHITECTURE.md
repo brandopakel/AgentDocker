@@ -175,7 +175,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
 
-Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidden|invalid|internal","message":"...","details":{...}?}`.
+Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|internal","message":"...","details":{...}?}`.
 
 ## Leases
 
@@ -496,6 +496,6 @@ The ledger now includes `checkout` (absent for legacy entries). A watcher change
 
 Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a tag protection/ruleset before publishing; an unprotected tag intentionally skips release. Credentials are limited to upload/download steps and checkout does not persist them. Critical physical-key paths use fallible normalization and reject unavailable cwd resolution; display/discovery callers retain the best-effort helper.
 
-Managed commands run in a dedicated process group. Stop signals that group only while the leader's recorded identity can be verified; after the leader exits, supervision terminates remaining group members (TERM, then KILL after two seconds) and retains leases until the group is gone. After restart, live orphan group members retain stopping state and protection even if the leader is gone; unverifiable groups are not blindly signalled. Legacy records without a group retain PID-only supervision. Processes deliberately escaping into another session/group are outside this cooperative process-group boundary. Schema 3 prevents older daemons from ignoring group lifetime.
+Managed commands run in a dedicated process group. While the supervisor owns the child handle, stop requests use a bounded control channel to that supervisor, with TERM followed by KILL after two seconds. Shutdown waits up to eight seconds for owned groups to finish and retains durable protection if they do not. After restart, stop signals that group only while the leader's recorded identity can be verified; after the leader exits, supervision terminates remaining group members (TERM, then KILL after two seconds) and retains leases until the group is gone. After restart, live orphan group members retain stopping state and protection even if the leader is gone; unverifiable groups are not blindly signalled. Legacy records without a group retain PID-only supervision. Processes deliberately escaping into another session/group are outside this cooperative process-group boundary. Schema 3 prevents older daemons from ignoring group lifetime.
 
 Watcher attribution resolves the observed path with the same physical canonicalization as claims, outside the state lock. Missing regular paths retain their normalized physical suffix; a removed symlink whose former target cannot be established is external/unknown rather than guessed.
