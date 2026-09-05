@@ -102,7 +102,7 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 **Identity.** A `ProjectRef` carries `root`, `worktree`, `source`, and for repositories a `fingerprint`: the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable). The `ProjectId` is the fingerprint when there is one, else a UUIDv5 of the root path — the same repository is one project across clones and, later, across hosts, and a plain directory is still one project for everyone in it. The fingerprint walks the whole history, so the daemon runs it once per root, in a blocking task with a 3-second timeout, and caches the result in the `projects` table; a lookup that fails (no `git`, no commits, timeout) is remembered in memory only, so every agent in that repository still shares a path-derived id this run and a restart retries. `project_discovered` fires the first time a repository is fingerprinted on this host.
 
-**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Path leases need nothing new: `leases --resource path:<root>` already lists a project's leases by overlap.
+**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Leases on files inside a project are stored as project-relative `file:` keys (see [Leases](#leases)), so `leases --resource <root>` lists everything held in a project wherever it is checked out.
 
 ## Wire protocol
 
@@ -127,11 +127,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
-| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
+| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | a `path:` inside a project is stored as `file:<project id>/<relative>`; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
 | `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
-| `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality |
+| `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; a `path:` filter also matches its `file:` form |
 | `events {replay?}` | stream of `event` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
 
@@ -141,7 +141,9 @@ Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidd
 
 ## Leases
 
-A **resource key** is `kind:value`. The daemon does not interpret kinds except one: `path`. Path keys overlap hierarchically — `path:/repo/src` overlaps `path:/repo/src/lib.rs` and `path:/repo` — so claiming a directory protects everything under it. Every other kind (`branch:`, `task:`, `db:`, or anything you invent) overlaps only on exact match. The CLI canonicalises paths that exist so two agents naming the same file differently still collide.
+A **resource key** is `kind:value`. The daemon interprets two kinds, `path` and `file`, which overlap hierarchically — `path:/repo/src` overlaps `path:/repo/src/lib.rs` and `path:/repo` — so claiming a directory protects everything under it. Every other kind (`branch:`, `task:`, `db:`, or anything you invent) overlaps only on exact match.
+
+**Files are named by project, not by path.** A `file:<project id>/<relative path>` key names a file by the project it belongs to and its path within the checkout, so it is the same resource from a linked worktree, from inside a container that mounts the checkout somewhere else, or from another clone on another host. Clients keep sending `path:<absolute>` — the hooks, the MCP server, and `agentdocker claim <path>` know nothing about ids — and the daemon rewrites the key on the way in: it canonicalises as much of the path as exists (a file about to be created gets the key it will have once it does), then uses the claimant's own project if the path lies in its checkout, else the repository or `Agentfile.toml` root containing the path. Only paths outside every project stay `path:`, and `leases --resource <path>` matches both forms. The CLI prints `file:` keys with the project id shortened.
 
 Two **modes**: `exclusive` conflicts with any lease on an overlapping resource held by someone else; `shared` conflicts only with exclusive leases held by someone else. An agent never conflicts with itself, and re-claiming a resource you hold in the same mode renews it instead of failing.
 
@@ -340,9 +342,18 @@ A container writes to its own layer over a shared image; an agent should write t
 
 *Done when* two isolated agents edit the same file, `overlap` names them, each `commit` lands on its own branch, and neither was ever blocked from editing.
 
-#### Sandboxed runtimes
+#### Sandboxes
 
-The daemon stays on the host; the *agent* may run in a container. `--runtime docker --image <img>` has the supervisor run `docker run --rm -i -v <workdir>:/work -w /work -v <socket>:/run/agentd.sock -e AGENTDOCKER_SOCKET=/run/agentd.sock -e AGENTDOCKER_AGENT_ID=… <img> <command>`; the docker client is the supervised child, so pid, logs, and exit status work unchanged. `podman` and Apple `container` are the same shape with a different executable. Combined with `--isolate` an agent gets its own worktree *and* its own filesystem view. Nothing in core changes.
+Settled on 2026-09-04. **The daemon is never sandboxed; the sandbox is a property of the agent's runtime**, the way Docker's `--runtime` picks runc, gVisor, or Kata. It supervises processes that use the user's repositories and credentials, signals pids, and canonicalises paths, so it lives in the host's namespace, and AgentDocker builds no sandbox engine of its own. Three layers compose:
+
+1. **Runtime-native sandboxes.** Claude Code and Codex ship their own (seatbelt on macOS, bubblewrap or landlock on Linux). The hooks and the MCP server run as children of the host process, *outside* that sandbox, so they always reach the daemon; nothing to build.
+2. **Worktree isolation** (above) sandboxes the filesystem layer with no process isolation.
+3. **Container runtimes.** `--runtime docker --image <img>` (likewise `podman`, and Apple's `container`) has the supervisor run the agent's command inside a container; the docker client is the supervised child, so pid, logs, and exit status work unchanged. Defaults are closed: `--network none`, the checkout bind-mounted read-write at `/work`, the daemon socket mounted at `/run/agentd.sock` with `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_PROJECT_ROOT=/work` set, and no host environment passed through; the spec opts into network, extra mounts, and `-e` values. Combined with `--isolate` an agent gets its own worktree *and* its own filesystem view.
+
+Two consequences were pulled forward because sandboxes depend on them:
+
+- **Project-relative resources** (done; [Leases](#leases)). Inside a container the same file has a different absolute path, so leases — and, in Phase 3, read sets and the ledger — name files by project id and relative path. The daemon translates; sandboxed clients still send whatever path they see.
+- **Per-agent tokens.** The socket is the one deliberate hole in a sandbox, so a sandboxed agent must not be able to impersonate another sender or stop other agents. `run` and `register` mint a token, returned in the response and passed to managed agents as `AGENTDOCKER_TOKEN`; a request carrying `token` is bound to that agent id (its `agent`/`from` must match) and may only act on itself. Sandboxed runtimes always get one and the daemon requires it from them; local shells and hooks stay token-free, so the CLI's ergonomics do not change. Tokens are stored hashed beside the record and revoked when the agent exits. This is the identity admission policy (Phase 5) binds rules to, and it closes the `from` open question for the case that matters.
 
 #### Handoff bundles
 
@@ -383,20 +394,21 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 |---|---|---|---|
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
-| 3 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
-| 4 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
-| 5 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
-| 6 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 5 |
-| 7 | staleness notices; hook deny-once on stale edits | 3 | 6 |
-| 8 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 6 |
-| 9 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 6 |
-| 10 | `handoff`, lease transfer, `export` / `import` | 4 | 8, 9 |
-| 11 | `docker` / `podman` runtimes | 4 | — |
-| 12 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
-| 13 | human agent, `ask` / `answer`, notifications | 5 | 2 |
-| 14 | admission policy and quotas | 5 | 1 |
-| 15 | restart policies, `depends_on`, `top` | 5 | — |
-| 16 | federation | 6 | 10 |
+| 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
+| 4 | `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
+| 5 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
+| 6 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
+| 7 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 3, 6 |
+| 8 | staleness notices; hook deny-once on stale edits | 3 | 7 |
+| 9 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 7 |
+| 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
+| 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9, 10 |
+| 12 | per-agent tokens; `docker` / `podman` / `container` runtimes with closed defaults | 4 | 3 |
+| 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
+| 14 | human agent, `ask` / `answer`, notifications | 5 | 2 |
+| 15 | admission policy and quotas | 5 | 12 |
+| 16 | restart policies, `depends_on`, `top` | 5 | — |
+| 17 | federation | 6 | 11, 12 |
 
 ### Planned protocol and event additions
 
@@ -414,6 +426,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `diff {agent, stat?}` | `diff` | 4 |
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
+| `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
 New events: `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
@@ -422,6 +435,5 @@ New events: `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appende
 
 - Should topic messages ever queue? Durable subscriptions solve it, but require the daemon to know about an agent's interests when it is offline. The `project:` destination removes the most common reason to want this.
 - Priority vs. fairness for contested leases: waiters race today, and Phase 5 makes them FIFO. Whether labels or policy should ever let a claim jump the queue, and whether deadlock victims should be chosen by priority, is deferred until there is usage to look at.
-- Whether `from` should be verified (the socket owner is trusted today, so an agent can impersonate another). Per-agent tokens would close this; the cost is friction for shell-based agents. Admission policy (Phase 5) raises the stakes, so it should land with or before it.
+- Whether `from` should be verified for *unsandboxed* agents too. Per-agent tokens (Phase 4) settle it for sandboxed runtimes, where it matters; requiring them from local shells and hooks would cost ergonomics for little, so they stay optional until there is a reason.
 - Read-set capacity and eviction: 5,000 marks per agent is a guess; measure a long Claude Code session before tuning.
-- Whether isolated agents should hold *logical* file leases (project-relative, advisory) so `overlap` can warn before the edit rather than after.

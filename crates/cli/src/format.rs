@@ -1,6 +1,6 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Envelope, Event, EventKind};
+use agentdocker_core::{Envelope, Event, EventKind, ResourceKey};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -61,6 +61,22 @@ fn span(secs: i64) -> String {
 fn short(s: &str) -> &str {
     let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
     &s[..end]
+}
+
+/// `file:` keys carry a full project id; show twelve characters of it.
+pub fn resource(key: &ResourceKey) -> String {
+    if key.kind() != "file" {
+        return key.to_string();
+    }
+    let (project, rest) = key
+        .value()
+        .split_once('/')
+        .map_or((key.value(), ""), |(p, r)| (p, r));
+    if rest.is_empty() {
+        format!("file:{}", short(project))
+    } else {
+        format!("file:{}/{rest}", short(project))
+    }
 }
 
 pub fn clock(at: DateTime<Utc>) -> String {
@@ -124,25 +140,25 @@ pub fn event_line(event: &Event) -> String {
             "lease claimed    {} {} {} by {}",
             lease.id,
             lease.mode,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseRenewed { lease } => format!(
             "lease renewed    {} {} by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseReleased { lease } => format!(
             "lease released   {} {} by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseExpired { lease } => format!(
             "lease expired    {} {} held by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseConflict {
@@ -152,7 +168,8 @@ pub fn event_line(event: &Event) -> String {
         } => {
             let holders: Vec<&str> = held_by.iter().map(|h| h.short()).collect();
             format!(
-                "lease conflict   {resource} wanted by {} held by {}",
+                "lease conflict   {} wanted by {} held by {}",
+                self::resource(resource),
                 requester.short(),
                 holders.join(", ")
             )

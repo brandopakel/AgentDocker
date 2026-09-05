@@ -42,6 +42,22 @@ pub fn discover(workdir: &Path) -> ProjectRef {
     ProjectRef::directory(start)
 }
 
+/// Canonicalise as much of `path` as exists: the longest existing ancestor
+/// is resolved and the rest appended unchanged, so a file about to be
+/// created gets the key it will have once it exists (`/tmp` on macOS is
+/// `/private/tmp` either way).
+pub fn canonical(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(base) = ancestor.canonicalize() {
+            return match path.strip_prefix(ancestor) {
+                Ok(rest) if !rest.as_os_str().is_empty() => base.join(rest),
+                _ => base,
+            };
+        }
+    }
+    path.to_path_buf()
+}
+
 fn git_project(start: &Path) -> Option<ProjectRef> {
     for dir in start.ancestors() {
         let dot_git = dir.join(".git");
@@ -194,6 +210,19 @@ mod tests {
         assert_eq!(project.source, ProjectSource::Directory);
         assert_eq!(project.root, dir.canonicalize().unwrap());
         assert_eq!(project.worktree, None);
+    }
+
+    #[test]
+    fn canonical_resolves_the_existing_prefix_only() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().canonicalize().unwrap();
+        assert_eq!(canonical(tmp.path()), real);
+        assert_eq!(
+            canonical(&tmp.path().join("new/deeper/file.rs")),
+            real.join("new/deeper/file.rs")
+        );
+        let nowhere = Path::new("/definitely/not/here/x");
+        assert_eq!(canonical(nowhere), Path::new("/definitely/not/here/x"));
     }
 
     #[test]
