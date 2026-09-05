@@ -164,6 +164,7 @@ impl Daemon {
                     agent: Some(from.clone()),
                     limit: BUNDLE_ROWS,
                     after: Some(record.created_at),
+                    before_seq: None,
                 })
                 .unwrap_or_default(),
             None => Vec::new(),

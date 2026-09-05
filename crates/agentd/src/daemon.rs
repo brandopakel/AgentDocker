@@ -76,6 +76,8 @@ const DIGEST_SCAN: usize = 1_000;
 const USER_READER: &str = "user";
 /// Ledger rows an overlap query reads at most, newest first.
 const OVERLAP_SCAN: usize = 50_000;
+/// Rows an overlap query reads per hold of the state lock.
+const OVERLAP_PAGE: usize = 2_000;
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -136,6 +138,21 @@ struct JournalRing {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether a name can be the last component of `agent/<name>` as a git
+/// branch and of a worktree path: a conservative subset of what git
+/// accepts, so the answer never depends on git's own parsing.
+fn isolate_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !name.starts_with(['-', '.'])
+        && !name.ends_with('.')
+        && !name.ends_with(".lock")
+        && !name.contains("..")
 }
 
 /// Whether the watcher would cover this agent's checkout at all.
@@ -949,6 +966,13 @@ impl Daemon {
         } else {
             record.spec.name.clone()
         };
+        // The name becomes a path component and part of a git ref: say so
+        // before anything is created rather than let git say "invalid".
+        if !isolate_name_ok(&name) {
+            return Err(invalid(&format!(
+                "agent name `{name}` cannot name a worktree and branch: use letters, digits, '-', '_' and '.', not starting with '-' or '.', without '..' or a '.lock' ending"
+            )));
+        }
         let dir = self.home.join("worktrees").join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
@@ -1023,18 +1047,36 @@ impl Daemon {
                 Err(response) => return *response,
             }
         };
-        let query = ChangesQuery {
-            project,
-            since_seq,
-            path: None,
-            agent: None,
-            limit: OVERLAP_SCAN,
-            after: None,
-        };
-        let changes = match lock(&self.state).store.changes(&query) {
-            Ok(changes) => changes,
-            Err(err) => return Response::error(ErrorCode::Internal, err.to_string()),
-        };
+        // Newest first, a page per hold of the lock, so a long ledger never
+        // stalls other requests for the whole scan. Rows are append-only,
+        // so paging below the oldest seq seen is consistent.
+        let mut changes: Vec<Change> = Vec::new();
+        let mut before_seq: Option<u64> = None;
+        while changes.len() < OVERLAP_SCAN {
+            let query = ChangesQuery {
+                project: project.clone(),
+                since_seq,
+                path: None,
+                agent: None,
+                limit: OVERLAP_PAGE.min(OVERLAP_SCAN - changes.len()),
+                after: None,
+                before_seq,
+            };
+            let page = match lock(&self.state).store.changes(&query) {
+                Ok(page) => page,
+                Err(err) => {
+                    return Response::error(
+                        ErrorCode::StorageUnavailable,
+                        format!("ledger query failed: {err}"),
+                    );
+                }
+            };
+            let Some(oldest) = page.first().map(|c| c.seq) else {
+                break;
+            };
+            before_seq = Some(oldest);
+            changes.extend(page);
+        }
         let mut overlaps = agentdocker_core::overlaps(&changes);
         if let Some((_, checkout)) = mine {
             overlaps.retain(|o| o.parties.iter().any(|p| p.checkout == checkout));
@@ -1519,6 +1561,7 @@ impl Daemon {
             agent,
             limit: limit.clamp(1, 10_000),
             after: None,
+            before_seq: None,
         };
         match lock(&self.state).store.changes(&query) {
             Ok(changes) => Response::Changes { changes },
@@ -2321,6 +2364,7 @@ impl State {
                 agent: None,
                 limit: RELEASE_SCAN,
                 after: lease.change_seq.is_none().then_some(lease.acquired_at),
+                before_seq: None,
             };
             let Some(changes) = self.store_op("journal", |store| store.changes(&query)) else {
                 continue;
@@ -4608,6 +4652,29 @@ mod tests {
             again.vcs.as_ref().and_then(|v| v.branch.as_deref()),
             Some(format!("agent/writer-{}", again.id.short()).as_str())
         );
+
+        // A name git could not take: refused before anything is created.
+        let mut command = spec("bad name!");
+        command.workdir = Some(repo.clone());
+        command.isolate = true;
+        command.command = vec!["sh".into(), "-c".into(), "true".into()];
+        assert!(matches!(
+            daemon.handle(Request::Run { spec: command }).await,
+            Response::Error { code: ErrorCode::Invalid, message, .. } if message.contains("bad name!")
+        ));
+        assert!(!worktrees.join("bad name!").exists());
+        for (name, ok) in [
+            ("writer", true),
+            ("w.1_2-3", true),
+            ("-lead", false),
+            (".hidden", false),
+            ("a..b", false),
+            ("x.lock", false),
+            ("with space", false),
+            ("", false),
+        ] {
+            assert_eq!(isolate_name_ok(name), ok, "{name:?}");
+        }
 
         // Not a repository: refused, nothing spawned.
         let plain = dir.path().join("plain");

@@ -253,7 +253,7 @@ enum Command {
         #[arg(long)]
         since: Option<u64>,
         /// Only overlaps involving this agent's checkout.
-        #[arg(long = "as", value_name = "AGENT")]
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
         agent: Option<String>,
     },
     /// Who changed a file, oldest first.
