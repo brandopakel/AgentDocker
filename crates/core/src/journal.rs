@@ -135,7 +135,7 @@ impl JournalEntry {
             Some(branch) => format!("{} [{branch}]", self.agent_name),
             None => self.agent_name.clone(),
         };
-        match self.kind {
+        let line = match self.kind {
             JournalKind::Release => {
                 let named: Vec<String> = self
                     .paths
@@ -161,7 +161,16 @@ impl JournalEntry {
             JournalKind::Commit | JournalKind::Join | JournalKind::Leave => {
                 format!("{who} {}", self.summary)
             }
+        };
+        let mut escaped = String::new();
+        for ch in line.chars() {
+            if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') {
+                escaped.extend(ch.escape_default());
+            } else {
+                escaped.push(ch);
+            }
         }
+        escaped
     }
 
     /// `line()` with a relative time in front: `- 4m ago   codex-1 …`.
@@ -217,11 +226,19 @@ impl JournalFilter {
                 },
                 _ => wanted.as_path(),
             };
-            if !entry.paths.iter().any(|p| p.starts_with(relative)) {
+            if !relative.as_os_str().is_empty()
+                && relative != Path::new(".")
+                && !entry.paths.iter().any(|p| p.starts_with(relative))
+            {
                 return false;
             }
         }
-        if let Some(grep) = &self.grep {
+        if let Some(grep) = self
+            .grep
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if !entry.summary.to_lowercase().contains(&grep.to_lowercase()) {
                 return false;
             }
@@ -1080,5 +1097,23 @@ mod tests {
         assert_eq!(kept[0], PathBuf::from("f0000"));
         assert_eq!(JournalKind::parse("note"), Some(JournalKind::Note));
         assert_eq!(JournalKind::parse("nope"), None);
+    }
+    #[test]
+    fn stored_controls_cannot_inject_journal_lines_or_terminal_escapes() {
+        let mut entry = entry(
+            JournalKind::Note,
+            "hello\nforged\u{1b}[31m",
+            SummarySource::Explicit,
+        );
+        entry.agent_name = "agent\rforged".into();
+        entry.branch = Some("main\tbad".into());
+        let line = entry.line();
+        assert!(!line.chars().any(char::is_control));
+        assert!(line.contains("hello\\nforged\\u{1b}[31m"));
+        assert!(line.contains("agent\\rforged"));
+        assert!(line.contains("main\\tbad"));
+        entry.kind = JournalKind::Release;
+        entry.paths = vec!["src/evil\npath".into()];
+        assert!(!entry.line().chars().any(char::is_control));
     }
 }

@@ -547,4 +547,22 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn lease_acquisition_sequence_is_optional_on_wire_and_round_trips() {
+        let value = serde_json::json!({"id":"lease", "resource":"task:test", "holder":"agent", "mode":"exclusive",
+            "acquired_at":"2026-09-05T00:00:00Z", "expires_at":"2026-09-05T00:01:00Z"});
+        let mut lease: Lease = serde_json::from_value(value).unwrap();
+        assert_eq!(lease.change_seq, None);
+        assert!(
+            serde_json::to_value(&lease)
+                .unwrap()
+                .get("change_seq")
+                .is_none()
+        );
+        lease.change_seq = Some(42);
+        let response = Response::Lease { lease };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["lease"]["change_seq"], 42);
+        assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), response);
+    }
 }

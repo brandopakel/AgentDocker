@@ -446,7 +446,7 @@ struct JournalArgs {
     /// With --new: show entries from every branch instead of counting them.
     #[arg(long, requires = "new")]
     all_branches: bool,
-    /// With --new: read as this agent (id, prefix, or name) instead of as the human.
+    /// With --new: reader identity (defaults to AGENTDOCKER_AGENT_ID, then user).
     #[arg(long = "as", value_name = "AGENT", requires = "new")]
     reader: Option<String>,
 }
@@ -1075,7 +1075,10 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                 grep: None,
                 limit: args.limit,
                 digest: Some(agentdocker_core::DigestRequest {
-                    reader: args.reader.unwrap_or_else(|| "user".to_owned()),
+                    reader: args
+                        .reader
+                        .or_else(|| std::env::var("AGENTDOCKER_AGENT_ID").ok())
+                        .unwrap_or_else(|| "user".to_owned()),
                     max_entries: args.limit,
                     max_chars: 100_000,
                     all_branches: args.all_branches,
