@@ -88,6 +88,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             if ticks.is_multiple_of(60) {
                 reaper.prune_events();
                 reaper.prune_changes();
+                reaper.evict_journal_rings();
             }
         }
     });

@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod change;
 pub mod event;
+pub mod journal;
 pub mod lease;
 pub mod message;
 pub mod paths;
@@ -17,9 +18,11 @@ pub mod registry;
 pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, VcsState};
 pub use change::{Attribution, Change, ChangeKind};
 pub use event::{Event, EventKind};
+pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use message::{Destination, Envelope, MessageId, topic_matches};
 pub use project::{ProjectId, ProjectRef, ProjectSource};
+pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
 

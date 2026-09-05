@@ -286,7 +286,12 @@ enum Command {
         /// Release every lease this agent holds.
         #[arg(long, conflicts_with = "lease")]
         all: bool,
+        /// What changed and why; becomes the project's journal entry.
+        #[arg(long)]
+        summary: Option<String>,
     },
+    /// The project's journal: what changed and why, one line per release, note, or commit.
+    Journal(JournalArgs),
     /// List leases.
     Leases {
         /// Only leases held by this agent.
@@ -373,6 +378,74 @@ struct RegisterArgs {
     workdir: Option<PathBuf>,
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+}
+
+#[derive(Args)]
+struct JournalArgs {
+    #[command(subcommand)]
+    action: Option<JournalAction>,
+    /// Project: an id prefix or a path inside it (default: current directory).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Only entries after this sequence number.
+    #[arg(long)]
+    since: Option<u64>,
+    /// Only entries up to this sequence number.
+    #[arg(long)]
+    until: Option<u64>,
+    /// Only entries by this agent.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Only entries made on this branch.
+    #[arg(long)]
+    branch: Option<String>,
+    /// release, note, commit, join, leave, or handoff.
+    #[arg(long)]
+    kind: Option<String>,
+    /// Only entries touching this file, or anything beneath a directory.
+    #[arg(long)]
+    path: Option<String>,
+    /// Full-text search over summaries.
+    #[arg(long)]
+    grep: Option<String>,
+    /// How many of the newest matching entries to show.
+    #[arg(short = 'n', long, default_value_t = 50)]
+    limit: usize,
+    /// Keep printing entries as they are appended.
+    #[arg(long)]
+    follow: bool,
+    /// Only what the reader has not been shown yet: the human's cursor,
+    /// or an agent's with --as.
+    #[arg(long, conflicts_with = "follow")]
+    new: bool,
+    /// With --new: mark what was shown as seen.
+    #[arg(long, requires = "new")]
+    ack: bool,
+    /// With --new: show entries from every branch instead of counting them.
+    #[arg(long, requires = "new")]
+    all_branches: bool,
+    /// With --new: reader identity (defaults to AGENTDOCKER_AGENT_ID, then user).
+    #[arg(long = "as", value_name = "AGENT", requires = "new")]
+    reader: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum JournalAction {
+    /// Append a note to the journal of the agent's project.
+    Add {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        summary: String,
+    },
+    /// Drop entries below a sequence number.
+    Prune {
+        /// Delete every entry whose sequence number is below this.
+        #[arg(long)]
+        before: u64,
+        /// Project: an id prefix or a path inside it (default: current directory).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -824,11 +897,19 @@ async fn main() -> Result<()> {
                 println!("{} expires {}", lease.id, format::until(lease.expires_at));
             }
         }
-        Command::Release { agent, lease, all } => {
+        Command::Release {
+            agent,
+            lease,
+            all,
+            summary,
+        } => {
             if all {
-                if let Response::Leases { leases } =
-                    client.call(&Request::ReleaseAll { agent }).await?
-                {
+                let request = Request::ReleaseAll {
+                    agent,
+                    summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
+                };
+                if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
                         println!("{}", lease.id);
                     }
@@ -837,10 +918,13 @@ async fn main() -> Result<()> {
                 let request = Request::Release {
                     agent,
                     lease: LeaseId::from(lease.as_str()),
+                    summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
                 };
                 client.call(&request).await?;
             }
         }
+        Command::Journal(args) => journal_command(&client, args).await?,
         Command::Leases { agent, resource } => {
             let request = Request::Leases {
                 agent,
@@ -859,12 +943,18 @@ async fn main() -> Result<()> {
         }
         Command::Events { replay } => {
             client
-                .stream(&Request::Events { replay }, |response| {
-                    if let Response::Event { event } = response {
-                        println!("{}", format::event_line(&event));
-                    }
-                    Ok(true)
-                })
+                .stream(
+                    &Request::Events {
+                        replay,
+                        ready: false,
+                    },
+                    |response| {
+                        if let Response::Event { event } = response {
+                            println!("{}", format::event_line(&event));
+                        }
+                        Ok(true)
+                    },
+                )
                 .await?;
         }
     }
@@ -904,6 +994,134 @@ pub(crate) fn project_selector(raw: &str) -> String {
         .unwrap_or(absolute)
         .to_string_lossy()
         .into_owned()
+}
+
+async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
+    match args.action {
+        Some(JournalAction::Add { agent, summary }) => {
+            if let Response::JournalEntry { entry } =
+                client.call(&Request::JournalAdd { agent, summary }).await?
+            {
+                println!("{}", entry.seq);
+            }
+        }
+        Some(JournalAction::Prune { before, project }) => {
+            let request = Request::JournalPrune {
+                project: project_selector(project.as_deref().unwrap_or(".")),
+                before_seq: before,
+            };
+            if let Response::Pruned { removed } = client.call(&request).await? {
+                println!("removed {removed} entries");
+            }
+        }
+        None if args.new => {
+            let request = Request::Journal {
+                project: project_selector(args.project.as_deref().unwrap_or(".")),
+                since_seq: args.since,
+                until_seq: None,
+                agent: None,
+                branch: None,
+                kind: None,
+                path: None,
+                grep: None,
+                limit: args.limit,
+                digest: Some(agentdocker_core::DigestRequest {
+                    reader: args
+                        .reader
+                        .or_else(|| std::env::var("AGENTDOCKER_AGENT_ID").ok())
+                        .unwrap_or_else(|| "user".to_owned()),
+                    max_entries: args.limit,
+                    max_chars: 100_000,
+                    all_branches: args.all_branches,
+                    advance: args.ack,
+                }),
+            };
+            if let Response::Digest { digest, .. } = client.call(&request).await? {
+                if digest.text.is_empty() {
+                    println!("Nothing new.");
+                } else {
+                    print!("{}", digest.text);
+                }
+            }
+        }
+        None => {
+            let path = args.path.as_deref().map(absolute_path);
+            let request = Request::Journal {
+                project: project_selector(args.project.as_deref().unwrap_or(".")),
+                since_seq: args.since,
+                until_seq: args.until,
+                agent: args.agent.clone(),
+                branch: args.branch.clone(),
+                kind: args.kind.clone(),
+                path: path.clone(),
+                grep: args.grep.clone(),
+                limit: args.limit,
+                digest: None,
+            };
+            let print = |entry: &agentdocker_core::JournalEntry| {
+                println!(
+                    "{:>6}  {}  {}",
+                    entry.seq,
+                    format::clock(entry.at),
+                    entry.line()
+                );
+            };
+            // The snapshot, and where its tail starts.
+            let snapshot = async {
+                let Response::Journal { project, entries } = client.call(&request).await? else {
+                    return Ok(None);
+                };
+                entries.iter().for_each(print);
+                let last = entries.last().map_or(args.since.unwrap_or(0), |e| e.seq);
+                Ok(Some((project, last)))
+            };
+            if !args.follow {
+                snapshot.await?;
+                return Ok(());
+            }
+            // Wait for subscription readiness before taking the snapshot.
+            // Its sequence bound drops entries already printed from that snapshot.
+            let filter = agentdocker_core::JournalFilter {
+                agent: args.agent,
+                branch: args.branch,
+                kind: args
+                    .kind
+                    .as_deref()
+                    .and_then(agentdocker_core::JournalKind::parse),
+                path: path.map(PathBuf::from),
+                grep: args.grep,
+                until_seq: args.until,
+            };
+            client
+                .stream_after(
+                    &Request::Events {
+                        replay: 0,
+                        ready: true,
+                    },
+                    snapshot,
+                    |seen, response| {
+                        let Some((project, last)) = seen else {
+                            return Ok(false);
+                        };
+                        if let Response::Event { event } = response {
+                            if let agentdocker_core::EventKind::JournalAppended { entry } =
+                                event.kind
+                            {
+                                if entry.project == *project
+                                    && entry.seq > *last
+                                    && filter.matches(&entry)
+                                {
+                                    print(&entry);
+                                }
+                            }
+                        }
+                        Ok(true)
+                    },
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Absolute, with as much of it canonical as exists.

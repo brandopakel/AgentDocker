@@ -5,6 +5,7 @@
 //! `AGENTDOCKER_NO_AUTOSTART` is set. See [`Client::with_start_timeout`].
 
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -150,7 +151,43 @@ impl Client {
         request: &Request,
         mut on_response: impl FnMut(Response) -> Result<bool>,
     ) -> Result<()> {
-        let mut reader = self.connect(request).await?;
+        self.stream_after(request, async { Ok(()) }, |(), response| {
+            on_response(response)
+        })
+        .await
+    }
+
+    /// Like [`Client::stream`], but events wait for the daemon's subscription
+    /// acknowledgement before polling `then`. Its snapshot can therefore be
+    /// deduplicated against the live tail without a subscription race.
+    /// Falling behind returns an error, so incomplete output is never silent.
+    pub async fn stream_after<T>(
+        &self,
+        request: &Request,
+        then: impl Future<Output = Result<T>>,
+        mut on_response: impl FnMut(&T, Response) -> Result<bool>,
+    ) -> Result<()> {
+        let subscription = match request {
+            Request::Events { replay, .. } => Request::Events {
+                replay: *replay,
+                ready: true,
+            },
+            other => other.clone(),
+        };
+        let mut reader = self.connect(&subscription).await?;
+        if matches!(subscription, Request::Events { .. }) {
+            let mut line = String::new();
+            if reader.read_line(&mut line).await? == 0 {
+                bail!("agentd closed the connection before subscription readiness");
+            }
+            if !matches!(
+                into_result(serde_json::from_str(&line)?)?,
+                Response::EventsReady
+            ) {
+                bail!("agentd did not acknowledge event subscription readiness; update the daemon");
+            }
+        }
+        let snapshot = then.await?;
         let mut line = String::new();
         loop {
             line.clear();
@@ -161,8 +198,8 @@ impl Client {
                 Response::End => return Ok(()),
                 Response::Lagged { skipped } => {
                     if matches!(request, Request::Events { .. }) {
-                        eprintln!(
-                            "agentdocker: skipped {skipped} events; use events --replay to recover retained event history"
+                        bail!(
+                            "event stream lost {skipped} events; rerun journal with --since to recover retained entries"
                         );
                     } else {
                         eprintln!(
@@ -171,7 +208,7 @@ impl Client {
                     }
                 }
                 response => {
-                    if !on_response(response)? {
+                    if !on_response(&snapshot, response)? {
                         return Ok(());
                     }
                 }
@@ -290,5 +327,102 @@ pub mod mock {
                 .unwrap_or(Response::Ok);
             async move { Ok(response) }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn snapshot_waits_for_subscription_acknowledgement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let polled = Arc::new(AtomicBool::new(false));
+        let snapshot_polled = polled.clone();
+        let client = Client::new(Some(socket)).with_start_timeout(None);
+        let task = tokio::spawn(async move {
+            client
+                .stream_after(
+                    &Request::Events {
+                        replay: 0,
+                        ready: false,
+                    },
+                    async move {
+                        snapshot_polled.store(true, Ordering::SeqCst);
+                        Ok(17)
+                    },
+                    |snapshot, response| {
+                        assert_eq!(*snapshot, 17);
+                        assert!(matches!(response, Response::Ok));
+                        Ok(false)
+                    },
+                )
+                .await
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut peer = BufReader::new(stream);
+        let mut line = String::new();
+        peer.read_line(&mut line).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Request>(&line).unwrap(),
+            Request::Events { ready: true, .. }
+        ));
+        // The request has reached the server, but the snapshot must stay unpolled.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!polled.load(Ordering::SeqCst));
+        for response in [Response::EventsReady, Response::Ok] {
+            peer.get_mut()
+                .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(polled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn lost_event_stream_returns_failure_instead_of_incomplete_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let client = Client::new(Some(socket)).with_start_timeout(None);
+        let task = tokio::spawn(async move {
+            client
+                .stream(
+                    &Request::Events {
+                        replay: 0,
+                        ready: true,
+                    },
+                    |_| Ok(true),
+                )
+                .await
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut peer = BufReader::new(stream);
+        let mut line = String::new();
+        peer.read_line(&mut line).await.unwrap();
+        for response in [Response::EventsReady, Response::Lagged { skipped: 3 }] {
+            peer.get_mut()
+                .write_all((serde_json::to_string(&response).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("lost 3 events"));
     }
 }

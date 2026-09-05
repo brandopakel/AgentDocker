@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Change, Destination, Lease, MessageId, ProjectId, ProjectRef,
-    ResourceKey, VcsState,
+    AgentId, AgentStatus, Change, Destination, JournalEntry, Lease, MessageId, ProjectId,
+    ProjectRef, ResourceKey, VcsState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +113,17 @@ pub enum EventKind {
     /// event history, which change volume would otherwise crowd out.
     FileChanged {
         change: Change,
+    },
+    /// A journal entry was appended to a project.
+    JournalAppended {
+        entry: JournalEntry,
+    },
+    /// A reader's journal cursor moved: everything up to `seq` has been
+    /// shown to it. `reader` is an agent id, or `user` for the human.
+    JournalRead {
+        reader: String,
+        project: ProjectId,
+        seq: u64,
     },
     /// An agent's checkout moved to another branch or commit.
     AgentVcsChanged {

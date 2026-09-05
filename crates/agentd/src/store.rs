@@ -9,8 +9,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::{AgentId, AgentRecord, Change, Envelope, Event, Lease, LeaseId, ProjectId};
+use agentdocker_core::{
+    AgentId, AgentRecord, Change, Envelope, Event, JournalEntry, JournalKind, Lease, LeaseId,
+    ProjectId,
+};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA_VERSION: i64 = 3;
@@ -69,10 +73,81 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 CREATE INDEX IF NOT EXISTS changes_project_seq ON changes (project, seq);
 CREATE INDEX IF NOT EXISTS changes_project_path ON changes (project, path, seq);
+CREATE TABLE IF NOT EXISTS journal (
+    id      INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    seq     INTEGER NOT NULL,
+    at      TEXT NOT NULL,
+    agent   TEXT,
+    branch  TEXT,
+    kind    TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    json    TEXT NOT NULL,
+    UNIQUE (project, seq)
+);
+CREATE TABLE IF NOT EXISTS journal_heads (
+    project TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL
+);
+INSERT INTO journal_heads (project, seq) SELECT project, MAX(seq) FROM journal GROUP BY project
+ON CONFLICT(project) DO UPDATE SET seq = MAX(journal_heads.seq, excluded.seq);
+CREATE INDEX IF NOT EXISTS journal_branch ON journal (project, branch, seq);
+CREATE INDEX IF NOT EXISTS journal_agent ON journal (project, agent, seq);
+CREATE TABLE IF NOT EXISTS journal_paths (
+    project TEXT NOT NULL,
+    path    TEXT NOT NULL,
+    seq     INTEGER NOT NULL,
+    PRIMARY KEY (project, path, seq)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS journal_cursors (
+    agent      TEXT NOT NULL,
+    project    TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent, project)
+) WITHOUT ROWID;
 ";
+
+/// Full-text search over journal summaries. Contentless: the text lives in
+/// the journal row, the index only maps terms to `journal.id`.
+const JOURNAL_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(summary, content='', contentless_delete=1)";
 
 pub struct Store {
     conn: Connection,
+    /// Whether the SQLite build gave us FTS5; `--grep` falls back to LIKE.
+    fts: bool,
+}
+
+/// A journal query; see [`Store::journal`].
+#[derive(Debug, Clone)]
+pub struct JournalQuery {
+    pub project: ProjectId,
+    pub since_seq: Option<u64>,
+    pub until_seq: Option<u64>,
+    pub agent: Option<AgentId>,
+    pub branch: Option<String>,
+    pub kind: Option<JournalKind>,
+    /// Checkout-relative; a directory matches everything beneath it.
+    pub path: Option<String>,
+    pub grep: Option<String>,
+    pub limit: usize,
+}
+
+impl JournalQuery {
+    /// Everything in a project, newest `limit`.
+    pub fn new(project: ProjectId, limit: usize) -> Self {
+        Self {
+            project,
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: None,
+            limit,
+        }
+    }
 }
 
 /// A ledger query; see [`Store::changes`].
@@ -84,6 +159,8 @@ pub struct ChangesQuery {
     pub path: Option<String>,
     pub agent: Option<AgentId>,
     pub limit: usize,
+    /// Only changes seen at or after this time.
+    pub after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Store {
@@ -183,6 +260,19 @@ impl Store {
             .transpose()
     }
     #[cfg(test)]
+    pub(crate) fn reject_event_for_test(&self, kind: &str) {
+        // Only static test event names enter this trigger.
+        assert!(kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        self.conn
+            .execute_batch(&format!(
+                "CREATE TEMP TRIGGER reject_event BEFORE INSERT ON events
+            WHEN json_extract(NEW.json, '$.kind.event') = '{kind}'
+            BEGIN SELECT RAISE(FAIL, 'injected event failure'); END;"
+            ))
+            .unwrap();
+    }
+
+    #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
@@ -206,10 +296,33 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
+    /// Behave as if the SQLite build lacked FTS5, to exercise the fallback.
+    #[cfg(test)]
+    pub fn without_fts(mut self) -> Self {
+        self.fts = false;
+        self
+    }
+
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
+        // A journal written before `summary` had its own column gets one,
+        // filled from the blob, so the LIKE fallback searches the same text
+        // as FTS. Idempotent: the column is checked for, not the version.
+        let has_summary = conn
+            .prepare("PRAGMA table_info(journal)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|column| column == "summary");
+        if !has_summary {
+            let tx = conn.unchecked_transaction()?;
+            conn.execute_batch(
+                "ALTER TABLE journal ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+                 UPDATE journal SET summary = COALESCE(json_extract(json, '$.summary'), '')",
+            )?;
+            tx.commit()?;
+        }
 
         let version: Option<String> = conn
             .query_row(
@@ -239,7 +352,44 @@ impl Store {
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
             ),
         }
-        Ok(Self { conn })
+        let had_fts: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='journal_fts')",
+            [],
+            |row| row.get(0),
+        )?;
+        let fts = match conn.execute_batch(JOURNAL_FTS) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(%err, "FTS5 unavailable; journal --grep falls back to LIKE");
+                false
+            }
+        };
+        if fts {
+            let complete: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='journal_fts_complete'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if !had_fts || complete.as_deref() != Some("1") {
+                let tx = conn.unchecked_transaction()?;
+                conn.execute(
+                    "INSERT INTO journal_fts(journal_fts) VALUES('delete-all')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO journal_fts(rowid, summary) SELECT id, summary FROM journal",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES('journal_fts_complete', '1')",
+                    [],
+                )?;
+                tx.commit()?;
+            }
+        }
+        Ok(Self { conn, fts })
     }
 
     // ----- agents ---------------------------------------------------------
@@ -268,6 +418,10 @@ impl Store {
     pub fn delete_agent(&self, id: &AgentId) -> Result<()> {
         self.conn
             .execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
+        self.conn.execute(
+            "DELETE FROM journal_cursors WHERE agent = ?1",
+            params![id.as_str()],
+        )?;
         self.conn
             .execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
         Ok(())
@@ -483,6 +637,10 @@ impl Store {
             args.push(Box::new(agent.as_str().to_owned()));
             sql.push_str(&format!(" AND by_agent = ?{}", args.len()));
         }
+        if let Some(after) = &query.after {
+            args.push(Box::new(after.to_rfc3339()));
+            sql.push_str(&format!(" AND julianday(at) >= julianday(?{})", args.len()));
+        }
         args.push(Box::new(i64::try_from(query.limit).unwrap_or(i64::MAX)));
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
         let mut stmt = self.conn.prepare(&sql)?;
@@ -513,6 +671,277 @@ impl Store {
             )?;
         }
         Ok(removed)
+    }
+
+    // ----- journal --------------------------------------------------------
+
+    /// The highest journal `seq` stored for a project, or 0.
+    pub fn max_journal_seq(&self, project: &ProjectId) -> Result<u64> {
+        let max: i64 = self.conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM journal_heads WHERE project = ?1), 0)",
+            params![project.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(max).unwrap_or(0))
+    }
+
+    /// Append an entry (its `seq` already assigned) on its own.
+    #[cfg(test)]
+    pub fn append_journal(&self, entry: &JournalEntry) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_journal(entry)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete released leases and append the entry that describes the
+    /// release in one transaction, so a crash can leave neither a released
+    /// lease without its entry nor an entry for a lease still held.
+    pub fn release_leases(
+        &self,
+        leases: &[LeaseId],
+        entry: Option<&JournalEntry>,
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in leases {
+            self.conn
+                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+        }
+        if let Some(entry) = entry {
+            self.insert_journal(entry)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Journal and ordered replay event must survive or roll back together.
+    pub fn append_journal_with_event(&self, entry: &JournalEntry, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_journal(entry)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Acknowledgement must not advance past a failed replay event.
+    pub fn set_journal_cursor_with_event(
+        &self,
+        key: &str,
+        project: &ProjectId,
+        seq: u64,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.set_journal_cursor(key, project, seq, event.at)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Last assigned ledger sequence, retained even when rows are pruned.
+    pub fn change_watermark(&self) -> Result<u64> {
+        let seq: i64 = self.conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='changes'), 0)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(seq)?)
+    }
+
+    fn insert_journal(&self, entry: &JournalEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO journal_heads (project, seq) VALUES (?1, ?2)
+            ON CONFLICT(project) DO UPDATE SET seq = MAX(journal_heads.seq, excluded.seq)",
+            params![entry.project.as_str(), i64::try_from(entry.seq)?],
+        )?;
+        self.conn.execute(
+            "INSERT INTO journal (project, seq, at, agent, branch, kind, summary, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                entry.project.as_str(),
+                i64::try_from(entry.seq).unwrap_or(i64::MAX),
+                entry.at.to_rfc3339(),
+                entry.agent.as_ref().map(AgentId::as_str),
+                entry.branch,
+                entry.kind.to_string(),
+                entry.summary,
+                serde_json::to_string(entry)?,
+            ],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        for path in &entry.paths {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO journal_paths (project, path, seq) VALUES (?1, ?2, ?3)",
+                params![
+                    entry.project.as_str(),
+                    path.to_string_lossy(),
+                    i64::try_from(entry.seq).unwrap_or(i64::MAX)
+                ],
+            )?;
+        }
+        if self.fts {
+            self.conn.execute(
+                "INSERT INTO journal_fts (rowid, summary) VALUES (?1, ?2)",
+                params![id, entry.summary],
+            )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='journal_fts_complete'", [])?;
+        }
+        Ok(())
+    }
+
+    /// The newest `limit` entries matching the query, oldest first.
+    pub fn journal(&self, query: &JournalQuery) -> Result<Vec<JournalEntry>> {
+        let mut sql = String::from("SELECT json FROM journal WHERE project = ?1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(query.project.as_str().to_owned())];
+        if let Some(since) = query.since_seq {
+            args.push(Box::new(i64::try_from(since).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq > ?{}", args.len()));
+        }
+        if let Some(until) = query.until_seq {
+            args.push(Box::new(i64::try_from(until).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq <= ?{}", args.len()));
+        }
+        if let Some(agent) = &query.agent {
+            args.push(Box::new(agent.as_str().to_owned()));
+            sql.push_str(&format!(" AND agent = ?{}", args.len()));
+        }
+        if let Some(branch) = &query.branch {
+            args.push(Box::new(branch.clone()));
+            sql.push_str(&format!(" AND branch = ?{}", args.len()));
+        }
+        if let Some(kind) = &query.kind {
+            args.push(Box::new(kind.to_string()));
+            sql.push_str(&format!(" AND kind = ?{}", args.len()));
+        }
+        if let Some(path) = query
+            .path
+            .as_deref()
+            .map(|p| p.trim_end_matches('/').trim_start_matches("./"))
+            .filter(|p| !p.is_empty() && *p != ".")
+        {
+            args.push(Box::new(path.to_owned()));
+            let exact = args.len();
+            args.push(Box::new(format!("{path}/")));
+            let lower = args.len();
+            args.push(Box::new(format!("{path}0")));
+            let upper = args.len();
+            sql.push_str(&format!(
+                " AND seq IN (SELECT seq FROM journal_paths WHERE project = ?1 AND (path = ?{exact} OR (path >= ?{lower} AND path < ?{upper})))"
+            ));
+        }
+        if let Some(grep) = query
+            .grep
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            // FTS has no tokens for punctuation-only text. Match that literal
+            // text with LIKE whether or not FTS is available.
+            if self.fts && grep.chars().any(char::is_alphanumeric) {
+                // Quote the whole phrase so user text is never FTS syntax.
+                args.push(Box::new(format!("\"{}\"", grep.replace('"', "\"\""))));
+                sql.push_str(&format!(
+                    " AND id IN (SELECT rowid FROM journal_fts WHERE journal_fts MATCH ?{})",
+                    args.len()
+                ));
+            } else {
+                // Same text as the FTS branch, and user text is never a
+                // pattern: `%` and `_` are matched literally.
+                let escaped = grep
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                args.push(Box::new(format!("%{escaped}%")));
+                sql.push_str(&format!(" AND summary LIKE ?{} ESCAPE '\\'", args.len()));
+            }
+        }
+        args.push(Box::new(
+            i64::try_from(query.limit.max(1)).unwrap_or(i64::MAX),
+        ));
+        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut entries: Vec<JournalEntry> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        entries.reverse();
+        Ok(entries)
+    }
+
+    /// Drop a project's entries below `before_seq`, with their paths and
+    /// search rows. Returns how many entries went.
+    pub fn prune_journal(&self, project: &ProjectId, before_seq: u64) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let before = i64::try_from(before_seq).unwrap_or(i64::MAX);
+        if self.fts {
+            self.conn.execute(
+                "DELETE FROM journal_fts WHERE rowid IN (SELECT id FROM journal WHERE project = ?1 AND seq < ?2)",
+                params![project.as_str(), before],
+            )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='journal_fts_complete'", [])?;
+        }
+        self.conn.execute(
+            "DELETE FROM journal_paths WHERE project = ?1 AND seq < ?2",
+            params![project.as_str(), before],
+        )?;
+        let removed = self.conn.execute(
+            "DELETE FROM journal WHERE project = ?1 AND seq < ?2",
+            params![project.as_str(), before],
+        )?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    // ----- journal cursors -----------------------------------------------
+
+    /// The last entry a reader was shown in a project; `None` for a reader
+    /// that has never been shown anything there.
+    pub fn journal_cursor(&self, reader: &str, project: &ProjectId) -> Result<Option<u64>> {
+        let seq: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT seq FROM journal_cursors WHERE agent = ?1 AND project = ?2",
+                params![reader, project.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(seq.map(|seq| u64::try_from(seq).unwrap_or(0)))
+    }
+
+    /// Record the last entry a reader was shown.
+    pub fn set_journal_cursor(
+        &self,
+        reader: &str,
+        project: &ProjectId,
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO journal_cursors (agent, project, seq, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent, project) DO UPDATE SET
+                 seq = excluded.seq,
+                 updated_at = excluded.updated_at",
+            params![
+                reader,
+                project.as_str(),
+                i64::try_from(seq).unwrap_or(i64::MAX),
+                now.to_rfc3339()
+            ],
+        )?;
+        Ok(())
     }
 
     // ----- events ---------------------------------------------------------
@@ -645,17 +1074,21 @@ mod tests {
     fn leases_round_trip() {
         let store = Store::in_memory().unwrap();
         let now = Utc::now();
-        let lease = Lease {
+        let mut lease = Lease {
             id: LeaseId::generate(),
             resource: ResourceKey::new("task:1"),
             holder: AgentId::from("a"),
             mode: LeaseMode::Shared,
             acquired_at: now,
+            change_seq: None,
             expires_at: now + Duration::seconds(30),
             note: Some("n".into()),
         };
         store.upsert_lease(&lease).unwrap();
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
+        lease.change_seq = Some(42);
+        store.upsert_lease(&lease).unwrap();
+        assert_eq!(store.load_leases().unwrap(), [lease.clone()]);
         store.delete_lease(&lease.id).unwrap();
         assert!(store.load_leases().unwrap().is_empty());
     }
@@ -670,6 +1103,7 @@ mod tests {
             holder: AgentId::from("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            change_seq: None,
             expires_at: now + Duration::seconds(30),
             note: None,
         };
@@ -809,6 +1243,7 @@ mod tests {
                     path: path.map(str::to_owned),
                     agent: agent.map(AgentId::from),
                     limit,
+                    after: None,
                 })
                 .unwrap()
                 .into_iter()
@@ -871,6 +1306,7 @@ mod tests {
                 path: Some("README.md".into()),
                 agent: None,
                 limit: 1,
+                after: None,
             })
             .unwrap();
         assert_eq!(stored[0].seq, s4, "the blob carries its seq");
@@ -887,12 +1323,363 @@ mod tests {
                     since_seq: None,
                     path: None,
                     agent: None,
-                    limit: 50
+                    limit: 50,
+                    after: None,
                 })
                 .unwrap()
                 .len(),
             1,
             "other projects untouched"
+        );
+    }
+
+    #[test]
+    fn journal_appends_queries_and_prunes_with_leases_in_one_transaction() {
+        use agentdocker_core::{JournalEntry, JournalKind, ProjectId, SummarySource};
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        let entry = |seq: u64,
+                     kind: JournalKind,
+                     summary: &str,
+                     paths: &[&str],
+                     agent: &str,
+                     branch: &str| JournalEntry {
+            project: project.clone(),
+            seq,
+            at: Utc::now(),
+            agent: Some(AgentId::from(agent)),
+            agent_name: agent.to_owned(),
+            branch: Some(branch.to_owned()),
+            checkout: None,
+            worktree: None,
+            kind,
+            summary: summary.to_owned(),
+            summary_source: SummarySource::Explicit,
+            resources: Vec::new(),
+            paths: paths.iter().map(|p| p.into()).collect(),
+            paths_total: paths.len(),
+            head_before: None,
+            head_after: None,
+            changes: None,
+        };
+        assert_eq!(store.max_journal_seq(&project).unwrap(), 0);
+
+        // A release and its entry land together.
+        let lease = Lease {
+            id: LeaseId::from("l1"),
+            resource: ResourceKey::new("path:/repo/src/a.rs"),
+            holder: AgentId::from("a1"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: Utc::now(),
+            change_seq: None,
+            expires_at: Utc::now() + Duration::seconds(60),
+            note: None,
+        };
+        store.upsert_lease(&lease).unwrap();
+        store
+            .release_leases(
+                std::slice::from_ref(&lease.id),
+                Some(&entry(
+                    1,
+                    JournalKind::Release,
+                    "rewrote the parser",
+                    &["src/a.rs", "src/b.rs"],
+                    "a1",
+                    "main",
+                )),
+                &[],
+            )
+            .unwrap();
+        assert!(store.load_leases().unwrap().is_empty());
+        store
+            .append_journal(&entry(
+                2,
+                JournalKind::Note,
+                "lexer next",
+                &[],
+                "a1",
+                "main",
+            ))
+            .unwrap();
+        store
+            .append_journal(&entry(
+                3,
+                JournalKind::Commit,
+                "committed abc: Add lexer",
+                &[],
+                "a2",
+                "feature",
+            ))
+            .unwrap();
+        store
+            .append_journal(&entry(
+                4,
+                JournalKind::Release,
+                "touched docs",
+                &["docs/x.md"],
+                "a2",
+                "feature",
+            ))
+            .unwrap();
+        assert_eq!(store.max_journal_seq(&project).unwrap(), 4);
+
+        let q = |f: &dyn Fn(&mut JournalQuery)| {
+            let mut query = JournalQuery::new(project.clone(), 50);
+            f(&mut query);
+            store
+                .journal(&query)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(q(&|_| {}), [1, 2, 3, 4]);
+        assert_eq!(q(&|x| x.limit = 2), [3, 4], "newest two, oldest first");
+        assert_eq!(q(&|x| x.since_seq = Some(2)), [3, 4]);
+        assert_eq!(q(&|x| x.until_seq = Some(2)), [1, 2]);
+        assert_eq!(q(&|x| x.agent = Some(AgentId::from("a2"))), [3, 4]);
+        assert_eq!(q(&|x| x.branch = Some("main".into())), [1, 2]);
+        assert_eq!(q(&|x| x.kind = Some(JournalKind::Release)), [1, 4]);
+        assert_eq!(
+            q(&|x| x.path = Some("src".into())),
+            [1],
+            "directory prefix via journal_paths"
+        );
+        assert_eq!(q(&|x| x.path = Some("src/b.rs".into())), [1]);
+        assert_eq!(q(&|x| x.path = Some("srcs".into())), Vec::<u64>::new());
+        assert_eq!(q(&|x| x.grep = Some("parser".into())), [1]);
+        assert_eq!(
+            q(&|x| x.grep = Some("lexer".into())),
+            [2, 3],
+            "fts or like, both match"
+        );
+
+        assert_eq!(store.prune_journal(&project, 3).unwrap(), 2);
+        assert_eq!(q(&|_| {}), [3, 4]);
+        assert_eq!(
+            q(&|x| x.path = Some("src".into())),
+            Vec::<u64>::new(),
+            "paths pruned too"
+        );
+        assert_eq!(
+            q(&|x| x.grep = Some("parser".into())),
+            Vec::<u64>::new(),
+            "search rows pruned too"
+        );
+    }
+
+    #[test]
+    fn journal_cursors_round_trip_and_go_with_their_agent() {
+        use agentdocker_core::ProjectId;
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
+        store
+            .set_journal_cursor("a1", &project, 7, Utc::now())
+            .unwrap();
+        store
+            .set_journal_cursor("a1", &project, 9, Utc::now())
+            .unwrap();
+        store
+            .set_journal_cursor("user", &project, 3, Utc::now())
+            .unwrap();
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), Some(9));
+        assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
+        assert_eq!(
+            store.journal_cursor("a1", &ProjectId::from("p2")).unwrap(),
+            None,
+            "one cursor per project"
+        );
+        store.delete_agent(&AgentId::from("a1")).unwrap();
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
+        assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn like_fallback_searches_only_summaries_and_takes_text_literally() {
+        use agentdocker_core::{JournalEntry, JournalKind, ProjectId, SummarySource};
+        let project = ProjectId::from("p1");
+        let entry = |seq: u64, summary: &str| JournalEntry {
+            project: project.clone(),
+            seq,
+            at: Utc::now(),
+            agent: Some(AgentId::from("agent-one")),
+            agent_name: "codex-1".to_owned(),
+            branch: Some("feat/lexer".to_owned()),
+            checkout: None,
+            worktree: None,
+            kind: JournalKind::Note,
+            summary: summary.to_owned(),
+            summary_source: SummarySource::Explicit,
+            resources: Vec::new(),
+            paths: vec!["src/lexer.rs".into()],
+            paths_total: 1,
+            head_before: None,
+            head_after: None,
+            changes: None,
+        };
+
+        // A database from before the column existed: the blob is the only
+        // copy of the summary until `init` adds and fills the column.
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE journal (
+                    id INTEGER PRIMARY KEY, project TEXT NOT NULL, seq INTEGER NOT NULL,
+                    at TEXT NOT NULL, agent TEXT, branch TEXT, kind TEXT NOT NULL,
+                    json TEXT NOT NULL, UNIQUE (project, seq))",
+            )
+            .unwrap();
+        let old = entry(1, "rewrote the parser");
+        legacy
+            .execute(
+                "INSERT INTO journal (project, seq, at, agent, branch, kind, json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    "p1",
+                    1,
+                    old.at.to_rfc3339(),
+                    "agent-one",
+                    "feat/lexer",
+                    "note",
+                    serde_json::to_string(&old).unwrap()
+                ],
+            )
+            .unwrap();
+        let store = Store::init(legacy).unwrap().without_fts();
+        store.append_journal(&entry(2, "100% of a_b done")).unwrap();
+
+        let q = |grep: &str| {
+            let mut query = JournalQuery::new(project.clone(), 50);
+            query.grep = Some(grep.to_owned());
+            store
+                .journal(&query)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(q("parser"), [1], "backfilled from the blob");
+        assert_eq!(q("PARSER"), [1], "LIKE is case-insensitive like FTS");
+        assert_eq!(q("a_b"), [2]);
+        assert_eq!(q("100%"), [2]);
+        assert_eq!(q("aXb"), Vec::<u64>::new(), "`_` is not a wildcard");
+        assert_eq!(q("100"), [2]);
+        for not_summary in ["agent-one", "codex-1", "feat/lexer", "lexer.rs", "note"] {
+            assert_eq!(
+                q(not_summary),
+                Vec::<u64>::new(),
+                "{not_summary} is not summary text"
+            );
+        }
+    }
+    #[test]
+    fn interrupted_summary_migration_rolls_back_and_can_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("CREATE TABLE journal (
+            id INTEGER PRIMARY KEY, project TEXT NOT NULL, seq INTEGER NOT NULL,
+            at TEXT NOT NULL, agent TEXT, branch TEXT, kind TEXT NOT NULL,
+            json TEXT NOT NULL, UNIQUE(project, seq));
+            INSERT INTO journal (project, seq, at, kind, json) VALUES ('p', 7, '', 'note', 'malformed');").unwrap();
+        drop(legacy);
+        assert!(Store::open(&path).is_err());
+        let conn = Connection::open(&path).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(journal)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            !columns.iter().any(|column| column == "summary"),
+            "ALTER TABLE must roll back with failed backfill"
+        );
+        conn.execute(
+            "UPDATE journal SET json = ?1",
+            [r#"{"summary":"recovered"}"#],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        let summary: String = store
+            .conn
+            .query_row("SELECT summary FROM journal", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(summary, "recovered");
+        assert_eq!(store.max_journal_seq(&ProjectId::from("p")).unwrap(), 7);
+    }
+    fn search_entry(seq: u64, summary: &str) -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "project":"search", "seq":seq, "at":Utc::now(), "agent_name":"writer",
+            "kind":"note", "summary":summary, "summary_source":"explicit"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn empty_and_punctuation_searches_agree_with_and_without_fts() {
+        let mut store = Store::in_memory().unwrap();
+        store
+            .append_journal(&search_entry(1, "100% ... _ done"))
+            .unwrap();
+        store
+            .append_journal(&search_entry(2, "ordinary text"))
+            .unwrap();
+        for term in ["", "  ", "%", "...", "_", "!"] {
+            let mut query = JournalQuery::new(ProjectId::from("search"), 50);
+            query.grep = Some(term.into());
+            let indexed = store.journal(&query).unwrap();
+            store.fts = false;
+            let fallback = store.journal(&query).unwrap();
+            store.fts = true;
+            assert_eq!(indexed, fallback, "{term:?}");
+            if term.trim().is_empty() {
+                assert_eq!(indexed.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn fts_rebuilds_after_fallback_writes_deletions_and_missing_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .append_journal(&search_entry(1, "old searchable"))
+            .unwrap();
+        let store = store.without_fts();
+        store.prune_journal(&ProjectId::from("search"), 2).unwrap();
+        store
+            .append_journal(&search_entry(2, "new searchable"))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let mut query = JournalQuery::new(ProjectId::from("search"), 50);
+        query.grep = Some("searchable".into());
+        assert_eq!(
+            store
+                .journal(&query)
+                .unwrap()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        // Losing an index while retaining the completion marker also rebuilds.
+        store.conn.execute("DROP TABLE journal_fts", []).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .journal(&query)
+                .unwrap()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [2]
         );
     }
 }

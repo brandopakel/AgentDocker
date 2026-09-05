@@ -49,6 +49,45 @@ pub fn state(dir: &Path) -> Option<VcsState> {
     })
 }
 
+/// The subject line of a commit, via `git log`; `None` when git is
+/// missing, the object is unknown, or `timeout` passes.
+pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<String> {
+    if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut child = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["log", "-1", "--format=%s", sha, "--"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    let subject = out.trim();
+    (!subject.is_empty()).then(|| subject.chars().take(200).collect())
+}
+
 /// `(git directory of this checkout, common git directory)`: equal for a
 /// main checkout, distinct for a linked worktree.
 pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {

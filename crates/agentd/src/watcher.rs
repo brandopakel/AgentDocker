@@ -30,6 +30,8 @@ use crate::daemon::{Checkout, Daemon, Observed};
 
 const RECONCILE_EVERY: Duration = Duration::from_secs(1);
 const FLUSH_EVERY: Duration = Duration::from_millis(100);
+/// How long an on-demand flush waits for the OS before draining.
+const FLUSH_GRACE: Duration = Duration::from_millis(150);
 
 struct Watched {
     checkout: Checkout,
@@ -70,6 +72,11 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     let mut pending: Vec<notify::Event> = Vec::new();
     let mut reconcile = tokio::time::interval(reconcile_every);
     let mut flush = tokio::time::interval(flush_every);
+    // A release asks for an immediate flush through this channel, so its
+    // journal entry sees the changes made just before it.
+    let (flush_tx, mut flush_rx) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(8);
+    daemon.set_watcher_flush(flush_tx);
     loop {
         tokio::select! {
             _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
@@ -77,20 +84,49 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
                 if pending.len() < 4096 { pending.push(event); }
                 else { gap.store(true, Ordering::Relaxed); }
             },
+            Some(ack) = flush_rx.recv() => {
+                // Give the OS a moment to deliver what just happened (FSEvents
+                // batches with some latency), take what is queued, then flush.
+                // No filesystem events can arrive when no checkout is watched.
+                // Plain-directory leases still work but have no watcher coverage.
+                if !watched.is_empty() {
+                    tokio::time::sleep(FLUSH_GRACE).await;
+                }
+                while let Ok(event) = rx.try_recv() {
+                    if pending.len() < 4096 { pending.push(event); }
+                    else { gap.store(true, Ordering::Relaxed); }
+                }
+                drain(&daemon, &mut pending, &watched, &gap).await;
+                let _ = ack.send(());
+            }
             _ = flush.tick() => {
-                if gap.swap(false, Ordering::Relaxed) {
-                    daemon.emit(agentdocker_core::EventKind::WatcherGap { reason: "event overflow or operating-system watcher error; ledger may be incomplete".into() });
-                }
-                if pending.is_empty() {
-                    continue;
-                }
-                let batch = std::mem::take(&mut pending);
-                let (observed, vcs_touched) = classify(&batch, &watched);
-                if !observed.is_empty() || !vcs_touched.is_empty() {
-                    daemon.record_fs_changes(observed, vcs_touched).await;
-                }
+                drain(&daemon, &mut pending, &watched, &gap).await;
             }
         }
+    }
+}
+
+/// Record everything pending, and report a gap if the OS or the queue
+/// dropped events since the last flush.
+async fn drain(
+    daemon: &Daemon,
+    pending: &mut Vec<notify::Event>,
+    watched: &BTreeMap<PathBuf, Watched>,
+    gap: &AtomicBool,
+) {
+    if gap.swap(false, Ordering::Relaxed) {
+        daemon.emit(agentdocker_core::EventKind::WatcherGap {
+            reason: "event overflow or operating-system watcher error; ledger may be incomplete"
+                .into(),
+        });
+    }
+    if pending.is_empty() {
+        return;
+    }
+    let batch = std::mem::take(pending);
+    let (observed, vcs_touched) = classify(&batch, watched);
+    if !observed.is_empty() || !vcs_touched.is_empty() {
+        daemon.record_fs_changes(observed, vcs_touched).await;
     }
 }
 

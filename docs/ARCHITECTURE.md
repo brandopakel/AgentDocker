@@ -51,7 +51,7 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 A failed SQLite write latches `storage_unavailable`: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported.
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 3 upgrades schemas 1 and 2 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 3, including its new `stopping` status.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 3 upgrades schemas 1 and 2 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 3, including dedicated process-group tracking and `stopping` status.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -133,13 +133,29 @@ The daemon watches the filesystem of every checkout a live agent works in and ke
 
 **Reading it.** `changes {project, since_seq?, path?, agent?, limit?}` returns the newest `limit` entries oldest first; `agentdocker changes [--project .] [--since N] [--path P] [--agent A] [-n N]` prints them with agent names, and `agentdocker blame <path>` is the same query for one file. An absolute path in a query is made relative to the checkout containing it, so callers need not know the root.
 
+## The journal
+
+Where the ledger records every file change, the journal records *what happened and why*, one line at a time, per project: coarse, readable by models and humans, and what a newcomer is handed instead of the event stream. Entries, storage, the release write path, cursors, digests, and the adapters exist.
+
+**Entries.** A `JournalEntry` carries project and per-project `seq`, time, the agent (or none, for a commit nobody is known to have made), its name and branch, the physical checkout and worktree, a kind, a summary with its source (`explicit`, `transcript`, `synthesised`), the released resources, up to 200 checkout-relative paths with the real count, HEAD before and after, and the ledger seq range for drill-down. Kinds: `release` (leases dropped; the entry says what changed under them), `note` (free text), `commit` (HEAD moved), `join`, `leave`, and `handoff` (Phase 4).
+
+**Write path.** A `release` or `release_all` that freed at least one lease passes the *release barrier* when a released lease protects a path — the daemon asks the watcher to record whatever it is still debouncing, bounded at 500 ms including queue admission, so a change made a moment before the release is in the entry — then, for each released `path:` resource, runs one indexed prefix-range query on the ledger bounded by the lease's durable `change_seq` (numeric `acquired_at` fallback for legacy leases), restricted to the same physical checkout; unions, sorts, dedupes, and caps the paths; takes the explicit summary or synthesises one ("edited 3 files under src/: parser.rs, lexer.rs, mod.rs"); and writes the entry, its path index rows, and its search row **in the same transaction as the lease deletions and replay events**, so a crash can leave neither a released lease without its entry nor an entry for a lease still held. An explicit nonempty summary is journaled even when no lease was held. A release under which nothing changed and nothing was said writes no entry. Agents joining and leaving a project are journaled; so is a checkout's HEAD moving — once per checkout and HEAD however many agents share it, named through `git log`, attributed to the only agent in the checkout, else the holder of the `branch:` lease, else nobody. `journal_add` appends a note.
+
+**Storage.** `journal` (rowid `id`, `project`, `seq`, `at`, `agent`, `branch`, `kind`, the JSON blob; unique on project + seq; indexed by project + branch + seq and project + agent + seq), `journal_paths` (project, path, seq — the index behind `--path`, a prefix range), `journal_fts` (FTS5, contentless, rowid = `journal.id`; when the SQLite build lacks FTS5 the daemon logs it once and `--grep` falls back to `LIKE`), and `journal_cursors`, created for row 9b. Entries are kept forever; `journal prune --before <seq>` deletes on demand, from all three tables together. The daemon keeps a ring of the newest 256 entries per active project, loaded on first use and dropped ten minutes after the project's last live agent leaves; a plain listing whose window lies in the ring never touches SQLite.
+
+**Reading it.** `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?}` returns the newest `limit` entries oldest first with the resolved project id; `agentdocker journal [--project .] [--since N] [--until N] [--agent A] [--branch B] [--kind K] [--path P] [--grep TEXT] [-n N] [--follow]` prints them, `journal add "…"` appends a note, `journal prune --before N` trims. `release --summary "…"` (and the MCP `release` tool's `summary`) is how an agent says what it did; the MCP `journal_note` tool is how it leaves a note. Every append is announced as `journal_appended`, which `--follow` streams (the stream is opened before the snapshot it continues, so nothing falls between them, and the listing's filters apply to streamed entries too).
+
+**Reading it incrementally.** Every reader has a cursor per project — `journal_cursors (agent, project, seq, updated_at)`, cached in the daemon and written through only when it moves forward — recording the last entry it was shown. A registration seeds the newcomer's cursor: from a finished agent of the same name in the same project that left within seven days (a resumed Claude Code session keeps its `claude-<prefix>` name, so it continues where it left off), else at the newer of "24 hours ago" and "20 entries back". The human reads as `user`. A `journal` request with `digest: {reader, max_entries, max_chars, all_branches?, advance?}` answers `digest {text, head_seq, shown, collapsed, other_branches}` instead of a listing: entries after the reader's cursor (or after `since_seq` when given), the reader's own branch verbatim plus `join`/`leave`/`commit`/`handoff` from every branch, the newest within the budget rendered one per line, older ones folded into a leading "… N earlier entries" line, other branches into a trailing count; the reader's own `join`/`leave` lines are not news and are skipped. `advance` moves the cursor to `head_seq` when text was produced — everything the filter hid counts as seen too. An empty `project` means the reader's own. Served from the ring whenever the cursor lies inside it; otherwise the newest 1,000 entries after the cursor are read from the store. Every move is announced as `journal_read`. `agentdocker journal --new [--ack] [--all-branches] [--as AGENT]` prints the human's (or an agent's) digest.
+
+**Adapters.** The Claude Code hooks hand the digest over as `additionalContext`: `SessionStart` with up to 20 entries or 2,000 characters (`--digest-entries`, `--digest-chars`), `UserPromptSubmit` only what is new and at most 5 entries or 500 characters (`--prompt-digest-entries`, `--prompt-digest-chars`), and nothing when nothing is new; `PostToolUse` never carries journal text. `Stop` reads the last 64 KB of the session transcript, takes the last assistant message with text — fenced code and headings dropped, markdown stripped, first paragraph, trimmed to 280 characters at a word boundary — and sends it as the `release_all` summary with `summary_source: transcript`; a transcript summary only ever describes leases actually released, whereas an explicit `--summary` is journaled even when nothing was held. The MCP `read_journal {since?, all_branches?}` tool returns the digest and advances the cursor.
+
 ## Wire protocol
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). One request object per line, tagged by `"op"`; responses tagged by `"type"`.
 
 ```json
 {"op":"claim","agent":"writer","resource":"path:/repo/src","mode":"exclusive","ttl_secs":300,"note":"refactoring"}
-{"type":"lease","lease":{"id":"3f1c...","resource":"path:/repo/src","holder":"9a2b...","mode":"exclusive","acquired_at":"...","expires_at":"...","note":"refactoring"}}
+{"type":"lease","lease":{"id":"3f1c...","resource":"path:/repo/src","holder":"9a2b...","mode":"exclusive","acquired_at":"...","change_seq":42,"expires_at":"...","note":"refactoring"}}
 ```
 
 | Request | Response | Notes |
@@ -177,11 +193,14 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `inbox {agent, drain?}` | `messages` | |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
-| `renew {agent, lease, ttl_secs?}` | `lease` | |
-| `release {agent, lease}` | `lease` | holder only |
-| `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
+| `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
+| `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
+| `release_all {agent, summary?, summary_source?}` | `leases` | every lease the agent holds; the reply lists them |
+| `journal_add {agent, summary}` | `journal_entry` | a note in the agent's project journal |
+| `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | newest `limit` entries oldest first, with the project id; with `digest {reader, max_entries, max_chars, all_branches?, advance?}` the reader's digest since its cursor instead (empty `project` = the reader's own) |
+| `journal_prune {project, before_seq}` | `pruned` | drops entries below `before_seq` |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; `file:` inputs resolve through the same physical checkout alias |
-| `events {replay?}` | stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
+| `events {replay?,ready?}` | optional `events_ready`, then stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
@@ -217,11 +236,13 @@ Four destinations:
 
 **Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
-Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live messages/events; the CLI prints it on stderr and continues.
+Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
 
 ## Events
 
-`agent_created` (with the project id), `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_created` (with the project id), `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `journal_appended`, `journal_read`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+
+`file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
 ## Process supervision
 
@@ -284,7 +305,9 @@ This phase replaces the earlier plan for a separate key/document context store. 
 
 See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering, attribution through leases, the `changes` table, and `changes`/`blame` all exist; attribution uses physical exclusive leases and remains best-effort.
 
-#### Change journal
+#### Change journal *(done)*
+
+What exists is described under [The journal](#the-journal); the rest of this section is the settled design it follows.
 
 A per-project, append-only narrative of what changed and why: coarse where the ledger is fine-grained, readable by models and humans, cheap to read incrementally, and the thing a newcomer is handed instead of the event stream. The design below was settled decision by decision on 2026-09-04 (the list is at the end) and is ready to build.
 
@@ -361,7 +384,7 @@ When the budget bites, the *oldest* entries collapse into the leading "… N ear
 
 **Retention.** Entries are kept forever by default: the journal is the audit trail, a busy five-agent team writes roughly a megabyte a day at worst, and SQLite is comfortable at millions of rows. `agentdocker journal prune --before <duration|seq> [--project]` deletes on demand, and an optional `[journal] retention = "180d"` in the daemon config is applied by the once-a-minute tick, deleting `journal`, `journal_paths`, and `journal_fts` rows together in batches of 1,000 so the tick stays short; a cursor below the new floor is clamped on read. Freed pages are reused by SQLite; `agentdocker daemon vacuum` reclaims disk when someone wants it back. No roll-up summaries.
 
-**Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `claim`/`release` tools accept `summary`.
+**Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `release` tool accepts `summary`.
 
 **Tests.** Core: rendering under both budget limits, the collapse rule, the branch filter, and cursor seeding (same name and project, within 7 days) are pure and unit-tested. Store: round trip, path-prefix and FTS queries, prune cascades, cursor clamp. Hooks: transcript-tail extraction against sample JSONL (markdown stripped, first paragraph, 280-char word boundary). Daemon: a release under which the ledger recorded changes produces one entry with those paths in the same transaction as the lease deletion.
 
@@ -444,9 +467,10 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback | 3 | 3, 6 |
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
-| 9 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 7 |
+| 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
+| 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
 | 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
-| 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9, 10 |
+| 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | per-agent tokens; `docker` / `podman` / `container` runtimes with closed defaults | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
 | 14 | human agent, `ask` / `answer`, notifications | 5 | 2 |
@@ -462,18 +486,15 @@ Listed here so the wire-protocol table above stays a description of what exists.
 |---|---|---|
 | `claim {…}` | adds `error(deadlock)` | 5 |
 | `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
-| `release {…, summary?}`, `release_all {…, summary?}` | `lease` / `leases` | 3 |
-| `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | 3 |
-| `journal_add {agent, summary}` | `journal_entry` | 3 |
 | `diff {agent, stat?}` | `diff` | 4 |
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-Shipped events include `file_changed` (ledger observations) and `agent_stale` (stale-reader events). The inbox notification uses the separate message kind `stale`.
+Shipped events include `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 
@@ -505,7 +526,7 @@ The ledger now includes `checkout` (absent for legacy entries). A watcher change
 
 ### Durable recovery and validation
 
-`checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` returns `checkpoint`. The key is idempotent within the original session; reuse with a different `task`, `assumptions`, `next_steps` or `release_leases` value is a conflict. The immutable record contains retained read versions plus a fresh whole-checkout fingerprint. SQLite uses FULL synchronous durability. When requested, checkpoint persistence and its ordered event commit atomically before lease release under the state lock; this journal barrier does not wait for debounced attribution events.
+`checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` returns `checkpoint`. The key is idempotent within the original session; reuse with a different `task`, `assumptions`, `next_steps` or `release_leases` value is a conflict. The immutable record contains retained read versions plus a fresh whole-checkout fingerprint. SQLite uses FULL synchronous durability. When requested, checkpoint persistence and its ordered event commit atomically before lease release under the state lock; the release barrier (the watcher flush) is passed before that lock is taken, so debounced changes are in the ledger by the time the release entry is built.
 
 `checkpoints {agent?}` lists durable handoffs, including finished sessions. `resume {agent,checkpoint,acknowledge?}` returns `recovery` containing notes, stale reads, checkout comparison and matching successful validation records. It verifies the same physical checkout. Acknowledgement refuses changed content or stale reads, is idempotent for one replacement, and conflicts for another. Acceptance, inherited read marks and HandoffAccepted commit together; the replacement acquires any needed leases independently. Existing replacement observations are retained. Checkpoints persist until explicit future retention tooling removes them.
 
@@ -523,3 +544,16 @@ Managed commands run in a dedicated process group. While the supervisor owns the
 Watcher attribution resolves the observed path with the same physical canonicalization as claims, outside the state lock. Missing regular paths retain their normalized physical suffix; a removed symlink whose former target cannot be established is external/unknown rather than guessed.
 
 The canonical physical checkout path is the worktree identifier returned by `worktree-create`; it is also the identifier accepted by Git worktree commands. The command prints that identifier alone.
+
+
+### Journal integration and event subscription barrier
+
+Journal entries, digests, cursors, transcript summaries and CLI/MCP adapters are shipped together with verified recovery. A release commits lease deletions, its journal entry and all ordered replay events in one SQLite transaction before publication. Standalone entries and cursor acknowledgements likewise commit with their events. A failed transaction latches `storage_unavailable`; restart restores the last durable leases and journal state. A checkpoint's atomic document/event barrier and watcher flush remain ahead of release.
+
+New leases retain `change_seq`, the last assigned change sequence at acquisition. Releases select changes after that durable boundary, even across clock adjustments or restart; renewals retain the original boundary. Legacy leases use a numeric timestamp comparison. Canonical checkout and resource identities are reused under the state lock. Journal sequence high watermarks survive pruning and restart, so existing reader cursors never hide newly appended entries.
+
+`events {replay?,ready:true}` first returns `events_ready` after the live subscription is active, then sends replay and live events. The default `ready:false` retains the original response stream. `journal --follow` waits for readiness before its snapshot and deduplicates the tail against the greater of the requested `since_seq` and the last snapshot entry. A lagged stream exits with an error directing the reader to recover retained entries with `--since`.
+
+Scoped container clients may add notes as their bound agent and read the mapped checkout journal. A digest may advance only that agent's cursor. Other checkout roots, cursor impersonation and journal pruning remain forbidden on the restricted endpoint.
+
+Journal grep ignores empty/whitespace-only filters. Punctuation-only filters use literal substring matching with or without FTS5. The FTS completion marker forces a transactional rebuild after fallback writes or loss of the index. Journal display escapes stored control characters before adding structural digest newlines. `journal --new` defaults its reader to AGENTDOCKER_AGENT_ID when set, otherwise user.

@@ -60,6 +60,12 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
+        if release {
+            // The release barrier, passed before any lock is taken: changes
+            // the watcher is still debouncing reach the ledger first, so the
+            // release entry written under the lock below sees them.
+            self.flush_release_watcher(reference, None).await;
+        }
         let id = format!("{}:{key}", agent.as_str());
         {
             let state = lock(&self.state);
@@ -131,7 +137,11 @@ impl Daemon {
         state.next_seq += 1;
         let _ = state.events.send(event);
         if release {
-            state.release_all(agent.as_str());
+            state.release_all(
+                agent.as_str(),
+                None,
+                agentdocker_core::SummarySource::Explicit,
+            );
         }
         Response::Checkpoint { checkpoint }
     }

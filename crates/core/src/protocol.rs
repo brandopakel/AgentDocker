@@ -11,12 +11,27 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::journal::{Digest, SummarySource};
 use crate::{
-    AgentRecord, Change, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId,
-    VcsState,
+    AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
+    LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
+
+/// The digest form of `journal`; see [`crate::journal::digest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DigestRequest {
+    /// An agent reference, or `user` for the human's own cursor.
+    pub reader: String,
+    pub max_entries: usize,
+    pub max_chars: usize,
+    #[serde(default)]
+    pub all_branches: bool,
+    /// Move the reader's cursor to the digest's head in the same request.
+    #[serde(default)]
+    pub advance: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -226,10 +241,61 @@ pub enum Request {
     Release {
         agent: String,
         lease: LeaseId,
+        /// What changed and why, for the journal; synthesised from the
+        /// ledger when absent.
+        #[serde(default)]
+        summary: Option<String>,
+        /// `explicit` (the default) is journaled even when nothing was
+        /// held; `transcript` only describes leases actually released.
+        #[serde(default)]
+        summary_source: SummarySource,
     },
     /// Release every lease an agent holds; the reply lists them.
     ReleaseAll {
         agent: String,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        summary_source: SummarySource,
+    },
+    /// Append a free-text note to the journal of the agent's project.
+    JournalAdd {
+        agent: String,
+        summary: String,
+    },
+    /// Journal entries for a project: newest `limit` matching, oldest
+    /// first. `project` is an id prefix or an absolute path inside it.
+    Journal {
+        project: String,
+        #[serde(default)]
+        since_seq: Option<u64>,
+        #[serde(default)]
+        until_seq: Option<u64>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        /// A path (absolute, or relative to the checkout); a directory
+        /// matches entries touching anything beneath it.
+        #[serde(default)]
+        path: Option<String>,
+        /// Full-text search over summaries.
+        #[serde(default)]
+        grep: Option<String>,
+        #[serde(default = "default_changes_limit")]
+        limit: usize,
+        /// Render a digest for a reader instead of listing: what is after
+        /// the reader's cursor (or `since_seq` when given), within a
+        /// budget. Only the project and `since_seq` apply alongside it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest: Option<DigestRequest>,
+    },
+    /// Drop journal entries of a project below `before_seq`.
+    JournalPrune {
+        project: String,
+        before_seq: u64,
     },
     Leases {
         #[serde(default)]
@@ -243,6 +309,9 @@ pub enum Request {
     Events {
         #[serde(default)]
         replay: usize,
+        /// Send EventsReady once subscribed, before replay or live events.
+        #[serde(default)]
+        ready: bool,
     },
     /// Replay the last `tail` log lines of an agent, then keep streaming
     /// while `follow` and the agent is alive.
@@ -365,6 +434,22 @@ pub enum Response {
     Leases {
         leases: Vec<Lease>,
     },
+    Journal {
+        project: crate::ProjectId,
+        entries: Vec<JournalEntry>,
+    },
+    JournalEntry {
+        entry: JournalEntry,
+    },
+    Digest {
+        project: crate::ProjectId,
+        digest: Digest,
+    },
+    Pruned {
+        removed: usize,
+    },
+    /// The requested events subscription is active; a snapshot can now begin.
+    EventsReady,
     Event {
         event: Event,
     },
@@ -442,6 +527,30 @@ mod tests {
     #[test]
     fn struct_variants_accept_missing_defaults() {
         let req: Request = serde_json::from_str(r#"{"op":"events"}"#).unwrap();
-        assert_eq!(req, Request::Events { replay: 0 });
+        assert_eq!(
+            req,
+            Request::Events {
+                replay: 0,
+                ready: false
+            }
+        );
+    }
+    #[test]
+    fn lease_acquisition_sequence_is_optional_on_wire_and_round_trips() {
+        let value = serde_json::json!({"id":"lease", "resource":"task:test", "holder":"agent", "mode":"exclusive",
+            "acquired_at":"2026-09-05T00:00:00Z", "expires_at":"2026-09-05T00:01:00Z"});
+        let mut lease: Lease = serde_json::from_value(value).unwrap();
+        assert_eq!(lease.change_seq, None);
+        assert!(
+            serde_json::to_value(&lease)
+                .unwrap()
+                .get("change_seq")
+                .is_none()
+        );
+        lease.change_seq = Some(42);
+        let response = Response::Lease { lease };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["lease"]["change_seq"], 42);
+        assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), response);
     }
 }

@@ -406,6 +406,39 @@ impl<B: Backend> McpServer<B> {
                 self.forward(Request::Release {
                     agent: me,
                     lease: LeaseId::from(args.lease.as_str()),
+                    summary: args.summary,
+                    summary_source: agentdocker_core::SummarySource::Explicit,
+                })
+                .await
+            }
+            "read_journal" => {
+                let args: ReadJournalArgs = parse(arguments)?;
+                let budget = agentdocker_core::DigestBudget::SESSION_START;
+                self.forward(Request::Journal {
+                    project: String::new(),
+                    since_seq: args.since,
+                    until_seq: None,
+                    agent: None,
+                    branch: None,
+                    kind: None,
+                    path: None,
+                    grep: None,
+                    limit: budget.max_entries,
+                    digest: Some(agentdocker_core::DigestRequest {
+                        reader: me,
+                        max_entries: budget.max_entries,
+                        max_chars: budget.max_chars,
+                        all_branches: args.all_branches,
+                        advance: true,
+                    }),
+                })
+                .await
+            }
+            "journal_note" => {
+                let args: JournalNoteArgs = parse(arguments)?;
+                self.forward(Request::JournalAdd {
+                    agent: me,
+                    summary: args.summary,
                 })
                 .await
             }
@@ -516,6 +549,21 @@ struct RenewArgs {
 #[derive(Deserialize)]
 struct ReleaseArgs {
     lease: String,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JournalNoteArgs {
+    summary: String,
+}
+
+#[derive(Deserialize, Default)]
+struct ReadJournalArgs {
+    #[serde(default)]
+    since: Option<u64>,
+    #[serde(default)]
+    all_branches: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -594,6 +642,7 @@ fn render(response: Response) -> Value {
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
+        Response::Digest { digest, .. } => text_result(&json!(digest), false),
         Response::Ok => text_result(&json!({ "ok": true }), false),
         other => text_result(&json!(other), false),
     }
@@ -709,11 +758,36 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "release",
-            "description": "Release a lease this agent holds. Do this as soon as you are done with the resource.",
+            "description": "Release a lease this agent holds. Do this as soon as you are done with the resource, and say in `summary` what you changed and why: it becomes the project's journal entry that other agents read.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "lease": { "type": "string", "description": "Lease id from claim." } },
+                "properties": {
+                    "lease": { "type": "string", "description": "Lease id from claim." },
+                    "summary": { "type": "string", "description": "One or two sentences: what changed under this lease and why." }
+                },
                 "required": ["lease"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "journal_note",
+            "description": "Append a note to this project's journal — a decision, a finding, or what you are about to do — so agents joining later see it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "summary": { "type": "string" } },
+                "required": ["summary"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "read_journal",
+            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading marks it seen; `since` re-reads from a sequence number instead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": { "type": "integer", "minimum": 0, "description": "Sequence number to read from instead of this agent's cursor." },
+                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." }
+                },
                 "additionalProperties": false
             }
         }),
@@ -843,6 +917,8 @@ mod tests {
                 "claim",
                 "renew",
                 "release",
+                "journal_note",
+                "read_journal",
                 "list_leases"
             ]
         );

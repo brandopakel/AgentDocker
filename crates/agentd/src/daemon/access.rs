@@ -157,9 +157,29 @@ impl Daemon {
             | Request::Inbox { agent, .. }
             | Request::AckInbox { agent, .. }
             | Request::Release { agent, .. }
-            | Request::ReleaseAll { agent } => {
+            | Request::ReleaseAll { agent, .. }
+            | Request::JournalAdd { agent, .. } => {
                 check_agent(agent)?;
                 *agent = identity;
+            }
+            Request::Journal {
+                project,
+                path,
+                digest,
+                ..
+            } => {
+                let mapped = map(project)?;
+                if Path::new(&mapped) != grant.host_root {
+                    return Err(reject("journal project must be the mapped checkout root"));
+                }
+                *project = mapped;
+                if let Some(path) = path {
+                    *path = map(path)?;
+                }
+                if let Some(digest) = digest {
+                    check_agent(&digest.reader)?;
+                    digest.reader = identity;
+                }
             }
             Request::Observe { agent, paths } | Request::Stale { agent, paths } => {
                 check_agent(agent)?;
@@ -255,6 +275,63 @@ mod tests {
         else {
             panic!()
         };
+        let journal = |project: &str, reader: &str| Request::Journal {
+            project: project.into(),
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: None,
+            limit: 20,
+            digest: Some(DigestRequest {
+                reader: reader.into(),
+                max_entries: 20,
+                max_chars: 2000,
+                all_branches: false,
+                advance: true,
+            }),
+        };
+        let scoped = daemon
+            .restricted_request(&token, journal("/workspace", "worker"))
+            .unwrap();
+        assert!(matches!(
+            daemon.handle(scoped).await,
+            Response::Digest { .. }
+        ));
+        assert!(
+            daemon
+                .restricted_request(&token, journal("/outside", "worker"))
+                .is_err()
+        );
+        assert!(
+            daemon
+                .restricted_request(&token, journal("/workspace", "peer"))
+                .is_err()
+        );
+        assert!(
+            daemon
+                .restricted_request(
+                    &token,
+                    Request::JournalAdd {
+                        agent: "peer".into(),
+                        summary: "impersonation".into(),
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            daemon
+                .restricted_request(
+                    &token,
+                    Request::JournalPrune {
+                        project: "/workspace".into(),
+                        before_seq: 10,
+                    }
+                )
+                .is_err()
+        );
         let claim = |agent: &str, path: &str| Request::Claim {
             agent: agent.into(),
             resource: format!("path:{path}"),
