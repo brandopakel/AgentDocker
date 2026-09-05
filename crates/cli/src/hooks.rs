@@ -831,11 +831,10 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
                                 .as_str()
                                 .is_some_and(|c| c.contains("hook claude-code"))
                         })
-                    }) {
-                        if entry["matcher"] != json!(EDIT_MATCHER) {
-                            entry["matcher"] = json!(EDIT_MATCHER);
-                            added += 1;
-                        }
+                    }) && entry["matcher"] != json!(EDIT_MATCHER)
+                    {
+                        entry["matcher"] = json!(EDIT_MATCHER);
+                        added += 1;
                     }
                 }
             }

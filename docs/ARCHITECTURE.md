@@ -155,6 +155,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `observe {agent, paths}` | `reads {reads: ReadMark[]}` | capture content immediately before reading |
 | `reads {agent}` | `reads {reads: ReadMark[]}` | durable observations |
 | `stale {agent, paths?}` | `stale {stale: StalePath[]}` | compare current content; querying never clears staleness |
+| `checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` | `checkpoint` | persist context before optional release; retries are idempotent |
+| `resume {agent,checkpoint,acknowledge?}` | `recovery` | verify and optionally accept a same-checkout handoff |
+| `checkpoints {agent?}` | `checkpoints` | list durable handoffs |
+| `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
+| `validations {agent}` | `validations` | evidence for one session |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes` | the ledger, newest `limit` entries oldest first |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |

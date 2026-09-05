@@ -13,11 +13,11 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state.store.documents::<Checkpoint>("checkpoint") {
-            Ok(mut checkpoints) => {
-                checkpoints.retain(|c| agent.as_ref().is_none_or(|a| c.from == *a));
-                Response::Checkpoints { checkpoints }
-            }
+        match state
+            .store
+            .documents::<Checkpoint>("checkpoint", agent.as_ref())
+        {
+            Ok(checkpoints) => Response::Checkpoints { checkpoints },
             Err(e) => internal(e),
         }
     }
@@ -65,18 +65,7 @@ impl Daemon {
             let state = lock(&self.state);
             match state.store.document::<Checkpoint>("checkpoint", &id) {
                 Ok(Some(checkpoint)) => {
-                    return if checkpoint.release_leases == release
-                        && checkpoint.task == task
-                        && checkpoint.assumptions == assumptions
-                        && checkpoint.next_steps == next_steps
-                    {
-                        Response::Checkpoint { checkpoint }
-                    } else {
-                        Response::error(
-                            ErrorCode::Conflict,
-                            "checkpoint key already names different content",
-                        )
-                    };
+                    return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
                 }
                 Ok(None) => {}
                 Err(e) => return internal(e),
@@ -100,15 +89,7 @@ impl Daemon {
         // not overwrite the winning checkpoint or its acknowledgement.
         match state.store.document::<Checkpoint>("checkpoint", &id) {
             Ok(Some(checkpoint)) => {
-                return if checkpoint.release_leases == release
-                    && checkpoint.task == task
-                    && checkpoint.assumptions == assumptions
-                    && checkpoint.next_steps == next_steps
-                {
-                    Response::Checkpoint { checkpoint }
-                } else {
-                    Response::error(ErrorCode::Conflict, "checkpoint key already exists")
-                };
+                return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
             }
             Ok(None) => {}
             Err(e) => return internal(e),
@@ -243,15 +224,11 @@ impl Daemon {
                 });
             }
         }
-        let validations = match state.store.documents::<Validation>("validation") {
-            Ok(v) => v
-                .into_iter()
-                .filter(|v| {
-                    v.checkout == checkpoint.checkout
-                        && v.before == checkpoint.version
-                        && v.passed()
-                })
-                .collect(),
+        let validations = match state
+            .store
+            .matching_validations(&checkpoint.checkout, &checkpoint.version)
+        {
+            Ok(v) => v,
             Err(e) => return internal(e),
         };
         Response::Recovery {
@@ -270,11 +247,11 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state.store.documents::<Validation>("validation") {
-            Ok(mut validations) => {
-                validations.retain(|v| v.agent == agent);
-                Response::Validations { validations }
-            }
+        match state
+            .store
+            .documents::<Validation>("validation", Some(&agent))
+        {
+            Ok(validations) => Response::Validations { validations },
             Err(e) => internal(e),
         }
     }
@@ -295,12 +272,17 @@ impl Daemon {
                 "validation needs a command and a timeout of 1–600 seconds",
             );
         }
-        let (agent, checkout, head) = match self.reader_checkout(reference) {
+        let (agent, checkout, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
         };
         let root = checkout.clone();
-        let before = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
+        let (before, head) = match tokio::task::spawn_blocking(move || {
+            content::fingerprint(&root)
+                .map(|version| (version, vcs::state(&root).and_then(|v| v.head)))
+        })
+        .await
+        {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return internal(e),
             Err(e) => return internal(e),
@@ -398,6 +380,27 @@ impl Daemon {
             passed,
         });
         Response::Validation { validation, passed }
+    }
+}
+
+fn checkpoint_retry(
+    checkpoint: Checkpoint,
+    release: bool,
+    task: &str,
+    assumptions: &[String],
+    next_steps: &[String],
+) -> Response {
+    if checkpoint.release_leases == release
+        && checkpoint.task == task
+        && checkpoint.assumptions == assumptions
+        && checkpoint.next_steps == next_steps
+    {
+        Response::Checkpoint { checkpoint }
+    } else {
+        Response::error(
+            ErrorCode::Conflict,
+            "checkpoint key already names different content",
+        )
     }
 }
 
