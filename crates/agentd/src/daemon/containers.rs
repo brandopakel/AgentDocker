@@ -240,14 +240,14 @@ impl Daemon {
             daemon: self.clone(),
             id: id.clone(),
         };
-        let _permit = if create {
-            self.container_slots.clone().acquire_owned().await.ok()
-        } else {
-            self.container_slots.clone().try_acquire_owned().ok()
-        };
-        if _permit.is_none() {
-            return Ok(());
-        }
+        // Keep one queued worker per agent. FIFO admission prevents slow engines
+        // from repeatedly occupying every slot and starving other containers.
+        let _permit = self
+            .container_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| ContainerError(e.to_string()))?;
         let result = self.drive_container_inner(&id, create).await;
         if let Err(e) = &result {
             let message: String = e.to_string().chars().take(2048).collect();
@@ -793,5 +793,36 @@ mod tests {
                 assert_eq!(lock(&fake.actions).last(), Some(&"kill"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_waits_for_capacity_instead_of_skipping_the_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        let Response::Agent { agent } = launch(&daemon, tmp.path()).await else {
+            panic!()
+        };
+        let held = daemon
+            .container_slots
+            .clone()
+            .acquire_many_owned(8)
+            .await
+            .unwrap();
+        lock(&fake.observed).as_mut().unwrap().state = ContainerState::Exited(0);
+        let worker = daemon.clone();
+        let id = agent.id.clone();
+        let task = tokio::spawn(async move { worker.drive_container(id, false).await });
+        tokio::task::yield_now().await;
+        assert!(lock(&daemon.state).container_busy.contains(&agent.id));
+        assert!(!task.is_finished());
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!daemon.is_live(&agent.id));
     }
 }
