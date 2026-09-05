@@ -400,15 +400,14 @@ impl Daemon {
             }
         }
         let mut leases = LeaseTable::new();
-        let mut restored_events = Vec::new();
+        let mut next_seq = store.max_event_seq()? + 1;
         for mut lease in store.load_leases()? {
-            if lease.is_expired(Utc::now())
+            if lease.is_expired(now)
                 || !registry
                     .get(&lease.holder)
                     .is_some_and(|a| a.status.is_live())
             {
-                store.delete_lease(&lease.id)?;
-                restored_events.push(if lease.is_expired(Utc::now()) {
+                let kind = if lease.is_expired(now) {
                     EventKind::LeaseExpired {
                         lease: lease.clone(),
                     }
@@ -416,7 +415,11 @@ impl Daemon {
                     EventKind::LeaseReleased {
                         lease: lease.clone(),
                     }
-                });
+                };
+                let mut event = Event::new(kind, now);
+                event.seq = next_seq;
+                store.delete_lease_with_event(&lease.id, &event)?;
+                next_seq += 1;
                 continue;
             }
             if lease.resource.kind() == "file" {
@@ -448,13 +451,6 @@ impl Daemon {
             .into_iter()
             .map(|(root, fingerprint)| (root, Some(fingerprint)))
             .collect();
-        let mut next_seq = store.max_event_seq()? + 1;
-        for kind in restored_events {
-            let mut event = Event::new(kind, Utc::now());
-            event.seq = next_seq;
-            next_seq += 1;
-            store.append_event(&event)?;
-        }
         info!(
             agents = registry.len(),
             leases = leases.len(),
@@ -1266,8 +1262,7 @@ impl State {
         self.persist("agent", |store| store.upsert_agent(&record));
         let released = self.leases.release_all(id);
         for lease in released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseReleased { lease });
+            self.persist_lease_removal(&lease, false);
         }
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         self.emit(EventKind::AgentExited {
@@ -1384,10 +1379,7 @@ impl State {
         let result = self.leases.release(lease, &holder);
         match result {
             Ok(lease) => {
-                self.persist("lease", |store| store.delete_lease(&lease.id));
-                self.emit(EventKind::LeaseReleased {
-                    lease: lease.clone(),
-                });
+                self.persist_lease_removal(&lease, false);
                 Response::Lease { lease }
             }
             Err(err) => lease_error(err),
@@ -1401,10 +1393,7 @@ impl State {
         };
         let released = self.leases.release_all(&holder);
         for lease in &released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseReleased {
-                lease: lease.clone(),
-            });
+            self.persist_lease_removal(lease, false);
         }
         Response::Leases { leases: released }
     }
@@ -1413,12 +1402,32 @@ impl State {
         self.expire_leases_at(Utc::now());
     }
 
+    fn persist_lease_removal(&mut self, lease: &Lease, expired: bool) {
+        let kind = if expired {
+            EventKind::LeaseExpired {
+                lease: lease.clone(),
+            }
+        } else {
+            EventKind::LeaseReleased {
+                lease: lease.clone(),
+            }
+        };
+        let mut event = Event::new(kind, Utc::now());
+        event.seq = self.next_seq;
+        self.persist("lease removal", |store| {
+            store.delete_lease_with_event(&lease.id, &event)
+        });
+        if self.storage_error.is_none() {
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+    }
+
     fn expire_leases_at(&mut self, now: DateTime<Utc>) {
         let expired = self.leases.expire(now);
         for lease in expired {
             info!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "lease expired");
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseExpired { lease });
+            self.persist_lease_removal(&lease, true);
         }
     }
 
@@ -1930,6 +1939,23 @@ mod tests {
         let leases = list_leases(&daemon).await;
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].id, LeaseId::from("kept"));
+        let events = daemon.recent_events(100);
+        let mut removed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::LeaseReleased { lease } => Some(lease.id.to_string()),
+                _ => None,
+            })
+            .collect();
+        removed.sort();
+        assert_eq!(removed, ["orphan", "twin2"]);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(
+            daemon.recent_events(100),
+            events,
+            "restart does not duplicate cleanup events"
+        );
         drop(daemon);
 
         // The retired records and dropped leases were written back.
