@@ -114,13 +114,22 @@ impl Daemon {
             accepted_by: None,
             release_leases: release,
         };
-        if let Err(e) = state.store.put_document("checkpoint", &id, &checkpoint) {
+        let mut event = Event::new(
+            EventKind::CheckpointSaved {
+                agent: agent.clone(),
+                checkpoint: id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        if let Err(e) = state
+            .store
+            .put_document_with_event("checkpoint", &id, &checkpoint, &event)
+        {
             return internal(e);
         }
-        state.emit(EventKind::CheckpointSaved {
-            agent: agent.clone(),
-            checkpoint: id,
-        });
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         if release {
             state.release_all(agent.as_str());
         }
@@ -211,17 +220,24 @@ impl Daemon {
                     );
                 }
                 checkpoint.accepted_by = Some(agent.clone());
+                let mut event = Event::new(
+                    EventKind::HandoffAccepted {
+                        agent: agent.clone(),
+                        checkpoint: id.into(),
+                    },
+                    Utc::now(),
+                );
+                event.seq = state.next_seq;
                 if let Err(e) = state.store.accept_handoff(
                     &checkpoint,
                     &agent,
                     &reads.into_values().collect::<Vec<_>>(),
+                    &event,
                 ) {
                     return internal(e);
                 }
-                state.emit(EventKind::HandoffAccepted {
-                    agent,
-                    checkpoint: id.into(),
-                });
+                state.next_seq += 1;
+                let _ = state.events.send(event);
             }
         }
         let validations = match state
@@ -517,6 +533,82 @@ mod tests {
             matches!(daemon.validations("original"), Response::Validations { validations } if validations.len() == 3)
         );
     }
+    #[tokio::test]
+    async fn failed_checkpoint_event_rolls_back_checkpoint_and_preserves_leases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        daemon
+            .handle(Request::Claim {
+                agent: "original".into(),
+                resource: "task:atomic".into(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        let next = lock(&daemon.state).next_seq;
+        lock(&daemon.state).next_seq = next - 1; // Force a unique-index failure at event insertion.
+        let result = daemon
+            .checkpoint(
+                "original",
+                "rollback".into(),
+                "task".into(),
+                vec![],
+                vec![],
+                true,
+            )
+            .await;
+        assert!(matches!(result, Response::Error { .. }));
+        let mut state = lock(&daemon.state);
+        let owner = state.registry.resolve("original").unwrap();
+        assert!(
+            state
+                .store
+                .document::<Checkpoint>("checkpoint", &format!("{owner}:rollback"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.leases.by_holder(&owner).len(), 1);
+        state.next_seq = next;
+    }
+
+    #[tokio::test]
+    async fn failed_acceptance_event_rolls_back_recipient_and_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Checkpoint { checkpoint } = daemon
+            .checkpoint(
+                "original",
+                "accept-rollback".into(),
+                "task".into(),
+                vec![],
+                vec![],
+                false,
+            )
+            .await
+        else {
+            panic!()
+        };
+        let next = lock(&daemon.state).next_seq;
+        lock(&daemon.state).next_seq = next - 1;
+        assert!(matches!(
+            daemon.resume("replacement", &checkpoint.id, true).await,
+            Response::Error { .. }
+        ));
+        let mut state = lock(&daemon.state);
+        assert!(
+            state
+                .store
+                .document::<Checkpoint>("checkpoint", &checkpoint.id)
+                .unwrap()
+                .unwrap()
+                .accepted_by
+                .is_none()
+        );
+        state.next_seq = next;
+    }
+
     #[tokio::test]
     async fn checkpoint_is_journalled_before_releasing_leases() {
         let tmp = tempfile::tempdir().unwrap();

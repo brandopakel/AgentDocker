@@ -88,15 +88,31 @@ pub struct ChangesQuery {
 
 impl Store {
     /// Commit acceptance and inherited observations in the same transaction.
+    pub fn put_document_with_event<T: serde::Serialize + ?Sized>(
+        &self,
+        kind: &str,
+        id: &str,
+        value: &T,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document(kind, id, value)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn accept_handoff(
         &self,
         checkpoint: &agentdocker_core::Checkpoint,
         agent: &AgentId,
         reads: &[agentdocker_core::ReadMark],
+        event: &Event,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
         self.put_document("reads", agent.as_str(), &reads)?;
+        self.append_event(event)?;
         tx.commit()?;
         Ok(())
     }
@@ -136,7 +152,12 @@ impl Store {
     }
 
     /// Atomically persist a typed recovery document before publishing its event.
-    pub fn put_document<T: serde::Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
+    pub fn put_document<T: serde::Serialize + ?Sized>(
+        &self,
+        kind: &str,
+        id: &str,
+        value: &T,
+    ) -> Result<()> {
         self.conn.execute("INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
             params![kind,id,serde_json::to_string(value)?])?;
         Ok(())
