@@ -107,6 +107,12 @@ pub enum Request {
         drain: bool,
     },
 
+    /// Idempotently remove only messages that a consumer has delivered.
+    AckInbox {
+        agent: String,
+        messages: Vec<MessageId>,
+    },
+
     Claim {
         agent: String,
         resource: String,
@@ -177,6 +183,7 @@ pub enum ErrorCode {
     Forbidden,
     Invalid,
     Internal,
+    StorageUnavailable,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -222,6 +229,10 @@ pub enum Response {
     },
     Log {
         line: String,
+    },
+    /// A live stream skipped messages; events can be recovered with replay.
+    Lagged {
+        skipped: u64,
     },
     Ok,
     /// Terminates a stream that finished on the daemon's side.

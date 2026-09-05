@@ -151,14 +151,20 @@ impl DiscoveredProcess {
 pub enum AgentStatus {
     Created,
     Running,
-    Exited { code: Option<i32> },
-    Failed { reason: String },
+    /// A stop signal was sent; exit has not yet been observed.
+    Stopping,
+    Exited {
+        code: Option<i32>,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 impl AgentStatus {
     /// Created or running: the agent still counts as present.
     pub fn is_live(&self) -> bool {
-        matches!(self, Self::Created | Self::Running)
+        matches!(self, Self::Created | Self::Running | Self::Stopping)
     }
 }
 
@@ -167,6 +173,7 @@ impl fmt::Display for AgentStatus {
         match self {
             Self::Created => f.write_str("created"),
             Self::Running => f.write_str("running"),
+            Self::Stopping => f.write_str("stopping"),
             Self::Exited { code: Some(code) } => write!(f, "exited ({code})"),
             Self::Exited { code: None } => f.write_str("exited (signal)"),
             Self::Failed { reason } => write!(f, "failed: {reason}"),
@@ -188,6 +195,9 @@ pub struct AgentRecord {
     /// mistaken for the agent. `None` when the platform can't tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_started_at: Option<DateTime<Utc>>,
+    /// Dedicated process group created by agentd for a managed command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_group: Option<u32>,
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
@@ -215,6 +225,7 @@ impl AgentRecord {
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,
+            process_group: None,
             managed,
             project: None,
             vcs: None,

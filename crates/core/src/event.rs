@@ -11,6 +11,10 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    InboxAcknowledged {
+        agent: crate::AgentId,
+        messages: Vec<crate::MessageId>,
+    },
     AgentCreated {
         agent: AgentId,
         name: String,
@@ -20,6 +24,11 @@ pub enum EventKind {
     AgentStarted {
         agent: AgentId,
         pid: Option<u32>,
+    },
+    /// Stop requested; the process still owns its leases until observed exit.
+    AgentStopping {
+        agent: AgentId,
+        force: bool,
     },
     AgentExited {
         agent: AgentId,

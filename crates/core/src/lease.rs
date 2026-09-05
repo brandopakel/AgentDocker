@@ -22,8 +22,8 @@ use crate::{AgentId, ProjectId};
 /// `path` and `file` keys overlap hierarchically: a lease on a directory
 /// covers every file and directory beneath it. A `file` key names a file by
 /// project and project-relative path, so it is the same resource from a
-/// linked worktree, a container mount, or another clone; the daemon
-/// rewrites `path` claims inside a project to `file` keys. All other kinds
+/// linked worktree, a container mount, or another clone for logical analysis.
+/// Daemon write claims resolve aliases into canonical physical `path` keys. All other kinds
 /// only overlap when equal.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

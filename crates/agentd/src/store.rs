@@ -13,7 +13,7 @@ use agentdocker_core::{AgentId, AgentRecord, Envelope, Event, Lease, LeaseId};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -57,6 +57,11 @@ pub struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) fn reject_writes_for_test(&self) {
+        self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
@@ -89,6 +94,15 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
+            Some(Ok(1 | 2)) => {
+                // v2 adds stopping status and physical lease identities; v3
+                // records dedicated process groups. Legacy groups default to
+                // None. The daemon maps legacy file keys idempotently on load.
+                conn.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                    params![SCHEMA_VERSION.to_string()],
+                )?;
+            }
             Some(other) => anyhow::bail!(
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
             ),
@@ -160,6 +174,15 @@ impl Store {
         Ok(())
     }
 
+    /// A removed lease and its replay evidence must survive or roll back together.
+    pub fn delete_lease_with_event(&self, id: &LeaseId, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.delete_lease(id)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn load_leases(&self) -> Result<Vec<Lease>> {
         let mut stmt = self.conn.prepare("SELECT json FROM leases")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -212,6 +235,25 @@ impl Store {
                 .push_back(message);
         }
         Ok(inboxes)
+    }
+
+    /// Acknowledge a delivered message without removing later arrivals.
+    pub fn ack_inbox(
+        &self,
+        agent: &AgentId,
+        messages: &[agentdocker_core::MessageId],
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for message in messages {
+            tx.execute(
+                "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
+                params![agent.as_str(), message.as_str()],
+            )?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
     }
 
     // ----- projects -------------------------------------------------------
@@ -356,6 +398,37 @@ mod tests {
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
         store.delete_lease(&lease.id).unwrap();
         assert!(store.load_leases().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_removal_event_rolls_back_lease_deletion() {
+        let store = Store::in_memory().unwrap();
+        let now = Utc::now();
+        let lease = Lease {
+            id: LeaseId::generate(),
+            resource: ResourceKey::new("task:atomic"),
+            holder: AgentId::from("a"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            expires_at: now + Duration::seconds(30),
+            note: None,
+        };
+        store.upsert_lease(&lease).unwrap();
+        let mut event = Event::new(
+            EventKind::LeaseReleased {
+                lease: lease.clone(),
+            },
+            now,
+        );
+        event.seq = 1;
+        store.append_event(&event).unwrap();
+        assert!(store.delete_lease_with_event(&lease.id, &event).is_err());
+        assert_eq!(store.load_leases().unwrap(), std::slice::from_ref(&lease));
+        assert_eq!(store.recent_events(100).unwrap().len(), 1);
+        event.seq = 2;
+        store.delete_lease_with_event(&lease.id, &event).unwrap();
+        assert!(store.load_leases().unwrap().is_empty());
+        assert_eq!(store.recent_events(100).unwrap().last(), Some(&event));
     }
 
     #[test]

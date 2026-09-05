@@ -11,7 +11,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -51,26 +50,24 @@ pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
     started: Instant,
-    store: Mutex<Store>,
-    registry: Mutex<Registry>,
-    leases: Mutex<LeaseTable>,
-    inboxes: Mutex<HashMap<AgentId, VecDeque<Envelope>>>,
-    /// Number of live subscriptions per agent. Agents with one or more skip
-    /// the inbox and get messages pushed directly.
-    live_subscribers: Mutex<HashMap<AgentId, usize>>,
-    /// Agents whose `Child` handle a supervisor task owns. Every other live
-    /// agent with a pid is polled by [`Daemon::check_liveness`].
-    supervised: Mutex<HashSet<AgentId>>,
-    /// Fingerprint per repository root. `None` means the lookup failed this
-    /// run (git missing, no commits, or timed out): kept so it is not
-    /// retried on every registration, never persisted so a restart retries.
-    projects: Mutex<HashMap<PathBuf, Option<String>>>,
-    /// Next event sequence number; continues from the stored history.
-    next_seq: AtomicU64,
+    state: Mutex<State>,
+    shutdown: Notify,
+}
+
+/// One synchronous transition owns memory, persistence and publication.
+/// Host I/O and waits are performed before or after this guard, never across await.
+struct State {
+    store: Store,
+    storage_error: Option<String>,
+    registry: Registry,
+    leases: LeaseTable,
+    inboxes: HashMap<AgentId, VecDeque<Envelope>>,
+    live_subscribers: HashMap<AgentId, usize>,
+    supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
+    projects: HashMap<PathBuf, Option<String>>,
+    next_seq: u64,
     bus: broadcast::Sender<Envelope>,
     events: broadcast::Sender<Event>,
-    /// Fired by a `shutdown` request; the main loop waits on it.
-    shutdown: Notify,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -108,25 +105,27 @@ fn default_name(id: &AgentId) -> String {
 /// Is there a process with this pid? `EPERM` means it exists but belongs to
 /// someone else, which still counts as alive. Zero and out-of-range values
 /// would address process groups, so they are never alive.
+fn signal_pid(pid: u32) -> Option<Pid> {
+    let raw = i32::try_from(pid).ok()?;
+    (raw > 0).then(|| Pid::from_raw(raw))
+}
+
 fn process_exists(pid: u32) -> bool {
-    let Ok(raw) = i32::try_from(pid) else {
+    let Some(pid) = signal_pid(pid) else {
         return false;
     };
-    if raw <= 0 {
-        return false;
-    }
-    match kill(Pid::from_raw(raw), None) {
+    match kill(pid, None) {
         Ok(()) | Err(Errno::EPERM) => true,
         Err(_) => false,
     }
 }
 
 /// Does the pid still belong to the process that registered it? Compared by
-/// start time, with slack for clock granularity. Lenient when either side
+/// exact start time. Liveness is lenient when either side
 /// is unknown: a pid that exists but can't be inspected is assumed alive.
 fn same_process(pid: u32, recorded: Option<DateTime<Utc>>) -> bool {
     match (recorded, procinfo::start_time(pid)) {
-        (Some(recorded), Some(current)) => (current - recorded).num_seconds().abs() <= 2,
+        (Some(recorded), Some(current)) => current == recorded,
         _ => true,
     }
 }
@@ -155,24 +154,235 @@ async fn wait_for_release(
     }
 }
 
-/// `path` as a `file:` key of `project`, if it lies in the project's
-/// checkout (the worktree first, then the main root).
-fn file_key(project: &ProjectRef, path: &Path) -> Option<ResourceKey> {
-    [project.dir(), project.root.as_path()]
-        .into_iter()
-        .find_map(|base| path.strip_prefix(base).ok())
-        .map(|relative| ResourceKey::file(&project.id(), relative))
-}
-
-/// An unsupervised live agent whose process the reaper must check.
-struct Candidate {
-    id: AgentId,
-    pid: Option<u32>,
-    process_started_at: Option<DateTime<Utc>>,
-    managed: bool,
+/// Resolve a logical file name only within its recorded holder checkout.
+fn physical_file(key: &ResourceKey, project: Option<&ProjectRef>) -> Option<PathBuf> {
+    let project = project?;
+    let (id, relative) = key.value().split_once('/').unwrap_or((key.value(), ""));
+    if id != project.id().as_str() {
+        return None;
+    }
+    let relative = Path::new(relative);
+    if relative.components().any(|c| {
+        !matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        return None;
+    }
+    Some(project.dir().join(relative))
 }
 
 impl Daemon {
+    pub fn emit(&self, kind: EventKind) {
+        lock(&self.state).emit(kind);
+    }
+    pub fn resolve(&self, reference: &str) -> Result<AgentId, Box<Response>> {
+        lock(&self.state).resolve(reference)
+    }
+    pub fn is_live(&self, id: &AgentId) -> bool {
+        lock(&self.state).is_live(id)
+    }
+    pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
+        lock(&self.state).mark_exited(id, status)
+    }
+    pub fn check_liveness(&self) {
+        let candidates: Vec<_> = {
+            let state = lock(&self.state);
+            state
+                .registry
+                .live()
+                .filter(|a| !state.supervised.contains_key(&a.id))
+                .filter(|a| !(a.managed && a.status == AgentStatus::Created))
+                .cloned()
+                .collect()
+        };
+        for candidate in candidates {
+            let alive = match candidate.pid {
+                Some(pid) => process_exists(pid) && same_process(pid, candidate.process_started_at),
+                None => !candidate.managed,
+            };
+            if alive {
+                continue;
+            }
+            let group_alive = candidate
+                .process_group
+                .is_some_and(supervisor::group_exists);
+            let mut state = lock(&self.state);
+            if !state.supervised.contains_key(&candidate.id)
+                && state.registry.get(&candidate.id).is_some_and(|a| {
+                    a.status.is_live()
+                        && a.pid == candidate.pid
+                        && a.process_started_at == candidate.process_started_at
+                })
+            {
+                if group_alive {
+                    if candidate.status != AgentStatus::Stopping {
+                        let agent = state
+                            .registry
+                            .set_status(&candidate.id, AgentStatus::Stopping, Utc::now())
+                            .unwrap();
+                        state.persist("agent", |store| store.upsert_agent(&agent));
+                        state.emit(EventKind::AgentStopping {
+                            agent: candidate.id,
+                            force: false,
+                        });
+                    }
+                } else {
+                    state.mark_exited(&candidate.id, AgentStatus::Exited { code: None });
+                }
+            }
+        }
+    }
+    pub async fn stop_all(&self) {
+        let managed: Vec<_> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| a.managed)
+            .map(|a| a.id.clone())
+            .collect();
+        for id in managed {
+            if let response @ Response::Error { .. } = self.stop(id.as_str(), false) {
+                warn!(agent = %id, ?response, "managed agent did not stop during shutdown");
+            }
+        }
+        // Keep supervision alive during shutdown so owned children are reaped
+        // and their groups stop before durable protection is released.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !lock(&self.state).supervised.is_empty() {
+            if tokio::time::Instant::now() >= deadline {
+                warn!("managed groups did not finish shutdown; durable protection retained");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    fn stop(&self, reference: &str, force: bool) -> Response {
+        let record = {
+            let mut state = lock(&self.state);
+            let id = match state.registry.resolve(reference) {
+                Ok(id) => id,
+                Err(e) => return registry_error(e),
+            };
+            let record = state.registry.get(&id).unwrap().clone();
+            if !record.status.is_live() {
+                return Response::error(ErrorCode::Invalid, "agent has already finished");
+            }
+            if let Some(control) = state.supervised.get(&id) {
+                // The supervisor still owns the Child. Route signals through
+                // that handle even when process start-time inspection fails.
+                control.send_modify(|pending| *pending = Some(force || pending.unwrap_or(false)));
+                let agent = state
+                    .registry
+                    .set_status(&id, AgentStatus::Stopping, Utc::now())
+                    .unwrap();
+                state.persist("agent", |store| store.upsert_agent(&agent));
+                state.emit(EventKind::AgentStopping { agent: id, force });
+                return Response::Agent { agent };
+            }
+            if record.pid.is_none() {
+                if record.managed {
+                    return Response::error(ErrorCode::Invalid, "agent is still starting");
+                }
+                return match state.mark_exited(&id, AgentStatus::Exited { code: None }) {
+                    Some(agent) => Response::Agent { agent },
+                    None => Response::error(ErrorCode::NotFound, "agent vanished"),
+                };
+            }
+            record
+        };
+        let pid = record.pid.unwrap();
+        let Some(target) = signal_pid(pid) else {
+            return Response::error(ErrorCode::Invalid, "invalid signal target");
+        };
+        // Host inspection and signaling never hold the global coordination guard.
+        let alive = process_exists(pid);
+        let current_started_at = procinfo::start_time(pid);
+        let group_alive = record.process_group.is_some_and(supervisor::group_exists);
+        if !alive && group_alive {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "managed descendants remain but the leader identity is unavailable; leases retained until group exit",
+            );
+        }
+        if alive {
+            let Some(started) = record.process_started_at else {
+                return Response::error(
+                    ErrorCode::Forbidden,
+                    "cannot verify process identity before signaling",
+                );
+            };
+            if current_started_at != Some(started) {
+                return Response::error(
+                    ErrorCode::Forbidden,
+                    "process identity changed or is unavailable",
+                );
+            }
+            let target = if record.managed && record.process_group == Some(pid) {
+                Pid::from_raw(-target.as_raw())
+            } else {
+                target
+            };
+            if let Err(err) = kill(
+                target,
+                if force {
+                    Signal::SIGKILL
+                } else {
+                    Signal::SIGTERM
+                },
+            ) {
+                if err != Errno::ESRCH {
+                    return Response::error(
+                        ErrorCode::Forbidden,
+                        format!("cannot signal pid {pid}: {err}"),
+                    );
+                }
+            }
+        }
+        let mut state = lock(&self.state);
+        let Some(current) = state.registry.get(&record.id) else {
+            return Response::error(ErrorCode::NotFound, "agent vanished");
+        };
+        if current.pid != record.pid || current.process_started_at != record.process_started_at {
+            return Response::error(ErrorCode::Conflict, "agent identity changed during stop");
+        }
+        if !current.status.is_live() {
+            return Response::Agent {
+                agent: current.clone(),
+            };
+        }
+        if !alive {
+            return Response::Agent {
+                agent: state
+                    .mark_exited(&record.id, AgentStatus::Exited { code: None })
+                    .unwrap(),
+            };
+        }
+        let agent = state
+            .registry
+            .set_status(&record.id, AgentStatus::Stopping, Utc::now())
+            .unwrap();
+        state.persist("agent", |store| store.upsert_agent(&agent));
+        state.emit(EventKind::AgentStopping {
+            agent: record.id,
+            force,
+        });
+        Response::Agent { agent }
+    }
+    pub fn expire_leases(&self) {
+        lock(&self.state).expire_leases();
+    }
+    pub fn prune_events(&self) {
+        lock(&self.state).prune_events();
+    }
+    fn apply_vcs(&self, id: &AgentId, vcs: VcsState) {
+        lock(&self.state).apply_vcs(id, vcs);
+    }
+    fn unsubscribe(&self, id: &AgentId) {
+        lock(&self.state).unsubscribe(id);
+    }
+
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&home)?;
@@ -212,16 +422,50 @@ impl Daemon {
             }
         }
         let mut leases = LeaseTable::new();
-        for lease in store.load_leases()? {
-            let holder_live = registry
-                .get(&lease.holder)
-                .is_some_and(|a| a.status.is_live());
-            if holder_live {
-                leases.restore(lease);
-            } else {
-                warn!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "dropping lease with no live holder");
-                store.delete_lease(&lease.id)?;
+        let mut next_seq = store.max_event_seq()? + 1;
+        for mut lease in store.load_leases()? {
+            if lease.is_expired(now)
+                || !registry
+                    .get(&lease.holder)
+                    .is_some_and(|a| a.status.is_live())
+            {
+                let kind = if lease.is_expired(now) {
+                    EventKind::LeaseExpired {
+                        lease: lease.clone(),
+                    }
+                } else {
+                    EventKind::LeaseReleased {
+                        lease: lease.clone(),
+                    }
+                };
+                let mut event = Event::new(kind, now);
+                event.seq = next_seq;
+                store.delete_lease_with_event(&lease.id, &event)?;
+                next_seq += 1;
+                continue;
             }
+            if lease.resource.kind() == "file" {
+                let path = physical_file(
+                    &lease.resource,
+                    registry.get(&lease.holder).and_then(|a| a.project.as_ref()),
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!("cannot migrate lease {} without its checkout", lease.id)
+                })?;
+                lease.resource =
+                    ResourceKey::new(format!("path:{}", project::try_canonical(&path)?.display()));
+                store.upsert_lease(&lease)?;
+            }
+            if leases.holders_of(&lease.resource).iter().any(|held| {
+                held.holder != lease.holder
+                    && (held.mode == LeaseMode::Exclusive || lease.mode == LeaseMode::Exclusive)
+            }) {
+                anyhow::bail!(
+                    "stored lease {} overlaps another live holder after physical migration; stop the holders and retry",
+                    lease.id
+                );
+            }
+            leases.restore(lease);
         }
         let inboxes = store.load_inboxes()?;
         let projects: HashMap<PathBuf, Option<String>> = store
@@ -229,7 +473,6 @@ impl Daemon {
             .into_iter()
             .map(|(root, fingerprint)| (root, Some(fingerprint)))
             .collect();
-        let next_seq = store.max_event_seq()? + 1;
         info!(
             agents = registry.len(),
             leases = leases.len(),
@@ -243,16 +486,19 @@ impl Daemon {
             home,
             socket,
             started: Instant::now(),
-            store: Mutex::new(store),
-            registry: Mutex::new(registry),
-            leases: Mutex::new(leases),
-            inboxes: Mutex::new(inboxes),
-            live_subscribers: Mutex::new(HashMap::new()),
-            supervised: Mutex::new(HashSet::new()),
-            projects: Mutex::new(projects),
-            next_seq: AtomicU64::new(next_seq),
-            bus,
-            events,
+            state: Mutex::new(State {
+                store,
+                storage_error: None,
+                registry,
+                leases,
+                inboxes,
+                live_subscribers: HashMap::new(),
+                supervised: HashMap::new(),
+                projects,
+                next_seq,
+                bus,
+                events,
+            }),
             shutdown: Notify::new(),
         })
     }
@@ -262,7 +508,7 @@ impl Daemon {
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
-        self.events.subscribe()
+        lock(&self.state).events.subscribe()
     }
 
     /// Resolves once a client has asked the daemon to exit.
@@ -275,7 +521,8 @@ impl Daemon {
         if limit == 0 {
             return Vec::new();
         }
-        lock(&self.store)
+        lock(&self.state)
+            .store
             .recent_events(limit)
             .unwrap_or_else(|err| {
                 error!(%err, "failed to load event history");
@@ -283,36 +530,23 @@ impl Daemon {
             })
     }
 
-    /// Run a write against the store, logging rather than propagating
-    /// failure: the in-memory state has already changed and the daemon
-    /// must keep serving.
-    fn persist(&self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
-        if let Err(err) = write(&lock(&self.store)) {
-            error!(%what, %err, "failed to persist state");
-        }
-    }
-
-    pub fn emit(&self, kind: EventKind) {
-        let mut event = Event::new(kind, Utc::now());
-        event.seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
-        self.persist("event", |store| store.append_event(&event));
-        let _ = self.events.send(event);
-    }
-
-    pub fn resolve(&self, reference: &str) -> Result<AgentId, Box<Response>> {
-        lock(&self.registry)
-            .resolve(reference)
-            .map_err(|err| Box::new(registry_error(err)))
-    }
-
-    pub fn is_live(&self, id: &AgentId) -> bool {
-        lock(&self.registry)
-            .get(id)
-            .is_some_and(|a| a.status.is_live())
-    }
-
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        // A failed write makes the in-memory projection unsafe to serve. Keep
+        // the daemon unavailable until restart reloads durable state; never
+        // acknowledge a mutation or grant new protection from that projection.
+        if matches!(request, Request::Shutdown) {
+            self.shutdown.notify_one();
+            return Response::Ok;
+        }
+        if let Some(error) = lock(&self.state).storage_failure() {
+            return error;
+        }
+        let response = self.handle_healthy(request).await;
+        lock(&self.state).storage_failure().unwrap_or(response)
+    }
+
+    async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -320,25 +554,25 @@ impl Daemon {
             },
             Request::Run { spec } => self.run(spec).await,
             Request::Register { spec, pid } => self.register(spec, pid).await,
-            Request::Deregister { agent } => self.deregister(&agent),
+            Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
             Request::Stop { agent, force } => self.stop(&agent, force),
-            Request::Remove { agent } => self.remove(&agent),
+            Request::Remove { agent } => lock(&self.state).remove(&agent),
             Request::List {
                 all,
                 project,
                 labels,
             } => self.list(all, project, labels).await,
-            Request::Inspect { agent } => self.inspect(&agent),
+            Request::Inspect { agent } => lock(&self.state).inspect(&agent),
             Request::Heartbeat { agent } => match self.resolve(&agent) {
                 Ok(id) => {
-                    self.touch(&id);
+                    lock(&self.state).touch(&id);
                     Response::Ok
                 }
                 Err(response) => *response,
             },
-            Request::Report { agent, vcs } => self.report(&agent, vcs),
+            Request::Report { agent, vcs } => lock(&self.state).report(&agent, vcs),
             Request::Shutdown => {
                 info!("shutdown requested by a client");
                 self.shutdown.notify_one();
@@ -351,7 +585,8 @@ impl Daemon {
                 payload,
                 reply_to,
             } => self.send(from, &to, kind, payload, reply_to).await,
-            Request::Inbox { agent, drain } => self.inbox(&agent, drain),
+            Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
+            Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
                 agent,
                 resource,
@@ -367,9 +602,9 @@ impl Daemon {
                 agent,
                 lease,
                 ttl_secs,
-            } => self.renew(&agent, &lease, ttl_secs),
-            Request::Release { agent, lease } => self.release(&agent, &lease),
-            Request::ReleaseAll { agent } => self.release_all(&agent),
+            } => lock(&self.state).renew(&agent, &lease, ttl_secs),
+            Request::Release { agent, lease } => lock(&self.state).release(&agent, &lease),
+            Request::ReleaseAll { agent } => lock(&self.state).release_all(&agent),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
             Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
@@ -378,93 +613,80 @@ impl Daemon {
     }
 
     async fn run(self: &Arc<Self>, spec: AgentSpec) -> Response {
-        if spec.command.is_empty() {
-            return Response::error(ErrorCode::Invalid, "run needs a command to launch");
+        if spec.command.first().is_none_or(String::is_empty) {
+            return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let mut record = AgentRecord::new(spec, true, Utc::now());
         record.project = project;
         record.vcs = vcs;
-        if record.spec.name.is_empty() {
-            record.spec.name = default_name(&record.id);
-        }
-        if let Err(err) = lock(&self.registry).insert(record.clone()) {
-            return registry_error(err);
-        }
-        self.persist("agent", |store| store.upsert_agent(&record));
-        self.emit(EventKind::AgentCreated {
-            agent: record.id.clone(),
-            name: record.spec.name.clone(),
-            project: record.project.as_ref().map(ProjectRef::id),
-        });
-
+        let record = match lock(&self.state).insert_record(record) {
+            Response::Agent { agent } => agent,
+            other => return other,
+        };
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
                 let pid = spawned.pid;
                 let process_started_at = procinfo::start_time(pid);
-                lock(&self.supervised).insert(record.id.clone());
                 let updated = {
-                    let mut registry = lock(&self.registry);
-                    if let Some(rec) = registry.get_mut(&record.id) {
+                    let mut state = lock(&self.state);
+                    state
+                        .supervised
+                        .insert(record.id.clone(), spawned.control.clone());
+                    if let Some(rec) = state.registry.get_mut(&record.id) {
                         rec.pid = Some(pid);
                         rec.process_started_at = process_started_at;
+                        rec.process_group = Some(pid);
                     }
-                    registry.set_status(&record.id, AgentStatus::Running, Utc::now())
+                    let updated =
+                        state
+                            .registry
+                            .set_status(&record.id, AgentStatus::Running, Utc::now());
+                    if let Some(rec) = &updated {
+                        state.persist("agent", |store| store.upsert_agent(rec));
+                    }
+                    state.emit(EventKind::AgentStarted {
+                        agent: record.id.clone(),
+                        pid: Some(pid),
+                    });
+                    updated
                 };
-                if let Some(rec) = &updated {
-                    self.persist("agent", |store| store.upsert_agent(rec));
-                }
-                self.emit(EventKind::AgentStarted {
-                    agent: record.id.clone(),
-                    pid: Some(pid),
-                });
-                supervisor::supervise(self.clone(), record.id.clone(), spawned);
-                info!(agent = %record.id.short(), name = %record.spec.name, pid, "agent started");
+                supervisor::supervise(self.clone(), record.id, spawned);
                 match updated {
                     Some(agent) => Response::Agent { agent },
-                    None => Response::error(ErrorCode::Internal, "agent vanished after spawn"),
+                    None => Response::error(ErrorCode::NotFound, "agent vanished"),
                 }
             }
             Err(err) => {
-                let status = AgentStatus::Failed {
-                    reason: format!("{err:#}"),
-                };
-                self.mark_exited(&record.id, status);
+                self.mark_exited(
+                    &record.id,
+                    AgentStatus::Failed {
+                        reason: format!("{err:#}"),
+                    },
+                );
                 Response::error(ErrorCode::Internal, format!("{err:#}"))
             }
         }
     }
 
     async fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
+        if pid.is_some_and(|pid| signal_pid(pid).is_none()) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "pid must be a positive process id within i32 range",
+            );
+        }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
-        let now = Utc::now();
-        let mut record = AgentRecord::new(spec, false, now);
+        let mut record = AgentRecord::new(spec, false, Utc::now());
         record.project = project;
         record.vcs = vcs;
-        if record.spec.name.is_empty() {
-            record.spec.name = default_name(&record.id);
-        }
         record.pid = pid;
         record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;
-        record.started_at = Some(now);
-        if let Err(err) = lock(&self.registry).insert(record.clone()) {
-            return registry_error(err);
-        }
-        self.persist("agent", |store| store.upsert_agent(&record));
-        self.emit(EventKind::AgentCreated {
-            agent: record.id.clone(),
-            name: record.spec.name.clone(),
-            project: record.project.as_ref().map(ProjectRef::id),
-        });
-        self.emit(EventKind::AgentStarted {
-            agent: record.id.clone(),
-            pid,
-        });
-        info!(agent = %record.id.short(), name = %record.spec.name, "agent registered");
-        Response::Agent { agent: record }
+        record.started_at = Some(Utc::now());
+        lock(&self.state).insert_record(record)
     }
 
     /// Agent processes of known runtimes that no live agent claims by pid.
@@ -472,7 +694,11 @@ impl Daemon {
     /// process nobody adopted should not warm the cache or announce a
     /// repository.
     async fn discover(&self) -> Response {
-        let registered: HashSet<u32> = lock(&self.registry).live().filter_map(|a| a.pid).collect();
+        let registered: HashSet<u32> = lock(&self.state)
+            .registry
+            .live()
+            .filter_map(|a| a.pid)
+            .collect();
         let mine = std::process::id();
         let processes = tokio::task::spawn_blocking(move || {
             let mut found: Vec<DiscoveredProcess> = procinfo::processes()
@@ -514,7 +740,8 @@ impl Daemon {
     /// its project. Adopted agents run no hooks, so they hold no leases
     /// and report nothing, but they are visible, messageable, and counted.
     async fn adopt(&self, pid: u32, name: Option<String>, runtime: Option<String>) -> Response {
-        let already = lock(&self.registry)
+        let already = lock(&self.state)
+            .registry
             .live()
             .find(|a| a.pid == Some(pid))
             .map(|a| a.spec.name.clone());
@@ -554,39 +781,12 @@ impl Daemon {
             .flatten()
     }
 
-    /// Keep what an adapter observed; only a real change is persisted and
-    /// announced.
-    fn report(&self, reference: &str, vcs: Option<VcsState>) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        self.touch(&id);
-        if let Some(vcs) = vcs {
-            self.apply_vcs(&id, vcs);
-        }
-        Response::Ok
-    }
-
-    fn apply_vcs(&self, id: &AgentId, vcs: VcsState) {
-        let Some((record, changed)) = lock(&self.registry).set_vcs(id, vcs.clone()) else {
-            return;
-        };
-        if changed {
-            info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
-            self.persist("agent", |store| store.upsert_agent(&record));
-            self.emit(EventKind::AgentVcsChanged {
-                agent: id.clone(),
-                vcs,
-            });
-        }
-    }
-
     /// Read every live agent's checkout and record what moved. Called on a
     /// timer, so branch and head stay right for agents that never report —
     /// adopted ones, and anything started with `run`.
     pub async fn refresh_vcs(&self) {
-        let targets: Vec<(AgentId, PathBuf)> = lock(&self.registry)
+        let targets: Vec<(AgentId, PathBuf)> = lock(&self.state)
+            .registry
             .live()
             .filter_map(|a| a.spec.workdir.clone().map(|dir| (a.id.clone(), dir)))
             .collect();
@@ -618,7 +818,7 @@ impl Daemon {
         if project.source != ProjectSource::Git {
             return Some(project);
         }
-        if let Some(cached) = lock(&self.projects).get(&project.root).cloned() {
+        if let Some(cached) = lock(&self.state).projects.get(&project.root).cloned() {
             project.fingerprint = cached;
             return Some(project);
         }
@@ -634,7 +834,8 @@ impl Daemon {
         }
         // Two registrations can race to fingerprint one repository; the
         // first to cache wins so every agent in it gets the same id.
-        let fresh = match lock(&self.projects).entry(project.root.clone()) {
+        let mut state = lock(&self.state);
+        let fresh = match state.projects.entry(project.root.clone()) {
             Entry::Occupied(entry) => {
                 project.fingerprint = entry.get().clone();
                 false
@@ -648,7 +849,7 @@ impl Daemon {
         if fresh {
             match &project.fingerprint {
                 Some(fingerprint) => {
-                    self.persist("project", |store| {
+                    state.persist("project", |store| {
                         store.upsert_project(&project.root, fingerprint)
                     });
                 }
@@ -658,7 +859,7 @@ impl Daemon {
                 ),
             }
             info!(project = %project.id().short(), root = %project.root.display(), "project discovered");
-            self.emit(EventKind::ProjectDiscovered {
+            state.emit(EventKind::ProjectDiscovered {
                 project: ProjectRef {
                     worktree: None,
                     ..project.clone()
@@ -680,7 +881,8 @@ impl Daemon {
                 ))),
             };
         }
-        lock(&self.registry)
+        lock(&self.state)
+            .registry
             .resolve_project(selector)
             .map_err(|err| Box::new(registry_error(err)))
     }
@@ -699,167 +901,9 @@ impl Daemon {
             },
         };
         Response::Agents {
-            agents: lock(&self.registry).matching(all, project.as_ref(), &labels),
-        }
-    }
-
-    fn deregister(&self, reference: &str) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        if !self.is_live(&id) {
-            return Response::error(ErrorCode::Invalid, "agent has already finished");
-        }
-        match self.mark_exited(&id, AgentStatus::Exited { code: Some(0) }) {
-            Some(agent) => Response::Agent { agent },
-            None => Response::error(ErrorCode::NotFound, "agent vanished"),
-        }
-    }
-
-    fn stop(&self, reference: &str, force: bool) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        let Some(record) = lock(&self.registry).get(&id).cloned() else {
-            return Response::error(ErrorCode::NotFound, "agent vanished");
-        };
-        if !record.status.is_live() {
-            return Response::error(
-                ErrorCode::Invalid,
-                format!("agent is already {}", record.status),
-            );
-        }
-        if let Some(pid) = record.pid {
-            let signal = if force {
-                Signal::SIGKILL
-            } else {
-                Signal::SIGTERM
-            };
-            if let Err(err) = kill(Pid::from_raw(pid as i32), signal) {
-                return Response::error(
-                    ErrorCode::Internal,
-                    format!("failed to signal pid {pid}: {err}"),
-                );
-            }
-        } else if record.managed {
-            return Response::error(ErrorCode::Internal, "managed agent has no pid");
-        }
-        if lock(&self.supervised).contains(&id) {
-            // The supervisor task observes the exit and updates the record.
-            return Response::Agent { agent: record };
-        }
-        match self.mark_exited(&id, AgentStatus::Exited { code: None }) {
-            Some(agent) => Response::Agent { agent },
-            None => Response::error(ErrorCode::NotFound, "agent vanished"),
-        }
-    }
-
-    /// SIGTERM every managed live agent; used on daemon shutdown.
-    pub fn stop_all(&self) {
-        let managed: Vec<(AgentId, u32)> = lock(&self.registry)
-            .live()
-            .filter(|a| a.managed)
-            .filter_map(|a| a.pid.map(|pid| (a.id.clone(), pid)))
-            .collect();
-        for (id, pid) in managed {
-            info!(agent = %id.short(), pid, "stopping agent");
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
-        }
-    }
-
-    fn remove(&self, reference: &str) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        if self.is_live(&id) {
-            return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
-        }
-        lock(&self.registry).remove(&id);
-        lock(&self.inboxes).remove(&id);
-        self.persist("agent", |store| store.delete_agent(&id));
-        self.emit(EventKind::AgentRemoved { agent: id });
-        Response::Ok
-    }
-
-    fn inspect(&self, reference: &str) -> Response {
-        match self.resolve(reference) {
-            Ok(id) => match lock(&self.registry).get(&id) {
-                Some(agent) => Response::Agent {
-                    agent: agent.clone(),
-                },
-                None => Response::error(ErrorCode::NotFound, "agent vanished"),
-            },
-            Err(response) => *response,
-        }
-    }
-
-    /// Record an exit: update status, release leases, emit the event.
-    pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
-        let record = lock(&self.registry).set_status(id, status.clone(), Utc::now())?;
-        lock(&self.supervised).remove(id);
-        self.persist("agent", |store| store.upsert_agent(&record));
-        let released = lock(&self.leases).release_all(id);
-        for lease in released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseReleased { lease });
-        }
-        info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
-        self.emit(EventKind::AgentExited {
-            agent: id.clone(),
-            status,
-        });
-        Some(record)
-    }
-
-    /// Live agents nobody is supervising get their pid checked; a vanished
-    /// process is recorded as an exit so its leases are freed. Covers agents
-    /// adopted from a previous daemon run and externally registered ones.
-    pub fn check_liveness(&self) {
-        let supervised = lock(&self.supervised).clone();
-        let candidates: Vec<Candidate> = lock(&self.registry)
-            .live()
-            .filter(|a| !supervised.contains(&a.id))
-            // A managed agent stays `Created` while `run` is still
-            // spawning it; it has no pid yet and is not gone.
-            .filter(|a| !(a.managed && a.status == AgentStatus::Created))
-            .map(|a| Candidate {
-                id: a.id.clone(),
-                pid: a.pid,
-                process_started_at: a.process_started_at,
-                managed: a.managed,
-            })
-            .collect();
-        for Candidate {
-            id,
-            pid,
-            process_started_at,
-            managed,
-        } in candidates
-        {
-            let alive = match pid {
-                Some(pid) => process_exists(pid) && same_process(pid, process_started_at),
-                // An external agent that gave no pid can only leave by
-                // deregistering; a managed one without a pid never started.
-                None => !managed,
-            };
-            if !alive {
-                warn!(agent = %id.short(), ?pid, "process is gone; recording exit");
-                self.mark_exited(&id, AgentStatus::Exited { code: None });
-            }
-        }
-    }
-
-    fn touch(&self, id: &AgentId) {
-        let record = {
-            let mut registry = lock(&self.registry);
-            registry.touch(id, Utc::now());
-            registry.get(id).cloned()
-        };
-        if let Some(record) = record {
-            self.persist("agent", |store| store.upsert_agent(&record));
+            agents: lock(&self.state)
+                .registry
+                .matching(all, project.as_ref(), &labels),
         }
     }
 
@@ -871,7 +915,7 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
-        let from = match lock(&self.registry).resolve(&from) {
+        let from = match lock(&self.state).registry.resolve(&from) {
             Ok(id) => id.to_string(),
             Err(RegistryError::NotFound(_)) => from,
             Err(err) => return registry_error(err),
@@ -887,84 +931,7 @@ impl Daemon {
             },
             other => other,
         };
-        let envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
-
-        let recipients: Vec<AgentId> = match &envelope.to {
-            Destination::Agent(id) => vec![id.clone()],
-            Destination::Broadcast => lock(&self.registry)
-                .live()
-                .filter(|a| a.id.as_str() != envelope.from)
-                .map(|a| a.id.clone())
-                .collect(),
-            Destination::Project(project) => lock(&self.registry)
-                .live()
-                .filter(|a| a.id.as_str() != envelope.from)
-                .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
-                .map(|a| a.id.clone())
-                .collect(),
-            Destination::Topic(_) => Vec::new(),
-        };
-        let offline: Vec<AgentId> = {
-            let live = lock(&self.live_subscribers);
-            recipients
-                .into_iter()
-                .filter(|id| !live.contains_key(id))
-                .collect()
-        };
-        if !offline.is_empty() {
-            {
-                let mut inboxes = lock(&self.inboxes);
-                for id in &offline {
-                    let queue = inboxes.entry(id.clone()).or_default();
-                    if queue.len() >= INBOX_CAPACITY {
-                        queue.pop_front();
-                    }
-                    queue.push_back(envelope.clone());
-                }
-            }
-            self.persist("inbox", |store| {
-                for id in &offline {
-                    store.enqueue(id, &envelope, INBOX_CAPACITY)?;
-                }
-                Ok(())
-            });
-        }
-
-        let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
-        self.emit(EventKind::MessageSent {
-            message: envelope.id.clone(),
-            from: envelope.from.clone(),
-            to: envelope.to.clone(),
-            kind: envelope.kind.clone(),
-        });
-        self.touch(&AgentId::from(envelope.from.as_str()));
-        Response::Sent {
-            message: envelope.id,
-            subscribers,
-        }
-    }
-
-    fn inbox(&self, reference: &str, drain: bool) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        let messages: Vec<Envelope> = {
-            let mut inboxes = lock(&self.inboxes);
-            if drain {
-                inboxes.remove(&id).map(Vec::from).unwrap_or_default()
-            } else {
-                inboxes
-                    .get(&id)
-                    .map(|queue| queue.iter().cloned().collect())
-                    .unwrap_or_default()
-            }
-        };
-        if drain && !messages.is_empty() {
-            self.persist("inbox", |store| store.clear_inbox(&id));
-        }
-        self.touch(&id);
-        Response::Messages { messages }
+        lock(&self.state).send(from, to, kind, payload, reply_to)
     }
 
     /// Open a live subscription. Returns the filter plus the raw receiver so
@@ -974,22 +941,21 @@ impl Daemon {
         agent: Option<&str>,
         topics: Vec<String>,
     ) -> Result<(Subscription, broadcast::Receiver<Envelope>), Box<Response>> {
-        let agent = agent.map(|reference| self.resolve(reference)).transpose()?;
-        let project = agent.as_ref().and_then(|id| {
-            lock(&self.registry)
-                .get(id)
-                .and_then(|a| a.project.as_ref().map(ProjectRef::id))
-        });
-        let receiver = self.bus.subscribe();
+        let mut state = lock(&self.state);
+        let agent = agent
+            .map(|reference| state.resolve(reference))
+            .transpose()?;
+        let project = agent
+            .as_ref()
+            .and_then(|id| state.registry.get(id))
+            .and_then(|a| a.project.as_ref().map(ProjectRef::id));
+        let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
-                *lock(&self.live_subscribers).entry(id.clone()).or_default() += 1;
-                let backlog: Vec<Envelope> = lock(&self.inboxes)
-                    .remove(id)
-                    .map(Vec::from)
-                    .unwrap_or_default();
+                *state.live_subscribers.entry(id.clone()).or_default() += 1;
+                let backlog = state.inboxes.remove(id).map(Vec::from).unwrap_or_default();
                 if !backlog.is_empty() {
-                    self.persist("inbox", |store| store.clear_inbox(id));
+                    state.persist("inbox", |store| store.clear_inbox(id));
                 }
                 backlog
             }
@@ -1009,16 +975,6 @@ impl Daemon {
         ))
     }
 
-    fn unsubscribe(&self, agent: &AgentId) {
-        let mut live = lock(&self.live_subscribers);
-        if let Some(count) = live.get_mut(agent) {
-            *count -= 1;
-            if *count == 0 {
-                live.remove(agent);
-            }
-        }
-    }
-
     async fn claim(
         &self,
         reference: &str,
@@ -1032,10 +988,14 @@ impl Daemon {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        self.touch(&holder);
-        let resource = self
+
+        let resource = match self
             .localise(ResourceKey::new(resource), Some(&holder), true)
-            .await;
+            .await
+        {
+            Ok(resource) => resource,
+            Err(response) => return *response,
+        };
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
         // Subscribe before the first attempt so a release that lands between
@@ -1043,47 +1003,64 @@ impl Daemon {
         let mut events = self.subscribe_events();
         let mut reported_conflict = false;
         loop {
-            let result = lock(&self.leases).claim(
-                resource.clone(),
-                holder.clone(),
-                mode,
-                ttl(ttl_secs),
-                note.clone(),
-                Utc::now(),
-            );
-            let (message, held_by) = match result {
-                Ok(Claimed::New(lease)) => {
-                    self.persist("lease", |store| store.upsert_lease(&lease));
-                    self.emit(EventKind::LeaseClaimed {
-                        lease: lease.clone(),
-                    });
-                    return Response::Lease { lease };
+            let (message, held_by) = {
+                let mut state = lock(&self.state);
+                if !state
+                    .registry
+                    .get(&holder)
+                    .is_some_and(|a| a.status == AgentStatus::Running)
+                {
+                    return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
-                Ok(Claimed::Renewed(lease)) => {
-                    self.persist("lease", |store| store.upsert_lease(&lease));
-                    self.emit(EventKind::LeaseRenewed {
-                        lease: lease.clone(),
-                    });
-                    return Response::Lease { lease };
+                if let Some(error) = state.storage_failure() {
+                    return error;
                 }
-                Err(err) => {
-                    let message = err.to_string();
-                    match err {
-                        LeaseError::Conflict { held_by, .. } => (message, held_by),
-                        other => return lease_error(other),
+                state.touch(&holder);
+                let now = Utc::now();
+                state.expire_leases_at(now);
+                let result = state.leases.claim(
+                    resource.clone(),
+                    holder.clone(),
+                    mode,
+                    ttl(ttl_secs),
+                    note.clone(),
+                    now,
+                );
+                let (message, held_by) = match result {
+                    Ok(Claimed::New(lease)) => {
+                        state.persist("lease", |store| store.upsert_lease(&lease));
+                        state.emit(EventKind::LeaseClaimed {
+                            lease: lease.clone(),
+                        });
+                        return Response::Lease { lease };
                     }
+                    Ok(Claimed::Renewed(lease)) => {
+                        state.persist("lease", |store| store.upsert_lease(&lease));
+                        state.emit(EventKind::LeaseRenewed {
+                            lease: lease.clone(),
+                        });
+                        return Response::Lease { lease };
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        match err {
+                            LeaseError::Conflict { held_by, .. } => (message, held_by),
+                            other => return lease_error(other),
+                        }
+                    }
+                };
+                // One conflict event per request, however long it waits.
+                if !reported_conflict {
+                    reported_conflict = true;
+                    warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
+                    state.emit(EventKind::LeaseConflict {
+                        resource: resource.clone(),
+                        requester: holder.clone(),
+                        held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
+                    });
                 }
+                (message, held_by)
             };
-            // One conflict event per request, however long it waits.
-            if !reported_conflict {
-                reported_conflict = true;
-                warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
-                self.emit(EventKind::LeaseConflict {
-                    resource: resource.clone(),
-                    requester: holder.clone(),
-                    held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
-                });
-            }
             if wait_secs == 0 || !wait_for_release(&mut events, &resource, deadline).await {
                 return Response::Error {
                     code: ErrorCode::Conflict,
@@ -1094,14 +1071,318 @@ impl Daemon {
         }
     }
 
-    fn renew(&self, reference: &str, lease: &LeaseId, ttl_secs: u64) -> Response {
+    async fn leases(&self, agent: Option<&str>, resource: Option<String>) -> Response {
+        let holder = match agent.map(|reference| self.resolve(reference)).transpose() {
+            Ok(holder) => holder,
+            Err(response) => return *response,
+        };
+        // Normalize query aliases using the same physical identity as claims.
+        let mut keys: Vec<ResourceKey> = Vec::new();
+        if let Some(resource) = resource {
+            let raw = ResourceKey::new(resource);
+            let local = match self.localise(raw.clone(), holder.as_ref(), false).await {
+                Ok(key) => key,
+                Err(response) => return *response,
+            };
+            if local != raw {
+                keys.push(local);
+            }
+            keys.push(raw);
+        }
+        let mut state = lock(&self.state);
+        state.expire_leases();
+        let leases: Vec<Lease> = state
+            .leases
+            .all()
+            .into_iter()
+            .filter(|l| holder.as_ref().is_none_or(|h| l.holder == *h))
+            .filter(|l| keys.is_empty() || keys.iter().any(|k| l.resource.overlaps(k)))
+            .cloned()
+            .collect();
+        Response::Leases { leases }
+    }
+
+    /// Canonical physical identity for write protection. A logical file key
+    /// is accepted only with an explicit holder checkout; it is never a second lock domain.
+    async fn localise(
+        &self,
+        key: ResourceKey,
+        holder: Option<&AgentId>,
+        _record: bool,
+    ) -> Result<ResourceKey, Box<Response>> {
+        let path = if key.kind() == "path" {
+            let path = PathBuf::from(key.value());
+            if !path.is_absolute() {
+                return Err(Box::new(Response::error(
+                    ErrorCode::Invalid,
+                    "path resources must be absolute",
+                )));
+            }
+            path
+        } else if key.kind() == "file" {
+            let state = lock(&self.state);
+            physical_file(
+                &key,
+                holder
+                    .and_then(|id| state.registry.get(id))
+                    .and_then(|a| a.project.as_ref()),
+            )
+            .ok_or_else(|| {
+                Box::new(Response::error(
+                    ErrorCode::Invalid,
+                    "file resources require a matching agent project and a safe relative path",
+                ))
+            })?
+        } else {
+            return Ok(key);
+        };
+        let path = tokio::task::spawn_blocking(move || project::try_canonical(&path))
+            .await
+            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?
+            .map_err(|err| Box::new(Response::error(ErrorCode::Invalid, err.to_string())))?;
+        if !path.is_absolute() {
+            return Err(Box::new(Response::error(
+                ErrorCode::Invalid,
+                "physical paths must be absolute",
+            )));
+        }
+        Ok(ResourceKey::new(format!("path:{}", path.display())))
+    }
+}
+
+impl State {
+    fn storage_failure(&self) -> Option<Response> {
+        self.storage_error.as_ref().map(|error| {
+            Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("storage failed ({error}); coordination disabled until daemon restart"),
+            )
+        })
+    }
+
+    fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+        if self.storage_error.is_some() {
+            return;
+        }
+        if let Err(err) = write(&self.store) {
+            error!(%what, %err, "storage failed; disabling coordination until restart");
+            self.storage_error = Some(format!("{what}: {err}"));
+        }
+    }
+
+    pub fn emit(&mut self, kind: EventKind) {
+        if self.storage_error.is_some() {
+            return;
+        }
+        let mut event = Event::new(kind, Utc::now());
+        event.seq = self.next_seq;
+        self.next_seq += 1;
+        self.persist("event", |store| store.append_event(&event));
+        if self.storage_error.is_none() {
+            let _ = self.events.send(event);
+        }
+    }
+
+    pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        self.registry
+            .resolve(reference)
+            .map_err(|err| Box::new(registry_error(err)))
+    }
+
+    pub fn is_live(&mut self, id: &AgentId) -> bool {
+        self.registry.get(id).is_some_and(|a| a.status.is_live())
+    }
+
+    fn report(&mut self, reference: &str, vcs: Option<VcsState>) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.touch(&id);
+        if let Some(vcs) = vcs {
+            self.apply_vcs(&id, vcs);
+        }
+        Response::Ok
+    }
+
+    fn apply_vcs(&mut self, id: &AgentId, vcs: VcsState) {
+        if !self.registry.get(id).is_some_and(|a| {
+            a.status.is_live()
+                && a.vcs
+                    .as_ref()
+                    .is_none_or(|old| old.updated_at <= vcs.updated_at)
+        }) {
+            return;
+        }
+        let Some((record, changed)) = self.registry.set_vcs(id, vcs.clone()) else {
+            return;
+        };
+        if changed {
+            info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
+            self.persist("agent", |store| store.upsert_agent(&record));
+            self.emit(EventKind::AgentVcsChanged {
+                agent: id.clone(),
+                vcs,
+            });
+        }
+    }
+
+    fn deregister(&mut self, reference: &str) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        if !self.is_live(&id) {
+            return Response::error(ErrorCode::Invalid, "agent has already finished");
+        }
+        if self.registry.get(&id).is_some_and(|a| a.managed) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "managed agents finish when their process exits; use stop",
+            );
+        }
+        match self.mark_exited(&id, AgentStatus::Exited { code: Some(0) }) {
+            Some(agent) => Response::Agent { agent },
+            None => Response::error(ErrorCode::NotFound, "agent vanished"),
+        }
+    }
+
+    fn remove(&mut self, reference: &str) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        if self.is_live(&id) {
+            return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
+        }
+        self.registry.remove(&id);
+        self.inboxes.remove(&id);
+        self.persist("agent", |store| store.delete_agent(&id));
+        self.emit(EventKind::AgentRemoved { agent: id });
+        Response::Ok
+    }
+
+    fn inspect(&mut self, reference: &str) -> Response {
+        match self.resolve(reference) {
+            Ok(id) => match self.registry.get(&id) {
+                Some(agent) => Response::Agent {
+                    agent: agent.clone(),
+                },
+                None => Response::error(ErrorCode::NotFound, "agent vanished"),
+            },
+            Err(response) => *response,
+        }
+    }
+
+    pub fn mark_exited(&mut self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
+        if !self.is_live(id) {
+            return self.registry.get(id).cloned();
+        }
+        let record = self.registry.set_status(id, status.clone(), Utc::now())?;
+        self.supervised.remove(id);
+        self.persist("agent", |store| store.upsert_agent(&record));
+        let released = self.leases.release_all(id);
+        for lease in released {
+            self.persist_lease_removal(&lease, false);
+        }
+        info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
+        self.emit(EventKind::AgentExited {
+            agent: id.clone(),
+            status,
+        });
+        Some(record)
+    }
+
+    fn touch(&mut self, id: &AgentId) {
+        let record = {
+            let registry = &mut self.registry;
+            registry.touch(id, Utc::now());
+            registry.get(id).cloned()
+        };
+        if let Some(record) = record {
+            self.persist("agent", |store| store.upsert_agent(&record));
+        }
+    }
+
+    fn ack_inbox(&mut self, reference: &str, messages: &[MessageId]) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut event = Event::new(
+            EventKind::InboxAcknowledged {
+                agent: id.clone(),
+                messages: messages.to_vec(),
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        self.persist("inbox acknowledgement", |store| {
+            store.ack_inbox(&id, messages, &event)
+        });
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        if let Some(queue) = self.inboxes.get_mut(&id) {
+            queue.retain(|message| !messages.contains(&message.id));
+        }
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Response::Ok
+    }
+
+    fn inbox(&mut self, reference: &str, drain: bool) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let messages: Vec<Envelope> = {
+            let inboxes = &mut self.inboxes;
+            if drain {
+                inboxes.remove(&id).map(Vec::from).unwrap_or_default()
+            } else {
+                inboxes
+                    .get(&id)
+                    .map(|queue| queue.iter().cloned().collect())
+                    .unwrap_or_default()
+            }
+        };
+        if drain && !messages.is_empty() {
+            self.persist("inbox", |store| store.clear_inbox(&id));
+        }
+        self.touch(&id);
+        Response::Messages { messages }
+    }
+
+    fn unsubscribe(&mut self, agent: &AgentId) {
+        let live = &mut self.live_subscribers;
+        if let Some(count) = live.get_mut(agent) {
+            *count -= 1;
+            if *count == 0 {
+                live.remove(agent);
+            }
+        }
+    }
+
+    fn renew(&mut self, reference: &str, lease: &LeaseId, ttl_secs: u64) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
         self.touch(&holder);
-        // Bind first so the lease guard is gone before persisting.
-        let result = lock(&self.leases).renew(lease, &holder, ttl(ttl_secs), Utc::now());
+        if !self
+            .registry
+            .get(&holder)
+            .is_some_and(|a| a.status == AgentStatus::Running)
+        {
+            return Response::error(ErrorCode::Invalid, "agent is not running");
+        }
+        let now = Utc::now();
+        self.expire_leases_at(now);
+        let result = self.leases.renew(lease, &holder, ttl(ttl_secs), now);
         match result {
             Ok(lease) => {
                 self.persist("lease", |store| store.upsert_lease(&lease));
@@ -1114,117 +1395,180 @@ impl Daemon {
         }
     }
 
-    fn release(&self, reference: &str, lease: &LeaseId) -> Response {
+    fn release(&mut self, reference: &str, lease: &LeaseId) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let result = lock(&self.leases).release(lease, &holder);
+        let result = self.leases.release(lease, &holder);
         match result {
             Ok(lease) => {
-                self.persist("lease", |store| store.delete_lease(&lease.id));
-                self.emit(EventKind::LeaseReleased {
-                    lease: lease.clone(),
-                });
+                self.persist_lease_removal(&lease, false);
                 Response::Lease { lease }
             }
             Err(err) => lease_error(err),
         }
     }
 
-    fn release_all(&self, reference: &str) -> Response {
+    fn release_all(&mut self, reference: &str) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let released = lock(&self.leases).release_all(&holder);
+        let released = self.leases.release_all(&holder);
         for lease in &released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseReleased {
-                lease: lease.clone(),
-            });
+            self.persist_lease_removal(lease, false);
         }
         Response::Leases { leases: released }
     }
 
-    async fn leases(&self, agent: Option<&str>, resource: Option<String>) -> Response {
-        let holder = match agent.map(|reference| self.resolve(reference)).transpose() {
-            Ok(holder) => holder,
-            Err(response) => return *response,
+    pub fn expire_leases(&mut self) {
+        self.expire_leases_at(Utc::now());
+    }
+
+    fn persist_lease_removal(&mut self, lease: &Lease, expired: bool) {
+        let kind = if expired {
+            EventKind::LeaseExpired {
+                lease: lease.clone(),
+            }
+        } else {
+            EventKind::LeaseReleased {
+                lease: lease.clone(),
+            }
         };
-        // A path query matches both its `file:` form and, for leases held
-        // outside any project, the raw path.
-        let mut keys: Vec<ResourceKey> = Vec::new();
-        if let Some(resource) = resource {
-            let raw = ResourceKey::new(resource);
-            let local = self.localise(raw.clone(), holder.as_ref(), false).await;
-            if local != raw {
-                keys.push(local);
-            }
-            keys.push(raw);
-        }
-        self.expire_leases();
-        let leases: Vec<Lease> = lock(&self.leases)
-            .all()
-            .into_iter()
-            .filter(|l| holder.as_ref().is_none_or(|h| l.holder == *h))
-            .filter(|l| keys.is_empty() || keys.iter().any(|k| l.resource.overlaps(k)))
-            .cloned()
-            .collect();
-        Response::Leases { leases }
-    }
-
-    /// Rewrite a `path:` key to its project-relative `file:` form when the
-    /// path lies in a project: the holder's own project first (so a plain
-    /// directory project still works for its members), else the repository
-    /// or Agentfile root containing the path. Anything else is left alone.
-    /// With `record`, a repository met this way counts as discovered.
-    async fn localise(
-        &self,
-        key: ResourceKey,
-        holder: Option<&AgentId>,
-        record: bool,
-    ) -> ResourceKey {
-        if key.kind() != "path" || !Path::new(key.value()).is_absolute() {
-            return key;
-        }
-        let raw = PathBuf::from(key.value());
-        let path = tokio::task::spawn_blocking(move || project::canonical(&raw))
-            .await
-            .unwrap_or_else(|_| PathBuf::from(key.value()));
-        let own =
-            holder.and_then(|id| lock(&self.registry).get(id).and_then(|a| a.project.clone()));
-        if let Some(file) = own.as_ref().and_then(|project| file_key(project, &path)) {
-            return file;
-        }
-        let parent = path.parent().map(Path::to_path_buf);
-        match self.project_for(parent, record).await {
-            Some(found)
-                if matches!(found.source, ProjectSource::Git | ProjectSource::Agentfile) =>
-            {
-                file_key(&found, &path).unwrap_or(key)
-            }
-            _ => key,
+        let mut event = Event::new(kind, Utc::now());
+        event.seq = self.next_seq;
+        self.persist("lease removal", |store| {
+            store.delete_lease_with_event(&lease.id, &event)
+        });
+        if self.storage_error.is_none() {
+            self.next_seq += 1;
+            let _ = self.events.send(event);
         }
     }
 
-    /// Drop leases whose TTL has passed. Called on a timer and before listing.
-    pub fn expire_leases(&self) {
-        let expired = lock(&self.leases).expire(Utc::now());
+    fn expire_leases_at(&mut self, now: DateTime<Utc>) {
+        let expired = self.leases.expire(now);
         for lease in expired {
             info!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "lease expired");
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseExpired { lease });
+            self.persist_lease_removal(&lease, true);
         }
     }
 
-    /// Trim stored event history. Called occasionally from the reaper.
-    pub fn prune_events(&self) {
-        match lock(&self.store).prune_events(EVENT_HISTORY) {
+    pub fn prune_events(&mut self) {
+        match self.store.prune_events(EVENT_HISTORY) {
             Ok(0) => {}
             Ok(removed) => info!(removed, "pruned event history"),
             Err(err) => error!(%err, "failed to prune event history"),
         }
+    }
+
+    fn send(
+        &mut self,
+        from: String,
+        to: Destination,
+        kind: String,
+        payload: Value,
+        reply_to: Option<MessageId>,
+    ) -> Response {
+        let envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
+
+        let recipients: Vec<AgentId> = match &envelope.to {
+            Destination::Agent(id) => vec![id.clone()],
+            Destination::Broadcast => self
+                .registry
+                .live()
+                .filter(|a| a.id.as_str() != envelope.from)
+                .map(|a| a.id.clone())
+                .collect(),
+            Destination::Project(project) => self
+                .registry
+                .live()
+                .filter(|a| a.id.as_str() != envelope.from)
+                .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
+                .map(|a| a.id.clone())
+                .collect(),
+            Destination::Topic(_) => Vec::new(),
+        };
+        let offline: Vec<AgentId> = {
+            let live = &self.live_subscribers;
+            recipients
+                .into_iter()
+                .filter(|id| !live.contains_key(id))
+                .collect()
+        };
+        if !offline.is_empty() {
+            {
+                let inboxes = &mut self.inboxes;
+                for id in &offline {
+                    let queue = inboxes.entry(id.clone()).or_default();
+                    if queue.len() >= INBOX_CAPACITY {
+                        queue.pop_front();
+                    }
+                    queue.push_back(envelope.clone());
+                }
+            }
+            self.persist("inbox", |store| {
+                for id in &offline {
+                    store.enqueue(id, &envelope, INBOX_CAPACITY)?;
+                }
+                Ok(())
+            });
+        }
+
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        self.touch(&AgentId::from(envelope.from.as_str()));
+        self.emit(EventKind::MessageSent {
+            message: envelope.id.clone(),
+            from: envelope.from.clone(),
+            to: envelope.to.clone(),
+            kind: envelope.kind.clone(),
+        });
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
+        Response::Sent {
+            message: envelope.id,
+            subscribers,
+        }
+    }
+
+    fn insert_record(&mut self, mut record: AgentRecord) -> Response {
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        if record.spec.name.is_empty() {
+            record.spec.name = default_name(&record.id);
+        }
+        if record
+            .spec
+            .labels
+            .get("adopted")
+            .is_some_and(|v| v == "true")
+            && self.registry.live().any(|a| a.pid == record.pid)
+        {
+            return Response::error(ErrorCode::Invalid, "pid is already registered");
+        }
+        if let Err(err) = self.registry.insert(record.clone()) {
+            return registry_error(err);
+        }
+        self.persist("agent", |store| store.upsert_agent(&record));
+        self.emit(EventKind::AgentCreated {
+            agent: record.id.clone(),
+            name: record.spec.name.clone(),
+            project: record.project.as_ref().map(ProjectRef::id),
+        });
+        if !record.managed {
+            self.emit(EventKind::AgentStarted {
+                agent: record.id.clone(),
+                pid: record.pid,
+            });
+        }
+        self.storage_failure()
+            .unwrap_or(Response::Agent { agent: record })
     }
 }
 
@@ -1348,6 +1692,50 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        for text in ["first", "second"] {
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text": text}),
+                    reply_to: None,
+                })
+                .await;
+        }
+        let first = inbox(&daemon, "receiver", false).await[0].id.clone();
+        for _ in 0..2 {
+            assert!(matches!(
+                daemon
+                    .handle(Request::AckInbox {
+                        agent: "receiver".into(),
+                        messages: vec![first.clone()],
+                    })
+                    .await,
+                Response::Ok
+            ));
+        }
+        let remaining = inbox(&daemon, "receiver", false).await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].payload["text"], "second");
+        assert_eq!(
+            lock(&daemon.state)
+                .store
+                .load_inboxes()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     /// A pid that certainly no longer exists: a child we already reaped.
     fn dead_pid() -> u32 {
         let child = std::process::Command::new("true").spawn().unwrap();
@@ -1378,7 +1766,7 @@ mod tests {
         drop(daemon);
 
         let daemon = open(&dir);
-        let agents = lock(&daemon.registry).list(true);
+        let agents = lock(&daemon.state).registry.list(true);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id, alpha.id);
         assert!(agents[0].status.is_live());
@@ -1433,7 +1821,7 @@ mod tests {
 
         let daemon = open(&dir);
         assert!(!daemon.is_live(&ghost.id));
-        assert!(lock(&daemon.leases).is_empty());
+        assert!(lock(&daemon.state).leases.is_empty());
     }
 
     #[tokio::test]
@@ -1466,8 +1854,8 @@ mod tests {
         drop(daemon);
 
         let daemon = open(&dir);
-        assert!(lock(&daemon.registry).get(&done.id).is_none());
-        assert!(lock(&daemon.inboxes).is_empty());
+        assert!(lock(&daemon.state).registry.get(&done.id).is_none());
+        assert!(lock(&daemon.state).inboxes.is_empty());
     }
 
     #[tokio::test]
@@ -1521,7 +1909,7 @@ mod tests {
         // What `run` looks like between registry insert and spawn completing.
         let record = AgentRecord::new(spec("spawning"), true, Utc::now());
         let id = record.id.clone();
-        lock(&daemon.registry).insert(record).unwrap();
+        lock(&daemon.state).registry.insert(record).unwrap();
 
         daemon.check_liveness();
         assert!(daemon.is_live(&id));
@@ -1564,7 +1952,7 @@ mod tests {
         }
 
         let daemon = open(&dir);
-        let agents = lock(&daemon.registry).list(true);
+        let agents = lock(&daemon.state).registry.list(true);
         assert_eq!(agents.len(), 3, "every stored record is still listed");
         let live: Vec<&AgentRecord> = agents.iter().filter(|a| a.status.is_live()).collect();
         assert_eq!(live.len(), 1);
@@ -1578,6 +1966,23 @@ mod tests {
         let leases = list_leases(&daemon).await;
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].id, LeaseId::from("kept"));
+        let events = daemon.recent_events(100);
+        let mut removed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::LeaseReleased { lease } => Some(lease.id.to_string()),
+                _ => None,
+            })
+            .collect();
+        removed.sort();
+        assert_eq!(removed, ["orphan", "twin2"]);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(
+            daemon.recent_events(100),
+            events,
+            "restart does not duplicate cleanup events"
+        );
         drop(daemon);
 
         // The retired records and dropped leases were written back.
@@ -1600,7 +2005,8 @@ mod tests {
         let stale = register(&daemon, "stale", Some(std::process::id())).await;
         // Pretend the process that registered started long before the one
         // holding the pid now (as after a reboot).
-        lock(&daemon.registry)
+        lock(&daemon.state)
+            .registry
             .get_mut(&stale.id)
             .unwrap()
             .process_started_at = Some(Utc::now() - Duration::hours(24 * 30));
@@ -1963,7 +2369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_claims_inside_a_project_become_file_keys() {
+    async fn path_claims_protect_the_physical_checkout() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let alpha = dir.path().join("alpha");
@@ -1972,10 +2378,10 @@ mod tests {
         let one = register_in(&daemon, "one", &alpha).await;
         register_in(&daemon, "two", &alpha.join("src")).await;
         register(&daemon, "outsider", None).await;
-        let project = one.project.clone().unwrap().id();
+        let _project = one.project.clone().unwrap().id();
 
         // The claimed path is under the non-canonical temp dir and the file
-        // does not exist yet; the key is still project-relative.
+        // does not exist yet; the key still has its eventual physical identity.
         let lib = alpha.join("src/lib.rs");
         let Response::Lease { lease } =
             claim(&daemon, "one", &format!("path:{}", lib.display())).await
@@ -1984,7 +2390,7 @@ mod tests {
         };
         assert_eq!(
             lease.resource.as_str(),
-            format!("file:{project}/src/lib.rs")
+            format!("path:{}", project::canonical(&lib).display())
         );
 
         // Everyone naming that file collides: a project mate, and an agent
@@ -2209,5 +2615,412 @@ mod tests {
             panic!("inspect failed");
         };
         assert_eq!(agent.vcs.unwrap().branch.as_deref(), Some("hotfix"));
+    }
+
+    #[tokio::test]
+    async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let owner = register_in(&daemon, "owner", &checkout).await;
+        register(&daemon, "outsider", None).await;
+        let path = checkout.join("file");
+        assert!(matches!(
+            claim(&daemon, "owner", &format!("path:{}", path.display())).await,
+            Response::Lease { .. }
+        ));
+        for alias in [&path, &checkout, &checkout.join("missing/../file")] {
+            assert!(matches!(
+                claim(&daemon, "outsider", &format!("path:{}", alias.display())).await,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ));
+        }
+        let id = owner.project.unwrap().id();
+        assert!(matches!(
+            claim(&daemon, "owner", &format!("file:{id}/file")).await,
+            Response::Lease { .. }
+        ));
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: Some(format!("path:{}", checkout.display())),
+            })
+            .await
+        else {
+            panic!()
+        };
+        assert_eq!(leases.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "holder", None).await;
+        register(&daemon, "waiter", None).await;
+        assert!(matches!(
+            claim(&daemon, "holder", "task:wait").await,
+            Response::Lease { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let pending = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent: "waiter".into(),
+                        resource: "task:wait".into(),
+                        mode: LeaseMode::Exclusive,
+                        ttl_secs: 60,
+                        note: None,
+                        wait_secs: 5,
+                    })
+                    .await
+            })
+        };
+        while !matches!(
+            events.recv().await.unwrap().kind,
+            EventKind::LeaseConflict { .. }
+        ) {}
+        daemon
+            .handle(Request::Deregister {
+                agent: "waiter".into(),
+            })
+            .await;
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "holder".into(),
+            })
+            .await;
+        assert!(matches!(
+            pending.await.unwrap(),
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(matches!(
+            claim(&daemon, "waiter", "task:other").await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(list_leases(&daemon).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_pid_registration_never_reaches_a_signal_target() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert!(signal_pid(pid).is_none());
+            assert!(matches!(
+                daemon
+                    .handle(Request::Register {
+                        spec: spec("invalid"),
+                        pid: Some(pid)
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn stopping_process_keeps_leases_until_observed_exit() {
+        use std::io::{BufRead, BufReader};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // The only process signalled is this test's child. trap is installed before READY.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; echo READY; while :; do :; done"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "READY");
+        let record = register(&daemon, "resistant", Some(child.id())).await;
+        claim(&daemon, "resistant", "task:live").await;
+        let response = daemon
+            .handle(Request::Stop {
+                agent: record.id.to_string(),
+                force: false,
+            })
+            .await;
+        let alive = child.try_wait().unwrap().is_none();
+        let held = list_leases(&daemon).await.len();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            matches!(response,Response::Agent {agent} if agent.status == AgentStatus::Stopping)
+        );
+        assert!(alive);
+        assert_eq!(held, 1);
+        daemon.check_liveness();
+        assert!(list_leases(&daemon).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_group_keeps_protection_until_descendants_stop() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("managed-group");
+        command.workdir = Some(dir.path().to_path_buf());
+        // A file gate makes the lease acquisition deterministic. The child
+        // ignores TERM, so the supervisor must escalate and observe its exit.
+        command.command = vec!["sh".into(), "-c".into(),
+            "trap '' TERM; sleep 30 & echo $! > child.pid; while [ ! -f exit-now ]; do sleep 0.05; done".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        assert_eq!(agent.process_group, agent.pid);
+        assert!(matches!(
+            claim(&daemon, "managed-group", "task:group").await,
+            Response::Lease { .. }
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !dir.path().join("child.pid").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        std::fs::write(dir.path().join("exit-now"), "").unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(supervisor::group_exists(agent.pid.unwrap()));
+        assert_eq!(list_leases(&daemon).await.len(), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while !list_leases(&daemon).await.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!supervisor::group_exists(agent.pid.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn failed_storage_never_acknowledges_or_serves_new_coordination() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "owner", None).await;
+        register(&daemon, "other", None).await;
+        let Response::Lease { lease } = claim(&daemon, "owner", "task:durable").await else {
+            panic!()
+        };
+        let before = daemon.recent_events(100).len();
+        lock(&daemon.state).store.reject_writes_for_test();
+        let failed = daemon
+            .handle(Request::Release {
+                agent: "owner".into(),
+                lease: lease.id,
+            })
+            .await;
+        assert!(matches!(
+            failed,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(daemon.recent_events(100).len(), before);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_message_event_never_reaches_a_live_subscriber() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "sender", None).await;
+        let recipient = register(&daemon, "recipient", None).await;
+        let (_subscription, mut messages) = daemon.subscribe(Some("recipient"), vec![]).unwrap();
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).next_seq -= 1;
+        let response = lock(&daemon.state).send(
+            "sender".into(),
+            Destination::Agent(recipient.id),
+            "chat".into(),
+            json!({"text": "must not be delivered"}),
+            None,
+        );
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(messages.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_shutdown_uses_owned_child_when_start_time_is_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("owned");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "trap '' TERM; echo ready > ready; while :; do sleep 0.05; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("launch failed");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !dir.path().join("ready").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        claim(&daemon, "owned", "task:shutdown").await;
+        lock(&daemon.state)
+            .registry
+            .get_mut(&agent.id)
+            .unwrap()
+            .process_started_at = None;
+        let response = daemon.stop("owned", false);
+        let held_while_stopping = list_leases(&daemon).await.len();
+        daemon.stop_all().await;
+        assert!(
+            matches!(response, Response::Agent { agent } if agent.status == AgentStatus::Stopping)
+        );
+        assert_eq!(held_while_stopping, 1);
+        assert!(!supervisor::group_exists(agent.pid.unwrap()));
+        assert!(list_leases(&daemon).await.is_empty());
+        assert!(!daemon.is_live(&agent.id));
+    }
+
+    #[tokio::test]
+    async fn claim_expiration_removes_storage_and_emits_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let owner = register(&daemon, "owner", None).await;
+        register(&daemon, "next", None).await;
+        let now = Utc::now();
+        let expired = Lease {
+            id: LeaseId::from("expired"),
+            resource: ResourceKey::new("task:expire"),
+            holder: owner.id,
+            mode: LeaseMode::Exclusive,
+            acquired_at: now - Duration::seconds(5),
+            expires_at: now - Duration::seconds(1),
+            note: None,
+        };
+        {
+            let mut state = lock(&daemon.state);
+            state.store.upsert_lease(&expired).unwrap();
+            state.leases.restore(expired);
+        }
+        let mut events = daemon.subscribe_events();
+        assert!(matches!(
+            claim(&daemon, "next", "task:expire").await,
+            Response::Lease { .. }
+        ));
+        daemon.expire_leases();
+        let mut count = 0;
+        while let Ok(e) = events.try_recv() {
+            if matches!(e.kind, EventKind::LeaseExpired { .. }) {
+                count += 1;
+            }
+        }
+        assert_eq!(count, 1);
+        assert!(
+            lock(&daemon.state)
+                .store
+                .load_leases()
+                .unwrap()
+                .iter()
+                .all(|l| l.id.as_str() != "expired")
+        );
+    }
+
+    #[tokio::test]
+    async fn vcs_observations_cannot_rewind_and_survive_restart() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let owner = register(&daemon, "owner", None).await;
+        let now = Utc::now();
+        let newest = VcsState {
+            branch: Some("new".into()),
+            head: None,
+            dirty: None,
+            updated_at: now,
+        };
+        daemon.apply_vcs(&owner.id, newest.clone());
+        daemon.apply_vcs(
+            &owner.id,
+            VcsState {
+                branch: Some("old".into()),
+                updated_at: now - Duration::seconds(1),
+                ..newest.clone()
+            },
+        );
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(
+            lock(&daemon.state).registry.get(&owner.id).unwrap().vcs,
+            Some(newest)
+        );
+    }
+
+    #[test]
+    fn concurrent_events_publish_in_persisted_sequence_order() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let daemon = &daemon;
+                scope.spawn(move || {
+                    for _ in 0..25 {
+                        daemon.emit(EventKind::DaemonStopping {
+                            reason: "test".into(),
+                        });
+                    }
+                });
+            }
+        });
+        let mut received = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            received.push(event.seq);
+        }
+        assert_eq!(received, (1..=200).collect::<Vec<_>>());
+        assert_eq!(
+            daemon
+                .recent_events(200)
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            received
+        );
     }
 }

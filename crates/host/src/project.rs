@@ -10,6 +10,7 @@
 //! walks the whole history, which can take seconds on huge repositories;
 //! the daemon caches it per root.
 
+#[cfg(test)]
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -47,15 +48,33 @@ pub fn discover(workdir: &Path) -> ProjectRef {
 /// created gets the key it will have once it exists (`/tmp` on macOS is
 /// `/private/tmp` either way).
 pub fn canonical(path: &Path) -> PathBuf {
-    for ancestor in path.ancestors() {
-        if let Ok(base) = ancestor.canonicalize() {
-            return match path.strip_prefix(ancestor) {
-                Ok(rest) if !rest.as_os_str().is_empty() => base.join(rest),
-                _ => base,
-            };
+    try_canonical(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Fallible normalization for physical identities. A deleted/unavailable cwd
+/// must never turn a relative input into a physical lease key.
+pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
+    // The public helper accepts relative paths and returns an absolute key.
+    // Resolve the base first so leading parent components cannot disappear.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut result = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::CurDir => {}
+            component => result.push(component.as_os_str()),
+        }
+        if let Ok(resolved) = result.canonicalize() {
+            result = resolved;
         }
     }
-    path.to_path_buf()
+    Ok(result)
 }
 
 fn git_project(start: &Path) -> Option<ProjectRef> {
@@ -84,15 +103,14 @@ fn repository(root: PathBuf, worktree: Option<PathBuf>) -> ProjectRef {
 /// contains `commondir`, which points at the main repository's `.git`; a
 /// submodule's does not, and a submodule is its own project.
 fn linked(dir: &Path, dot_git: &Path) -> ProjectRef {
-    let main_root = fs::read_to_string(dot_git)
-        .ok()
+    let main_root = crate::vcs::read_metadata(dot_git, 4096)
         .and_then(|text| {
             text.trim()
                 .strip_prefix("gitdir:")
                 .map(|path| resolve(dir, path.trim()))
         })
         .and_then(|gitdir| {
-            let common = fs::read_to_string(gitdir.join("commondir")).ok()?;
+            let common = crate::vcs::read_metadata(&gitdir.join("commondir"), 4096)?;
             let common = resolve(&gitdir, common.trim());
             let common = common.canonicalize().unwrap_or(common);
             common.parent().map(Path::to_path_buf)
@@ -199,6 +217,15 @@ mod tests {
             &["commit", "-q", "--allow-empty", "-m", "root"]
         ));
         main.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn relative_parent_is_resolved_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            canonical(Path::new("../missing-file")),
+            canonical(&cwd.join("../missing-file"))
+        );
     }
 
     #[test]

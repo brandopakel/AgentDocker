@@ -25,9 +25,11 @@ Agents don't need an SDK. Anything that can write a line of JSON to a Unix socke
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh   # release binaries into ~/.local/bin
-cargo install agentdocker                                                                  # or build from source: both binaries
+cargo install --path crates/cli --locked                                                   # from a source checkout: both binaries
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
+
+Release binaries require a published GitHub release; the installer requires a matching SHA-256 checksum. `cargo install agentdocker` becomes available after the crates are published. Homebrew formulae are generated from release checksums, not placeholder hashes.
 
 The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running.
 
@@ -91,7 +93,7 @@ args = ["mcp", "--runtime", "codex"]
 { "mcpServers": { "agentdocker": { "command": "agentdocker", "args": ["mcp", "--runtime", "cursor"] } } }
 ```
 
-Two Claude Code sessions in the same repo, both with the server configured, will refuse to edit the same file at the same time and can message each other about it — with no changes to either session's prompt.
+MCP exposes voluntary coordination tools. Automatic denial requires the Claude Code hooks below and applies to their covered edit tools; shell/script writes are not guarded by that matcher. Hooks fail open if coordination is unavailable.
 
 ### Claude Code: hooks make it automatic
 
@@ -142,7 +144,7 @@ agentdocker down              # stops them
 
 ## What it solves
 
-**Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it, and a path inside a project is stored by project and relative path, so the same file is the same resource from a worktree, a container, or another clone. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases everything an agent holds the moment it exits. A refused claim tells the requester exactly who holds what and the note they left.
+**Race conditions.** A lease is an exclusive or shared claim on a *resource key* such as `path:/repo/src`, `branch:feature/x`, or `task:ISSUE-42`. Path keys are hierarchical, so a lease on a directory covers every file beneath it, and file protection uses canonical physical paths, so aliases and agents from different projects cannot obtain separate exclusive claims on one checkout. Separate worktrees can edit independently; logical project-relative paths support cross-worktree overlap analysis. Every lease has a TTL, so a crashed agent can never wedge the system, and the daemon releases held leases when exit is observed. A stop request reports `stopping` and retains protection until then. A refused claim tells the requester exactly who holds what and the note they left.
 
 **Lost context.** Agents that overwrite each other's work do so because neither knew the other existed. The registry (`ps`, `inspect`) makes every agent visible — and `ps` also lists agent processes nobody registered (a Claude Code or Codex session started by hand), which `adopt <pid>` brings in; leases carry human-readable notes about what the holder is doing; the event stream shows changes as they happen. Next, the daemon tracks what each agent has read and watches the project, so an agent is told when a file it depends on moved, and who moved it.
 
@@ -157,7 +159,7 @@ agentdocker down              # stops them
 │   codex ───────┤   NDJSON over Unix socket       │   (CLI)       │
 │   gemini-cli ──┼──────────────►  agentd  ◄───────┤               │
 │   custom ──────┘                   │             └─ MCP adapter  │
-│                                    │                  (planned)  │
+│                                    │                             │
 │               ┌────────────────────┼─────────────────────┐       │
 │               │  registry   supervisor   bus   leases    │       │
 │               │  inboxes    events       logs            │       │
@@ -165,9 +167,10 @@ agentdocker down              # stops them
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Three crates:
+Four crates:
 
 - `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
+- `crates/host` — host filesystem, process and Git metadata inspection.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
 
