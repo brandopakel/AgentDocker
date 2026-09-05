@@ -87,7 +87,11 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
             Some(ack) = flush_rx.recv() => {
                 // Give the OS a moment to deliver what just happened (FSEvents
                 // batches with some latency), take what is queued, then flush.
-                tokio::time::sleep(FLUSH_GRACE).await;
+                // No filesystem events can arrive when no checkout is watched.
+                // Plain-directory leases still work but have no watcher coverage.
+                if !watched.is_empty() {
+                    tokio::time::sleep(FLUSH_GRACE).await;
+                }
                 while let Ok(event) = rx.try_recv() {
                     if pending.len() < 4096 { pending.push(event); }
                     else { gap.store(true, Ordering::Relaxed); }
