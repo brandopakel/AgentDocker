@@ -319,6 +319,7 @@ mod tests {
             .handle(Request::ReleaseAll {
                 agent: "holder".into(),
                 summary: None,
+                summary_source: agentdocker_core::SummarySource::Explicit,
             })
             .await;
         assert!(

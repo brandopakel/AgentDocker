@@ -11,12 +11,27 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::journal::{Digest, SummarySource};
 use crate::{
     AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
     LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
+
+/// The digest form of `journal`; see [`crate::journal::digest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DigestRequest {
+    /// An agent reference, or `user` for the human's own cursor.
+    pub reader: String,
+    pub max_entries: usize,
+    pub max_chars: usize,
+    #[serde(default)]
+    pub all_branches: bool,
+    /// Move the reader's cursor to the digest's head in the same request.
+    #[serde(default)]
+    pub advance: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -202,12 +217,18 @@ pub enum Request {
         /// ledger when absent.
         #[serde(default)]
         summary: Option<String>,
+        /// `explicit` (the default) is journaled even when nothing was
+        /// held; `transcript` only describes leases actually released.
+        #[serde(default)]
+        summary_source: SummarySource,
     },
     /// Release every lease an agent holds; the reply lists them.
     ReleaseAll {
         agent: String,
         #[serde(default)]
         summary: Option<String>,
+        #[serde(default)]
+        summary_source: SummarySource,
     },
     /// Append a free-text note to the journal of the agent's project.
     JournalAdd {
@@ -237,6 +258,11 @@ pub enum Request {
         grep: Option<String>,
         #[serde(default = "default_changes_limit")]
         limit: usize,
+        /// Render a digest for a reader instead of listing: what is after
+        /// the reader's cursor (or `since_seq` when given), within a
+        /// budget. Only the project and `since_seq` apply alongside it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest: Option<DigestRequest>,
     },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
@@ -362,6 +388,10 @@ pub enum Response {
     },
     JournalEntry {
         entry: JournalEntry,
+    },
+    Digest {
+        project: crate::ProjectId,
+        digest: Digest,
     },
     Pruned {
         removed: usize,

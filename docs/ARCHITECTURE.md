@@ -131,7 +131,7 @@ The daemon watches the filesystem of every checkout a live agent works in and ke
 
 ## The journal
 
-Where the ledger records every file change, the journal records *what happened and why*, one line at a time, per project: coarse, readable by models and humans, and what a newcomer is handed instead of the event stream. Entries, storage, the release write path, and the CLI exist; cursors, digests, hook injection, and the transcript-tail summary follow (roadmap row 9b).
+Where the ledger records every file change, the journal records *what happened and why*, one line at a time, per project: coarse, readable by models and humans, and what a newcomer is handed instead of the event stream. Entries, storage, the release write path, cursors, digests, and the adapters exist.
 
 **Entries.** A `JournalEntry` carries project and per-project `seq`, time, the agent (or none, for a commit nobody is known to have made), its name and branch, the physical checkout and worktree, a kind, a summary with its source (`explicit`, `transcript`, `synthesised`), the released resources, up to 200 checkout-relative paths with the real count, HEAD before and after, and the ledger seq range for drill-down. Kinds: `release` (leases dropped; the entry says what changed under them), `note` (free text), `commit` (HEAD moved), `join`, `leave`, and `handoff` (Phase 4).
 
@@ -139,7 +139,11 @@ Where the ledger records every file change, the journal records *what happened a
 
 **Storage.** `journal` (rowid `id`, `project`, `seq`, `at`, `agent`, `branch`, `kind`, the JSON blob; unique on project + seq; indexed by project + branch + seq and project + agent + seq), `journal_paths` (project, path, seq — the index behind `--path`, a prefix range), `journal_fts` (FTS5, contentless, rowid = `journal.id`; when the SQLite build lacks FTS5 the daemon logs it once and `--grep` falls back to `LIKE`), and `journal_cursors`, created for row 9b. Entries are kept forever; `journal prune --before <seq>` deletes on demand, from all three tables together. The daemon keeps a ring of the newest 256 entries per active project, loaded on first use and dropped ten minutes after the project's last live agent leaves; a plain listing whose window lies in the ring never touches SQLite.
 
-**Reading it.** `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?}` returns the newest `limit` entries oldest first with the resolved project id; `agentdocker journal [--project .] [--since N] [--until N] [--agent A] [--branch B] [--kind K] [--path P] [--grep TEXT] [-n N] [--follow]` prints them, `journal add "…"` appends a note, `journal prune --before N` trims. `release --summary "…"` (and the MCP `release` tool's `summary`) is how an agent says what it did; the MCP `journal_note` tool is how it leaves a note. Every append is announced as `journal_appended`, which `--follow` streams.
+**Reading it.** `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?}` returns the newest `limit` entries oldest first with the resolved project id; `agentdocker journal [--project .] [--since N] [--until N] [--agent A] [--branch B] [--kind K] [--path P] [--grep TEXT] [-n N] [--follow]` prints them, `journal add "…"` appends a note, `journal prune --before N` trims. `release --summary "…"` (and the MCP `release` tool's `summary`) is how an agent says what it did; the MCP `journal_note` tool is how it leaves a note. Every append is announced as `journal_appended`, which `--follow` streams (the stream is opened before the snapshot it continues, so nothing falls between them, and the listing's filters apply to streamed entries too).
+
+**Reading it incrementally.** Every reader has a cursor per project — `journal_cursors (agent, project, seq, updated_at)`, cached in the daemon and written through only when it moves forward — recording the last entry it was shown. A registration seeds the newcomer's cursor: from a finished agent of the same name in the same project that left within seven days (a resumed Claude Code session keeps its `claude-<prefix>` name, so it continues where it left off), else at the newer of "24 hours ago" and "20 entries back". The human reads as `user`. A `journal` request with `digest: {reader, max_entries, max_chars, all_branches?, advance?}` answers `digest {text, head_seq, shown, collapsed, other_branches}` instead of a listing: entries after the reader's cursor (or after `since_seq` when given), the reader's own branch verbatim plus `join`/`leave`/`commit`/`handoff` from every branch, the newest within the budget rendered one per line, older ones folded into a leading "… N earlier entries" line, other branches into a trailing count; the reader's own `join`/`leave` lines are not news and are skipped. `advance` moves the cursor to `head_seq` when text was produced — everything the filter hid counts as seen too. An empty `project` means the reader's own. Served from the ring whenever the cursor lies inside it; otherwise the newest 1,000 entries after the cursor are read from the store. Every move is announced as `journal_read`. `agentdocker journal --new [--ack] [--all-branches] [--as AGENT]` prints the human's (or an agent's) digest.
+
+**Adapters.** The Claude Code hooks hand the digest over as `additionalContext`: `SessionStart` with up to 20 entries or 2,000 characters (`--digest-entries`, `--digest-chars`), `UserPromptSubmit` only what is new and at most 5 entries or 500 characters (`--prompt-digest-entries`, `--prompt-digest-chars`), and nothing when nothing is new; `PostToolUse` never carries journal text. `Stop` reads the last 64 KB of the session transcript, takes the last assistant message with text — fenced code and headings dropped, markdown stripped, first paragraph, trimmed to 280 characters at a word boundary — and sends it as the `release_all` summary with `summary_source: transcript`; a transcript summary only ever describes leases actually released, whereas an explicit `--summary` is journaled even when nothing was held. The MCP `read_journal {since?, all_branches?}` tool returns the digest and advances the cursor.
 
 ## Wire protocol
 
@@ -181,10 +185,10 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
-| `release {agent, lease, summary?}` | `lease` | holder only; `summary` becomes the journal entry's text |
-| `release_all {agent, summary?}` | `leases` | every lease the agent holds; the reply lists them |
+| `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
+| `release_all {agent, summary?, summary_source?}` | `leases` | every lease the agent holds; the reply lists them |
 | `journal_add {agent, summary}` | `journal_entry` | a note in the agent's project journal |
-| `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?}` | `journal` | newest `limit` entries oldest first, with the project id |
+| `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | newest `limit` entries oldest first, with the project id; with `digest {reader, max_entries, max_chars, all_branches?, advance?}` the reader's digest since its cursor instead (empty `project` = the reader's own) |
 | `journal_prune {project, before_seq}` | `pruned` | drops entries below `before_seq` |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; `file:` inputs resolve through the same physical checkout alias |
 | `events {replay?}` | stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
@@ -227,7 +231,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_created` (with the project id), `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `journal_appended`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_created` (with the project id), `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `journal_appended`, `journal_read`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 ## Process supervision
 
@@ -290,7 +294,7 @@ This phase replaces the earlier plan for a separate key/document context store. 
 
 See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering, attribution through leases, the `changes` table, and `changes`/`blame` all exist; attribution uses physical exclusive leases and remains best-effort.
 
-#### Change journal *(entries, storage, write path, and CLI done; digests next)*
+#### Change journal *(done)*
 
 What exists is described under [The journal](#the-journal); the rest of this section is the settled design it follows.
 
@@ -369,7 +373,7 @@ When the budget bites, the *oldest* entries collapse into the leading "… N ear
 
 **Retention.** Entries are kept forever by default: the journal is the audit trail, a busy five-agent team writes roughly a megabyte a day at worst, and SQLite is comfortable at millions of rows. `agentdocker journal prune --before <duration|seq> [--project]` deletes on demand, and an optional `[journal] retention = "180d"` in the daemon config is applied by the once-a-minute tick, deleting `journal`, `journal_paths`, and `journal_fts` rows together in batches of 1,000 so the tick stays short; a cursor below the new floor is clamped on read. Freed pages are reused by SQLite; `agentdocker daemon vacuum` reclaims disk when someone wants it back. No roll-up summaries.
 
-**Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `claim`/`release` tools accept `summary`.
+**Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `release` tool accepts `summary`.
 
 **Tests.** Core: rendering under both budget limits, the collapse rule, the branch filter, and cursor seeding (same name and project, within 7 days) are pure and unit-tested. Store: round trip, path-prefix and FTS queries, prune cascades, cursor clamp. Hooks: transcript-tail extraction against sample JSONL (markdown stripped, first paragraph, 280-char word boundary). Daemon: a release under which the ledger recorded changes produces one entry with those paths in the same transaction as the lease deletion.
 
@@ -457,7 +461,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback | 3 | 3, 6 |
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
-| 9b | change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
+| 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
 | 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
 | 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | per-agent tokens; `docker` / `podman` / `container` runtimes with closed defaults | 4 | 3 |

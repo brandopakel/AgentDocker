@@ -98,6 +98,13 @@ pub enum EventKind {
     JournalAppended {
         entry: JournalEntry,
     },
+    /// A reader's journal cursor moved: everything up to `seq` has been
+    /// shown to it. `reader` is an agent id, or `user` for the human.
+    JournalRead {
+        reader: String,
+        project: ProjectId,
+        seq: u64,
+    },
     /// An agent's checkout moved to another branch or commit.
     AgentVcsChanged {
         agent: AgentId,

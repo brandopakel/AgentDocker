@@ -14,6 +14,7 @@ use agentdocker_core::{
     ProjectId,
 };
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA_VERSION: i64 = 3;
@@ -331,6 +332,10 @@ impl Store {
     pub fn delete_agent(&self, id: &AgentId) -> Result<()> {
         self.conn
             .execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
+        self.conn.execute(
+            "DELETE FROM journal_cursors WHERE agent = ?1",
+            params![id.as_str()],
+        )?;
         self.conn
             .execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
         Ok(())
@@ -731,6 +736,46 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(removed)
+    }
+
+    // ----- journal cursors -----------------------------------------------
+
+    /// The last entry a reader was shown in a project; `None` for a reader
+    /// that has never been shown anything there.
+    pub fn journal_cursor(&self, reader: &str, project: &ProjectId) -> Result<Option<u64>> {
+        let seq: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT seq FROM journal_cursors WHERE agent = ?1 AND project = ?2",
+                params![reader, project.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(seq.map(|seq| u64::try_from(seq).unwrap_or(0)))
+    }
+
+    /// Record the last entry a reader was shown.
+    pub fn set_journal_cursor(
+        &self,
+        reader: &str,
+        project: &ProjectId,
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO journal_cursors (agent, project, seq, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent, project) DO UPDATE SET
+                 seq = excluded.seq,
+                 updated_at = excluded.updated_at",
+            params![
+                reader,
+                project.as_str(),
+                i64::try_from(seq).unwrap_or(i64::MAX),
+                now.to_rfc3339()
+            ],
+        )?;
+        Ok(())
     }
 
     // ----- events ---------------------------------------------------------
@@ -1199,6 +1244,33 @@ mod tests {
             Vec::<u64>::new(),
             "search rows pruned too"
         );
+    }
+
+    #[test]
+    fn journal_cursors_round_trip_and_go_with_their_agent() {
+        use agentdocker_core::ProjectId;
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
+        store
+            .set_journal_cursor("a1", &project, 7, Utc::now())
+            .unwrap();
+        store
+            .set_journal_cursor("a1", &project, 9, Utc::now())
+            .unwrap();
+        store
+            .set_journal_cursor("user", &project, 3, Utc::now())
+            .unwrap();
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), Some(9));
+        assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
+        assert_eq!(
+            store.journal_cursor("a1", &ProjectId::from("p2")).unwrap(),
+            None,
+            "one cursor per project"
+        );
+        store.delete_agent(&AgentId::from("a1")).unwrap();
+        assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
+        assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
     }
 
     #[test]
