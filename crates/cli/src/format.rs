@@ -129,6 +129,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::HandoffAccepted { agent, checkpoint } => {
             format!("{agent} accepted handoff {checkpoint}")
         }
+        EventKind::ValidationStarted { agent, validation } => {
+            format!("{agent} started validation {validation}")
+        }
         EventKind::ValidationFinished {
             agent,
             validation,

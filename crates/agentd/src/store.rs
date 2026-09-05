@@ -140,15 +140,18 @@ impl Store {
     ) -> Result<Vec<agentdocker_core::Validation>> {
         let mut stmt = self.conn.prepare(
             "SELECT json FROM documents WHERE kind='validation'
-            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2
-            AND json_extract(json, '$.exit_code')=0 AND json_extract(json, '$.timed_out')=0
-            AND json_extract(json, '$.descendants_survived')=0
-            AND json_extract(json, '$.after')=json_extract(json, '$.before') ORDER BY id",
+            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![checkout.to_string_lossy(), version], |row| {
             row.get::<_, String>(0)
         })?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let validations: Vec<agentdocker_core::Validation> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        Ok(validations
+            .into_iter()
+            .filter(agentdocker_core::Validation::passed)
+            .collect())
     }
 
     /// Atomically persist a typed recovery document before publishing its event.
@@ -182,6 +185,13 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_validation_finish_for_test(&self) {
+        self.conn.execute_batch("CREATE TEMP TRIGGER reject_validation_finish
+            BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'validation_finished'
+            BEGIN SELECT RAISE(FAIL, 'injected validation event failure'); END;").unwrap();
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -456,7 +466,7 @@ impl Store {
         if let Some(path) = query
             .path
             .as_deref()
-            .map(|p| p.trim_end_matches('/'))
+            .map(|p| p.trim_end_matches('/').trim_start_matches("./"))
             .filter(|p| !p.is_empty() && *p != ".")
         {
             args.push(Box::new(path.to_owned()));
@@ -831,6 +841,12 @@ mod tests {
             paths(query(Some("src/"), None, None, 50)),
             ["src/lib.rs", "src/main.rs"]
         );
+        for relative in ["./src", "./src/", "././src"] {
+            assert_eq!(
+                query(Some(relative), None, None, 50),
+                query(Some("src"), None, None, 50)
+            );
+        }
         assert_eq!(
             paths(query(Some("src/lib.rs"), None, None, 50)),
             ["src/lib.rs"]

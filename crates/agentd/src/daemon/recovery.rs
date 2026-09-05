@@ -350,12 +350,22 @@ impl Daemon {
                     "agent stopped before validation started",
                 );
             }
+            let mut event = Event::new(
+                EventKind::ValidationStarted {
+                    agent: agent.clone(),
+                    validation: id.clone(),
+                },
+                Utc::now(),
+            );
+            event.seq = state.next_seq;
             state.persist("validation start", |store| {
-                store.put_document("validation", &id, &validation)
+                store.put_document_with_event("validation", &id, &validation, &event)
             });
             if let Some(error) = state.storage_failure() {
                 return error;
             }
+            state.next_seq += 1;
+            let _ = state.events.send(event);
         }
         let mut cmd = tokio::process::Command::new(&command[0]);
         cmd.args(&command[1..])
@@ -655,7 +665,9 @@ mod tests {
     async fn failed_validation_event_does_not_store_or_publish_passing_evidence() {
         let tmp = tempfile::tempdir().unwrap();
         let (daemon, _) = fixture(&tmp).await;
-        lock(&daemon.state).next_seq -= 1;
+        lock(&daemon.state)
+            .store
+            .reject_validation_finish_for_test();
         let mut events = daemon.subscribe_events();
         assert!(matches!(
             daemon.validate("original", vec!["true".into()], 5).await,
@@ -664,7 +676,14 @@ mod tests {
                 ..
             }
         ));
-        assert!(events.try_recv().is_err());
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::ValidationStarted { .. }
+        ));
+        assert!(
+            events.try_recv().is_err(),
+            "no finished event was published"
+        );
         drop(daemon);
         let daemon =
             Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
@@ -678,6 +697,35 @@ mod tests {
         );
         assert!(!validations[0].passed());
         assert!(validations[0].exit_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_validation_start_event_prevents_command_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, root) = fixture(&tmp).await;
+        lock(&daemon.state).next_seq -= 1;
+        let before = std::fs::read(root.join("file")).unwrap();
+        assert!(matches!(
+            daemon
+                .validate(
+                    "original",
+                    vec!["sh".into(), "-c".into(), "printf changed > file".into()],
+                    5
+                )
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(root.join("file")).unwrap(), before);
+        assert!(
+            lock(&daemon.state)
+                .store
+                .documents::<Validation>("validation", None)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
