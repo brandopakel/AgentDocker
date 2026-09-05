@@ -16,21 +16,24 @@ use std::time::Instant;
 
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
-    Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, Lease, LeaseError,
-    LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId, ProjectRef, ProjectSource, Registry,
-    RegistryError, Request, ResourceKey, Response, VcsState, topic_matches,
+    Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
+    JournalKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId,
+    ProjectRef, ProjectSource, Registry, RegistryError, Request, ResourceKey, Response,
+    SummarySource, VcsState,
+    journal::{cap_paths, synthesise_summary},
+    topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use agentdocker_host::{procinfo, project, vcs};
 
-use crate::store::{ChangesQuery, Store};
+use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod recovery;
 mod working;
@@ -49,6 +52,16 @@ const MAX_WAIT_SECS: u64 = 600;
 /// How long `git` may take to find a repository's root commit before the
 /// project falls back to grouping by path for this daemon run.
 const FINGERPRINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long `git log` may take to name a commit for a journal entry.
+const SUBJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Newest journal entries kept in memory per active project.
+const JOURNAL_RING: usize = 256;
+/// A project's ring is dropped this long after its last live agent left.
+const RING_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+/// How long a release waits for the watcher to flush pending observations.
+const WATCHER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// Ledger rows examined per released resource when building an entry.
+const RELEASE_SCAN: usize = 10_000;
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -56,6 +69,9 @@ pub struct Daemon {
     started: Instant,
     state: Mutex<State>,
     shutdown: Notify,
+    /// Asks the watcher to flush pending observations now; set once the
+    /// watcher runs. Never held across an await.
+    watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
 }
 
 /// One synchronous transition owns memory, persistence and publication.
@@ -71,6 +87,18 @@ struct State {
     next_seq: u64,
     bus: broadcast::Sender<Envelope>,
     events: broadcast::Sender<Event>,
+    /// Next journal seq per project, loaded from the store on first use.
+    journal_seq: HashMap<ProjectId, u64>,
+    /// Newest entries per active project, so digests never touch SQLite.
+    journal_rings: HashMap<ProjectId, JournalRing>,
+    /// The last HEAD a commit entry was written for, per checkout, so a
+    /// move seen through several agents is journaled once.
+    last_head: HashMap<PathBuf, String>,
+}
+
+struct JournalRing {
+    entries: VecDeque<JournalEntry>,
+    touched: Instant,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -505,8 +533,12 @@ impl Daemon {
                 next_seq,
                 bus,
                 events,
+                journal_seq: HashMap::new(),
+                journal_rings: HashMap::new(),
+                last_head: HashMap::new(),
             }),
             shutdown: Notify::new(),
+            watcher_flush: Mutex::new(None),
         })
     }
 
@@ -628,8 +660,44 @@ impl Daemon {
                 lease,
                 ttl_secs,
             } => lock(&self.state).renew(&agent, &lease, ttl_secs),
-            Request::Release { agent, lease } => lock(&self.state).release(&agent, &lease),
-            Request::ReleaseAll { agent } => lock(&self.state).release_all(&agent),
+            Request::Release {
+                agent,
+                lease,
+                summary,
+            } => {
+                self.flush_watcher().await;
+                lock(&self.state).release(&agent, &lease, summary)
+            }
+            Request::ReleaseAll { agent, summary } => {
+                self.flush_watcher().await;
+                lock(&self.state).release_all(&agent, summary)
+            }
+            Request::JournalAdd { agent, summary } => {
+                lock(&self.state).journal_add(&agent, summary)
+            }
+            Request::Journal {
+                project,
+                since_seq,
+                until_seq,
+                agent,
+                branch,
+                kind,
+                path,
+                grep,
+                limit,
+            } => {
+                self.journal(
+                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit,
+                )
+                .await
+            }
+            Request::JournalPrune {
+                project,
+                before_seq,
+            } => match self.resolve_project(&project).await {
+                Ok(id) => lock(&self.state).journal_prune(&id, before_seq),
+                Err(response) => *response,
+            },
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
             Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
@@ -808,7 +876,7 @@ impl Daemon {
     /// timer, so branch and head stay right for agents that never report —
     /// adopted ones, and anything started with `run`.
     pub async fn refresh_vcs(&self, dir: Option<&Path>) {
-        let targets: Vec<(AgentId, PathBuf)> = lock(&self.state)
+        let targets: Vec<(AgentId, PathBuf, Option<VcsState>)> = lock(&self.state)
             .registry
             .live()
             .filter(|a| dir.is_none_or(|dir| a.project.as_ref().is_some_and(|p| p.dir() == dir)))
@@ -816,22 +884,39 @@ impl Daemon {
                 a.spec
                     .workdir
                     .clone()
-                    .map(|workdir| (a.id.clone(), workdir))
+                    .map(|workdir| (a.id.clone(), workdir, a.vcs.clone()))
             })
             .collect();
         if targets.is_empty() {
             return;
         }
+        // A moved HEAD is named while we are off the lock anyway.
         let observed = tokio::task::spawn_blocking(move || {
             targets
                 .into_iter()
-                .filter_map(|(id, dir)| vcs::state(&dir).map(|state| (id, state)))
+                .filter_map(|(id, dir, old)| {
+                    let state = vcs::state(&dir)?;
+                    let moved = state.head.is_some()
+                        && old.as_ref().and_then(|o| o.head.clone()) != state.head;
+                    let subject = if moved {
+                        state
+                            .head
+                            .as_deref()
+                            .and_then(|sha| vcs::subject(&dir, sha, SUBJECT_TIMEOUT))
+                    } else {
+                        None
+                    };
+                    Some((id, state, old, moved, subject))
+                })
                 .collect::<Vec<_>>()
         })
         .await
         .unwrap_or_default();
-        for (id, state) in observed {
-            self.apply_vcs(&id, state);
+        for (id, state, old, moved, subject) in observed {
+            self.apply_vcs(&id, state.clone());
+            if moved {
+                lock(&self.state).note_head_move(&id, old.as_ref(), &state, subject);
+            }
         }
     }
 
@@ -853,6 +938,95 @@ impl Daemon {
                 worktree: p.worktree.clone(),
             })
             .collect()
+    }
+
+    /// Let the watcher hand us its flush channel.
+    pub fn set_watcher_flush(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
+        *lock(&self.watcher_flush) = Some(sender);
+    }
+
+    /// The release barrier: have the watcher record whatever it is still
+    /// debouncing, so a release entry sees the changes made just before it.
+    /// Bounded, and a no-op when no watcher runs.
+    async fn flush_watcher(&self) {
+        let sender = lock(&self.watcher_flush).clone();
+        let Some(sender) = sender else {
+            return;
+        };
+        let (ack, done) = oneshot::channel();
+        if sender.send(ack).await.is_err() {
+            return;
+        }
+        let _ = tokio::time::timeout(WATCHER_FLUSH_TIMEOUT, done).await;
+    }
+
+    /// An absolute path made relative to the checkout containing it;
+    /// anything else passes through.
+    async fn relative_path(&self, raw: String) -> String {
+        if !Path::new(&raw).is_absolute() {
+            return raw;
+        }
+        let given = PathBuf::from(&raw);
+        let absolute = tokio::task::spawn_blocking(move || project::canonical(&given))
+            .await
+            .unwrap_or_else(|_| PathBuf::from(&raw));
+        let parent = absolute.parent().map(Path::to_path_buf);
+        match self.project_for(parent, false).await {
+            Some(found) => match absolute.strip_prefix(found.dir()) {
+                Ok(relative) => relative.to_string_lossy().into_owned(),
+                Err(_) => raw,
+            },
+            None => raw,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn journal(
+        &self,
+        project: &str,
+        since_seq: Option<u64>,
+        until_seq: Option<u64>,
+        agent: Option<String>,
+        branch: Option<String>,
+        kind: Option<String>,
+        path: Option<String>,
+        grep: Option<String>,
+        limit: usize,
+    ) -> Response {
+        let project = match self.resolve_project(project).await {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let agent = match agent.map(|reference| self.resolve(&reference)).transpose() {
+            Ok(agent) => agent,
+            Err(response) => return *response,
+        };
+        let kind = match kind.as_deref().map(JournalKind::parse) {
+            None => None,
+            Some(Some(kind)) => Some(kind),
+            Some(None) => {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "kind must be release, note, commit, join, leave, or handoff",
+                );
+            }
+        };
+        let path = match path {
+            Some(raw) => Some(self.relative_path(raw).await),
+            None => None,
+        };
+        let query = JournalQuery {
+            project,
+            since_seq,
+            until_seq,
+            agent,
+            branch,
+            kind,
+            path,
+            grep,
+            limit: limit.clamp(1, 10_000),
+        };
+        lock(&self.state).journal_query(query)
     }
 
     /// What the watcher saw in one debounced batch: file changes become
@@ -929,21 +1103,8 @@ impl Daemon {
         };
         // An absolute path is made relative to the checkout containing it.
         let path = match path {
-            Some(raw) if Path::new(&raw).is_absolute() => {
-                let given = PathBuf::from(&raw);
-                let absolute = tokio::task::spawn_blocking(move || project::canonical(&given))
-                    .await
-                    .unwrap_or_else(|_| PathBuf::from(&raw));
-                let parent = absolute.parent().map(Path::to_path_buf);
-                match self.project_for(parent, false).await {
-                    Some(found) => match absolute.strip_prefix(found.dir()) {
-                        Ok(relative) => Some(relative.to_string_lossy().into_owned()),
-                        Err(_) => Some(raw),
-                    },
-                    None => Some(raw),
-                }
-            }
-            other => other,
+            Some(raw) => Some(self.relative_path(raw).await),
+            None => None,
         };
         let query = ChangesQuery {
             project,
@@ -951,6 +1112,7 @@ impl Daemon {
             path,
             agent,
             limit: limit.clamp(1, 10_000),
+            after: None,
         };
         match self.store_op("changes", |store| store.changes(&query)) {
             Some(changes) => Response::Changes { changes },
@@ -959,6 +1121,10 @@ impl Daemon {
     }
 
     /// Trim the ledger. Called occasionally from the reaper.
+    pub fn evict_journal_rings(&self) {
+        lock(&self.state).evict_journal_rings();
+    }
+
     pub fn prune_changes(&self) {
         match lock(&self.state).store.prune_changes(CHANGE_HISTORY) {
             Ok(0) => {}
@@ -1454,10 +1620,8 @@ impl State {
         self.supervised.remove(id);
         self.persist("agent", |store| store.upsert_agent(&record));
         let released = self.leases.release_all(id);
-        for lease in released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
-            self.emit(EventKind::LeaseReleased { lease });
-        }
+        self.finish_release(id, released, None);
+        self.journal_event(&record, JournalKind::Leave, format!("left ({status})"));
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         self.emit(EventKind::AgentExited {
             agent: id.clone(),
@@ -1556,37 +1720,406 @@ impl State {
         }
     }
 
-    fn release(&mut self, reference: &str, lease: &LeaseId) -> Response {
+    fn release(&mut self, reference: &str, lease: &LeaseId, summary: Option<String>) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let result = self.leases.release(lease, &holder);
-        match result {
+        match self.leases.release(lease, &holder) {
             Ok(lease) => {
-                self.persist("lease", |store| store.delete_lease(&lease.id));
-                self.emit(EventKind::LeaseReleased {
-                    lease: lease.clone(),
-                });
-                Response::Lease { lease }
+                let mut released = self.finish_release(&holder, vec![lease], summary);
+                Response::Lease {
+                    lease: released.remove(0),
+                }
             }
             Err(err) => lease_error(err),
         }
     }
 
-    fn release_all(&mut self, reference: &str) -> Response {
+    fn release_all(&mut self, reference: &str, summary: Option<String>) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
         let released = self.leases.release_all(&holder);
+        let released = self.finish_release(&holder, released, summary);
+        Response::Leases { leases: released }
+    }
+
+    /// Leases already dropped from the table: persist their deletion with
+    /// the journal entry describing the release in one transaction, then
+    /// announce both. Returns the leases for the reply.
+    fn finish_release(
+        &mut self,
+        holder: &AgentId,
+        released: Vec<Lease>,
+        summary: Option<String>,
+    ) -> Vec<Lease> {
+        if released.is_empty() {
+            return released;
+        }
+        let entry = self
+            .release_entry(holder, &released, summary)
+            .map(|mut entry| {
+                entry.seq = self.next_journal_seq(&entry.project);
+                entry
+            });
+        let ids: Vec<LeaseId> = released.iter().map(|l| l.id.clone()).collect();
+        self.persist("release", |store| {
+            store.release_leases(&ids, entry.as_ref())
+        });
         for lease in &released {
-            self.persist("lease", |store| store.delete_lease(&lease.id));
             self.emit(EventKind::LeaseReleased {
                 lease: lease.clone(),
             });
         }
-        Response::Leases { leases: released }
+        if let Some(entry) = entry {
+            self.announce_journal(entry);
+        }
+        released
+    }
+
+    /// The journal entry for a release: what the ledger saw change under
+    /// the released paths while they were held, plus the summary the agent
+    /// gave, or one synthesised from those paths. `None` when there is
+    /// nothing to say.
+    fn release_entry(
+        &mut self,
+        holder: &AgentId,
+        released: &[Lease],
+        summary: Option<String>,
+    ) -> Option<JournalEntry> {
+        let record = self.registry.get(holder)?.clone();
+        let project = record.project.clone()?;
+        let checkout = project::canonical(project.dir());
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut range: Option<(u64, u64)> = None;
+        let mut head_before: Option<String> = None;
+        for lease in released.iter().filter(|l| l.resource.kind() == "path") {
+            let physical = project::canonical(Path::new(lease.resource.value()));
+            let Ok(relative) = physical.strip_prefix(&checkout) else {
+                continue;
+            };
+            let query = ChangesQuery {
+                project: project.id(),
+                since_seq: None,
+                path: Some(relative.to_string_lossy().into_owned()),
+                agent: None,
+                limit: RELEASE_SCAN,
+                after: Some(lease.acquired_at),
+            };
+            let Some(changes) = self.store_op("journal", |store| store.changes(&query)) else {
+                continue;
+            };
+            for change in changes
+                .into_iter()
+                .filter(|c| c.checkout.as_deref().is_none_or(|dir| dir == checkout))
+            {
+                range = Some(match range {
+                    None => (change.seq, change.seq),
+                    Some((lo, hi)) => (lo.min(change.seq), hi.max(change.seq)),
+                });
+                if head_before.is_none() {
+                    head_before = change.head.clone();
+                }
+                paths.push(change.path);
+            }
+        }
+        let (paths, paths_total) = cap_paths(paths);
+        let (summary, summary_source) = match summary
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            Some(text) => (text, SummarySource::Explicit),
+            None if paths.is_empty() => return None,
+            None => (
+                synthesise_summary(&paths, paths_total),
+                SummarySource::Synthesised,
+            ),
+        };
+        Some(JournalEntry {
+            project: project.id(),
+            seq: 0,
+            at: Utc::now(),
+            agent: Some(holder.clone()),
+            agent_name: record.spec.name.clone(),
+            branch: record.vcs.as_ref().and_then(|v| v.branch.clone()),
+            checkout: Some(checkout),
+            worktree: project.worktree.clone(),
+            kind: JournalKind::Release,
+            summary,
+            summary_source,
+            resources: released.iter().map(|l| l.resource.clone()).collect(),
+            paths,
+            paths_total,
+            head_before,
+            head_after: record.vcs.as_ref().and_then(|v| v.head.clone()),
+            changes: range,
+        })
+    }
+
+    /// A journal entry about an agent that needs no ledger: join, leave,
+    /// note, commit.
+    fn plain_entry(
+        &self,
+        record: &AgentRecord,
+        kind: JournalKind,
+        summary: String,
+        source: SummarySource,
+    ) -> Option<JournalEntry> {
+        let project = record.project.as_ref()?;
+        Some(JournalEntry {
+            project: project.id(),
+            seq: 0,
+            at: Utc::now(),
+            agent: Some(record.id.clone()),
+            agent_name: record.spec.name.clone(),
+            branch: record.vcs.as_ref().and_then(|v| v.branch.clone()),
+            checkout: Some(project::canonical(project.dir())),
+            worktree: project.worktree.clone(),
+            kind,
+            summary,
+            summary_source: source,
+            resources: Vec::new(),
+            paths: Vec::new(),
+            paths_total: 0,
+            head_before: None,
+            head_after: record.vcs.as_ref().and_then(|v| v.head.clone()),
+            changes: None,
+        })
+    }
+
+    fn next_journal_seq(&mut self, project: &ProjectId) -> u64 {
+        if let Some(next) = self.journal_seq.get_mut(project) {
+            let seq = *next;
+            *next += 1;
+            return seq;
+        }
+        let stored = self
+            .store_op("journal", |store| store.max_journal_seq(project))
+            .unwrap_or(0);
+        self.journal_seq.insert(project.clone(), stored + 2);
+        stored + 1
+    }
+
+    /// Assign a seq, persist (own transaction), ring, announce.
+    fn append_journal(&mut self, mut entry: JournalEntry) -> JournalEntry {
+        entry.seq = self.next_journal_seq(&entry.project);
+        self.persist("journal", |store| store.append_journal(&entry));
+        self.announce_journal(entry.clone());
+        entry
+    }
+
+    /// Ring and event for an entry that is already persisted.
+    fn announce_journal(&mut self, entry: JournalEntry) {
+        if let Some(ring) = self.journal_rings.get_mut(&entry.project) {
+            ring.entries.push_back(entry.clone());
+            while ring.entries.len() > JOURNAL_RING {
+                ring.entries.pop_front();
+            }
+            ring.touched = Instant::now();
+        }
+        debug!(project = %entry.project.short(), seq = entry.seq, kind = %entry.kind, "journal");
+        self.emit(EventKind::JournalAppended { entry });
+    }
+
+    /// Entries with a seq assigned go through the same path whether they
+    /// travel with a release or alone.
+    fn journal_event(&mut self, record: &AgentRecord, kind: JournalKind, summary: String) {
+        if let Some(entry) = self.plain_entry(record, kind, summary, SummarySource::Synthesised) {
+            self.append_journal(entry);
+        }
+    }
+
+    fn journal_add(&mut self, reference: &str, summary: String) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let summary = summary.trim().to_owned();
+        if summary.is_empty() {
+            return Response::error(ErrorCode::Invalid, "a note needs some text");
+        }
+        let Some(record) = self.registry.get(&id).cloned() else {
+            return Response::error(ErrorCode::NotFound, "agent vanished");
+        };
+        let Some(entry) =
+            self.plain_entry(&record, JournalKind::Note, summary, SummarySource::Explicit)
+        else {
+            return Response::error(ErrorCode::Invalid, "the agent is in no project");
+        };
+        let entry = self.append_journal(entry);
+        Response::JournalEntry { entry }
+    }
+
+    /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
+    /// however many agents share it. Attributed to the only agent in that
+    /// checkout, else the holder of its `branch:` lease, else nobody.
+    fn note_head_move(
+        &mut self,
+        id: &AgentId,
+        old: Option<&VcsState>,
+        new: &VcsState,
+        subject: Option<String>,
+    ) {
+        let Some(head) = new.head.clone() else {
+            return;
+        };
+        let Some(record) = self.registry.get(id).cloned() else {
+            return;
+        };
+        let Some(project) = record.project.clone() else {
+            return;
+        };
+        let checkout = project::canonical(project.dir());
+        if self.last_head.get(&checkout) == Some(&head) {
+            return;
+        }
+        self.last_head.insert(checkout.clone(), head.clone());
+        if old.is_none() {
+            return; // first observation, not a move
+        }
+        let short: String = head.chars().take(7).collect();
+        let summary = match (&old.and_then(|o| o.branch.clone()), &new.branch) {
+            (before, Some(branch)) if before.as_deref() != Some(branch) => {
+                format!("switched to {branch} at {short}")
+            }
+            (_, None) => format!("detached at {short}"),
+            _ => match subject {
+                Some(subject) => format!("committed {short}: {subject}"),
+                None => format!("committed {short}"),
+            },
+        };
+        let in_checkout: Vec<AgentRecord> = self
+            .registry
+            .live()
+            .filter(|a| {
+                a.project
+                    .as_ref()
+                    .is_some_and(|p| project::canonical(p.dir()) == checkout)
+            })
+            .cloned()
+            .collect();
+        let attributed = match in_checkout.as_slice() {
+            [one] => Some(one.clone()),
+            _ => new.branch.as_ref().and_then(|branch| {
+                let key = ResourceKey::new(format!("branch:{branch}"));
+                let holder = self
+                    .leases
+                    .holders_of(&key)
+                    .first()
+                    .map(|l| l.holder.clone())?;
+                self.registry.get(&holder).cloned()
+            }),
+        };
+        let mut entry = match &attributed {
+            Some(agent) => self.plain_entry(
+                agent,
+                JournalKind::Commit,
+                summary,
+                SummarySource::Synthesised,
+            ),
+            None => self
+                .plain_entry(
+                    &record,
+                    JournalKind::Commit,
+                    summary,
+                    SummarySource::Synthesised,
+                )
+                .map(|mut e| {
+                    e.agent = None;
+                    e.agent_name = "external".to_owned();
+                    e
+                }),
+        }
+        .unwrap_or_else(|| unreachable!("record has a project"));
+        entry.branch = new.branch.clone();
+        entry.head_before = old.and_then(|o| o.head.clone());
+        entry.head_after = Some(head);
+        self.append_journal(entry);
+    }
+
+    /// Serve a query, from the ring when it can be.
+    fn journal_query(&mut self, query: JournalQuery) -> Response {
+        let simple = query.agent.is_none()
+            && query.branch.is_none()
+            && query.kind.is_none()
+            && query.path.is_none()
+            && query.grep.is_none()
+            && query.until_seq.is_none();
+        if simple {
+            let ring = self.ring(&query.project);
+            let oldest = ring.entries.front().map(|e| e.seq).unwrap_or(u64::MAX);
+            let covers = ring.entries.len() < JOURNAL_RING
+                || query.since_seq.is_some_and(|since| since + 1 >= oldest);
+            if covers {
+                let entries: Vec<JournalEntry> = ring
+                    .entries
+                    .iter()
+                    .filter(|e| query.since_seq.is_none_or(|since| e.seq > since))
+                    .cloned()
+                    .collect();
+                let start = entries.len().saturating_sub(query.limit.max(1));
+                return Response::Journal {
+                    project: query.project,
+                    entries: entries[start..].to_vec(),
+                };
+            }
+        }
+        match self.store_op("journal", |store| store.journal(&query)) {
+            Some(entries) => Response::Journal {
+                project: query.project,
+                entries,
+            },
+            None => Response::error(ErrorCode::Internal, "journal query failed"),
+        }
+    }
+
+    /// The project's ring, loaded from the store on first use.
+    fn ring(&mut self, project: &ProjectId) -> &mut JournalRing {
+        if !self.journal_rings.contains_key(project) {
+            let newest = self
+                .store_op("journal", |store| {
+                    store.journal(&JournalQuery::new(project.clone(), JOURNAL_RING))
+                })
+                .unwrap_or_default();
+            self.journal_rings.insert(
+                project.clone(),
+                JournalRing {
+                    entries: newest.into_iter().collect(),
+                    touched: Instant::now(),
+                },
+            );
+        }
+        let ring = self.journal_rings.get_mut(project).expect("just inserted");
+        ring.touched = Instant::now();
+        ring
+    }
+
+    /// Drop rings of projects with no live agent that nobody read lately.
+    pub fn evict_journal_rings(&mut self) {
+        let active: HashSet<ProjectId> = self
+            .registry
+            .live()
+            .filter_map(|a| a.project.as_ref().map(ProjectRef::id))
+            .collect();
+        self.journal_rings
+            .retain(|project, ring| active.contains(project) || ring.touched.elapsed() < RING_IDLE);
+    }
+
+    fn journal_prune(&mut self, project: &ProjectId, before_seq: u64) -> Response {
+        match self.store_op("journal", |store| store.prune_journal(project, before_seq)) {
+            Some(removed) => {
+                if let Some(ring) = self.journal_rings.get_mut(project) {
+                    ring.entries.retain(|e| e.seq >= before_seq);
+                }
+                if removed > 0 {
+                    info!(project = %project.short(), removed, "pruned the journal");
+                }
+                Response::Pruned { removed }
+            }
+            None => Response::error(ErrorCode::Internal, "journal prune failed"),
+        }
     }
 
     pub fn expire_leases(&mut self) {
@@ -1704,6 +2237,26 @@ impl State {
                 agent: record.id.clone(),
                 pid: record.pid,
             });
+        }
+        if let Some(project) = &record.project {
+            let mut what = String::from("joined");
+            let mut details: Vec<String> = Vec::new();
+            if let Some(worktree) = &project.worktree {
+                details.push(format!(
+                    "worktree {}",
+                    worktree
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(branch) = record.vcs.as_ref().and_then(|v| v.branch.clone()) {
+                details.push(format!("branch {branch}"));
+            }
+            if !details.is_empty() {
+                what.push_str(&format!(" ({})", details.join(", ")));
+            }
+            self.journal_event(&record, JournalKind::Join, what);
         }
         Response::Agent { agent: record }
     }
@@ -2174,6 +2727,7 @@ mod tests {
             .handle(Request::Release {
                 agent: "a".into(),
                 lease: lease.id,
+                summary: None,
             })
             .await;
         let response = waiter.await.unwrap();
@@ -2814,6 +3368,7 @@ mod tests {
         daemon
             .handle(Request::ReleaseAll {
                 agent: "holder".into(),
+                summary: None,
             })
             .await;
         assert!(matches!(
@@ -3158,5 +3713,294 @@ mod tests {
             }
         })
         .await;
+    }
+
+    async fn journal_of(
+        daemon: &Arc<Daemon>,
+        project: &Path,
+        kind: Option<&str>,
+        path: Option<&str>,
+        grep: Option<&str>,
+    ) -> Vec<JournalEntry> {
+        match daemon
+            .handle(Request::Journal {
+                project: project.to_string_lossy().into_owned(),
+                since_seq: None,
+                until_seq: None,
+                agent: None,
+                branch: None,
+                kind: kind.map(str::to_owned),
+                path: path.map(str::to_owned),
+                grep: grep.map(str::to_owned),
+                limit: 50,
+            })
+            .await
+        {
+            Response::Journal { entries, .. } => entries,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn releases_notes_joins_and_leaves_are_journaled() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        let daemon = open(&dir);
+        let a = register_in(&daemon, "a", &repo).await;
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(50),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        // Joining is the first entry.
+        let entries = journal_of(&daemon, &repo, None, None, None).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, JournalKind::Join);
+        assert_eq!(entries[0].seq, 1);
+        assert!(
+            entries[0].summary.contains("branch main"),
+            "{}",
+            entries[0].summary
+        );
+
+        // Two files edited under leases, released with no summary: one
+        // synthesised entry naming both, with the ledger range.
+        let lib = repo.join("src/lib.rs");
+        let main = repo.join("src/main.rs");
+        for path in [&lib, &main] {
+            assert!(matches!(
+                claim(&daemon, "a", &format!("path:{}", path.display())).await,
+                Response::Lease { .. }
+            ));
+        }
+        std::fs::write(&lib, "fn a() {}\n").unwrap();
+        std::fs::write(&main, "fn main() {}\n").unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let Response::Leases { leases } = daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: None,
+            })
+            .await
+        else {
+            panic!("release_all failed");
+        };
+        assert_eq!(leases.len(), 2);
+        let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        let release = &entries[0];
+        assert_eq!(release.summary_source, SummarySource::Synthesised);
+        assert_eq!(
+            release.summary,
+            "edited 2 files under src/: lib.rs, main.rs"
+        );
+        assert_eq!(
+            release.paths,
+            vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")]
+        );
+        assert_eq!(release.paths_total, 2);
+        assert!(release.changes.is_some_and(|(lo, hi)| lo <= hi));
+        assert_eq!(release.resources.len(), 2);
+        assert_eq!(release.agent, Some(a.id.clone()));
+        assert!(release.head_after.is_some());
+
+        // The barrier: a change made right before the release, with no
+        // wait for the watcher's debounce, is still in the entry.
+        assert!(matches!(
+            claim(&daemon, "a", &format!("path:{}", lib.display())).await,
+            Response::Lease { .. }
+        ));
+        std::fs::write(&lib, "fn a() { /* parser */ }\n").unwrap();
+        let Response::Leases { .. } = daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: Some("rewrote the parser".to_owned()),
+            })
+            .await
+        else {
+            panic!("release_all failed");
+        };
+        let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
+        assert_eq!(entries.len(), 2);
+        let explicit = &entries[1];
+        assert_eq!(explicit.summary_source, SummarySource::Explicit);
+        assert_eq!(explicit.summary, "rewrote the parser");
+        assert_eq!(
+            explicit.paths,
+            vec![PathBuf::from("src/lib.rs")],
+            "barrier flushed the watcher"
+        );
+        assert!(explicit.seq > release.seq);
+
+        // Nothing changed and nothing said: no entry.
+        assert!(matches!(
+            claim(&daemon, "a", &format!("path:{}", main.display())).await,
+            Response::Lease { .. }
+        ));
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "a".to_owned(),
+                summary: None,
+            })
+            .await;
+        assert_eq!(
+            journal_of(&daemon, &repo, Some("release"), None, None)
+                .await
+                .len(),
+            2
+        );
+
+        // Notes, and the filters.
+        let Response::JournalEntry { entry: note } = daemon
+            .handle(Request::JournalAdd {
+                agent: "a".to_owned(),
+                summary: "lexer is next".to_owned(),
+            })
+            .await
+        else {
+            panic!("journal_add failed");
+        };
+        assert_eq!(note.kind, JournalKind::Note);
+        assert_eq!(
+            journal_of(&daemon, &repo, Some("note"), None, None)
+                .await
+                .len(),
+            1
+        );
+        let by_path = journal_of(&daemon, &repo, None, Some(&lib.to_string_lossy()), None).await;
+        assert_eq!(by_path.len(), 2, "both releases touched src/lib.rs");
+        let by_dir = journal_of(&daemon, &repo, None, Some("src"), None).await;
+        assert_eq!(by_dir.len(), 2);
+        let grep = journal_of(&daemon, &repo, None, None, Some("parser")).await;
+        assert_eq!(grep.len(), 1);
+        assert_eq!(grep[0].seq, explicit.seq);
+        assert!(matches!(
+            daemon
+                .handle(Request::Journal {
+                    project: repo.to_string_lossy().into_owned(),
+                    since_seq: None,
+                    until_seq: None,
+                    agent: None,
+                    branch: None,
+                    kind: Some("bogus".to_owned()),
+                    path: None,
+                    grep: None,
+                    limit: 50,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+
+        // Leaving is journaled, and the ring survives a prune.
+        daemon
+            .handle(Request::Deregister {
+                agent: "a".to_owned(),
+            })
+            .await;
+        let all = journal_of(&daemon, &repo, None, None, None).await;
+        assert_eq!(all.last().map(|e| e.kind), Some(JournalKind::Leave));
+        let seqs: Vec<u64> = all.iter().map(|e| e.seq).collect();
+        assert_eq!(
+            seqs,
+            (1..=seqs.len() as u64).collect::<Vec<_>>(),
+            "dense per-project seqs"
+        );
+        let Response::Pruned { removed } = daemon
+            .handle(Request::JournalPrune {
+                project: repo.to_string_lossy().into_owned(),
+                before_seq: 3,
+            })
+            .await
+        else {
+            panic!("prune failed");
+        };
+        assert_eq!(removed, 2);
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await[0].seq, 3);
+
+        // A restart continues the seq and reloads the ring.
+        drop(daemon);
+        let daemon = open(&dir);
+        register_in(&daemon, "b", &repo).await;
+        let after = journal_of(&daemon, &repo, None, None, None).await;
+        assert_eq!(after.last().map(|e| e.kind), Some(JournalKind::Join));
+        assert_eq!(after.last().map(|e| e.seq), Some(seqs.len() as u64 + 1));
+    }
+
+    #[tokio::test]
+    async fn head_moves_are_journaled_once_per_checkout() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+        let daemon = open(&dir);
+        register_in(&daemon, "a", &repo).await;
+        register_in(&daemon, "b", &repo).await;
+        daemon.refresh_vcs(None).await;
+        assert!(
+            journal_of(&daemon, &repo, Some("commit"), None, None)
+                .await
+                .is_empty()
+        );
+
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "Add lexer"]
+        ));
+        daemon.refresh_vcs(None).await;
+        daemon.refresh_vcs(None).await;
+        let commits = journal_of(&daemon, &repo, Some("commit"), None, None).await;
+        assert_eq!(commits.len(), 1, "two agents, one checkout, one entry");
+        assert!(
+            commits[0].summary.starts_with("committed "),
+            "{}",
+            commits[0].summary
+        );
+        assert!(
+            commits[0].summary.ends_with(": Add lexer"),
+            "{}",
+            commits[0].summary
+        );
+        assert_eq!(
+            commits[0].agent, None,
+            "shared checkout, nobody holds the branch"
+        );
+        assert_eq!(commits[0].agent_name, "external");
+        assert!(commits[0].head_before.is_some() && commits[0].head_after.is_some());
+
+        assert!(git(dir.path(), &repo, &["checkout", "-q", "-b", "feature"]));
+        daemon.refresh_vcs(None).await;
+        let commits = journal_of(&daemon, &repo, Some("commit"), None, None).await;
+        assert_eq!(commits.len(), 1, "same head, no new entry");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "On feature"]
+        ));
+        daemon.refresh_vcs(None).await;
+        let commits = journal_of(&daemon, &repo, Some("commit"), None, None).await;
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[1].branch.as_deref(), Some("feature"));
     }
 }

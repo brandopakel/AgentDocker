@@ -122,7 +122,7 @@ impl Daemon {
             checkpoint: id,
         });
         if release {
-            state.release_all(agent.as_str());
+            state.release_all(agent.as_str(), None);
         }
         Response::Checkpoint { checkpoint }
     }

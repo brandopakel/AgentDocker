@@ -406,6 +406,15 @@ impl<B: Backend> McpServer<B> {
                 self.forward(Request::Release {
                     agent: me,
                     lease: LeaseId::from(args.lease.as_str()),
+                    summary: args.summary,
+                })
+                .await
+            }
+            "journal_note" => {
+                let args: JournalNoteArgs = parse(arguments)?;
+                self.forward(Request::JournalAdd {
+                    agent: me,
+                    summary: args.summary,
                 })
                 .await
             }
@@ -516,6 +525,13 @@ struct RenewArgs {
 #[derive(Deserialize)]
 struct ReleaseArgs {
     lease: String,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JournalNoteArgs {
+    summary: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -706,11 +722,24 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "release",
-            "description": "Release a lease this agent holds. Do this as soon as you are done with the resource.",
+            "description": "Release a lease this agent holds. Do this as soon as you are done with the resource, and say in `summary` what you changed and why: it becomes the project's journal entry that other agents read.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "lease": { "type": "string", "description": "Lease id from claim." } },
+                "properties": {
+                    "lease": { "type": "string", "description": "Lease id from claim." },
+                    "summary": { "type": "string", "description": "One or two sentences: what changed under this lease and why." }
+                },
                 "required": ["lease"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "journal_note",
+            "description": "Append a note to this project's journal — a decision, a finding, or what you are about to do — so agents joining later see it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "summary": { "type": "string" } },
+                "required": ["summary"],
                 "additionalProperties": false
             }
         }),
@@ -827,6 +856,7 @@ mod tests {
                 "claim",
                 "renew",
                 "release",
+                "journal_note",
                 "list_leases"
             ]
         );

@@ -9,7 +9,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::{AgentId, AgentRecord, Change, Envelope, Event, Lease, LeaseId, ProjectId};
+use agentdocker_core::{
+    AgentId, AgentRecord, Change, Envelope, Event, JournalEntry, JournalKind, Lease, LeaseId,
+    ProjectId,
+};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -69,10 +72,74 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 CREATE INDEX IF NOT EXISTS changes_project_seq ON changes (project, seq);
 CREATE INDEX IF NOT EXISTS changes_project_path ON changes (project, path, seq);
+CREATE TABLE IF NOT EXISTS journal (
+    id      INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    seq     INTEGER NOT NULL,
+    at      TEXT NOT NULL,
+    agent   TEXT,
+    branch  TEXT,
+    kind    TEXT NOT NULL,
+    json    TEXT NOT NULL,
+    UNIQUE (project, seq)
+);
+CREATE INDEX IF NOT EXISTS journal_branch ON journal (project, branch, seq);
+CREATE INDEX IF NOT EXISTS journal_agent ON journal (project, agent, seq);
+CREATE TABLE IF NOT EXISTS journal_paths (
+    project TEXT NOT NULL,
+    path    TEXT NOT NULL,
+    seq     INTEGER NOT NULL,
+    PRIMARY KEY (project, path, seq)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS journal_cursors (
+    agent      TEXT NOT NULL,
+    project    TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent, project)
+) WITHOUT ROWID;
 ";
+
+/// Full-text search over journal summaries. Contentless: the text lives in
+/// the journal row, the index only maps terms to `journal.id`.
+const JOURNAL_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(summary, content='', contentless_delete=1)";
 
 pub struct Store {
     conn: Connection,
+    /// Whether the SQLite build gave us FTS5; `--grep` falls back to LIKE.
+    fts: bool,
+}
+
+/// A journal query; see [`Store::journal`].
+#[derive(Debug, Clone)]
+pub struct JournalQuery {
+    pub project: ProjectId,
+    pub since_seq: Option<u64>,
+    pub until_seq: Option<u64>,
+    pub agent: Option<AgentId>,
+    pub branch: Option<String>,
+    pub kind: Option<JournalKind>,
+    /// Checkout-relative; a directory matches everything beneath it.
+    pub path: Option<String>,
+    pub grep: Option<String>,
+    pub limit: usize,
+}
+
+impl JournalQuery {
+    /// Everything in a project, newest `limit`.
+    pub fn new(project: ProjectId, limit: usize) -> Self {
+        Self {
+            project,
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: None,
+            limit,
+        }
+    }
 }
 
 /// A ledger query; see [`Store::changes`].
@@ -84,6 +151,8 @@ pub struct ChangesQuery {
     pub path: Option<String>,
     pub agent: Option<AgentId>,
     pub limit: usize,
+    /// Only changes seen at or after this time.
+    pub after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Store {
@@ -204,7 +273,14 @@ impl Store {
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
             ),
         }
-        Ok(Self { conn })
+        let fts = match conn.execute_batch(JOURNAL_FTS) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(%err, "FTS5 unavailable; journal --grep falls back to LIKE");
+                false
+            }
+        };
+        Ok(Self { conn, fts })
     }
 
     // ----- agents ---------------------------------------------------------
@@ -433,6 +509,10 @@ impl Store {
             args.push(Box::new(agent.as_str().to_owned()));
             sql.push_str(&format!(" AND by_agent = ?{}", args.len()));
         }
+        if let Some(after) = &query.after {
+            args.push(Box::new(after.to_rfc3339()));
+            sql.push_str(&format!(" AND at >= ?{}", args.len()));
+        }
         args.push(Box::new(i64::try_from(query.limit).unwrap_or(i64::MAX)));
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
         let mut stmt = self.conn.prepare(&sql)?;
@@ -462,6 +542,165 @@ impl Store {
                 params![project, i64::try_from(keep).unwrap_or(i64::MAX)],
             )?;
         }
+        Ok(removed)
+    }
+
+    // ----- journal --------------------------------------------------------
+
+    /// The highest journal `seq` stored for a project, or 0.
+    pub fn max_journal_seq(&self, project: &ProjectId) -> Result<u64> {
+        let max: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM journal WHERE project = ?1",
+            params![project.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(max).unwrap_or(0))
+    }
+
+    /// Append an entry (its `seq` already assigned) on its own.
+    pub fn append_journal(&self, entry: &JournalEntry) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_journal(entry)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete released leases and append the entry that describes the
+    /// release in one transaction, so a crash can leave neither a released
+    /// lease without its entry nor an entry for a lease still held.
+    pub fn release_leases(&self, leases: &[LeaseId], entry: Option<&JournalEntry>) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in leases {
+            self.conn
+                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+        }
+        if let Some(entry) = entry {
+            self.insert_journal(entry)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn insert_journal(&self, entry: &JournalEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO journal (project, seq, at, agent, branch, kind, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                entry.project.as_str(),
+                i64::try_from(entry.seq).unwrap_or(i64::MAX),
+                entry.at.to_rfc3339(),
+                entry.agent.as_ref().map(AgentId::as_str),
+                entry.branch,
+                entry.kind.to_string(),
+                serde_json::to_string(entry)?,
+            ],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        for path in &entry.paths {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO journal_paths (project, path, seq) VALUES (?1, ?2, ?3)",
+                params![
+                    entry.project.as_str(),
+                    path.to_string_lossy(),
+                    i64::try_from(entry.seq).unwrap_or(i64::MAX)
+                ],
+            )?;
+        }
+        if self.fts {
+            self.conn.execute(
+                "INSERT INTO journal_fts (rowid, summary) VALUES (?1, ?2)",
+                params![id, entry.summary],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The newest `limit` entries matching the query, oldest first.
+    pub fn journal(&self, query: &JournalQuery) -> Result<Vec<JournalEntry>> {
+        let mut sql = String::from("SELECT json FROM journal WHERE project = ?1");
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(query.project.as_str().to_owned())];
+        if let Some(since) = query.since_seq {
+            args.push(Box::new(i64::try_from(since).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq > ?{}", args.len()));
+        }
+        if let Some(until) = query.until_seq {
+            args.push(Box::new(i64::try_from(until).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq <= ?{}", args.len()));
+        }
+        if let Some(agent) = &query.agent {
+            args.push(Box::new(agent.as_str().to_owned()));
+            sql.push_str(&format!(" AND agent = ?{}", args.len()));
+        }
+        if let Some(branch) = &query.branch {
+            args.push(Box::new(branch.clone()));
+            sql.push_str(&format!(" AND branch = ?{}", args.len()));
+        }
+        if let Some(kind) = &query.kind {
+            args.push(Box::new(kind.to_string()));
+            sql.push_str(&format!(" AND kind = ?{}", args.len()));
+        }
+        if let Some(path) = &query.path {
+            let path = path.trim_end_matches('/');
+            args.push(Box::new(path.to_owned()));
+            let exact = args.len();
+            args.push(Box::new(format!("{path}/")));
+            let lower = args.len();
+            args.push(Box::new(format!("{path}0")));
+            let upper = args.len();
+            sql.push_str(&format!(
+                " AND seq IN (SELECT seq FROM journal_paths WHERE project = ?1 AND (path = ?{exact} OR (path >= ?{lower} AND path < ?{upper})))"
+            ));
+        }
+        if let Some(grep) = &query.grep {
+            if self.fts {
+                // Quote the whole phrase so user text is never FTS syntax.
+                args.push(Box::new(format!("\"{}\"", grep.replace('"', "\"\""))));
+                sql.push_str(&format!(
+                    " AND id IN (SELECT rowid FROM journal_fts WHERE journal_fts MATCH ?{})",
+                    args.len()
+                ));
+            } else {
+                args.push(Box::new(format!("%{grep}%")));
+                sql.push_str(&format!(" AND json LIKE ?{}", args.len()));
+            }
+        }
+        args.push(Box::new(
+            i64::try_from(query.limit.max(1)).unwrap_or(i64::MAX),
+        ));
+        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut entries: Vec<JournalEntry> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        entries.reverse();
+        Ok(entries)
+    }
+
+    /// Drop a project's entries below `before_seq`, with their paths and
+    /// search rows. Returns how many entries went.
+    pub fn prune_journal(&self, project: &ProjectId, before_seq: u64) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let before = i64::try_from(before_seq).unwrap_or(i64::MAX);
+        if self.fts {
+            self.conn.execute(
+                "DELETE FROM journal_fts WHERE rowid IN (SELECT id FROM journal WHERE project = ?1 AND seq < ?2)",
+                params![project.as_str(), before],
+            )?;
+        }
+        self.conn.execute(
+            "DELETE FROM journal_paths WHERE project = ?1 AND seq < ?2",
+            params![project.as_str(), before],
+        )?;
+        let removed = self.conn.execute(
+            "DELETE FROM journal WHERE project = ?1 AND seq < ?2",
+            params![project.as_str(), before],
+        )?;
+        tx.commit()?;
         Ok(removed)
     }
 
@@ -728,6 +967,7 @@ mod tests {
                     path: path.map(str::to_owned),
                     agent: agent.map(AgentId::from),
                     limit,
+                    after: None,
                 })
                 .unwrap()
                 .into_iter()
@@ -772,6 +1012,7 @@ mod tests {
                 path: Some("README.md".into()),
                 agent: None,
                 limit: 1,
+                after: None,
             })
             .unwrap();
         assert_eq!(stored[0].seq, s4, "the blob carries its seq");
@@ -788,12 +1029,146 @@ mod tests {
                     since_seq: None,
                     path: None,
                     agent: None,
-                    limit: 50
+                    limit: 50,
+                    after: None,
                 })
                 .unwrap()
                 .len(),
             1,
             "other projects untouched"
+        );
+    }
+
+    #[test]
+    fn journal_appends_queries_and_prunes_with_leases_in_one_transaction() {
+        use agentdocker_core::{JournalEntry, JournalKind, ProjectId, SummarySource};
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        let entry = |seq: u64,
+                     kind: JournalKind,
+                     summary: &str,
+                     paths: &[&str],
+                     agent: &str,
+                     branch: &str| JournalEntry {
+            project: project.clone(),
+            seq,
+            at: Utc::now(),
+            agent: Some(AgentId::from(agent)),
+            agent_name: agent.to_owned(),
+            branch: Some(branch.to_owned()),
+            checkout: None,
+            worktree: None,
+            kind,
+            summary: summary.to_owned(),
+            summary_source: SummarySource::Explicit,
+            resources: Vec::new(),
+            paths: paths.iter().map(|p| p.into()).collect(),
+            paths_total: paths.len(),
+            head_before: None,
+            head_after: None,
+            changes: None,
+        };
+        assert_eq!(store.max_journal_seq(&project).unwrap(), 0);
+
+        // A release and its entry land together.
+        let lease = Lease {
+            id: LeaseId::from("l1"),
+            resource: ResourceKey::new("path:/repo/src/a.rs"),
+            holder: AgentId::from("a1"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: Utc::now(),
+            expires_at: Utc::now() + Duration::seconds(60),
+            note: None,
+        };
+        store.upsert_lease(&lease).unwrap();
+        store
+            .release_leases(
+                std::slice::from_ref(&lease.id),
+                Some(&entry(
+                    1,
+                    JournalKind::Release,
+                    "rewrote the parser",
+                    &["src/a.rs", "src/b.rs"],
+                    "a1",
+                    "main",
+                )),
+            )
+            .unwrap();
+        assert!(store.load_leases().unwrap().is_empty());
+        store
+            .append_journal(&entry(
+                2,
+                JournalKind::Note,
+                "lexer next",
+                &[],
+                "a1",
+                "main",
+            ))
+            .unwrap();
+        store
+            .append_journal(&entry(
+                3,
+                JournalKind::Commit,
+                "committed abc: Add lexer",
+                &[],
+                "a2",
+                "feature",
+            ))
+            .unwrap();
+        store
+            .append_journal(&entry(
+                4,
+                JournalKind::Release,
+                "touched docs",
+                &["docs/x.md"],
+                "a2",
+                "feature",
+            ))
+            .unwrap();
+        assert_eq!(store.max_journal_seq(&project).unwrap(), 4);
+
+        let q = |f: &dyn Fn(&mut JournalQuery)| {
+            let mut query = JournalQuery::new(project.clone(), 50);
+            f(&mut query);
+            store
+                .journal(&query)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(q(&|_| {}), [1, 2, 3, 4]);
+        assert_eq!(q(&|x| x.limit = 2), [3, 4], "newest two, oldest first");
+        assert_eq!(q(&|x| x.since_seq = Some(2)), [3, 4]);
+        assert_eq!(q(&|x| x.until_seq = Some(2)), [1, 2]);
+        assert_eq!(q(&|x| x.agent = Some(AgentId::from("a2"))), [3, 4]);
+        assert_eq!(q(&|x| x.branch = Some("main".into())), [1, 2]);
+        assert_eq!(q(&|x| x.kind = Some(JournalKind::Release)), [1, 4]);
+        assert_eq!(
+            q(&|x| x.path = Some("src".into())),
+            [1],
+            "directory prefix via journal_paths"
+        );
+        assert_eq!(q(&|x| x.path = Some("src/b.rs".into())), [1]);
+        assert_eq!(q(&|x| x.path = Some("srcs".into())), Vec::<u64>::new());
+        assert_eq!(q(&|x| x.grep = Some("parser".into())), [1]);
+        assert_eq!(
+            q(&|x| x.grep = Some("lexer".into())),
+            [2, 3],
+            "fts or like, both match"
+        );
+
+        assert_eq!(store.prune_journal(&project, 3).unwrap(), 2);
+        assert_eq!(q(&|_| {}), [3, 4]);
+        assert_eq!(
+            q(&|x| x.path = Some("src".into())),
+            Vec::<u64>::new(),
+            "paths pruned too"
+        );
+        assert_eq!(
+            q(&|x| x.grep = Some("parser".into())),
+            Vec::<u64>::new(),
+            "search rows pruned too"
         );
     }
 }

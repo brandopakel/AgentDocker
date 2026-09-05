@@ -236,7 +236,12 @@ enum Command {
         /// Release every lease this agent holds.
         #[arg(long, conflicts_with = "lease")]
         all: bool,
+        /// What changed and why; becomes the project's journal entry.
+        #[arg(long)]
+        summary: Option<String>,
     },
+    /// The project's journal: what changed and why, one line per release, note, or commit.
+    Journal(JournalArgs),
     /// List leases.
     Leases {
         /// Only leases held by this agent.
@@ -323,6 +328,58 @@ struct RegisterArgs {
     workdir: Option<PathBuf>,
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+}
+
+#[derive(Args)]
+struct JournalArgs {
+    #[command(subcommand)]
+    action: Option<JournalAction>,
+    /// Project: an id prefix or a path inside it (default: current directory).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Only entries after this sequence number.
+    #[arg(long)]
+    since: Option<u64>,
+    /// Only entries up to this sequence number.
+    #[arg(long)]
+    until: Option<u64>,
+    /// Only entries by this agent.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Only entries made on this branch.
+    #[arg(long)]
+    branch: Option<String>,
+    /// release, note, commit, join, leave, or handoff.
+    #[arg(long)]
+    kind: Option<String>,
+    /// Only entries touching this file, or anything beneath a directory.
+    #[arg(long)]
+    path: Option<String>,
+    /// Full-text search over summaries.
+    #[arg(long)]
+    grep: Option<String>,
+    #[arg(short = 'n', long, default_value_t = 50)]
+    limit: usize,
+    /// Keep printing entries as they are appended.
+    #[arg(long)]
+    follow: bool,
+}
+
+#[derive(Subcommand)]
+enum JournalAction {
+    /// Append a note to the journal of the agent's project.
+    Add {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        summary: String,
+    },
+    /// Drop entries below a sequence number.
+    Prune {
+        #[arg(long)]
+        before: u64,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -686,10 +743,15 @@ async fn main() -> Result<()> {
                 println!("{} expires {}", lease.id, format::until(lease.expires_at));
             }
         }
-        Command::Release { agent, lease, all } => {
+        Command::Release {
+            agent,
+            lease,
+            all,
+            summary,
+        } => {
             if all {
                 if let Response::Leases { leases } =
-                    client.call(&Request::ReleaseAll { agent }).await?
+                    client.call(&Request::ReleaseAll { agent, summary }).await?
                 {
                     for lease in leases {
                         println!("{}", lease.id);
@@ -699,10 +761,12 @@ async fn main() -> Result<()> {
                 let request = Request::Release {
                     agent,
                     lease: LeaseId::from(lease.as_str()),
+                    summary,
                 };
                 client.call(&request).await?;
             }
         }
+        Command::Journal(args) => journal_command(&client, args).await?,
         Command::Leases { agent, resource } => {
             let request = Request::Leases {
                 agent,
@@ -766,6 +830,75 @@ pub(crate) fn project_selector(raw: &str) -> String {
         .unwrap_or(absolute)
         .to_string_lossy()
         .into_owned()
+}
+
+async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
+    match args.action {
+        Some(JournalAction::Add { agent, summary }) => {
+            if let Response::JournalEntry { entry } =
+                client.call(&Request::JournalAdd { agent, summary }).await?
+            {
+                println!("{:>6}  {}", entry.seq, entry.line());
+            }
+        }
+        Some(JournalAction::Prune { before, project }) => {
+            let request = Request::JournalPrune {
+                project: project_selector(project.as_deref().unwrap_or(".")),
+                before_seq: before,
+            };
+            if let Response::Pruned { removed } = client.call(&request).await? {
+                println!("removed {removed} entries");
+            }
+        }
+        None => {
+            let request = Request::Journal {
+                project: project_selector(args.project.as_deref().unwrap_or(".")),
+                since_seq: args.since,
+                until_seq: args.until,
+                agent: args.agent,
+                branch: args.branch,
+                kind: args.kind,
+                path: args.path.as_deref().map(absolute_path),
+                grep: args.grep,
+                limit: args.limit,
+            };
+            let Response::Journal { project, entries } = client.call(&request).await? else {
+                return Ok(());
+            };
+            let mut last = 0;
+            for entry in &entries {
+                println!(
+                    "{:>6}  {}  {}",
+                    entry.seq,
+                    format::clock(entry.at),
+                    entry.line()
+                );
+                last = entry.seq;
+            }
+            if args.follow {
+                client
+                    .stream(&Request::Events { replay: 0 }, |response| {
+                        if let Response::Event { event } = response {
+                            if let agentdocker_core::EventKind::JournalAppended { entry } =
+                                event.kind
+                            {
+                                if entry.project == project && entry.seq > last {
+                                    println!(
+                                        "{:>6}  {}  {}",
+                                        entry.seq,
+                                        format::clock(entry.at),
+                                        entry.line()
+                                    );
+                                }
+                            }
+                        }
+                        Ok(true)
+                    })
+                    .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Absolute, with as much of it canonical as exists.

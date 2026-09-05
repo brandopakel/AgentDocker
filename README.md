@@ -50,6 +50,8 @@ agentdocker ps --project .        # only agents in this project
 agentdocker discover              # agent processes running outside AgentDocker; `adopt <pid>` registers one
 agentdocker changes               # the ledger: files that changed in this project, and who held each
 agentdocker blame src/parser.rs   # the same for one file
+agentdocker journal               # what happened and why, one line per release, note, or commit
+agentdocker release --as writer --all --summary "rewrote the tokenizer"   # your line in the journal
 
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"

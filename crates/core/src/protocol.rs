@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentRecord, Change, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId,
-    VcsState,
+    AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
+    LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -198,10 +198,50 @@ pub enum Request {
     Release {
         agent: String,
         lease: LeaseId,
+        /// What changed and why, for the journal; synthesised from the
+        /// ledger when absent.
+        #[serde(default)]
+        summary: Option<String>,
     },
     /// Release every lease an agent holds; the reply lists them.
     ReleaseAll {
         agent: String,
+        #[serde(default)]
+        summary: Option<String>,
+    },
+    /// Append a free-text note to the journal of the agent's project.
+    JournalAdd {
+        agent: String,
+        summary: String,
+    },
+    /// Journal entries for a project: newest `limit` matching, oldest
+    /// first. `project` is an id prefix or an absolute path inside it.
+    Journal {
+        project: String,
+        #[serde(default)]
+        since_seq: Option<u64>,
+        #[serde(default)]
+        until_seq: Option<u64>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        /// A path (absolute, or relative to the checkout); a directory
+        /// matches entries touching anything beneath it.
+        #[serde(default)]
+        path: Option<String>,
+        /// Full-text search over summaries.
+        #[serde(default)]
+        grep: Option<String>,
+        #[serde(default = "default_changes_limit")]
+        limit: usize,
+    },
+    /// Drop journal entries of a project below `before_seq`.
+    JournalPrune {
+        project: String,
+        before_seq: u64,
     },
     Leases {
         #[serde(default)]
@@ -315,6 +355,16 @@ pub enum Response {
     },
     Leases {
         leases: Vec<Lease>,
+    },
+    Journal {
+        project: crate::ProjectId,
+        entries: Vec<JournalEntry>,
+    },
+    JournalEntry {
+        entry: JournalEntry,
+    },
+    Pruned {
+        removed: usize,
     },
     Event {
         event: Event,

@@ -592,6 +592,7 @@ async fn release_all<B: Backend>(backend: &B, me: &AgentRecord) -> Result<()> {
     backend
         .call(Request::ReleaseAll {
             agent: me.id.to_string(),
+            summary: None,
         })
         .await?;
     Ok(())
@@ -825,14 +826,15 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
         if present {
             if *event == "PreToolUse" {
                 for entry in entries.iter_mut() {
-                    if entry["hooks"].as_array().is_some_and(|hs| {
-                        hs.iter().all(|h| {
+                    let ours = entry["hooks"].as_array().is_some_and(|hs| {
+                        !hs.is_empty()
+                            && hs.iter().all(|h| {
                             h["command"]
                                 .as_str()
                                 .is_some_and(|c| c.contains("hook claude-code"))
                         })
-                    }) && entry["matcher"] != json!(EDIT_MATCHER)
-                    {
+                    });
+                    if ours && entry["matcher"] != json!(EDIT_MATCHER) {
                         entry["matcher"] = json!(EDIT_MATCHER);
                         added += 1;
                     }
@@ -1221,7 +1223,7 @@ mod tests {
         );
         assert!(matches!(
             &backend.requests()[1],
-            Request::ReleaseAll { agent } if agent == me.id.as_str()
+            Request::ReleaseAll { agent, .. } if agent == me.id.as_str()
         ));
     }
 

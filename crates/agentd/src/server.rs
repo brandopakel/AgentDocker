@@ -318,6 +318,7 @@ mod tests {
         daemon
             .handle(Request::ReleaseAll {
                 agent: "holder".into(),
+                summary: None,
             })
             .await;
         assert!(
