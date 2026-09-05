@@ -188,6 +188,7 @@ impl Store {
         agent: &AgentId,
         reads: &[agentdocker_core::ReadMark],
         transferred: &[Lease],
+        cursor: Option<(&str, &ProjectId, u64, DateTime<Utc>)>,
         events: &[Event],
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
@@ -195,6 +196,9 @@ impl Store {
         self.put_document("reads", agent.as_str(), &reads)?;
         for lease in transferred {
             self.upsert_lease(lease)?;
+        }
+        if let Some((reader, project, seq, now)) = cursor {
+            self.set_journal_cursor(reader, project, seq, now)?;
         }
         for event in events {
             self.append_event(event)?;

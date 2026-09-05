@@ -111,9 +111,17 @@ impl HandoffBundle {
                 worktree,
             };
         }
-        let cut = patch[..DIFF_CAP].rfind('\n').map_or(DIFF_CAP, |i| i + 1);
+        // Room for the marker, then back to a character boundary and a
+        // line boundary, so the kept text fits the cap and never splits a
+        // character.
+        const MARKER: &str = "… (truncated)\n";
+        let mut cut = DIFF_CAP.saturating_sub(MARKER.len());
+        while cut > 0 && !patch.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let cut = patch[..cut].rfind('\n').map_or(cut, |i| i + 1);
         let mut kept = patch[..cut].to_owned();
-        kept.push_str("… (truncated)\n");
+        kept.push_str(MARKER);
         HandoffDiff {
             patch: kept,
             truncated: true,
@@ -122,25 +130,44 @@ impl HandoffBundle {
     }
 
     /// Re-home a bundle that came from elsewhere: the checkout becomes the
-    /// importer's and read marks move with it (one outside the checkout is
-    /// dropped), the recipient is the importer, and leases and the journal
-    /// cursor stay behind on the host they belong to.
-    pub fn imported(mut self, to: AgentId, checkout: PathBuf, now: DateTime<Utc>) -> Self {
+    /// importer's and read marks move with it, the recipient is the
+    /// importer, and leases and the journal cursor stay behind on the host
+    /// they belong to. A read mark that does not sit plainly below the
+    /// sender's checkout — outside it, or reaching out of it with `..` —
+    /// makes the bundle unacceptable rather than a path to go and check.
+    pub fn imported(
+        mut self,
+        to: AgentId,
+        checkout: PathBuf,
+        now: DateTime<Utc>,
+    ) -> Result<Self, String> {
         let old = std::mem::replace(&mut self.checkout, checkout);
-        self.read_set = self
-            .read_set
-            .into_iter()
-            .filter_map(|mut mark| {
-                let relative = mark.path.strip_prefix(&old).ok()?.to_path_buf();
-                mark.path = self.checkout.join(relative);
-                Some(mark)
-            })
-            .collect();
+        let mut read_set = Vec::with_capacity(self.read_set.len());
+        for mut mark in std::mem::take(&mut self.read_set) {
+            let relative = mark.path.strip_prefix(&old).map_err(|_| {
+                format!(
+                    "read mark {} lies outside the checkout",
+                    mark.path.display()
+                )
+            })?;
+            if !relative
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(format!(
+                    "read mark {} reaches outside the checkout",
+                    mark.path.display()
+                ));
+            }
+            mark.path = self.checkout.join(relative);
+            read_set.push(mark);
+        }
+        self.read_set = read_set;
         self.to = Some(to);
         self.transfer_leases = false;
         self.journal_cursor = None;
         self.imported_at = Some(now);
-        self
+        Ok(self)
     }
 }
 
@@ -196,10 +223,22 @@ mod tests {
         let cut = HandoffBundle::cap_diff(long, PathBuf::from("/wt"));
         assert!(cut.truncated);
         assert!(cut.patch.ends_with("… (truncated)\n"));
+        assert!(cut.patch.len() <= DIFF_CAP, "marker included");
         let body = cut.patch.trim_end_matches("… (truncated)\n");
-        assert!(body.len() <= DIFF_CAP);
         assert!(body.ends_with('\n'), "cut on a line boundary");
         assert_eq!(cut.worktree, PathBuf::from("/wt"));
+        // Multibyte text with no newline near the cap: no panic, no split
+        // character, still within the cap.
+        let wide = "é".repeat(DIFF_CAP);
+        let cut = HandoffBundle::cap_diff(wide, PathBuf::from("/wt"));
+        assert!(cut.truncated);
+        assert!(cut.patch.len() <= DIFF_CAP);
+        assert!(
+            cut.patch
+                .trim_end_matches("… (truncated)\n")
+                .chars()
+                .all(|c| c == 'é')
+        );
     }
 
     #[test]
@@ -212,16 +251,26 @@ mod tests {
             head: None,
         };
         let mut b = bundle();
-        b.read_set = vec![mark("/work/alpha/src/a.rs"), mark("/outside/x")];
-        let b = b.imported(AgentId::from("c3"), PathBuf::from("/elsewhere"), now);
+        b.read_set = vec![mark("/work/alpha/src/a.rs")];
+        let b = b
+            .imported(AgentId::from("c3"), PathBuf::from("/elsewhere"), now)
+            .unwrap();
         assert_eq!(b.to, Some(AgentId::from("c3")));
         assert_eq!(b.checkout, PathBuf::from("/elsewhere"));
-        assert_eq!(
-            b.read_set.len(),
-            1,
-            "a mark outside the checkout is dropped"
-        );
         assert_eq!(b.read_set[0].path, PathBuf::from("/elsewhere/src/a.rs"));
+        for bad in [
+            "/outside/x",
+            "/work/alpha/../../etc/passwd",
+            "/work/alpha/src/../../x",
+        ] {
+            let mut b = bundle();
+            b.read_set = vec![mark(bad)];
+            assert!(
+                b.imported(AgentId::from("c3"), PathBuf::from("/elsewhere"), now)
+                    .is_err(),
+                "{bad} must not be re-homed"
+            );
+        }
         assert!(!b.transfer_leases);
         assert_eq!(b.journal_cursor, None);
         assert_eq!(b.imported_at, Some(now));

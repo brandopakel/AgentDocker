@@ -89,6 +89,12 @@ impl Daemon {
             }
             None => None,
         };
+        if recipient.is_none() && transfer_leases {
+            return Response::error(
+                ErrorCode::Invalid,
+                "leases can only move to a named recipient; an export releases them",
+            );
+        }
         let key = key.unwrap_or_else(|| format!("handoff-{}", MessageId::generate()));
         let id = format!("{}:{key}", from.as_str());
         // A retry returns what the first attempt made.
@@ -139,6 +145,14 @@ impl Daemon {
             other => return other,
         };
         let mut state = lock(&self.state);
+        // Two retries with one key may both have passed the probe above
+        // while nobody held the lock; the first to get here wins and the
+        // other returns what it wrote.
+        match state.store.document::<HandoffBundle>("handoff", &id) {
+            Ok(Some(bundle)) => return Response::Handoff { bundle },
+            Ok(None) => {}
+            Err(e) => return internal(e),
+        }
         let project = record.project.as_ref().map(ProjectRef::id);
         let changes = match &project {
             Some(project) => state
@@ -272,6 +286,40 @@ impl Daemon {
         if bundle.id.is_empty() || bundle.id.len() > 256 || bundle.task.is_empty() {
             return Response::error(ErrorCode::Invalid, "bundle needs an id and a task");
         }
+        // The bounds this daemon's own bundles and checkpoints keep, before
+        // anything is written.
+        let notes = bundle.task.len()
+            + bundle.note.as_ref().map_or(0, String::len)
+            + bundle
+                .assumptions
+                .iter()
+                .chain(&bundle.next_steps)
+                .map(String::len)
+                .sum::<usize>();
+        if notes > 65536 {
+            return Response::error(
+                ErrorCode::Invalid,
+                "bundle carries more than 64 KiB of notes",
+            );
+        }
+        if bundle.read_set.len() > 1000
+            || bundle.changes.len() > BUNDLE_ROWS
+            || bundle.journal.len() > BUNDLE_ROWS
+            || bundle.unread_inbox.len() > BUNDLE_ROWS
+            || bundle.leases.len() > BUNDLE_ROWS
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "bundle carries more rows than this daemon accepts",
+            );
+        }
+        if bundle
+            .diff
+            .as_ref()
+            .is_some_and(|d| d.patch.len() > agentdocker_core::handoff::DIFF_CAP)
+        {
+            return Response::error(ErrorCode::Invalid, "bundle diff exceeds the cap");
+        }
         let (agent, checkout, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
@@ -292,7 +340,10 @@ impl Daemon {
             .registry
             .get(&agent)
             .and_then(|r| r.project.as_ref().map(ProjectRef::id));
-        let mut bundle = bundle.imported(agent.clone(), checkout.clone(), now);
+        let mut bundle = match bundle.imported(agent.clone(), checkout.clone(), now) {
+            Ok(bundle) => bundle,
+            Err(reason) => return Response::error(ErrorCode::Invalid, reason),
+        };
         bundle.project = project;
         let checkpoint = Checkpoint {
             id: bundle.id.clone(),
@@ -615,6 +666,23 @@ mod tests {
         };
         assert_eq!(bundle.to, None);
         assert_eq!(bundle.task, "continue the work");
+        // Leases cannot be asked to move to nobody.
+        assert!(matches!(
+            daemon
+                .handle(Request::Handoff {
+                    agent: "sender".into(),
+                    to: None,
+                    task: None,
+                    note: None,
+                    transfer_leases: true,
+                    key: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
         assert_eq!(bundle.leases.len(), 1, "what was held when it was made");
         assert!(
             holders(&daemon, "sender").await.is_empty(),
@@ -656,6 +724,34 @@ mod tests {
                     }
                 )
                 .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // Oversized or escaping bundles are refused before anything is
+        // written.
+        let mark = |path: PathBuf| agentdocker_core::ReadMark {
+            path,
+            at: Utc::now(),
+            version: "v".into(),
+            head: None,
+        };
+        let mut huge = bundle.clone();
+        huge.read_set = (0..1001)
+            .map(|i| mark(root.join(format!("f{i}"))))
+            .collect();
+        assert!(matches!(
+            elsewhere.import("recipient", huge).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let mut escaping = bundle.clone();
+        escaping.read_set = vec![mark(bundle.checkout.join("../../etc/passwd"))];
+        assert!(matches!(
+            elsewhere.import("recipient", escaping).await,
             Response::Error {
                 code: ErrorCode::Invalid,
                 ..
@@ -716,5 +812,58 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_acceptance_puts_back_only_the_transferred_leases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        let own = claim(&daemon, "recipient", "task:own").await;
+        let moving = claim(&daemon, "sender", "task:parse").await;
+        let Response::Handoff { bundle } = daemon
+            .handle(Request::Handoff {
+                agent: "sender".into(),
+                to: Some("recipient".into()),
+                task: Some("x".into()),
+                note: None,
+                transfer_leases: true,
+                key: Some("rollback".into()),
+            })
+            .await
+        else {
+            panic!("handoff failed");
+        };
+        // Force a unique-index failure at event insertion, as the recovery
+        // tests do.
+        let next = lock(&daemon.state).next_seq;
+        lock(&daemon.state).next_seq = next - 1;
+        assert!(matches!(
+            daemon.resume("recipient", &bundle.id, true).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        let sender = state.registry.resolve("sender").unwrap();
+        let recipient = state.registry.resolve("recipient").unwrap();
+        let held = |who: &AgentId| -> Vec<LeaseId> {
+            state
+                .leases
+                .by_holder(who)
+                .into_iter()
+                .map(|l| l.id.clone())
+                .collect()
+        };
+        assert_eq!(
+            held(&sender),
+            vec![moving.id.clone()],
+            "the moved lease went back"
+        );
+        assert_eq!(
+            held(&recipient),
+            vec![own.id.clone()],
+            "what the recipient already held stayed"
+        );
     }
 }

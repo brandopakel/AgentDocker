@@ -277,6 +277,27 @@ impl Daemon {
                         )
                     }));
                 }
+                // The recipient continues reading the journal where the
+                // sender left off: the cursor and its event commit with the
+                // acceptance, never after it.
+                let cursor = bundle
+                    .as_ref()
+                    .and_then(|b| Some((b.project.clone()?, b.journal_cursor?)))
+                    .filter(|(project, seq)| {
+                        state
+                            .cursor(agent.as_str(), project)
+                            .is_none_or(|current| current < *seq)
+                    });
+                if let Some((project, seq)) = &cursor {
+                    events.push(Event::new(
+                        EventKind::JournalRead {
+                            reader: agent.to_string(),
+                            project: project.clone(),
+                            seq: *seq,
+                        },
+                        now,
+                    ));
+                }
                 for (offset, event) in events.iter_mut().enumerate() {
                     event.seq = state.next_seq + offset as u64;
                 }
@@ -286,28 +307,32 @@ impl Daemon {
                         &agent,
                         &reads.into_values().collect::<Vec<_>>(),
                         &transferred,
+                        cursor
+                            .as_ref()
+                            .map(|(project, seq)| (agent.as_str(), project, *seq, now)),
                         &events,
                     )
                 });
                 if let Some(error) = state.storage_failure() {
-                    // The table already moved the leases; put them back so
-                    // memory matches what was (not) written.
+                    // The table already moved these leases; put exactly
+                    // them back so memory matches what was (not) written.
                     if let Some(b) = &bundle {
-                        state.leases.transfer(&agent, &b.from, now);
+                        for lease in &transferred {
+                            let mut back = lease.clone();
+                            back.holder = b.from.clone();
+                            state.leases.restore(back);
+                        }
                     }
                     return error;
                 }
                 state.next_seq += events.len() as u64;
+                if let Some((project, seq)) = cursor {
+                    state
+                        .journal_cursors
+                        .insert((agent.to_string(), project), seq);
+                }
                 for event in events {
                     let _ = state.events.send(event);
-                }
-                // The recipient continues reading the journal where the
-                // sender left off.
-                if let Some((cursor, project)) = bundle
-                    .as_ref()
-                    .and_then(|b| Some((b.journal_cursor?, b.project.clone()?)))
-                {
-                    state.move_cursor(agent.as_str(), &project, cursor);
                 }
             }
         }

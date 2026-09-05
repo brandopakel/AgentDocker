@@ -183,7 +183,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `stale {agent, paths?}` | `stale {stale: StalePath[]}` | compare current content; querying never clears staleness |
 | `checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` | `checkpoint` | persist context before optional release; retries are idempotent |
 | `resume {agent,checkpoint,acknowledge?}` | `recovery` | verify and optionally accept a same-checkout handoff; accepting a bundle also moves its leases to the recipient when the sender asked, seeds the recipient's read set, and sets its journal cursor to the sender's |
-| `checkpoints {agent?}` | `checkpoints` | list durable handoffs |
+| `checkpoints {agent?}` | `checkpoints` | list durable checkpoints |
 | `handoff {agent, to?, task?, note?, transfer_leases?, key?}` | `handoff {bundle}` | a checkpoint addressed to `to` with the sender's state bundled around it, announced to `to` as a `handoff` message; leases are released unless they are to move at acceptance; without `to` the bundle is an export; retries with the same key return the same bundle |
 | `handoffs {agent?}` | `handoffs {bundles}` | bundles sent by or addressed to the agent, oldest first; all of them without one |
 | `import {agent, bundle}` | `handoff {bundle}` | a bundle exported on another host, re-homed to the agent's checkout and addressed to it, to accept with `resume` |
