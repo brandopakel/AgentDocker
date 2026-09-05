@@ -1,11 +1,19 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Envelope, Event, EventKind};
+use agentdocker_core::{Envelope, Event, EventKind, ResourceKey};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
 /// Print rows as left-aligned columns, `docker ps` style.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) {
+    table_dimming(headers, rows, |_| false);
+}
+
+/// Like [`table`], with rows for which `dim` is true rendered faint when
+/// stdout is a terminal (and plainly otherwise, so pipes see clean text).
+pub fn table_dimming(headers: &[&str], rows: &[Vec<String>], dim: impl Fn(usize) -> bool) {
+    use std::io::IsTerminal;
+
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
@@ -22,9 +30,15 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) {
             .collect();
         line.join("   ").trim_end().to_owned()
     };
+    let tty = std::io::stdout().is_terminal();
     println!("{}", render(headers.to_vec()));
-    for row in rows {
-        println!("{}", render(row.iter().map(String::as_str).collect()));
+    for (i, row) in rows.iter().enumerate() {
+        let line = render(row.iter().map(String::as_str).collect());
+        if tty && dim(i) {
+            println!("\x1b[2m{line}\x1b[0m");
+        } else {
+            println!("{line}");
+        }
     }
 }
 
@@ -63,6 +77,22 @@ fn short(s: &str) -> &str {
     &s[..end]
 }
 
+/// `file:` keys carry a full project id; show twelve characters of it.
+pub fn resource(key: &ResourceKey) -> String {
+    if key.kind() != "file" {
+        return key.to_string();
+    }
+    let (project, rest) = key
+        .value()
+        .split_once('/')
+        .map_or((key.value(), ""), |(p, r)| (p, r));
+    if rest.is_empty() {
+        format!("file:{}", short(project))
+    } else {
+        format!("file:{}/{rest}", short(project))
+    }
+}
+
 pub fn clock(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%H:%M:%S").to_string()
 }
@@ -93,8 +123,16 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
-        EventKind::AgentCreated { agent, name } => {
-            format!("agent created    {} ({name})", agent.short())
+        EventKind::AgentCreated {
+            agent,
+            name,
+            project,
+        } => {
+            let project = project
+                .as_ref()
+                .map(|p| format!(" in {}", p.short()))
+                .unwrap_or_default();
+            format!("agent created    {} ({name}){project}", agent.short())
         }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
@@ -116,25 +154,25 @@ pub fn event_line(event: &Event) -> String {
             "lease claimed    {} {} {} by {}",
             lease.id,
             lease.mode,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseRenewed { lease } => format!(
             "lease renewed    {} {} by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseReleased { lease } => format!(
             "lease released   {} {} by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseExpired { lease } => format!(
             "lease expired    {} {} held by {}",
             lease.id,
-            lease.resource,
+            resource(&lease.resource),
             lease.holder.short()
         ),
         EventKind::LeaseConflict {
@@ -144,11 +182,22 @@ pub fn event_line(event: &Event) -> String {
         } => {
             let holders: Vec<&str> = held_by.iter().map(|h| h.short()).collect();
             format!(
-                "lease conflict   {resource} wanted by {} held by {}",
+                "lease conflict   {} wanted by {} held by {}",
+                self::resource(resource),
                 requester.short(),
                 holders.join(", ")
             )
         }
+        EventKind::ProjectDiscovered { project } => format!(
+            "project found    {} {} ({})",
+            project.id().short(),
+            project.root.display(),
+            project.name()
+        ),
+        EventKind::AgentVcsChanged { agent, vcs } => {
+            format!("checkout moved   {} {}", agent.short(), vcs.describe())
+        }
+        EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
     };
     format!("{}  {body}", clock(event.at))
 }

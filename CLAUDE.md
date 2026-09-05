@@ -5,8 +5,9 @@ Docker-style control plane for AI agents: a per-host daemon (`agentd`) plus a CL
 ## Layout
 
 - `crates/core` — `agentdocker-core`: data model, wire protocol, pure coordination logic. No I/O, no async, no clocks (pass `now`). All semantics are unit-tested here.
-- `crates/agentd` — the daemon. `daemon.rs` state + handlers, `server.rs` socket loop + streaming, `supervisor.rs` process spawning + log capture.
-- `crates/cli` — `agentdocker`. `client.rs` talks the protocol, `format.rs` renders output.
+- `crates/host` — `agentdocker-host`: host-side I/O both binaries need (project discovery from a working directory, process inspection). Stateless helpers; no daemon state.
+- `crates/agentd` — the daemon, as a library (`agentd::main`); the `agentd` binary itself is built by `crates/cli` so one install ships both. `daemon.rs` state + handlers, `server.rs` socket loop + streaming, `supervisor.rs` process spawning + log capture, `store.rs` SQLite write-through persistence (JSON blobs; bump `SCHEMA_VERSION` only when a stored meaning changes).
+- `crates/cli` — the `agentdocker` package: the `agentdocker` CLI and the `agentd` binary (`src/bin/agentd.rs`, one line). `client.rs` talks the protocol and starts the daemon on demand, `service.rs` installs it as a launchd/systemd user service, `format.rs` renders output, `mcp.rs` is the stdio MCP server (hand-rolled JSON-RPC), `hooks.rs` the Claude Code hooks adapter. Both talk to the daemon through the `Backend` trait in `client.rs`, whose test mock lets them be tested without a daemon.
 
 ## Commands
 
@@ -17,7 +18,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd` and use the same env var with the CLI.
+Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd` and use the same env var with the CLI (or just run the CLI with that env var: a client that cannot connect starts the daemon itself; `AGENTDOCKER_NO_AUTOSTART=1` turns that off).
 
 ## Conventions
 

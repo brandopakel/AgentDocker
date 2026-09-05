@@ -6,10 +6,14 @@
 //! `events`, `logs`) keep sending responses until the client closes the
 //! connection or the daemon sends [`Response::End`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AgentRecord, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId};
+use crate::{
+    AgentRecord, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId, VcsState,
+};
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 
@@ -32,6 +36,16 @@ pub enum Request {
     Deregister {
         agent: String,
     },
+    /// Running agent processes (known runtimes) that nobody registered.
+    Discover,
+    /// Register a running process found by `discover`, by pid.
+    Adopt {
+        pid: u32,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        runtime: Option<String>,
+    },
     /// Signal a managed agent to stop (SIGTERM, or SIGKILL when `force`).
     Stop {
         agent: String,
@@ -45,6 +59,13 @@ pub enum Request {
     List {
         #[serde(default)]
         all: bool,
+        /// A project id (any unique prefix), or an absolute path inside the
+        /// project.
+        #[serde(default)]
+        project: Option<String>,
+        /// Only agents carrying every one of these labels.
+        #[serde(default)]
+        labels: BTreeMap<String, String>,
     },
     Inspect {
         agent: String,
@@ -52,6 +73,15 @@ pub enum Request {
     Heartbeat {
         agent: String,
     },
+    /// What an adapter observed about its agent. Everything is optional;
+    /// the daemon keeps what changed and emits events for it.
+    Report {
+        agent: String,
+        #[serde(default)]
+        vcs: Option<VcsState>,
+    },
+    /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
+    Shutdown,
 
     /// Publish a message. `to` uses [`crate::Destination::parse`] shorthand.
     Send {
@@ -86,6 +116,10 @@ pub enum Request {
         ttl_secs: u64,
         #[serde(default)]
         note: Option<String>,
+        /// Seconds to wait for a conflicting lease to clear before giving
+        /// up; 0 reports the conflict immediately.
+        #[serde(default)]
+        wait_secs: u64,
     },
     Renew {
         agent: String,
@@ -97,6 +131,10 @@ pub enum Request {
         agent: String,
         lease: LeaseId,
     },
+    /// Release every lease an agent holds; the reply lists them.
+    ReleaseAll {
+        agent: String,
+    },
     Leases {
         #[serde(default)]
         agent: Option<String>,
@@ -104,8 +142,12 @@ pub enum Request {
         resource: Option<String>,
     },
 
-    /// Stream daemon events until the connection closes.
-    Events,
+    /// Replay the last `replay` stored events, then stream new ones until
+    /// the connection closes.
+    Events {
+        #[serde(default)]
+        replay: usize,
+    },
     /// Replay the last `tail` log lines of an agent, then keep streaming
     /// while `follow` and the agent is alive.
     Logs {
@@ -137,6 +179,10 @@ pub enum ErrorCode {
     Internal,
 }
 
+// A response is built once and serialised at once, so the size gap between
+// `Agent` (a whole record) and `Ok` never matters; boxing would only add
+// ceremony at every construction and match site.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
@@ -149,6 +195,9 @@ pub enum Response {
     },
     Agents {
         agents: Vec<AgentRecord>,
+    },
+    Processes {
+        processes: Vec<DiscoveredProcess>,
     },
     /// `subscribers` is how many live subscriptions were notified; queued
     /// inbox delivery is not counted.
@@ -211,6 +260,7 @@ mod tests {
                 mode: LeaseMode::Exclusive,
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
+                wait_secs: 0,
             }
         );
         let back = serde_json::to_string(&req).unwrap();
@@ -227,5 +277,11 @@ mod tests {
             serde_json::to_string(&Response::End).unwrap(),
             r#"{"type":"end"}"#
         );
+    }
+
+    #[test]
+    fn struct_variants_accept_missing_defaults() {
+        let req: Request = serde_json::from_str(r#"{"op":"events"}"#).unwrap();
+        assert_eq!(req, Request::Events { replay: 0 });
     }
 }

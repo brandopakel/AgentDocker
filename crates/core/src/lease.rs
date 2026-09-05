@@ -7,18 +7,24 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Component, Path};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::AgentId;
+use crate::{AgentId, ProjectId};
 
 /// Something agents coordinate over. Keys are `kind:value`, for example
-/// `path:/repo/src/main.rs`, `branch:feature/login`, `task:ISSUE-42`.
+/// `path:/repo/src/main.rs`, `file:<project id>/src/main.rs`,
+/// `branch:feature/login`, `task:ISSUE-42`.
 ///
-/// `path` keys overlap hierarchically: a lease on a directory covers every
-/// file and directory beneath it. All other kinds only overlap when equal.
+/// `path` and `file` keys overlap hierarchically: a lease on a directory
+/// covers every file and directory beneath it. A `file` key names a file by
+/// project and project-relative path, so it is the same resource from a
+/// linked worktree, a container mount, or another clone; the daemon
+/// rewrites `path` claims inside a project to `file` keys. All other kinds
+/// only overlap when equal.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ResourceKey(String);
@@ -26,12 +32,31 @@ pub struct ResourceKey(String);
 impl ResourceKey {
     pub fn new(key: impl Into<String>) -> Self {
         let mut key: String = key.into();
-        if key.starts_with("path:") && key.len() > "path:/".len() {
+        let hierarchical = key.starts_with("path:") || key.starts_with("file:");
+        if hierarchical && key.len() > "path:/".len() {
             while key.ends_with('/') {
                 key.pop();
             }
         }
         Self(key)
+    }
+
+    /// A file or directory inside a project, by project-relative path; an
+    /// empty path is the whole project.
+    pub fn file(project: &ProjectId, relative: &Path) -> Self {
+        let mut key = format!("file:{project}");
+        for component in relative.components() {
+            if let Component::Normal(name) = component {
+                key.push('/');
+                key.push_str(&name.to_string_lossy());
+            }
+        }
+        Self::new(key)
+    }
+
+    /// Whether the kind nests: a key covers everything beneath its value.
+    pub fn is_hierarchical(&self) -> bool {
+        matches!(self.kind(), "path" | "file")
     }
 
     pub fn as_str(&self) -> &str {
@@ -51,7 +76,7 @@ impl ResourceKey {
         if self == other {
             return true;
         }
-        if self.kind() != "path" || other.kind() != "path" {
+        if !self.is_hierarchical() || self.kind() != other.kind() {
             return false;
         }
         is_ancestor(self.value(), other.value()) || is_ancestor(other.value(), self.value())
@@ -248,6 +273,12 @@ impl LeaseTable {
         Ok(Claimed::New(lease))
     }
 
+    /// Put back a lease loaded from durable storage, without conflict
+    /// checks: it was valid when it was saved. Expiry still applies.
+    pub fn restore(&mut self, lease: Lease) {
+        self.leases.insert(lease.id.clone(), lease);
+    }
+
     pub fn renew(
         &mut self,
         id: &LeaseId,
@@ -364,6 +395,34 @@ mod tests {
         assert_eq!(key("ISSUE-1").value(), "ISSUE-1");
         assert_eq!(key("path:/repo/src/").as_str(), "path:/repo/src");
         assert_eq!(key("path:/").as_str(), "path:/");
+    }
+
+    #[test]
+    fn file_keys_overlap_within_a_project_only() {
+        let alpha = ProjectId::from("aaaa");
+        let beta = ProjectId::from("bbbb");
+        let lib = ResourceKey::file(&alpha, Path::new("src/lib.rs"));
+        assert_eq!(lib.as_str(), "file:aaaa/src/lib.rs");
+        assert_eq!(lib.kind(), "file");
+        assert!(lib.is_hierarchical());
+        assert!(ResourceKey::file(&alpha, Path::new("src")).overlaps(&lib));
+        assert!(ResourceKey::file(&alpha, Path::new("")).overlaps(&lib));
+        assert_eq!(
+            ResourceKey::file(&alpha, Path::new("")).as_str(),
+            "file:aaaa"
+        );
+        assert!(!ResourceKey::file(&beta, Path::new("src/lib.rs")).overlaps(&lib));
+        assert!(!ResourceKey::file(&alpha, Path::new("src/lib")).overlaps(&lib));
+        assert!(
+            !key("path:/repo/src/lib.rs").overlaps(&lib),
+            "kinds never mix"
+        );
+        assert_eq!(
+            ResourceKey::file(&alpha, Path::new("./src/../src/x/")).as_str(),
+            "file:aaaa/src/src/x",
+            "only normal components are kept; the daemon canonicalises first"
+        );
+        assert_eq!(key("file:aaaa/src/").as_str(), "file:aaaa/src");
     }
 
     #[test]
@@ -601,6 +660,33 @@ mod tests {
             t.release(&lease.id, &agent("a")),
             Err(LeaseError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn restored_leases_behave_like_claimed_ones() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        t.restore(Lease {
+            id: LeaseId::from("saved"),
+            resource: key("task:1"),
+            holder: agent("a"),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            expires_at: now + ttl(),
+            note: None,
+        });
+        assert!(
+            t.claim(
+                key("task:1"),
+                agent("b"),
+                LeaseMode::Exclusive,
+                ttl(),
+                None,
+                now
+            )
+            .is_err()
+        );
+        assert_eq!(t.expire(now + ttl()).len(), 1);
     }
 
     #[test]

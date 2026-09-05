@@ -1,14 +1,20 @@
 //! `agentdocker`: command-line client for `agentd`.
 
+mod agentfile;
 mod client;
 mod format;
+mod hooks;
+mod mcp;
+mod service;
+mod teams;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use agentdocker_core::ProjectRef;
 use agentdocker_core::{
-    AgentRecord, AgentSpec, Lease, LeaseId, LeaseMode, MessageId, Request, Response,
-    protocol::DEFAULT_LEASE_TTL_SECS,
+    AgentRecord, AgentSpec, DiscoveredProcess, Lease, LeaseId, LeaseMode, MessageId, Request,
+    Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -36,11 +42,33 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
-    /// List agents (live ones by default).
+    /// List agents (live ones by default), grouped by project.
     Ps {
         /// Include finished agents.
         #[arg(short, long)]
         all: bool,
+        /// Only agents in this project: an id (or unique prefix), or a path
+        /// inside it such as `.`.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only agents carrying this label (repeatable).
+        #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
+        labels: Vec<String>,
+        /// Do not look for running agent processes nobody registered.
+        #[arg(long)]
+        no_discover: bool,
+    },
+    /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
+    Discover,
+    /// Register a running process found by `discover`, by pid.
+    Adopt {
+        pid: u32,
+        /// Agent name (default: <runtime>-<pid>).
+        #[arg(long)]
+        name: Option<String>,
+        /// Runtime (default: recognised from the command line, else custom).
+        #[arg(long)]
+        runtime: Option<String>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -77,7 +105,7 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
-    /// Send a message to an agent, a topic (`topic:name`), or everyone (`all`).
+    /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
     Send(SendArgs),
     /// Stream messages for an agent and/or matching topic patterns.
     Watch {
@@ -105,11 +133,15 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_LEASE_TTL_SECS)]
         ttl: u64,
     },
-    /// Release a lease you hold.
+    /// Release a lease you hold, or every lease with --all.
     Release {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
-        lease: String,
+        #[arg(required_unless_present = "all")]
+        lease: Option<String>,
+        /// Release every lease this agent holds.
+        #[arg(long, conflicts_with = "lease")]
+        all: bool,
     },
     /// List leases.
     Leases {
@@ -120,8 +152,37 @@ enum Command {
         #[arg(long)]
         resource: Option<String>,
     },
+    /// Run agentd as a login service, or start, stop, and inspect it.
+    Daemon(service::DaemonArgs),
+    /// Host integrations: handle a hook event, or install the hook configuration.
+    Hook(hooks::HookArgs),
+    /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
+    Mcp(mcp::McpArgs),
+    /// Start the agents in an Agentfile.toml that are not already running.
+    Up {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+    },
+    /// Stop the agents in an Agentfile.toml.
+    Down {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+        /// SIGKILL instead of SIGTERM.
+        #[arg(long)]
+        force: bool,
+    },
     /// Stream daemon events.
-    Events,
+    Events {
+        /// Show this many stored events before streaming new ones.
+        #[arg(long, default_value_t = 0)]
+        replay: usize,
+    },
 }
 
 #[derive(Args)]
@@ -163,6 +224,7 @@ struct RegisterArgs {
     /// Process id, so `stop` can signal it.
     #[arg(long)]
     pid: Option<u32>,
+    /// Working directory (default: current directory).
     #[arg(short = 'w', long)]
     workdir: Option<PathBuf>,
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
@@ -174,7 +236,8 @@ struct SendArgs {
     /// Sender; defaults to this agent's id, or `user`.
     #[arg(long, env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
     from: String,
-    /// Agent id/name, `topic:<name>`, or `all`.
+    /// Agent id/name, `project` (everyone working in this directory's
+    /// project) or `project:<id|path>`, `topic:<name>`, or `all`.
     #[arg(long)]
     to: String,
     /// Message kind: chat, task, handoff, question, answer, notice...
@@ -194,7 +257,7 @@ struct SendArgs {
 struct ClaimArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     agent: String,
-    /// `kind:value`. A bare path that exists becomes `path:<absolute>`.
+    /// `kind:value`. A bare path becomes `path:<absolute>`; it need not exist yet.
     resource: String,
     /// Allow other shared holders; blocks exclusive ones.
     #[arg(long)]
@@ -205,11 +268,15 @@ struct ClaimArgs {
     /// What you are doing with it, for other agents to read.
     #[arg(long)]
     note: Option<String>,
+    /// Seconds to wait for the resource to free up instead of failing at once.
+    #[arg(long, default_value_t = 0)]
+    wait: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let socket = cli.socket.clone();
     let client = Client::new(cli.socket);
 
     match cli.command {
@@ -222,9 +289,43 @@ async fn main() -> Result<()> {
                 println!("agentd {version} up {}", format::span_secs(uptime_secs));
             }
         }
-        Command::Ps { all } => {
-            if let Response::Agents { agents } = client.call(&Request::List { all }).await? {
-                print_agents(&agents);
+        Command::Ps {
+            all,
+            project,
+            labels,
+            no_discover,
+        } => {
+            let request = Request::List {
+                all,
+                project: project.as_deref().map(project_selector),
+                labels: parse_pairs(&labels)?,
+            };
+            let Response::Agents { agents } = client.call(&request).await? else {
+                return Ok(());
+            };
+            let mut unadopted = Vec::new();
+            if !no_discover && project.is_none() && labels.is_empty() {
+                if let Response::Processes { processes } = client.call(&Request::Discover).await? {
+                    unadopted = processes;
+                }
+            }
+            print_agents(&agents, &unadopted);
+            if !unadopted.is_empty() {
+                eprintln!(
+                    "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
+                    unadopted.len()
+                );
+            }
+        }
+        Command::Discover => {
+            if let Response::Processes { processes } = client.call(&Request::Discover).await? {
+                print_processes(&processes);
+            }
+        }
+        Command::Adopt { pid, name, runtime } => {
+            let request = Request::Adopt { pid, name, runtime };
+            if let Response::Agent { agent } = client.call(&request).await? {
+                println!("{}", agent.id);
             }
         }
         Command::Run(args) => {
@@ -247,13 +348,17 @@ async fn main() -> Result<()> {
             }
         }
         Command::Register(args) => {
+            let workdir = match args.workdir {
+                Some(dir) => dir,
+                None => std::env::current_dir()?,
+            };
             let spec = AgentSpec {
                 name: args.name,
                 runtime: args.runtime,
                 provider: args.provider,
                 model: args.model,
                 command: Vec::new(),
-                workdir: args.workdir.map(|d| d.canonicalize().unwrap_or(d)),
+                workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: BTreeMap::new(),
                 labels: parse_pairs(&args.labels)?,
             };
@@ -311,7 +416,7 @@ async fn main() -> Result<()> {
             };
             let request = Request::Send {
                 from: args.from,
-                to: args.to,
+                to: destination(&args.to),
                 kind: args.kind,
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
@@ -358,6 +463,7 @@ async fn main() -> Result<()> {
                 },
                 ttl_secs: args.ttl,
                 note: args.note,
+                wait_secs: args.wait,
             };
             if let Response::Lease { lease } = client.call(&request).await? {
                 println!("{}", lease.id);
@@ -373,12 +479,22 @@ async fn main() -> Result<()> {
                 println!("{} expires {}", lease.id, format::until(lease.expires_at));
             }
         }
-        Command::Release { agent, lease } => {
-            let request = Request::Release {
-                agent,
-                lease: LeaseId::from(lease.as_str()),
-            };
-            client.call(&request).await?;
+        Command::Release { agent, lease, all } => {
+            if all {
+                if let Response::Leases { leases } =
+                    client.call(&Request::ReleaseAll { agent }).await?
+                {
+                    for lease in leases {
+                        println!("{}", lease.id);
+                    }
+                }
+            } else if let Some(lease) = lease {
+                let request = Request::Release {
+                    agent,
+                    lease: LeaseId::from(lease.as_str()),
+                };
+                client.call(&request).await?;
+            }
         }
         Command::Leases { agent, resource } => {
             let request = Request::Leases {
@@ -389,9 +505,16 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
-        Command::Events => {
+        Command::Daemon(args) => service::run(client, socket, args).await?,
+        Command::Hook(args) => hooks::run(client, args).await?,
+        Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
+        Command::Down { file, names, force } => {
+            teams::down(&client, file.as_deref(), &names, force).await?;
+        }
+        Command::Events { replay } => {
             client
-                .stream(&Request::Events, |response| {
+                .stream(&Request::Events { replay }, |response| {
                     if let Response::Event { event } = response {
                         println!("{}", format::event_line(&event));
                     }
@@ -403,13 +526,82 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_agents(agents: &[AgentRecord]) {
-    let rows: Vec<Vec<String>> = agents
+/// `project` means the project containing the current directory; a
+/// `project:` selector is normalised like `ps --project`; anything else
+/// is passed through for the daemon to interpret.
+pub(crate) fn destination(raw: &str) -> String {
+    match raw {
+        "project" => format!("project:{}", project_selector(".")),
+        _ => match raw.strip_prefix("project:") {
+            Some(selector) => format!("project:{}", project_selector(selector)),
+            None => raw.to_owned(),
+        },
+    }
+}
+
+/// A project id prefix passes through; anything that names a path (`.`,
+/// something with a slash, or an existing entry) becomes absolute so the
+/// daemon can find the project containing it.
+pub(crate) fn project_selector(raw: &str) -> String {
+    let path = PathBuf::from(raw);
+    if !(raw == "." || raw.contains('/') || path.exists()) {
+        return raw.to_owned();
+    }
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
+    absolute
+        .canonicalize()
+        .unwrap_or(absolute)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `repo` for the main checkout, `repo@wt` inside a linked worktree.
+fn project_cell(agent: &AgentRecord) -> String {
+    match &agent.project {
+        None => "-".to_owned(),
+        Some(project) => match &project.worktree {
+            None => project.name(),
+            Some(worktree) => format!(
+                "{}@{}",
+                project.name(),
+                worktree
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        },
+    }
+}
+
+/// Agents, then — dimmed — running agent processes nobody registered,
+/// shown under the name `adopt` would give them.
+fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
+    let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
             vec![
                 a.id.short().to_owned(),
                 a.spec.name.clone(),
+                project_cell(a),
+                a.vcs
+                    .as_ref()
+                    .map(|v| match (&v.branch, &v.head) {
+                        (Some(branch), _) => branch.clone(),
+                        (None, Some(_)) => "(detached)".to_owned(),
+                        (None, None) => "-".to_owned(),
+                    })
+                    .unwrap_or_else(|| "-".to_owned()),
+                a.vcs
+                    .as_ref()
+                    .and_then(VcsState::short_head)
+                    .unwrap_or("-")
+                    .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
@@ -420,10 +612,64 @@ fn print_agents(agents: &[AgentRecord]) {
             ]
         })
         .collect();
-    format::table(
+    let first_unadopted = rows.len();
+    rows.extend(unadopted.iter().map(|p| {
+        vec![
+            "-".to_owned(),
+            p.default_name(),
+            p.project
+                .as_ref()
+                .map(ProjectRef::name)
+                .unwrap_or_else(|| "-".to_owned()),
+            "-".to_owned(),
+            "-".to_owned(),
+            p.runtime.clone(),
+            "-".to_owned(),
+            "unadopted".to_owned(),
+            p.pid.to_string(),
+            p.started_at
+                .map(format::ago)
+                .unwrap_or_else(|| "-".to_owned()),
+        ]
+    }));
+    format::table_dimming(
         &[
-            "AGENT ID", "NAME", "RUNTIME", "MODEL", "STATUS", "PID", "CREATED",
+            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "PID",
+            "CREATED",
         ],
+        &rows,
+        |i| i >= first_unadopted,
+    );
+}
+
+fn print_processes(processes: &[DiscoveredProcess]) {
+    let rows: Vec<Vec<String>> = processes
+        .iter()
+        .map(|p| {
+            let mut command: String = p.command.chars().take(60).collect();
+            if p.command.chars().count() > 60 {
+                command.push('…');
+            }
+            vec![
+                p.pid.to_string(),
+                p.runtime.clone(),
+                p.project
+                    .as_ref()
+                    .map(ProjectRef::name)
+                    .unwrap_or_else(|| "-".to_owned()),
+                p.cwd
+                    .as_ref()
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                p.started_at
+                    .map(format::ago)
+                    .unwrap_or_else(|| "-".to_owned()),
+                command,
+            ]
+        })
+        .collect();
+    format::table(
+        &["PID", "RUNTIME", "PROJECT", "CWD", "STARTED", "COMMAND"],
         &rows,
     );
 }
@@ -434,7 +680,7 @@ fn print_leases(leases: &[Lease]) {
         .map(|l| {
             vec![
                 l.id.to_string(),
-                l.resource.to_string(),
+                format::resource(&l.resource),
                 l.holder.short().to_owned(),
                 l.mode.to_string(),
                 format::until(l.expires_at),
@@ -451,16 +697,21 @@ fn print_leases(leases: &[Lease]) {
 /// Turn a user-supplied resource into a canonical key. Bare or `path:`
 /// values that exist on disk are made absolute so two agents naming the
 /// same file differently still collide.
-fn resource_key(raw: &str) -> String {
+pub(crate) fn resource_key(raw: &str) -> String {
     let value = match raw.split_once(':') {
         Some(("path", value)) => value,
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    match PathBuf::from(value).canonicalize() {
-        Ok(absolute) => format!("path:{}", absolute.display()),
-        Err(_) => raw.to_owned(),
-    }
+    let path = PathBuf::from(value);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    };
+    format!("path:{}", hooks::normalize(&absolute).display())
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
@@ -472,4 +723,23 @@ fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
                 .with_context(|| format!("expected KEY=VALUE, got `{pair}`"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_keys_are_absolute_paths_unless_typed() {
+        assert_eq!(resource_key("task:ISSUE-1"), "task:ISSUE-1");
+        assert_eq!(resource_key("branch:main"), "branch:main");
+        let key = resource_key("does-not-exist-yet.rs");
+        assert!(key.starts_with("path:/"), "{key}");
+        assert!(key.ends_with("/does-not-exist-yet.rs"), "{key}");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            resource_key(&format!("path:{}", cwd.display())),
+            format!("path:{}", cwd.canonicalize().unwrap().display())
+        );
+    }
 }

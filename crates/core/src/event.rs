@@ -3,7 +3,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AgentStatus, Destination, Lease, MessageId, ResourceKey};
+use crate::{
+    AgentId, AgentStatus, Destination, Lease, MessageId, ProjectId, ProjectRef, ResourceKey,
+    VcsState,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -11,6 +14,8 @@ pub enum EventKind {
     AgentCreated {
         agent: AgentId,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
     },
     AgentStarted {
         agent: AgentId,
@@ -46,16 +51,37 @@ pub enum EventKind {
         requester: AgentId,
         held_by: Vec<AgentId>,
     },
+    /// A repository was seen for the first time on this host.
+    ProjectDiscovered {
+        project: ProjectRef,
+    },
+    /// An agent's checkout moved to another branch or commit.
+    AgentVcsChanged {
+        agent: AgentId,
+        vcs: VcsState,
+    },
+    /// The daemon is about to exit; `reason` is `signal` or `request`.
+    DaemonStopping {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
+    /// Position in the daemon's event log: strictly increasing, assigned by
+    /// the daemon when the event is emitted. `0` means not yet assigned.
+    #[serde(default)]
+    pub seq: u64,
     pub at: DateTime<Utc>,
     pub kind: EventKind,
 }
 
 impl Event {
     pub fn new(kind: EventKind, now: DateTime<Utc>) -> Self {
-        Self { at: now, kind }
+        Self {
+            seq: 0,
+            at: now,
+            kind,
+        }
     }
 }
