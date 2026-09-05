@@ -807,6 +807,11 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
         .as_object_mut()
         .context("`hooks` must be a JSON object")?;
     let mut added = 0;
+    let managed = |hook: &Value| {
+        hook["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("hook claude-code"))
+    };
     for (event, matcher) in EVENTS {
         let entries = hooks
             .entry(*event)
@@ -814,29 +819,34 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
             .as_array_mut()
             .with_context(|| format!("`hooks.{event}` must be an array"))?;
         let present = entries.iter().any(|entry| {
-            entry["hooks"].as_array().is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook["command"]
-                        .as_str()
-                        .is_some_and(|c| c.contains("hook claude-code"))
-                })
-            })
+            entry["hooks"]
+                .as_array()
+                .is_some_and(|hooks| hooks.iter().any(managed))
         });
         if present {
             if *event == "PreToolUse" {
+                let mut upgraded = Vec::new();
                 for entry in entries.iter_mut() {
-                    if entry["hooks"].as_array().is_some_and(|hs| {
-                        hs.iter().all(|h| {
-                            h["command"]
-                                .as_str()
-                                .is_some_and(|c| c.contains("hook claude-code"))
-                        })
-                    }) && entry["matcher"] != json!(EDIT_MATCHER)
-                    {
-                        entry["matcher"] = json!(EDIT_MATCHER);
-                        added += 1;
+                    let Some(hooks) = entry["hooks"].as_array() else {
+                        continue;
+                    };
+                    if !hooks.iter().any(managed) || entry["matcher"] == json!(EDIT_MATCHER) {
+                        continue;
                     }
+                    let (ours, others): (Vec<_>, Vec<_>) = hooks.iter().cloned().partition(managed);
+                    if others.is_empty() {
+                        entry["matcher"] = json!(EDIT_MATCHER);
+                    } else {
+                        // Widen only our hook's scope; preserve the user's matcher.
+                        let mut separate = entry.clone();
+                        separate["hooks"] = json!(ours);
+                        separate["matcher"] = json!(EDIT_MATCHER);
+                        entry["hooks"] = json!(others);
+                        upgraded.push(separate);
+                    }
+                    added += 1;
                 }
+                entries.extend(upgraded);
             }
             continue;
         }
@@ -1299,6 +1309,31 @@ mod tests {
             merge_claude_code_hooks(&mut settings, "agentdocker hook claude-code").unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn installer_upgrades_mixed_hooks_without_widening_user_hooks() {
+        let mut settings = json!({});
+        let command = "agentdocker hook claude-code";
+        merge_claude_code_hooks(&mut settings, command).unwrap();
+        let own = settings["hooks"]["PreToolUse"][0]["hooks"][0].clone();
+        let user = json!({"type": "command", "command": "echo user", "timeout": 9});
+        let empty = json!({"matcher": "Bash", "hooks": []});
+        let missing = json!({"matcher": "Bash"});
+        settings["hooks"]["PreToolUse"] = json!([
+            {"matcher": "Edit", "hooks": [own, user]}, empty, missing
+        ]);
+        assert_eq!(merge_claude_code_hooks(&mut settings, command).unwrap(), 1);
+        assert_eq!(
+            settings["hooks"]["PreToolUse"],
+            json!([
+                {"matcher": "Edit", "hooks": [user]}, empty, missing,
+                {"matcher": EDIT_MATCHER, "hooks": [own]}
+            ])
+        );
+        let upgraded = settings.clone();
+        assert_eq!(merge_claude_code_hooks(&mut settings, command).unwrap(), 0);
+        assert_eq!(settings, upgraded);
     }
 
     #[test]

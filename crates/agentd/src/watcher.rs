@@ -187,7 +187,10 @@ fn classify(
                 }
                 continue;
             }
-            let is_dir = path.is_dir();
+            let is_dir = matches!(
+                event.kind,
+                EventKind::Remove(notify::event::RemoveKind::Folder)
+            ) || path.is_dir();
             if is_dir && kind != ChangeKind::Removed {
                 continue;
             }
@@ -288,6 +291,37 @@ fn kind_of(kind: &EventKind) -> Option<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_directories_keep_their_type_for_ignore_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        for name in ["target", "src"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::remove_dir(root.join(name)).unwrap();
+        }
+        let watched = BTreeMap::from([(
+            root.clone(),
+            Watched {
+                checkout: Checkout {
+                    dir: root.clone(),
+                    project: agentdocker_core::ProjectId::from("test"),
+                    worktree: None,
+                },
+                gitdir: None,
+            },
+        )]);
+        let events = ["target", "src"].map(|name| {
+            notify::Event::new(EventKind::Remove(notify::event::RemoveKind::Folder))
+                .add_path(root.join(name))
+        });
+        let (observed, vcs) = classify(&events, &watched);
+        assert!(vcs.is_empty());
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].path, Path::new("src"));
+        assert_eq!(observed[0].kind, ChangeKind::Removed);
+    }
 
     #[test]
     fn nested_ignore_changes_take_effect_without_restarting_watch() {

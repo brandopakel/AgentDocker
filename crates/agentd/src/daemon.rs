@@ -62,6 +62,7 @@ pub struct Daemon {
 /// Host I/O and waits are performed before or after this guard, never across await.
 struct State {
     store: Store,
+    storage_error: Option<String>,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
@@ -196,10 +197,6 @@ pub struct Observed {
 }
 
 impl Daemon {
-    fn store_op<T>(&self, what: &str, op: impl FnOnce(&Store) -> anyhow::Result<T>) -> Option<T> {
-        lock(&self.state).store_op(what, op)
-    }
-
     pub fn emit(&self, kind: EventKind) {
         lock(&self.state).emit(kind);
     }
@@ -277,9 +274,9 @@ impl Daemon {
     fn stop(&self, reference: &str, force: bool) -> Response {
         let record = {
             let mut state = lock(&self.state);
-            let id = match state.resolve(reference) {
+            let id = match state.registry.resolve(reference) {
                 Ok(id) => id,
-                Err(e) => return *e,
+                Err(e) => return registry_error(e),
             };
             let record = state.registry.get(&id).unwrap().clone();
             if !record.status.is_live() {
@@ -496,6 +493,7 @@ impl Daemon {
             started: Instant::now(),
             state: Mutex::new(State {
                 store,
+                storage_error: None,
                 registry,
                 leases,
                 inboxes,
@@ -539,6 +537,21 @@ impl Daemon {
 
     /// Handle every non-streaming request.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        // A failed write makes the in-memory projection unsafe to serve. Keep
+        // the daemon unavailable until restart reloads durable state; never
+        // acknowledge a mutation or grant new protection from that projection.
+        if matches!(request, Request::Shutdown) {
+            self.shutdown.notify_one();
+            return Response::Ok;
+        }
+        if let Some(error) = lock(&self.state).storage_failure() {
+            return error;
+        }
+        let response = self.handle_healthy(request).await;
+        lock(&self.state).storage_failure().unwrap_or(response)
+    }
+
+    async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Observe { agent, paths } => self.observe(&agent, paths).await,
             Request::Stale { agent, paths } => self.stale(&agent, paths).await,
@@ -876,15 +889,32 @@ impl Daemon {
         })
         .await
         .unwrap_or_default();
+        let observed = tokio::task::spawn_blocking(move || {
+            observed
+                .into_iter()
+                .map(|entry| {
+                    let physical =
+                        project::try_canonical(&entry.checkout.dir.join(&entry.path)).ok();
+                    (entry, physical)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
         let now = Utc::now();
-        for Observed {
-            checkout,
-            path,
-            kind,
-        } in observed
+        for (
+            Observed {
+                checkout,
+                path,
+                kind,
+            },
+            physical,
+        ) in observed
         {
             let mut state = lock(&self.state);
-            let by = state.attribute(&checkout, &path);
+            let by = physical
+                .as_deref()
+                .map_or(Attribution::External, |path| state.attribute(path));
             let mut change = Change {
                 seq: 0,
                 project: checkout.project.clone(),
@@ -900,7 +930,7 @@ impl Daemon {
                 continue;
             };
             change.seq = seq;
-            state.warn_readers(&change);
+            state.warn_readers(&change, physical.as_deref());
             debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
             let _ = state
                 .events
@@ -931,11 +961,18 @@ impl Daemon {
         let path = match path {
             Some(raw) if Path::new(&raw).is_absolute() => {
                 let given = PathBuf::from(&raw);
-                let absolute = tokio::task::spawn_blocking(move || project::canonical(&given))
-                    .await
-                    .unwrap_or_else(|_| PathBuf::from(&raw));
-                let parent = absolute.parent().map(Path::to_path_buf);
-                match self.project_for(parent, false).await {
+                let (absolute, discovery_dir) = tokio::task::spawn_blocking(move || {
+                    let absolute = project::canonical(&given);
+                    let discovery_dir = if absolute.is_dir() {
+                        Some(absolute.clone())
+                    } else {
+                        absolute.parent().map(Path::to_path_buf)
+                    };
+                    (absolute, discovery_dir)
+                })
+                .await
+                .unwrap_or_else(|_| (PathBuf::from(&raw), None));
+                match self.project_for(discovery_dir, false).await {
                     Some(found) => match absolute.strip_prefix(found.dir()) {
                         Ok(relative) => Some(relative.to_string_lossy().into_owned()),
                         Err(_) => Some(raw),
@@ -952,9 +989,9 @@ impl Daemon {
             agent,
             limit: limit.clamp(1, 10_000),
         };
-        match self.store_op("changes", |store| store.changes(&query)) {
-            Some(changes) => Response::Changes { changes },
-            None => Response::error(ErrorCode::Internal, "ledger query failed"),
+        match lock(&self.state).store.changes(&query) {
+            Ok(changes) => Response::Changes { changes },
+            Err(err) => Response::error(ErrorCode::Internal, format!("ledger query failed: {err}")),
         }
     }
 
@@ -1173,6 +1210,9 @@ impl Daemon {
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
+                if let Some(error) = state.storage_failure() {
+                    return error;
+                }
                 state.touch(&holder);
                 let now = Utc::now();
                 state.expire_leases_at(now);
@@ -1310,17 +1350,25 @@ impl Daemon {
 
 impl State {
     /// Execute a store operation as part of the current ordered transition.
-    fn store_op<T>(&self, what: &str, op: impl FnOnce(&Store) -> anyhow::Result<T>) -> Option<T> {
+    fn store_op<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Option<T> {
+        if self.storage_error.is_some() {
+            return None;
+        }
         match op(&self.store) {
             Ok(value) => Some(value),
             Err(err) => {
                 error!(%what, %err, "store operation failed");
+                self.storage_error = Some(format!("{what}: {err}"));
                 None
             }
         }
     }
-    fn attribute(&self, checkout: &Checkout, path: &Path) -> Attribution {
-        let key = ResourceKey::new(format!("path:{}", checkout.dir.join(path).display()));
+    fn attribute(&self, path: &Path) -> Attribution {
+        let key = ResourceKey::new(format!("path:{}", path.display()));
         let leases = &self.leases;
         let mut overlapping: Vec<&Lease> = leases
             .all()
@@ -1341,21 +1389,42 @@ impl State {
             None => Attribution::External,
         }
     }
-    fn persist(&self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+    fn storage_failure(&self) -> Option<Response> {
+        self.storage_error.as_ref().map(|error| {
+            Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("storage failed ({error}); coordination disabled until daemon restart"),
+            )
+        })
+    }
+
+    fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+        if self.storage_error.is_some() {
+            return;
+        }
         if let Err(err) = write(&self.store) {
-            error!(%what, %err, "failed to persist state");
+            error!(%what, %err, "storage failed; disabling coordination until restart");
+            self.storage_error = Some(format!("{what}: {err}"));
         }
     }
 
     pub fn emit(&mut self, kind: EventKind) {
+        if self.storage_error.is_some() {
+            return;
+        }
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
         self.next_seq += 1;
         self.persist("event", |store| store.append_event(&event));
-        let _ = self.events.send(event);
+        if self.storage_error.is_none() {
+            let _ = self.events.send(event);
+        }
     }
 
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
         self.registry
             .resolve(reference)
             .map_err(|err| Box::new(registry_error(err)))
@@ -1482,16 +1551,25 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        if let Err(err) = self.store.ack_inbox(&id, messages) {
-            return Response::error(ErrorCode::Internal, err.to_string());
+        let mut event = Event::new(
+            EventKind::InboxAcknowledged {
+                agent: id.clone(),
+                messages: messages.to_vec(),
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        self.persist("inbox acknowledgement", |store| {
+            store.ack_inbox(&id, messages, &event)
+        });
+        if let Some(error) = self.storage_failure() {
+            return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
             queue.retain(|message| !messages.contains(&message.id));
         }
-        self.emit(EventKind::InboxAcknowledged {
-            agent: id,
-            messages: messages.to_vec(),
-        });
+        self.next_seq += 1;
+        let _ = self.events.send(event);
         Response::Ok
     }
 
@@ -1663,6 +1741,9 @@ impl State {
             });
         }
 
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
         self.emit(EventKind::MessageSent {
             message: envelope.id.clone(),
@@ -1678,6 +1759,9 @@ impl State {
     }
 
     fn insert_record(&mut self, mut record: AgentRecord) -> Response {
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -1705,7 +1789,8 @@ impl State {
                 pid: record.pid,
             });
         }
-        Response::Agent { agent: record }
+        self.storage_failure()
+            .unwrap_or(Response::Agent { agent: record })
     }
 }
 
@@ -2931,6 +3016,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_storage_never_acknowledges_or_serves_new_coordination() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "owner", None).await;
+        register(&daemon, "other", None).await;
+        let Response::Lease { lease } = claim(&daemon, "owner", "task:durable").await else {
+            panic!()
+        };
+        let before = daemon.recent_events(100).len();
+        lock(&daemon.state).store.reject_writes_for_test();
+        let failed = daemon
+            .handle(Request::Release {
+                agent: "owner".into(),
+                lease: lease.id,
+            })
+            .await;
+        assert!(matches!(
+            failed,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(daemon.recent_events(100).len(), before);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            claim(&daemon, "other", "task:durable").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn claim_expiration_removes_storage_and_emits_once() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
@@ -3049,6 +3177,108 @@ mod tests {
             Response::Changes { changes } => changes,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn watcher_attribution_uses_physical_aliases_and_root_queries_include_all_paths() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("Agentfile.toml"), "").unwrap();
+        let target = repo.join("src/lib.rs");
+        std::fs::write(&target, "before").unwrap();
+        std::os::unix::fs::symlink("src/lib.rs", repo.join("alias.rs")).unwrap();
+        std::os::unix::fs::symlink("src", repo.join("alias-dir")).unwrap();
+        let daemon = open(&dir);
+        let agent = register_in(&daemon, "writer", &repo).await;
+        register_in(&daemon, "reader", &repo).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Observe {
+                    agent: "reader".into(),
+                    paths: vec!["src/lib.rs".into()],
+                })
+                .await,
+            Response::Reads { .. }
+        ));
+        let Response::Lease { lease } = claim(
+            &daemon,
+            "writer",
+            &format!("path:{}", repo.join("alias.rs").display()),
+        )
+        .await
+        else {
+            panic!("claim failed");
+        };
+        let checkout = daemon.watch_targets().pop().unwrap();
+        std::fs::write(&target, "after").unwrap();
+        daemon
+            .record_fs_changes(
+                ["alias.rs", "alias-dir/lib.rs", "notes.md"]
+                    .into_iter()
+                    .map(|path| Observed {
+                        checkout: checkout.clone(),
+                        path: path.into(),
+                        kind: ChangeKind::Modified,
+                    })
+                    .collect(),
+                vec![],
+            )
+            .await;
+        let attributed = Attribution::Agent {
+            agent: agent.id,
+            lease: lease.id,
+            note: None,
+        };
+        let entries = ledger(&daemon, &repo, None).await;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].by, attributed);
+        assert_eq!(entries[1].by, attributed);
+        assert_eq!(entries[2].by, Attribution::External);
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "reader".into(),
+                drain: true,
+            })
+            .await
+        else {
+            panic!("inbox failed");
+        };
+        assert_eq!(messages.len(), 2, "both alias changes warn the reader");
+        for message in messages {
+            assert_eq!(message.kind, "stale");
+            assert_eq!(
+                message.payload["paths"],
+                json!([project::canonical(&target)])
+            );
+        }
+        let root = repo.to_string_lossy();
+        for filter in ["", ".", "./", root.as_ref()] {
+            assert_eq!(ledger(&daemon, &repo, Some(filter)).await, entries);
+        }
+        assert_eq!(ledger(&daemon, &repo, Some("alias-dir")).await.len(), 1);
+
+        // A deleted regular file still has its normalized physical key. A
+        // removed symlink no longer supplies evidence of its former target.
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_file(repo.join("alias.rs")).unwrap();
+        daemon
+            .record_fs_changes(
+                ["alias-dir/lib.rs", "alias.rs"]
+                    .into_iter()
+                    .map(|path| Observed {
+                        checkout: checkout.clone(),
+                        path: path.into(),
+                        kind: ChangeKind::Removed,
+                    })
+                    .collect(),
+                vec![],
+            )
+            .await;
+        let entries = ledger(&daemon, &repo, None).await;
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[3].by, attributed);
+        assert_eq!(entries[4].by, Attribution::External);
     }
 
     /// Poll until `check` passes or five seconds elapse.
