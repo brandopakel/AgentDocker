@@ -159,7 +159,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `observe {agent, paths}` | `reads {reads: ReadMark[]}` | capture content immediately before reading |
 | `reads {agent}` | `reads {reads: ReadMark[]}` | durable observations |
 | `stale {agent, paths?}` | `stale {stale: StalePath[]}` | compare current content; querying never clears staleness |
-| `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; empty, `.` and absolute checkout-root paths select all paths |
+| `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
@@ -464,7 +464,9 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-New events: `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Shipped events include `file_changed` (ledger observations) and `agent_stale` (stale-reader events). The inbox notification uses the separate message kind `stale`.
+
+Planned events: `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 
