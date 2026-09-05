@@ -62,6 +62,7 @@ def container(request, authenticated=True):
 try:
     expect(container({'op':'ping'}, False), 'error', 'forbidden')
     expect(container({'op':'shutdown'}), 'error', 'forbidden')
+    expect(container({'op':'build_image','spec':{'engine':args.engine,'context':'/workspace','recipe':'Containerfile'}}), 'error', 'forbidden')
     expect(container({'op':'journal_add','agent':reader,'summary':'container note'}), 'journal_entry')
     digest = {'op':'journal','project':'/workspace','digest':{'reader':reader,'max_entries':20,'max_chars':2000,'advance':True}}
     assert 'container note' in expect(container(digest), 'digest')['digest']['text']

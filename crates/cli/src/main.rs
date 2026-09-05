@@ -42,6 +42,28 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Build an image with an explicit engine and retain immutable input provenance.
+    ImageBuild {
+        #[arg(long)]
+        /// Container engine: docker or podman (required; no fallback).
+        engine: agentdocker_core::ContainerEngine,
+        #[arg(long)]
+        /// Docker context or Podman connection name.
+        connection: Option<String>,
+        /// Local directory to capture as build context (maximum 256 MiB).
+        context: PathBuf,
+        #[arg(short = 'f', long, default_value = "Containerfile")]
+        /// Recipe path relative to the context.
+        file: PathBuf,
+        #[arg(long, default_value_t = 600)]
+        /// Engine build timeout in seconds (1–3600).
+        timeout: u64,
+        #[arg(long)]
+        /// Print the complete JSON record instead of only its ID.
+        json: bool,
+    },
+    /// List retained image build records, including finished sessions.
+    Images,
     /// Create a new linked checkout and branch without changing existing files.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -497,6 +519,33 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.socket);
 
     match cli.command {
+        Command::ImageBuild {
+            engine,
+            connection,
+            context,
+            file,
+            timeout,
+            json,
+        } => {
+            let context = std::env::current_dir()?.join(context);
+            let response = client
+                .call(&Request::BuildImage {
+                    spec: agentdocker_core::ImageBuildSpec {
+                        engine,
+                        connection,
+                        context,
+                        recipe: file,
+                        timeout_secs: timeout,
+                    },
+                })
+                .await?;
+            match response {
+                Response::ImageBuild { build } if !json => println!("{}", build.id),
+                response @ Response::ImageBuild { .. } => print_json(&response)?,
+                _ => bail!("unexpected image build response"),
+            }
+        }
+        Command::Images => print_json(&client.call(&Request::Images).await?)?,
         Command::Observe { agent, paths } => {
             print_json(&client.call(&Request::Observe { agent, paths }).await?)?;
         }
