@@ -783,6 +783,7 @@ async fn main() -> Result<()> {
             if let Response::Pong {
                 version,
                 uptime_secs,
+                ..
             } = client.call(&Request::Ping).await?
             {
                 println!("agentd {version} up {}", format::span_secs(uptime_secs));
