@@ -61,3 +61,29 @@ pub struct ImageBuild {
     pub architecture: String,
     pub variant: Option<String>,
 }
+
+/// Durable intent for one managed container. A replacement run gets a new identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerIntent {
+    Run,
+    Stop,
+    Kill,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedContainer {
+    pub build: String,
+    pub engine: ContainerEngine,
+    pub connection: Option<String>,
+    pub image_id: String,
+    /// Unique engine name used only to recover a lost create response.
+    pub name: String,
+    /// Random ownership label, checked along with the agent and image identity.
+    pub owner: String,
+    pub id: Option<String>,
+    pub intent: ContainerIntent,
+    /// Written before invoking start, including when its response is lost.
+    pub start_attempted: bool,
+    pub last_error: Option<String>,
+}

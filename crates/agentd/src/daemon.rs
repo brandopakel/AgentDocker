@@ -38,6 +38,7 @@ use agentdocker_host::{procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod containers;
 mod images;
 mod recovery;
 mod working;
@@ -82,6 +83,8 @@ pub struct Daemon {
     /// Asks the watcher to flush pending observations now; set once the
     /// watcher runs. Never held across an await.
     watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
+    container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
+    container_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// One synchronous transition owns memory, persistence and publication.
@@ -94,6 +97,7 @@ struct State {
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
     live_subscribers: HashMap<AgentId, usize>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
+    container_busy: HashSet<AgentId>,
     projects: HashMap<PathBuf, Option<String>>,
     next_seq: u64,
     bus: broadcast::Sender<Envelope>,
@@ -256,6 +260,7 @@ impl Daemon {
             state
                 .registry
                 .live()
+                .filter(|a| a.container.is_none())
                 .filter(|a| !state.supervised.contains_key(&a.id))
                 .filter(|a| !(a.managed && a.status == AgentStatus::Created))
                 .cloned()
@@ -298,7 +303,7 @@ impl Daemon {
             }
         }
     }
-    pub async fn stop_all(&self) {
+    pub async fn stop_all(self: &Arc<Self>) {
         let managed: Vec<_> = lock(&self.state)
             .registry
             .live()
@@ -306,14 +311,24 @@ impl Daemon {
             .map(|a| a.id.clone())
             .collect();
         for id in managed {
+            if self.container_record(&id).is_some() {
+                if let Err(error) = self.request_container_stop(&id, false) {
+                    warn!(agent = %id, %error, "container shutdown intent could not be persisted");
+                }
+                continue;
+            }
             if let response @ Response::Error { .. } = self.stop(id.as_str(), false) {
                 warn!(agent = %id, ?response, "managed agent did not stop during shutdown");
             }
         }
+        self.reconcile_containers();
         // Keep supervision alive during shutdown so owned children are reaped
         // and their groups stop before durable protection is released.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
-        while !lock(&self.state).supervised.is_empty() {
+        while {
+            let state = lock(&self.state);
+            !state.supervised.is_empty() || state.registry.live().any(|a| a.container.is_some())
+        } {
             if tokio::time::Instant::now() >= deadline {
                 warn!("managed groups did not finish shutdown; durable protection retained");
                 break;
@@ -458,7 +473,8 @@ impl Daemon {
         let now = Utc::now();
         let mut registry = Registry::new();
         for mut record in store.load_agents()? {
-            if record.managed && record.status == AgentStatus::Created {
+            if record.managed && record.container.is_none() && record.status == AgentStatus::Created
+            {
                 // The previous daemon stopped between creating the record and
                 // spawning the process, so nothing is running for it.
                 warn!(agent = %record.id.short(), name = %record.spec.name, "agent never started; recording failure");
@@ -471,6 +487,15 @@ impl Daemon {
             match registry.insert(record.clone()) {
                 Ok(()) => {}
                 Err(RegistryError::NameTaken(name)) => {
+                    if record.container.is_some()
+                        || registry
+                            .live()
+                            .any(|a| a.spec.name == name && a.container.is_some())
+                    {
+                        anyhow::bail!(
+                            "duplicate live container agent name {name}; refusing to release protection"
+                        );
+                    }
                     // Two live records with one name can only come from a
                     // damaged store: keep the first, retire the rest so the
                     // store and the registry agree.
@@ -558,6 +583,7 @@ impl Daemon {
                 inboxes,
                 live_subscribers: HashMap::new(),
                 supervised: HashMap::new(),
+                container_busy: HashSet::new(),
                 projects,
                 next_seq,
                 bus,
@@ -569,6 +595,8 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
+            container_backend: Arc::new(agentdocker_host::containers::CliContainers),
+            container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
         })
     }
 
@@ -672,11 +700,13 @@ impl Daemon {
                 uptime_secs: self.started.elapsed().as_secs(),
             },
             Request::Run { spec } => self.run(spec).await,
+            Request::RunContainer { spec, build } => self.run_container(spec, build).await,
+            Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid } => self.register(spec, pid).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
-            Request::Stop { agent, force } => self.stop(&agent, force),
+            Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
             Request::Remove { agent } => lock(&self.state).remove(&agent),
             Request::List {
                 all,

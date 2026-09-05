@@ -68,6 +68,7 @@ jobs:
           test "$ready" = true
           target/debug/agentdocker --socket "$fixture/host.sock" images > artifacts/image-builds-restored.json
           python3 -c 'import json; built=json.load(open("artifacts/image-build.json"))["build"]; restored=json.load(open("artifacts/image-builds-restored.json"))["builds"]; assert restored == [built], "image provenance did not survive restart"'
+          python3 tests/containers/lifecycle.py --engine "$TEST_ENGINE" --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root "$fixture/lifecycle" --result artifacts/lifecycle-result.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
