@@ -1,17 +1,12 @@
 name: Release
-
 on:
   push:
     tags: ["v*"]
-
 permissions:
   contents: read
-
 jobs:
   build:
     if: github.ref_protected
-    permissions:
-      contents: write
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -36,21 +31,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      # Archives are named without the version so the installer can fetch
-      # .../releases/latest/download/agentdocker-<target>.tar.gz; versioned
-      # downloads go through .../releases/download/<tag>/....
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - name: Build and archive
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker --bins
+          mkdir dist
+          tar -czf "dist/agentdocker-${BUILD_TARGET}.tar.gz" -C "target/${BUILD_TARGET}/release" agentdocker agentd
+          cd dist
+          shasum -a 256 "agentdocker-${BUILD_TARGET}.tar.gz" > "agentdocker-${BUILD_TARGET}.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          bin: agentdocker,agentd
-          target: ${{ matrix.target }}
-          archive: agentdocker-$target
-          tar: unix
-          checksum: sha256
-          token: ${{ secrets.GITHUB_TOKEN }}
-
+          name: binary-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
   formula:
-    permissions:
-      contents: write
     name: Generate verified Homebrew formula
     needs: build
     runs-on: ubuntu-latest
@@ -58,19 +53,38 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Download checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release download "$RELEASE_TAG" --pattern '*.sha256' --dir checksums
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: checksums
       - name: Generate formula
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: python3 packaging/homebrew/generate.py "$RELEASE_TAG" checksums agentdocker.rb
       - name: Validate formula
         run: ruby -c agentdocker.rb
-      - name: Upload formula
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: formula
+          path: agentdocker.rb
+          if-no-files-found: error
+  publish:
+    needs: [build, formula]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Publish verified artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release upload "$RELEASE_TAG" agentdocker.rb --clobber
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

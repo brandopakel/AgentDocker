@@ -195,6 +195,9 @@ pub struct AgentRecord {
     /// mistaken for the agent. `None` when the platform can't tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_started_at: Option<DateTime<Utc>>,
+    /// Dedicated process group created by agentd for a managed command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_group: Option<u32>,
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
@@ -222,6 +225,7 @@ impl AgentRecord {
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,
+            process_group: None,
             managed,
             project: None,
             vcs: None,
