@@ -193,11 +193,13 @@ pub(super) fn check_reads(reads: &[ReadMark]) -> Vec<StalePath> {
 }
 
 impl State {
-    pub(super) fn warn_readers(&mut self, change: &Change) {
+    pub(super) fn warn_readers(&mut self, change: &Change, physical: Option<&Path>) {
         let Some(checkout) = &change.checkout else {
             return;
         };
-        let absolute = checkout.join(&change.path);
+        let absolute = physical
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| checkout.join(&change.path));
         let agents: Vec<_> = self
             .registry
             .list(false)
