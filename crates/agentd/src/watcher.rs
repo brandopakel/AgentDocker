@@ -12,7 +12,7 @@
 //! branch refresh instead of an entry. Watches are reconciled against the
 //! registry once a second, so an agent joining or leaving needs no hook.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,11 +20,11 @@ use std::time::Duration;
 
 use agentdocker_core::ChangeKind;
 use agentdocker_host::vcs;
-use ignore::gitignore::Gitignore;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::event::{EventKind, ModifyKind};
 use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::daemon::{Checkout, Daemon, Observed};
 
@@ -33,7 +33,6 @@ const FLUSH_EVERY: Duration = Duration::from_millis(100);
 
 struct Watched {
     checkout: Checkout,
-    ignore: Gitignore,
     /// A linked worktree's own git directory, watched for its `HEAD`.
     gitdir: Option<PathBuf>,
 }
@@ -67,12 +66,13 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
         }
     };
     let mut watched: BTreeMap<PathBuf, Watched> = BTreeMap::new();
+    let mut retries: HashMap<PathBuf, std::time::Instant> = HashMap::new();
     let mut pending: Vec<notify::Event> = Vec::new();
     let mut reconcile = tokio::time::interval(reconcile_every);
     let mut flush = tokio::time::interval(flush_every);
     loop {
         tokio::select! {
-            _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched),
+            _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
             Some(event) = rx.recv() => {
                 if pending.len() < 4096 { pending.push(event); }
                 else { gap.store(true, Ordering::Relaxed); }
@@ -98,6 +98,7 @@ fn reconcile_watches(
     daemon: &Daemon,
     watcher: &mut notify::RecommendedWatcher,
     watched: &mut BTreeMap<PathBuf, Watched>,
+    retries: &mut HashMap<PathBuf, std::time::Instant>,
 ) {
     let wanted = daemon.watch_targets();
     let wanted_dirs: HashSet<&Path> = wanted.iter().map(|c| c.dir.as_path()).collect();
@@ -116,11 +117,24 @@ fn reconcile_watches(
         }
     }
     for checkout in wanted {
+        if retries
+            .get(&checkout.dir)
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(30))
+        {
+            continue;
+        }
         if watched.contains_key(&checkout.dir) {
             continue;
         }
         if let Err(err) = watcher.watch(&checkout.dir, RecursiveMode::Recursive) {
             warn!(checkout = %checkout.dir.display(), %err, "cannot watch checkout");
+            retries.insert(checkout.dir.clone(), std::time::Instant::now());
+            daemon.emit(agentdocker_core::EventKind::WatcherGap {
+                reason: format!(
+                    "cannot watch {}: {err}; retrying in 30 seconds",
+                    checkout.dir.display()
+                ),
+            });
             continue;
         }
         // A linked worktree keeps HEAD in its own git directory, elsewhere.
@@ -129,19 +143,8 @@ fn reconcile_watches(
             .map(|(gitdir, _)| gitdir)
             .filter(|gitdir| *gitdir != own_git)
             .filter(|gitdir| watcher.watch(gitdir, RecursiveMode::NonRecursive).is_ok());
-        let (ignore, problem) = Gitignore::new(checkout.dir.join(".gitignore"));
-        if let Some(problem) = problem {
-            debug!(checkout = %checkout.dir.display(), %problem, "no usable .gitignore");
-        }
         info!(checkout = %checkout.dir.display(), project = %checkout.project.short(), "watching");
-        watched.insert(
-            checkout.dir.clone(),
-            Watched {
-                checkout,
-                ignore,
-                gitdir,
-            },
-        );
+        watched.insert(checkout.dir.clone(), Watched { checkout, gitdir });
     }
 }
 
@@ -188,11 +191,7 @@ fn classify(
             if is_dir && kind != ChangeKind::Removed {
                 continue;
             }
-            if entry
-                .ignore
-                .matched_path_or_any_parents(path, is_dir)
-                .is_ignore()
-            {
+            if ignored(dir, path, is_dir) {
                 continue;
             }
             if seen.insert((dir.clone(), relative.to_path_buf(), kind)) {
@@ -207,6 +206,42 @@ fn classify(
     (observed, vcs_touched)
 }
 
+/// Evaluate global, repository and nested ignore rules with their own roots.
+/// Rebuilding on demand makes edits to ignore sources effective immediately.
+fn ignored(root: &Path, path: &Path, is_dir: bool) -> bool {
+    let (global, _) = GitignoreBuilder::new(root).build_global();
+    let mut matchers = vec![global];
+    if let Some((_, common)) = vcs::git_dirs(root) {
+        let mut builder = GitignoreBuilder::new(root);
+        let _ = builder.add(common.join("info/exclude"));
+        if let Ok(matcher) = builder.build() {
+            matchers.push(matcher);
+        }
+    }
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut current = root.to_path_buf();
+    let parts: Vec<_> = relative.components().collect();
+    for (index, part) in parts.iter().enumerate() {
+        let (matcher, _) = Gitignore::new(current.join(".gitignore"));
+        matchers.push(matcher);
+        current.push(part.as_os_str());
+        let directory = index + 1 < parts.len() || is_dir;
+        let mut ignored = false;
+        for matcher in &matchers {
+            let matched = matcher.matched(&current, directory);
+            if !matched.is_none() {
+                ignored = matched.is_ignore();
+            }
+        }
+        if ignored {
+            return true;
+        }
+    }
+    false
+}
+
 /// The watched checkout containing `path`: the deepest one, so a worktree
 /// nested under a root wins over the root.
 fn owner<'a>(path: &Path, watched: &'a BTreeMap<PathBuf, Watched>) -> Option<&'a Watched> {
@@ -216,7 +251,19 @@ fn owner<'a>(path: &Path, watched: &'a BTreeMap<PathBuf, Watched>) -> Option<&'a
             path.starts_with(&w.checkout.dir)
                 || w.gitdir.as_ref().is_some_and(|g| path.starts_with(g))
         })
-        .max_by_key(|w| w.checkout.dir.as_os_str().len())
+        .max_by_key(|w| {
+            let root = if path.starts_with(&w.checkout.dir) {
+                w.checkout.dir.as_os_str().len()
+            } else {
+                0
+            };
+            let git = w
+                .gitdir
+                .as_ref()
+                .filter(|g| path.starts_with(g))
+                .map_or(0, |g| g.as_os_str().len());
+            root.max(git)
+        })
 }
 
 /// Files inside a git directory that say where HEAD is.
@@ -241,6 +288,19 @@ fn kind_of(kind: &EventKind) -> Option<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_ignore_changes_take_effect_without_restarting_watch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let path = root.join("src/generated");
+        assert!(!ignored(root, &path, false));
+        std::fs::write(root.join("src/.gitignore"), "/generated\n").unwrap();
+        assert!(ignored(root, &path, false));
+        std::fs::write(root.join("src/.gitignore"), "").unwrap();
+        assert!(!ignored(root, &path, false));
+    }
 
     #[test]
     fn head_files_are_recognised() {

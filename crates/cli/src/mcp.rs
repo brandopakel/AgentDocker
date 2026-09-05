@@ -255,7 +255,7 @@ impl<B: Backend> McpServer<B> {
                  `read_inbox` to see messages other agents sent you and `send_message` to \
                  reply, hand off work, or announce what you are doing — `to: \"project\"` \
                  reaches everyone working in the same repository. `list_agents` shows who \
-                 else is running and which project each is in.",
+                 else is running and which project each is in. Call `observe_paths` immediately before reading or searching, then `check_stale` before editing; reread changed content.",
                 self.identity.name, self.identity.id
             ),
         })

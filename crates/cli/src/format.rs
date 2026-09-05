@@ -144,6 +144,10 @@ pub fn event_line(event: &Event) -> String {
             "{agent} has stale context for {} paths; reread",
             paths.len()
         ),
+
+        EventKind::InboxAcknowledged { agent, messages } => {
+            format!("{agent} acknowledged {} messages", messages.len())
+        }
         EventKind::AgentCreated {
             agent,
             name,

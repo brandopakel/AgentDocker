@@ -125,7 +125,7 @@ The daemon watches the filesystem of every checkout a live agent works in and ke
 
 **Watching.** One `notify` watcher (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second, so an agent joining or leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
 
-**The ledger.** Each surviving change becomes a `Change`: project, worktree, checkout-relative path, kind (created, modified, removed, renamed), time, the checkout's HEAD, and an **attribution** — the holder of a lease overlapping the file's `file:` key at that moment (exclusive first), else `external`: the user's editor, a git command, a build. Attribution is best-effort by construction and every rendering says so. Entries are persisted in the `changes` table (`seq`, indexed by project and by project + path, so "everything under `src/`" is a prefix range) and announced live as `file_changed`, which is deliberately *not* kept in the event history: change volume would crowd out everything else in that 10,000-event window. The newest 100,000 entries per project are kept, pruned once a minute.
+**The ledger.** Each surviving change becomes a `Change`: project, worktree, checkout-relative path, kind (created, modified, removed, renamed), time, the checkout's HEAD, and an **attribution** — the holder of an unexpired exclusive lease on the physical checkout path (shared leases are not authorship evidence), else `external`: the user's editor, a git command, a build. Attribution is best-effort by construction and every rendering says so. Entries are persisted in the `changes` table (`seq`, indexed by project and by project + path, so "everything under `src/`" is a prefix range) and announced live as `file_changed`, which is deliberately *not* kept in the event history: change volume would crowd out everything else in that 10,000-event window. The newest 100,000 entries per project are kept, pruned once a minute.
 
 **Reading it.** `changes {project, since_seq?, path?, agent?, limit?}` returns the newest `limit` entries oldest first; `agentdocker changes [--project .] [--since N] [--path P] [--agent A] [-n N]` prints them with agent names, and `agentdocker blame <path>` is the same query for one file. An absolute path in a query is made relative to the checkout containing it, so callers need not know the root.
 
@@ -152,17 +152,22 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
 | `report {agent, vcs?}` | `ok` | what an adapter observed; a changed `vcs` is stored and announced |
+| `observe {agent, paths}` | `reads {reads: ReadMark[]}` | capture content immediately before reading |
+| `reads {agent}` | `reads {reads: ReadMark[]}` | durable observations |
+| `stale {agent, paths?}` | `stale {stale: StalePath[]}` | compare current content; querying never clears staleness |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes` | the ledger, newest `limit` entries oldest first |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
-| `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
+| `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
+
+| `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | |
 | `release {agent, lease}` | `lease` | holder only |
 | `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
-| `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; a `path:` filter also matches its `file:` form |
-| `events {replay?}` | stream of `event` | replays the last `replay` stored events, then live until the client disconnects |
+| `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; `file:` inputs resolve through the same physical checkout alias |
+| `events {replay?}` | stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
@@ -244,7 +249,7 @@ See [Projects](#projects). The known-runtime table is code for now; making it co
 
 #### Branch and head *(done)*
 
-See [Projects](#projects). `report` will grow `reads` and `writes` in Phase 3.
+See [Projects](#projects). `observe`, `reads` and `stale` provide content observations independently of VCS reports.
 
 ### Phase 3 — the working set
 
@@ -252,19 +257,18 @@ This phase replaces the earlier plan for a separate key/document context store. 
 
 #### Read-set tracking and staleness
 
-- **Reporting.** Hooks report reads on `PostToolUse` for `Read` (the file), `Grep` and `Glob` (the searched directory, recorded as a directory mark that covers everything beneath it), and writes for the edit tools; both go through `report`. MCP hosts expose no tool observation, so MCP agents have no read set (see the fallback below).
-- **Core.** `WorkingSet { reads: BTreeMap<RelPath, ReadMark { at, head: Option<String> }>, writes: … }` per agent, paths stored *project-relative* with the worktree noted, so marks compare across worktrees and prefix queries are short. Capacity 5,000 marks per agent, oldest evicted; a directory mark absorbs file marks beneath it. Pure `WorkingSet::stale_against(&[Change]) -> Vec<RelPath>` decides what to notify. Every rule here is unit-tested in core.
-- **Watching.** The daemon watches every distinct checkout root that has at least one live agent (`notify`: FSEvents on macOS, inotify on Linux), ref-counted by live agents and dropped when the last one leaves. Raw events are debounced (100 ms), filtered through the project's `.gitignore` (the `ignore` crate's matcher) so `target/` and `node_modules/` never reach the pipeline, and `.git/` is ignored except `HEAD` and `refs/heads/`, which feed head observation (Phase 3 journal). Events become `Change { seq, project, worktree, path, kind: Created | Modified | Removed | Renamed, at, by: Attribution }`.
-- **Attribution.** In order: an agent that reported a write to the path within the last 5 s; else the holder of an exclusive lease overlapping the path; else `External` (the user's editor, `git checkout`, a build). Best-effort by construction, and labelled as such in every output.
-- **Notices.** For each live agent in the project other than the author, if the changed path is in its read set and the mark predates the change, the daemon queues a message `kind: stale` from `agentd` with `{paths: [{path, by, at}]}`. Notices are coalesced per agent over a 2 s window and merged into an undelivered `stale` message already in the inbox rather than enqueued beside it, so a noisy build produces one notice, not a thousand. Hooks surface it as `additionalContext`; a fresh `Read` of the path clears its mark. On `PreToolUse` for an edit of a stale path the hook denies once with the reason and the author's note, so the model re-reads before it writes; a second attempt after the read passes. `agent_stale {agent, paths}` is emitted; `file_changed {change}` is emitted to the live stream but persisted in the ledger, not the events table, because change volume would otherwise crowd out everything else within the 10,000-event window.
-- **Fallback for agents without a read set.** Nothing is pushed. `changes --project . --since <seq|duration>` and the digest in `SessionStart`/`UserPromptSubmit` are pull-based, so an MCP or adopted agent still learns what moved without being flooded.
-- **Persistence.** `reads (agent, project, path, at, head, PRIMARY KEY (agent, path))`, written through per `report` call in one transaction and deleted on agent exit, so a daemon restart under running agents does not silently forget what they read.
+- **Observation.** Claude hooks call `observe` before Read/Grep/Glob and check `stale` before editing. MCP clients explicitly call `observe_paths` before reading and `check_stale` before editing. Read/Grep/Glob results are not intercepted by the daemon.
+- **Identity.** Read marks contain absolute physical paths, SHA-256 content versions, times and optional HEAD context. The durable set is capped at 1,000 marks; overflow is rejected rather than silently evicted. Separate worktrees and clones retain separate observations.
+- **Verification.** Current content is compared directly, including uncommitted changes before watcher debounce. Queries do not acknowledge staleness. A newer read of a target can shadow an older directory observation when checking that target; broader directory checks still inspect the directory mark.
+- **Watching and attribution.** The watcher covers registered Git/Agentfile checkouts, debounces events, honors hierarchical ignore rules, and emits explicit gaps for lost coverage. Attribution uses an unexpired exclusive lease on the physical checkout path; shared readers are not authorship evidence. Otherwise attribution is external, and all attribution remains best-effort.
+- **Notices.** Changes warn readers of the same checkout. Hooks surface queued notices and deny stale edits until the affected content is observed and reread. Live ledger events carry their own ledger sequence; replayed daemon events use the ordered event sequence.
+- **Durability.** Read sets are stored as versioned-content documents, survive daemon restart and remain available after session exit for recovery. The implemented wire contract appears in the table above and the content-observation section below.
 
-*Done when* agent A reads a file, agent B edits it under a lease, and A's next hook fire hands the model a notice naming the file, B, and B's note — and an edit by A before re-reading is refused once.
+*Implemented*: read → change → warning → stale-edit denial → reread, through supported hooks or explicit client calls. Generic adopted processes are not automatically observed.
 
 #### Attribution ledger *(done)*
 
-See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering, attribution through leases, the `changes` table, and `changes`/`blame` all exist; attribution through reported writes arrives with read sets.
+See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering, attribution through leases, the `changes` table, and `changes`/`blame` all exist; attribution uses physical exclusive leases and remains best-effort.
 
 #### Change journal
 
@@ -424,12 +428,12 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 |---|---|---|---|
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
-| 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
+| 3 | ✅ canonical physical `path:` lease keys with validated `file:` input aliases | 2 | 1 |
 | 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
-| 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), branch refresh from the watcher instead of a poll | 3 | 3, 6 |
-| 8 | read sets (`report` reads and writes), staleness notices, hook deny-once on stale edits | 3 | 7 |
+| 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback | 3 | 3, 6 |
+| 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 7 |
 | 10 | `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
 | 11 | `handoff`, lease transfer, `export` / `import` | 4 | 9, 10 |
@@ -470,6 +474,7 @@ New events: `file_changed`, `agent_stale`, `journal_appended`, `lease_transferre
 Implementation order after hardening: complete read/content-version observations and staleness; add durable journal and acknowledged recovery with validation evidence tied to exact code; then worktree integration and authenticated container transport. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
 
 The integrated watcher attributes a change only to an unexpired exclusive lease on its physical checkout path; a reader's shared lease is not authorship evidence. Watcher-triggered VCS refreshes retain the five-second poll as a fallback. `file_changed` uses its ledger sequence (`change.seq`), and its event envelope has `seq: 0`; event replay filtering does not suppress these live ledger notifications.
+
 ### Delivery and request boundaries
 
 Clients await each unary response before sending the next request. Additional input while a claim is pending cancels the claim and closes that connection. `ack_inbox {agent, messages: MessageId[]}` idempotently acknowledges specific delivered messages and returns `ok`. Hooks peek rather than drain and acknowledge after flushing their output; a timeout can cause redelivery, not discard unread input.
@@ -495,3 +500,4 @@ The ledger now includes `checkout` (absent for legacy entries). A watcher change
 `validate {agent,command,timeout_secs?}` executes an argv command in the agent's checkout and returns `validation` plus `passed`; `validations {agent}` returns stored evidence. Evidence includes SHA-256 before/after fingerprints, HEAD context, times, exit code, timeout, surviving descendants and a log path. Successful exit counts only when both content fingerprints match, the command did not time out, and no descendants remain in its process group. Validation subprocess groups are terminated on timeout/cancellation. An interrupted run retains an incomplete, non-passing record. No automatic test result is inferred from an agent's claim that tests passed.
 
 Evidence covers the ignore-aware snapshot scope described above, not ignored dependencies, environment reproducibility or adversarial change-and-revert during execution. Commands run in the live checkout: callers should hold leases for code under test and avoid concurrent mutation. A check or accepted handoff is point-in-time evidence; external writers can invalidate it afterward. Recovery displays task assumptions for the replacement to assess, not as proven facts.
+Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a tag protection/ruleset before publishing; an unprotected tag intentionally skips release. Credentials are limited to upload/download steps and checkout does not persist them. Critical physical-key paths use fallible normalization and reject unavailable cwd resolution; display/discovery callers retain the best-effort helper.

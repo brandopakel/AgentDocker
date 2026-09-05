@@ -22,6 +22,7 @@ pub fn fingerprint(path: &Path) -> io::Result<String> {
     }
     for entry in ignore::WalkBuilder::new(path)
         .hidden(false)
+        .require_git(false)
         .follow_links(false)
         .build()
     {
@@ -101,6 +102,29 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshots_apply_ignores_outside_git_and_track_executable_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "ignored\n").unwrap();
+        std::fs::write(tmp.path().join("source"), "source").unwrap();
+        let before = fingerprint(tmp.path()).unwrap();
+        std::fs::write(tmp.path().join("ignored"), "output").unwrap();
+        assert_eq!(before, fingerprint(tmp.path()).unwrap());
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".git/HEAD"), "metadata").unwrap();
+        assert_eq!(before, fingerprint(tmp.path()).unwrap());
+        let file = tmp.path().join("source");
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode ^ 0o100)).unwrap();
+        assert_ne!(before, fingerprint(tmp.path()).unwrap());
+        let fifo = tmp.path().join("pipe");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid nul-terminated path is passed to mkfifo.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(fingerprint(&fifo).is_err());
+    }
+
     #[test]
     fn uncommitted_changes_and_deletions_change_content_identity() {
         let tmp = tempfile::tempdir().unwrap();

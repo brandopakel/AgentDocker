@@ -48,15 +48,18 @@ pub fn discover(workdir: &Path) -> ProjectRef {
 /// created gets the key it will have once it exists (`/tmp` on macOS is
 /// `/private/tmp` either way).
 pub fn canonical(path: &Path) -> PathBuf {
+    try_canonical(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Fallible normalization for physical identities. A deleted/unavailable cwd
+/// must never turn a relative input into a physical lease key.
+pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
     // The public helper accepts relative paths and returns an absolute key.
     // Resolve the base first so leading parent components cannot disappear.
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(path),
-            Err(_) => return path.to_path_buf(),
-        }
+        std::env::current_dir()?.join(path)
     };
     let mut result = PathBuf::new();
     for component in absolute.components() {
@@ -71,7 +74,7 @@ pub fn canonical(path: &Path) -> PathBuf {
             result = resolved;
         }
     }
-    result
+    Ok(result)
 }
 
 fn git_project(start: &Path) -> Option<ProjectRef> {
