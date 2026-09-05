@@ -5,14 +5,20 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-struct ChildGroup(Child);
+struct ChildGroup {
+    child: Child,
+    reaped: bool,
+}
 impl Drop for ChildGroup {
     fn drop(&mut self) {
-        // SAFETY: only the dedicated group allocated to this child is signalled.
-        unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        if !self.reaped {
+            // SAFETY: the unreaped child still reserves its PID. Never signal
+            // its cached group number once that identity can be reused.
+            unsafe {
+                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            }
+            let _ = self.child.wait();
         }
-        let _ = self.0.wait();
     }
 }
 
@@ -35,10 +41,14 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         .stdout(log.try_clone()?)
         .stderr(log.try_clone()?)
         .process_group(0);
-    let mut child = ChildGroup(command.spawn()?);
+    let mut child = ChildGroup {
+        child: command.spawn()?,
+        reaped: false,
+    };
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.0.try_wait()? {
+        if let Some(status) = child.child.try_wait()? {
+            child.reaped = true;
             break status;
         }
         if started.elapsed() >= timeout || log.metadata()?.len() > 4 * 1024 * 1024 {

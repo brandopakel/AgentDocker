@@ -13,6 +13,11 @@ async fn git(root: PathBuf, args: Vec<String>) -> anyhow::Result<command::Output
     .await?
     .map_err(Into::into)
 }
+async fn physical(raw: String) -> anyhow::Result<PathBuf> {
+    tokio::task::spawn_blocking(move || project::try_canonical(Path::new(&raw)))
+        .await?
+        .map_err(Into::into)
+}
 fn failure(e: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Invalid, e.to_string())
 }
@@ -28,7 +33,7 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let path = match project::try_canonical(Path::new(&path)) {
+        let path = match physical(path).await {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
@@ -105,16 +110,21 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let source = match project::try_canonical(Path::new(&source)) {
+        let source = match physical(source).await {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
         if source == target {
             return failure("source and target must be distinct checkouts");
         }
-        let same_repository = vcs::git_dirs(&source)
-            .zip(vcs::git_dirs(&target))
-            .is_some_and(|((_, a), (_, b))| project::canonical(&a) == project::canonical(&b));
+        let roots = (source.clone(), target.clone());
+        let same_repository = tokio::task::spawn_blocking(move || {
+            vcs::git_dirs(&roots.0)
+                .zip(vcs::git_dirs(&roots.1))
+                .is_some_and(|((_, a), (_, b))| project::canonical(&a) == project::canonical(&b))
+        })
+        .await
+        .unwrap_or(false);
         if !same_repository {
             return failure("integration requires linked worktrees of the same repository");
         }
@@ -123,7 +133,16 @@ impl Daemon {
             .document::<Validation>("validation", &validation)
         {
             Ok(Some(v)) if v.passed() && v.checkout == source => v,
-            _ => return failure("a passing validation from the source checkout is required"),
+            Ok(None) => {
+                return Response::error(ErrorCode::NotFound, "validation document not found");
+            }
+            Ok(Some(_)) => {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "a passing validation from the source checkout is required",
+                );
+            }
+            Err(e) => return Response::error(ErrorCode::StorageUnavailable, e.to_string()),
         };
         for root in [&source, &target] {
             match git(
@@ -138,7 +157,8 @@ impl Daemon {
             {
                 Ok(output) if output.success && output.text.is_empty() => {}
                 _ => {
-                    return failure(
+                    return Response::error(
+                        ErrorCode::Conflict,
                         "both checkouts must be clean; commit source changes and validate the committed code first",
                     );
                 }
@@ -151,11 +171,24 @@ impl Daemon {
             .and_then(Result::ok)
             .is_some_and(|v| v == evidence.before)
         {
-            return failure("source content changed after validation");
+            return Response::error(
+                ErrorCode::Conflict,
+                "source content changed after validation",
+            );
         }
-        let head = match vcs::state(&source).and_then(|v| v.head) {
+        let root = source.clone();
+        let source_state = tokio::task::spawn_blocking(move || vcs::state(&root))
+            .await
+            .ok()
+            .flatten();
+        let head = match source_state.and_then(|v| v.head) {
             Some(v) if Some(&v) == evidence.head.as_ref() => v,
-            _ => return failure("source HEAD changed after validation"),
+            _ => {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "source HEAD changed after validation",
+                );
+            }
         };
         if !apply {
             return match git(
@@ -209,7 +242,10 @@ impl Daemon {
         {
             Ok(o) if o.success && o.text.is_empty() => {}
             _ => {
-                return failure("target changed before integration; lease retained for inspection");
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "target changed before integration; lease retained for inspection",
+                );
             }
         }
         match git(
@@ -236,7 +272,14 @@ impl Daemon {
                     text: output.text,
                 }
             }
-            Err(e) => failure(e),
+            Err(e) => {
+                lock(&self.state).emit(EventKind::IntegrationPrepared {
+                    agent,
+                    source_head: head,
+                    clean: false,
+                });
+                failure(e)
+            }
         }
     }
 }
@@ -337,6 +380,15 @@ mod tests {
         let source = branch.to_string_lossy().into_owned();
         assert!(matches!(
             daemon
+                .integrate("target", source.clone(), "missing-validation".into(), false)
+                .await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
                 .integrate("target", source.clone(), validation.id.clone(), false)
                 .await,
             Response::Integration { applied: false, .. }
@@ -349,6 +401,39 @@ mod tests {
             Response::Error { .. }
         ));
         std::fs::write(branch.join("file"), "two").unwrap();
+        // Git can ignore executable-bit changes while content fingerprints do
+        // not. This reaches the content check with clean Git status and the
+        // same HEAD, independently of the dirty-checkout guard.
+        use std::os::unix::fs::PermissionsExt;
+        assert!(
+            git(
+                branch.clone(),
+                vec!["config".into(), "core.fileMode".into(), "false".into()]
+            )
+            .await
+            .unwrap()
+            .success
+        );
+        let permissions = std::fs::metadata(branch.join("file"))
+            .unwrap()
+            .permissions();
+        std::fs::set_permissions(
+            branch.join("file"),
+            std::fs::Permissions::from_mode(permissions.mode() | 0o111),
+        )
+        .unwrap();
+        assert!(
+            git(branch.clone(), vec!["status".into(), "--porcelain".into()])
+                .await
+                .unwrap()
+                .text
+                .is_empty()
+        );
+        assert!(
+            matches!(daemon.integrate("target", source.clone(), validation.id.clone(), true).await,
+            Response::Error { code: ErrorCode::Conflict, message, .. } if message == "source content changed after validation")
+        );
+        std::fs::set_permissions(branch.join("file"), permissions).unwrap();
         assert!(matches!(
             daemon
                 .integrate("target", source, validation.id, true)

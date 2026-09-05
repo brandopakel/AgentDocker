@@ -67,7 +67,7 @@ impl Daemon {
         Response::Access {
             grant: id,
             token,
-            socket: self.home.join("container.sock"),
+            socket: agentdocker_core::paths::container_socket(&self.home),
             expires_at,
         }
     }
@@ -109,7 +109,8 @@ impl Daemon {
             .bytes()
             .zip(grant.token_hash.bytes())
             .fold(0u8, |diff, (a, b)| diff | (a ^ b));
-        if difference != 0
+        if supplied.len() != grant.token_hash.len()
+            || difference != 0
             || grant.revoked
             || grant.expires_at <= Utc::now()
             || !state
@@ -263,6 +264,51 @@ mod tests {
             wait_secs: 20,
         };
         assert!(daemon.restricted_request("wrong", Request::Ping).is_err());
+        let original = lock(&daemon.state)
+            .store
+            .document::<Grant>("access", &grant)
+            .unwrap()
+            .unwrap();
+        for length in [0, 63] {
+            let mut corrupted = original.clone();
+            corrupted.token_hash.truncate(length);
+            lock(&daemon.state)
+                .store
+                .put_document("access", &grant, &corrupted)
+                .unwrap();
+            assert!(
+                daemon.restricted_request(&token, Request::Ping).is_err(),
+                "a truncated digest is never a valid credential"
+            );
+        }
+        lock(&daemon.state)
+            .store
+            .put_document("access", &grant, &original)
+            .unwrap();
+        let outside = tmp.path().join("other-project");
+        std::fs::create_dir(&outside).unwrap();
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "outsider".into(),
+                    workdir: Some(outside),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+            })
+            .await;
+        let send = |to: &str| Request::Send {
+            from: "worker".into(),
+            to: to.into(),
+            kind: "chat".into(),
+            payload: json!({"text":"hello"}),
+            reply_to: None,
+        };
+        assert!(daemon.restricted_request(&token, send("outsider")).is_err());
+        let peer = daemon.resolve("peer").unwrap().to_string();
+        assert!(
+            matches!(daemon.restricted_request(&token, send("peer")).unwrap(), Request::Send { to, .. } if to == peer)
+        );
         assert!(
             daemon
                 .restricted_request(&token, Request::Shutdown)

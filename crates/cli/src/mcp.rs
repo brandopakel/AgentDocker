@@ -297,15 +297,7 @@ impl<B: Backend> McpServer<B> {
                     "worktree_diff" => "worktree_diff",
                     _ => "integrate",
                 };
-                let mut object = arguments
-                    .as_object()
-                    .cloned()
-                    .ok_or((INVALID_PARAMS, "arguments must be an object".into()))?;
-                object.insert("op".into(), json!(op));
-                object.insert("agent".into(), json!(me));
-                let request: Request = serde_json::from_value(Value::Object(object))
-                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
-                self.forward(request).await
+                self.forward(tagged_request(arguments, op, &me)?).await
             }
             "save_checkpoint" | "resume_checkpoint" | "list_checkpoints" | "validate"
             | "validation_results" => {
@@ -316,15 +308,7 @@ impl<B: Backend> McpServer<B> {
                     "validate" => "validate",
                     _ => "validations",
                 };
-                let mut object = arguments
-                    .as_object()
-                    .cloned()
-                    .ok_or((INVALID_PARAMS, "arguments must be an object".into()))?;
-                object.insert("op".into(), json!(op));
-                object.insert("agent".into(), json!(me));
-                let request: Request = serde_json::from_value(Value::Object(object))
-                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
-                self.forward(request).await
+                self.forward(tagged_request(arguments, op, &me)?).await
             }
             "whoami" => self.forward(Request::Inspect { agent: me }).await,
             "list_agents" => {
@@ -746,6 +730,16 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
     ]
+}
+
+fn tagged_request(arguments: Value, op: &str, agent: &str) -> Result<Request, (i64, String)> {
+    let mut object = arguments
+        .as_object()
+        .cloned()
+        .ok_or((INVALID_PARAMS, "arguments must be an object".into()))?;
+    object.insert("op".into(), json!(op));
+    object.insert("agent".into(), json!(agent));
+    serde_json::from_value(Value::Object(object)).map_err(|e| (INVALID_PARAMS, e.to_string()))
 }
 
 #[cfg(test)]

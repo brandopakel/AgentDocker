@@ -73,8 +73,13 @@ impl Client {
             })? + "\n";
             reader.get_mut().write_all(auth.as_bytes()).await?;
             let mut response = String::new();
-            reader.read_line(&mut response).await?;
-            if !matches!(serde_json::from_str::<Response>(&response)?, Response::Ok) {
+            if reader.read_line(&mut response).await? == 0 {
+                bail!("agentd closed the connection without answering");
+            }
+            if !matches!(
+                into_result(serde_json::from_str::<Response>(&response)?)?,
+                Response::Ok
+            ) {
                 bail!("restricted endpoint authentication failed");
             }
         }

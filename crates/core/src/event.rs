@@ -35,6 +35,10 @@ pub enum EventKind {
         agent: crate::AgentId,
         checkpoint: String,
     },
+    ValidationStarted {
+        agent: AgentId,
+        validation: String,
+    },
     ValidationFinished {
         agent: crate::AgentId,
         validation: String,

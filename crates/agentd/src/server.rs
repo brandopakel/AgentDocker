@@ -271,7 +271,7 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
 
 /// A distinct socket prevents optional-token bypass through the host endpoint.
 pub async fn serve_restricted(daemon: Arc<Daemon>) -> anyhow::Result<()> {
-    let socket = daemon.home.join("container.sock");
+    let socket = agentdocker_core::paths::container_socket(&daemon.home);
     if socket == daemon.socket {
         anyhow::bail!("restricted and host sockets must differ");
     }
@@ -394,7 +394,11 @@ mod tests {
         let (client, server) = UnixStream::pair().unwrap();
         let task = tokio::spawn(restricted_connection(daemon.clone(), server));
         let mut client = BufReader::new(client);
-        let auth = serde_json::to_string(&Request::Authenticate { token }).unwrap() + "\n";
+        let auth = serde_json::to_string(&Request::Authenticate {
+            token: token.clone(),
+        })
+        .unwrap()
+            + "\n";
         client.get_mut().write_all(auth.as_bytes()).await.unwrap();
         line.clear();
         client.read_line(&mut line).await.unwrap();
@@ -402,6 +406,46 @@ mod tests {
             serde_json::from_str::<Response>(&line).unwrap(),
             Response::Ok
         );
+        // A valid credential must not allow an oversized operation through the
+        // frame reader. The connection closes without acquiring its lease.
+        let (oversized, server) = UnixStream::pair().unwrap();
+        let oversized_task = tokio::spawn(restricted_connection(daemon.clone(), server));
+        let mut oversized = BufReader::new(oversized);
+        oversized
+            .get_mut()
+            .write_all(auth.as_bytes())
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        oversized.read_line(&mut reply).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&reply).unwrap(),
+            Response::Ok
+        ));
+        let frame = serde_json::to_string(&Request::Claim {
+            agent: "worker".into(),
+            resource: "path:/workspace/oversized".into(),
+            mode: LeaseMode::Exclusive,
+            ttl_secs: 60,
+            wait_secs: 0,
+            note: Some("x".repeat(1024 * 1024)),
+        })
+        .unwrap()
+            + "\n";
+        let _ = oversized.get_mut().write_all(frame.as_bytes()).await;
+        reply.clear();
+        let closed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            oversized.read_line(&mut reply),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(closed, Ok(0) | Err(_)));
+        assert!(oversized_task.await.unwrap().is_err());
+        assert!(
+            matches!(daemon.handle(Request::Leases { agent: Some("worker".into()), resource: None }).await, Response::Leases { leases } if leases.is_empty())
+        );
+
         daemon.handle(Request::RevokeAccess { grant }).await;
         client
             .get_mut()

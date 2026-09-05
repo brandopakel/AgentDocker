@@ -109,9 +109,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    daemon.stop_all();
+    daemon.stop_all().await;
     let _ = std::fs::remove_file(&daemon.socket);
-    let _ = std::fs::remove_file(daemon.home.join("container.sock"));
+    let _ = std::fs::remove_file(agentdocker_core::paths::container_socket(&daemon.home));
     result
 }
 

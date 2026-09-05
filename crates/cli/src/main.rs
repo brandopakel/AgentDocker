@@ -45,35 +45,47 @@ enum Command {
     /// Create a new linked checkout and branch without changing existing files.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
+        /// New checkout path, which becomes its physical identifier.
         path: String,
         #[arg(long)]
+        /// Name of the new branch.
         branch: String,
     },
     /// Show tracked changes in this agent's checkout.
     WorktreeDiff {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
     /// Preview or prepare an uncommitted merge of validated source code.
     Integrate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
+        /// Source worktree path containing the validated commit.
         source: String,
         #[arg(long)]
+        /// Passing validation identifier for the source checkout.
         validation: String,
         #[arg(long)]
+        /// Prepare an uncommitted merge and retain the target lease for review.
         apply: bool,
     },
     /// Issue a scoped container credential; the secret is written to a new private file.
     GrantAccess {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
         #[arg(long, default_value = "/workspace")]
+        /// Checkout mount path inside the container.
         container_root: String,
         #[arg(long, default_value_t = 3600)]
+        /// Credential lifetime in seconds (1–86400).
         ttl: u64,
         #[arg(long)]
+        /// New private file in which to store the credential.
         token_file: PathBuf,
     },
     /// Revoke container access without prematurely releasing a live writer's leases.
@@ -110,6 +122,7 @@ enum Command {
     /// List persisted checkpoints, including finished sessions.
     Checkpoints {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
     },
     /// Execute a check and retain its command, log, and before/after code fingerprints.
@@ -123,6 +136,7 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
+    /// List retained validation evidence for a session.
     Validations {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
