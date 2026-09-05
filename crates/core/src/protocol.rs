@@ -22,6 +22,37 @@ pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    Checkpoint {
+        agent: String,
+        key: String,
+        task: String,
+        #[serde(default)]
+        assumptions: Vec<String>,
+        #[serde(default)]
+        next_steps: Vec<String>,
+        #[serde(default)]
+        release_leases: bool,
+    },
+    /// Review a handoff; acknowledgement is explicit and refuses changed content.
+    Resume {
+        agent: String,
+        checkpoint: String,
+        #[serde(default)]
+        acknowledge: bool,
+    },
+    Checkpoints {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    Validate {
+        agent: String,
+        command: Vec<String>,
+        #[serde(default = "validation_timeout")]
+        timeout_secs: u64,
+    },
+    Validations {
+        agent: String,
+    },
     /// Record content immediately before reading these paths (not after a delayed tool result).
     Observe {
         agent: String,
@@ -227,6 +258,23 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    Checkpoint {
+        checkpoint: crate::Checkpoint,
+    },
+    Checkpoints {
+        checkpoints: Vec<crate::Checkpoint>,
+    },
+    Recovery {
+        recovery: crate::Recovery,
+    },
+    Validation {
+        validation: crate::Validation,
+        passed: bool,
+    },
+    Validations {
+        validations: Vec<crate::Validation>,
+    },
+
     Reads {
         reads: Vec<crate::ReadMark>,
     },
@@ -297,6 +345,10 @@ impl Response {
             details: None,
         }
     }
+}
+
+fn validation_timeout() -> u64 {
+    300
 }
 
 #[cfg(test)]

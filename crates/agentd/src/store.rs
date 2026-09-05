@@ -84,6 +84,29 @@ pub struct ChangesQuery {
 }
 
 impl Store {
+    /// Commit acceptance and inherited observations in the same transaction.
+    pub fn accept_handoff(
+        &self,
+        checkpoint: &agentdocker_core::Checkpoint,
+        agent: &AgentId,
+        reads: &[agentdocker_core::ReadMark],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
+        self.put_document("reads", agent.as_str(), &reads)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return recovery documents in stable id order.
+    pub fn documents<T: serde::de::DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT json FROM documents WHERE kind=?1 ORDER BY id")?;
+        let rows = stmt.query_map([kind], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
     /// Atomically persist a typed recovery document before publishing its event.
     pub fn put_document<T: serde::Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
         self.conn.execute("INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
@@ -122,7 +145,7 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
 
         let version: Option<String> = conn

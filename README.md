@@ -216,3 +216,16 @@ agentdocker reads --as reader
 ```
 
 `stale` exits unsuccessfully when recorded content changed, including uncommitted edits that leave HEAD unchanged. Observe and reread the reported paths before editing. Claude hooks automate these steps for supported tools after rerunning `agentdocker hook install claude-code`; MCP clients use `observe_paths` and `check_stale` explicitly. Read sets persist across daemon restarts and stay specific to the agent's physical checkout.
+
+## Resume with verified context
+
+```sh
+agentdocker validate --as worker -- cargo test --workspace
+agentdocker checkpoint --as worker parser-step --task "Fix the parser" \
+  --assumption "Inputs use UTF-8" --next "Review boundary cases" --release-leases
+agentdocker checkpoints
+agentdocker resume --as replacement <checkpoint-id>
+agentdocker resume --as replacement <checkpoint-id> --acknowledge
+```
+
+Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. It never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.

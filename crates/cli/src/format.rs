@@ -123,6 +123,17 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::CheckpointSaved { agent, checkpoint } => {
+            format!("{agent} saved checkpoint {checkpoint}")
+        }
+        EventKind::HandoffAccepted { agent, checkpoint } => {
+            format!("{agent} accepted handoff {checkpoint}")
+        }
+        EventKind::ValidationFinished {
+            agent,
+            validation,
+            passed,
+        } => format!("{agent} validation {validation} passed={passed}"),
         EventKind::WatcherGap { reason } => {
             format!("watcher coverage gap: {reason}; verify content with stale")
         }

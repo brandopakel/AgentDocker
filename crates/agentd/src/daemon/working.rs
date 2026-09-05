@@ -5,7 +5,7 @@ use agentdocker_core::{ReadMark, StalePath};
 use agentdocker_host::content;
 
 impl Daemon {
-    fn reader_checkout(
+    pub(super) fn reader_checkout(
         &self,
         reference: &str,
     ) -> Result<(AgentId, PathBuf, Option<String>), Box<Response>> {

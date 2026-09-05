@@ -42,6 +42,46 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Persist task context and content identity before an optional lease release.
+    Checkpoint {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        key: String,
+        #[arg(long)]
+        task: String,
+        #[arg(long = "assumption")]
+        assumptions: Vec<String>,
+        #[arg(long = "next")]
+        next_steps: Vec<String>,
+        #[arg(long)]
+        release_leases: bool,
+    },
+    /// Inspect or explicitly accept a verified session handoff.
+    Resume {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        checkpoint: String,
+        #[arg(long)]
+        acknowledge: bool,
+    },
+    /// List persisted checkpoints, including finished sessions.
+    Checkpoints {
+        #[arg(long = "as")]
+        agent: Option<String>,
+    },
+    /// Execute a check and retain its command, log, and before/after code fingerprints.
+    Validate {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    Validations {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+    },
     /// Record content immediately before reading files or searching a directory.
     Observe {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -333,6 +373,63 @@ async fn main() -> Result<()> {
         }
         Command::Reads { agent } => {
             print_json(&client.call(&Request::Reads { agent }).await?)?;
+        }
+        Command::Checkpoint {
+            agent,
+            key,
+            task,
+            assumptions,
+            next_steps,
+            release_leases,
+        } => print_json(
+            &client
+                .call(&Request::Checkpoint {
+                    agent,
+                    key,
+                    task,
+                    assumptions,
+                    next_steps,
+                    release_leases,
+                })
+                .await?,
+        )?,
+        Command::Resume {
+            agent,
+            checkpoint,
+            acknowledge,
+        } => print_json(
+            &client
+                .call(&Request::Resume {
+                    agent,
+                    checkpoint,
+                    acknowledge,
+                })
+                .await?,
+        )?,
+        Command::Checkpoints { agent } => {
+            print_json(&client.call(&Request::Checkpoints { agent }).await?)?
+        }
+        Command::Validations { agent } => {
+            print_json(&client.call(&Request::Validations { agent }).await?)?
+        }
+        Command::Validate {
+            agent,
+            command,
+            timeout,
+        } => {
+            let response = client
+                .call(&Request::Validate {
+                    agent,
+                    command,
+                    timeout_secs: timeout,
+                })
+                .await?;
+            print_json(&response)?;
+            if !matches!(response, Response::Validation { passed: true, .. }) {
+                bail!(
+                    "validation did not pass for unchanged content; inspect its log and evidence"
+                );
+            }
         }
         Command::Ping => {
             if let Response::Pong {
