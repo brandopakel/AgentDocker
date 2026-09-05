@@ -32,6 +32,7 @@ use agentdocker_host::{procinfo, project, vcs};
 
 use crate::store::{ChangesQuery, Store};
 use crate::supervisor;
+mod recovery;
 mod working;
 
 /// Messages queued per agent while it has no live subscription.
@@ -573,6 +574,29 @@ impl Daemon {
             Request::Observe { agent, paths } => self.observe(&agent, paths).await,
             Request::Stale { agent, paths } => self.stale(&agent, paths).await,
             Request::Reads { agent } => self.reads(&agent),
+            Request::Checkpoint {
+                agent,
+                key,
+                task,
+                assumptions,
+                next_steps,
+                release_leases,
+            } => {
+                self.checkpoint(&agent, key, task, assumptions, next_steps, release_leases)
+                    .await
+            }
+            Request::Resume {
+                agent,
+                checkpoint,
+                acknowledge,
+            } => self.resume(&agent, &checkpoint, acknowledge).await,
+            Request::Checkpoints { agent } => self.checkpoints(agent.as_deref()),
+            Request::Validate {
+                agent,
+                command,
+                timeout_secs,
+            } => self.validate(&agent, command, timeout_secs).await,
+            Request::Validations { agent } => self.validations(&agent),
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),

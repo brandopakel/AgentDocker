@@ -11,6 +11,23 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    CheckpointSaved {
+        agent: crate::AgentId,
+        checkpoint: String,
+    },
+    HandoffAccepted {
+        agent: crate::AgentId,
+        checkpoint: String,
+    },
+    ValidationStarted {
+        agent: AgentId,
+        validation: String,
+    },
+    ValidationFinished {
+        agent: crate::AgentId,
+        validation: String,
+        passed: bool,
+    },
     WatcherGap {
         reason: String,
     },

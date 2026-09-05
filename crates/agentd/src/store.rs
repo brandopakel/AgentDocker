@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS documents (
     json TEXT NOT NULL,
     PRIMARY KEY (kind, id)
 );
+CREATE INDEX IF NOT EXISTS documents_agent ON documents (kind, json_extract(json, '$.agent'));
+CREATE INDEX IF NOT EXISTS documents_author ON documents (kind, json_extract(json, '$.from'));
+CREATE INDEX IF NOT EXISTS documents_version ON documents (kind, json_extract(json, '$.checkout'), json_extract(json, '$.before'));
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -84,8 +87,80 @@ pub struct ChangesQuery {
 }
 
 impl Store {
+    /// Commit acceptance and inherited observations in the same transaction.
+    pub fn put_document_with_event<T: serde::Serialize + ?Sized>(
+        &self,
+        kind: &str,
+        id: &str,
+        value: &T,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document(kind, id, value)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn accept_handoff(
+        &self,
+        checkpoint: &agentdocker_core::Checkpoint,
+        agent: &AgentId,
+        reads: &[agentdocker_core::ReadMark],
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
+        self.put_document("reads", agent.as_str(), &reads)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return recovery documents in stable id order.
+    pub fn documents<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        agent: Option<&AgentId>,
+    ) -> Result<Vec<T>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT json FROM documents WHERE kind=?1 AND (?2 IS NULL OR json_extract(json, '$.agent') = ?2 OR json_extract(json, '$.from') = ?2) ORDER BY id")?;
+        let rows = stmt.query_map(params![kind, agent.map(AgentId::as_str)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// Select only passing evidence for the checkpoint's exact content scope.
+    pub fn matching_validations(
+        &self,
+        checkout: &Path,
+        version: &str,
+    ) -> Result<Vec<agentdocker_core::Validation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='validation'
+            AND json_extract(json, '$.checkout')=?1 AND json_extract(json, '$.before')=?2 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![checkout.to_string_lossy(), version], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let validations: Vec<agentdocker_core::Validation> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        Ok(validations
+            .into_iter()
+            .filter(agentdocker_core::Validation::passed)
+            .collect())
+    }
+
     /// Atomically persist a typed recovery document before publishing its event.
-    pub fn put_document<T: serde::Serialize>(&self, kind: &str, id: &str, value: &T) -> Result<()> {
+    pub fn put_document<T: serde::Serialize + ?Sized>(
+        &self,
+        kind: &str,
+        id: &str,
+        value: &T,
+    ) -> Result<()> {
         self.conn.execute("INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
             params![kind,id,serde_json::to_string(value)?])?;
         Ok(())
@@ -112,6 +187,13 @@ impl Store {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
 
+    #[cfg(test)]
+    pub(crate) fn reject_validation_finish_for_test(&self) {
+        self.conn.execute_batch("CREATE TEMP TRIGGER reject_validation_finish
+            BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'validation_finished'
+            BEGIN SELECT RAISE(FAIL, 'injected validation event failure'); END;").unwrap();
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
@@ -126,7 +208,7 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
 
         let version: Option<String> = conn
@@ -243,6 +325,7 @@ impl Store {
 
     /// Queue a message for an agent, keeping only the newest `capacity`.
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
             "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
             params![
@@ -257,6 +340,7 @@ impl Store {
              )",
             params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -507,6 +591,40 @@ mod tests {
             None,
             Utc::now(),
         )
+    }
+
+    #[test]
+    #[ignore = "manual filesystem durability benchmark"]
+    fn durability_write_benchmark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("state.db")).unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            store
+                .enqueue(&AgentId::from("reader"), &envelope("message"), 1000)
+                .unwrap();
+        }
+        let inbox = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            store
+                .append_change(&agentdocker_core::Change {
+                    seq: 0,
+                    project: ProjectId::from("project"),
+                    checkout: Some(tmp.path().into()),
+                    worktree: None,
+                    path: "file".into(),
+                    kind: agentdocker_core::ChangeKind::Modified,
+                    at: Utc::now(),
+                    by: agentdocker_core::Attribution::External,
+                    head: None,
+                })
+                .unwrap();
+        }
+        eprintln!(
+            "FULL durability, 200 operations each: enqueue={inbox:?}, append_change={:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

@@ -25,3 +25,6 @@ pub use registry::{Registry, RegistryError};
 
 pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
+
+pub mod recovery;
+pub use recovery::{Checkpoint, Recovery, Validation};

@@ -42,9 +42,62 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Persist task context and content identity before an optional lease release.
+    Checkpoint {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+        key: String,
+        #[arg(long)]
+        #[arg(help = "Task the replacement session should continue.")]
+        task: String,
+        #[arg(long = "assumption")]
+        #[arg(help = "Assumption to review during recovery (repeatable).")]
+        assumptions: Vec<String>,
+        #[arg(long = "next")]
+        #[arg(help = "Next action for the replacement (repeatable).")]
+        next_steps: Vec<String>,
+        #[arg(long)]
+        #[arg(help = "Release this agent’s leases only after saving the checkpoint.")]
+        release_leases: bool,
+    },
+    /// Inspect or explicitly accept a verified session handoff.
+    Resume {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+        checkpoint: String,
+        #[arg(long)]
+        #[arg(help = "Accept this handoff after verifying unchanged content.")]
+        acknowledge: bool,
+    },
+    /// List persisted checkpoints, including finished sessions.
+    Checkpoints {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: Option<String>,
+    },
+    /// Execute a check and retain its command, log, and before/after code fingerprints.
+    Validate {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+        #[arg(long, default_value_t = 300)]
+        #[arg(help = "Maximum validation runtime in seconds (1–600).")]
+        timeout: u64,
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// List retained validation evidence for a session.
+    Validations {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+    },
     /// Record content immediately before reading files or searching a directory.
     Observe {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: String,
         #[arg(required = true)]
         paths: Vec<String>,
@@ -52,12 +105,14 @@ enum Command {
     /// Verify retained observations against current physical content.
     Stale {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: String,
         paths: Vec<String>,
     },
     /// Show durable read observations for a session.
     Reads {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: String,
     },
     /// List agents (live ones by default), grouped by project.
@@ -333,6 +388,71 @@ async fn main() -> Result<()> {
         }
         Command::Reads { agent } => {
             print_json(&client.call(&Request::Reads { agent }).await?)?;
+        }
+        Command::Checkpoint {
+            agent,
+            key,
+            task,
+            assumptions,
+            next_steps,
+            release_leases,
+        } => {
+            let response = client
+                .call(&Request::Checkpoint {
+                    agent,
+                    key,
+                    task,
+                    assumptions,
+                    next_steps,
+                    release_leases,
+                })
+                .await?;
+            if let Response::Checkpoint { checkpoint } = response {
+                println!("{}", checkpoint.id);
+            } else {
+                bail!("unexpected checkpoint response");
+            }
+        }
+
+        Command::Resume {
+            agent,
+            checkpoint,
+            acknowledge,
+        } => print_json(
+            &client
+                .call(&Request::Resume {
+                    agent,
+                    checkpoint,
+                    acknowledge,
+                })
+                .await?,
+        )?,
+        Command::Checkpoints { agent } => {
+            print_json(&client.call(&Request::Checkpoints { agent }).await?)?
+        }
+        Command::Validations { agent } => {
+            print_json(&client.call(&Request::Validations { agent }).await?)?
+        }
+        Command::Validate {
+            agent,
+            command,
+            timeout,
+        } => {
+            let response = client
+                .call(&Request::Validate {
+                    agent,
+                    command,
+                    timeout_secs: timeout,
+                })
+                .await?;
+            if let Response::Validation { validation, .. } = &response {
+                println!("{}", validation.id);
+            }
+            if !matches!(response, Response::Validation { passed: true, .. }) {
+                bail!(
+                    "validation did not pass for unchanged content; inspect its log and evidence"
+                );
+            }
         }
         Command::Ping => {
             if let Response::Pong {

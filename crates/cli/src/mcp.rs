@@ -291,6 +291,25 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(request).await
             }
+            "save_checkpoint" | "resume_checkpoint" | "list_checkpoints" | "validate"
+            | "validation_results" => {
+                let op = match name {
+                    "save_checkpoint" => "checkpoint",
+                    "resume_checkpoint" => "resume",
+                    "list_checkpoints" => "checkpoints",
+                    "validate" => "validate",
+                    _ => "validations",
+                };
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".into()))?;
+                object.insert("op".into(), json!(op));
+                object.insert("agent".into(), json!(me));
+                let request: Request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
             "whoami" => self.forward(Request::Inspect { agent: me }).await,
             "list_agents" => {
                 let args: ListAgentsArgs = parse(arguments)?;
@@ -584,6 +603,11 @@ fn tool_definitions() -> Vec<Value> {
     let resource_doc = "Resource key `kind:value`, e.g. `path:/abs/file`, `path:/abs/dir` \
                         (covers everything beneath), `branch:name`, `task:ID`.";
     vec![
+        json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
+        json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session without transferring leases.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
+        json!({"name":"list_checkpoints","description":"List this agent's durable checkpoints.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({"name":"validate","description":"Run a validation command and retain its log, exit status and code fingerprints. Passing requires unchanged content and no surviving child processes.","inputSchema":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":600}},"required":["command"],"additionalProperties":false}}),
+        json!({"name":"validation_results","description":"Show validation evidence for this agent.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"observe_paths","description":"Record content immediately BEFORE reading files or searching a directory. Do not report old tool results as fresh observations.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"],"additionalProperties":false}}),
         json!({"name":"check_stale","description":"Compare retained reads to current content. Reread changed paths before editing; checking repeatedly never clears staleness.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}),
         json!({"name":"read_set","description":"Show this session's durable content observations.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
@@ -786,6 +810,11 @@ mod tests {
         assert_eq!(
             names,
             [
+                "save_checkpoint",
+                "resume_checkpoint",
+                "list_checkpoints",
+                "validate",
+                "validation_results",
                 "observe_paths",
                 "check_stale",
                 "read_set",
