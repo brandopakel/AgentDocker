@@ -466,7 +466,7 @@ impl Store {
         if let Some(path) = query
             .path
             .as_deref()
-            .map(|p| p.trim_end_matches('/'))
+            .map(|p| p.trim_end_matches('/').trim_start_matches("./"))
             .filter(|p| !p.is_empty() && *p != ".")
         {
             args.push(Box::new(path.to_owned()));
@@ -841,6 +841,12 @@ mod tests {
             paths(query(Some("src/"), None, None, 50)),
             ["src/lib.rs", "src/main.rs"]
         );
+        for relative in ["./src", "./src/", "././src"] {
+            assert_eq!(
+                query(Some(relative), None, None, 50),
+                query(Some("src"), None, None, 50)
+            );
+        }
         assert_eq!(
             paths(query(Some("src/lib.rs"), None, None, 50)),
             ["src/lib.rs"]
