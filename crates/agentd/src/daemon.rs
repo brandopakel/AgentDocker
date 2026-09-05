@@ -64,6 +64,8 @@ const JOURNAL_RING: usize = 256;
 const RING_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 /// How long a release waits for the watcher to flush pending observations.
 const WATCHER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long a registration waits for the watcher to cover its checkout.
+const WATCHER_ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 /// Ledger rows examined per released resource when building an entry.
 const RELEASE_SCAN: usize = 10_000;
 /// Entries after a cursor a digest reads from the store at most; older
@@ -81,6 +83,10 @@ pub struct Daemon {
     /// Asks the watcher to flush pending observations now; set once the
     /// watcher runs. Never held across an await.
     watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
+    /// Asks the watcher to reconcile its watches now, so a checkout is
+    /// covered from the moment its first agent is registered rather than
+    /// from the next tick.
+    watcher_attach: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
 }
 
 /// One synchronous transition owns memory, persistence and publication.
@@ -116,6 +122,14 @@ struct JournalRing {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether the watcher would cover this agent's checkout at all.
+fn watchable(record: &AgentRecord) -> bool {
+    record
+        .project
+        .as_ref()
+        .is_some_and(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
 }
 
 fn registry_error(err: RegistryError) -> Response {
@@ -568,6 +582,7 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
+            watcher_attach: Mutex::new(None),
         })
     }
 
@@ -790,6 +805,10 @@ impl Daemon {
             Response::Agent { agent } => agent,
             other => return other,
         };
+        // Watched before the process exists, so its first edit is seen.
+        if watchable(&record) {
+            self.ensure_watched().await;
+        }
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
                 let pid = spawned.pid;
@@ -851,7 +870,15 @@ impl Daemon {
         record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;
         record.started_at = Some(Utc::now());
-        lock(&self.state).insert_record(record)
+        let response = lock(&self.state).insert_record(record);
+        // The reply is what a session waits for before its first edit, so
+        // the checkout is watched by the time it goes out.
+        if let Response::Agent { agent } = &response {
+            if watchable(agent) {
+                self.ensure_watched().await;
+            }
+        }
+        response
     }
 
     /// Agent processes of known runtimes that no live agent claims by pid.
@@ -1017,6 +1044,29 @@ impl Daemon {
     /// Let the watcher hand us its flush channel.
     pub fn set_watcher_flush(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
         *lock(&self.watcher_flush) = Some(sender);
+    }
+
+    /// Let the watcher hand us its reconcile channel.
+    pub fn set_watcher_attach(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
+        *lock(&self.watcher_attach) = Some(sender);
+    }
+
+    /// Have the watcher cover every checkout a live agent works in, now:
+    /// registration awaits this so the agent's first edit is never made in
+    /// the gap before the next reconcile tick. Bounded, and a no-op when no
+    /// watcher runs.
+    async fn ensure_watched(&self) {
+        let sender = lock(&self.watcher_attach).clone();
+        let Some(sender) = sender else {
+            return;
+        };
+        let _ = tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
+            let (ack, done) = oneshot::channel();
+            if sender.send(ack).await.is_ok() {
+                let _ = done.await;
+            }
+        })
+        .await;
     }
 
     /// Only path leases need pending filesystem observations for their summary.
@@ -4280,6 +4330,45 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "timed out");
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn registration_attaches_the_watcher_before_replying() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+        let daemon = open(&dir);
+        // A reconcile tick that never comes during the test: only the
+        // registration's own nudge can attach the watch.
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis(50),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        register_in(&daemon, "a", &repo).await;
+        let lib = repo.join("src/lib.rs");
+        std::fs::write(&lib, "fn a() {}\n").unwrap();
+        let seen = eventually(async || {
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|c| c.path == Path::new("src/lib.rs"))
+        })
+        .await;
+        assert!(
+            seen.seq > 0,
+            "an edit right after registration is in the ledger"
+        );
     }
 
     #[tokio::test]

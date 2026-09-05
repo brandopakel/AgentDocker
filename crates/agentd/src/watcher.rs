@@ -10,7 +10,9 @@
 //! `target/` and `node_modules/` never reach the ledger, and `.git/` is
 //! ignored except the files that say where HEAD is, which trigger a
 //! branch refresh instead of an entry. Watches are reconciled against the
-//! registry once a second, so an agent joining or leaving needs no hook.
+//! registry once a second, and at once when an agent registers — the
+//! registration waits for it — so a checkout is covered before its first
+//! agent's first edit, and an agent leaving needs no hook.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -77,9 +79,18 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     let (flush_tx, mut flush_rx) =
         tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(8);
     daemon.set_watcher_flush(flush_tx);
+    // A registration asks for an immediate reconcile through this channel,
+    // so the new agent's checkout is watched before the reply goes out.
+    let (attach_tx, mut attach_rx) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(8);
+    daemon.set_watcher_attach(attach_tx);
     loop {
         tokio::select! {
             _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
+            Some(ack) = attach_rx.recv() => {
+                reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
+                let _ = ack.send(());
+            }
             Some(event) = rx.recv() => {
                 if pending.len() < 4096 { pending.push(event); }
                 else { gap.store(true, Ordering::Relaxed); }
