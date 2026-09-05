@@ -13,7 +13,7 @@ pub mod project;
 pub mod protocol;
 pub mod registry;
 
-pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess};
+pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, VcsState};
 pub use event::{Event, EventKind};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use message::{Destination, Envelope, MessageId, topic_matches};

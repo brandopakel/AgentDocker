@@ -194,6 +194,9 @@ pub fn event_line(event: &Event) -> String {
             project.root.display(),
             project.name()
         ),
+        EventKind::AgentVcsChanged { agent, vcs } => {
+            format!("checkout moved   {} {}", agent.short(), vcs.describe())
+        }
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
     };
     format!("{}  {body}", clock(event.at))

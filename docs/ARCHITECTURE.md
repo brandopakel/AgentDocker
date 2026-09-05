@@ -114,7 +114,9 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 **Discovery.** Agents that never register are still worth seeing. `discover` reads the process table once (`ps -axo pid=,ppid=,args=`, portable across macOS and Linux and complete enough to recognise `node …/@anthropic-ai/claude-code/cli.js` as well as a native `claude`), keeps the rows whose command line matches the known-runtime table in `agentdocker_host::procinfo` (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`), drops pids that live agents already claim, and reads each survivor's working directory (`proc_pidinfo` on macOS, `/proc/<pid>/cwd` on Linux) to place it in a project — without a fingerprint, because this runs on every `ps` and a process nobody adopted should neither warm the cache nor announce a repository. `ps` appends them, dimmed on a terminal and plain in a pipe, under the name `adopt` would give them (`<runtime>-<pid>`) with status `unadopted`, and says so on stderr; `--no-discover` skips it. `adopt <pid>` registers the process with the runtime from the table (overridable), the working directory from the process, the pid for liveness, and the label `adopted=true`. An adopted agent runs no hooks, so it holds no leases and reports nothing, but it is visible, messageable — its inbox fills until something drains it — and counted in its project. It is a heuristic on-ramp and is presented as one.
 
-**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Leases on files inside a project are stored as project-relative `file:` keys (see [Leases](#leases)), so `leases --resource <root>` lists everything held in a project wherever it is checked out.
+**Branch and head.** Every agent with a working directory carries `vcs`: the branch (or none, detached), the commit HEAD points at (or none, unborn), and when it was observed. It is read from `.git` directly — `HEAD` and one ref file, packed refs as the fallback, the worktree's own git directory for a linked worktree — in microseconds and with no `git` process (`agentdocker_host::vcs`), so it costs nothing to do often: the daemon reads it when an agent is created and again for every live agent every five seconds, which covers adopted agents and anything started with `run`; the Claude Code hooks additionally send it with `report` on `SessionStart`, `UserPromptSubmit`, and `PostToolUse`, so a `git checkout` run through the Bash tool shows up at once. Only a real change is persisted and announced (`agent_vcs_changed`); a fresh timestamp alone is neither. `ps` shows `BRANCH` and `HEAD` so "are we even looking at the same code" is answered at a glance. Dirtiness stays unknown until something cheap can tell.
+
+**What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `BRANCH` and `HEAD` say what each agent's checkout is on; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Leases on files inside a project are stored as project-relative `file:` keys (see [Leases](#leases)), so `leases --resource <root>` lists everything held in a project wherever it is checked out.
 
 ## Wire protocol
 
@@ -138,6 +140,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `list {all?, project?, labels?}` | `agents` | live only unless `all`; `project` is an id prefix or an absolute path inside it; `labels` must all match |
 | `inspect {agent}` | `agent` | |
 | `heartbeat {agent}` | `ok` | bumps `last_seen` |
+| `report {agent, vcs?}` | `ok` | what an adapter observed; a changed `vcs` is stored and announced |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` | flushes the inbox first, then live until the client disconnects |
@@ -187,7 +190,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_created` (with the project id), `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_created` (with the project id), `agent_started`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 ## Process supervision
 
@@ -227,9 +230,9 @@ See [Projects](#projects). Compared with the original plan, derivation lives onl
 
 See [Projects](#projects). The known-runtime table is code for now; making it configurable waits for the daemon config file that admission policy (Phase 5) introduces.
 
-#### Branch and head
+#### Branch and head *(done)*
 
-`AgentRecord.vcs: Option<VcsState { branch: Option<String>, head: String, dirty: Option<bool>, updated_at }>`, reported by clients through a new `report {agent, vcs?, reads?, writes?}` request — one op that carries everything an adapter observes, so a hook fire is a single round trip. Hooks read `.git/HEAD` and the ref file directly (microseconds, no `git` process) on `SessionStart` and `PostToolUse` and report only when it changed. `ps` gains `BRANCH` and `HEAD` (short) columns so "are we even looking at the same code" is answered at a glance; `agent_vcs_changed {agent, vcs}` is emitted on change. Stored in the record blob.
+See [Projects](#projects). `report` will grow `reads` and `writes` in Phase 3.
 
 ### Phase 3 — the working set
 
@@ -412,7 +415,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
 | 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
-| 6 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
+| 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 3, 6 |
 | 8 | staleness notices; hook deny-once on stale edits | 3 | 7 |
 | 9 | change journal: schema, release summaries and transcript tail, cursors, ring cache, `journal` CLI and MCP tools, hook digests | 3 | 7 |
@@ -432,7 +435,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | Request | Response | Phase |
 |---|---|---|
 | `claim {…}` | adds `error(deadlock)` | 5 |
-| `report {agent, vcs?, reads?, writes?}` | `ok` | 2–3 |
+| `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
 | `release {…, summary?}`, `release_all {…, summary?}` | `lease` / `leases` | 3 |
 | `changes {project, since?, path?, agent?, limit?}` | `changes` | 3 |
 | `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | 3 |
@@ -443,7 +446,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-New events: `agent_vcs_changed`, `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+New events: `file_changed`, `agent_stale`, `journal_appended`, `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 

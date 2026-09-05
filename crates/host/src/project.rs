@@ -103,7 +103,7 @@ fn linked(dir: &Path, dot_git: &Path) -> ProjectRef {
     }
 }
 
-fn resolve(base: &Path, path: &str) -> PathBuf {
+pub(crate) fn resolve(base: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
         path.to_path_buf()

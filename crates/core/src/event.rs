@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentId, AgentStatus, Destination, Lease, MessageId, ProjectId, ProjectRef, ResourceKey,
+    VcsState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +54,11 @@ pub enum EventKind {
     /// A repository was seen for the first time on this host.
     ProjectDiscovered {
         project: ProjectRef,
+    },
+    /// An agent's checkout moved to another branch or commit.
+    AgentVcsChanged {
+        agent: AgentId,
+        vcs: VcsState,
     },
     /// The daemon is about to exit; `reason` is `signal` or `request`.
     DaemonStopping {

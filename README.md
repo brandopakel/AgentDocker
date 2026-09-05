@@ -43,7 +43,7 @@ export PATH="$PWD/target/release:$PATH"
 # 2. Launch two agents. Any command works; here they are shell loops.
 agentdocker run --name writer   --runtime custom -- sh -c 'sleep 300'
 agentdocker run --name reviewer --runtime custom -- sh -c 'sleep 300'
-agentdocker ps                    # grouped by project: the repo each agent works in
+agentdocker ps                    # grouped by project, with each agent's branch and head
 agentdocker ps --project .        # only agents in this project
 agentdocker discover              # agent processes running outside AgentDocker; `adopt <pid>` registers one
 

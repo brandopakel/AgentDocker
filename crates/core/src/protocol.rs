@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentRecord, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId,
+    AgentRecord, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -72,6 +72,13 @@ pub enum Request {
     },
     Heartbeat {
         agent: String,
+    },
+    /// What an adapter observed about its agent. Everything is optional;
+    /// the daemon keeps what changed and emits events for it.
+    Report {
+        agent: String,
+        #[serde(default)]
+        vcs: Option<VcsState>,
     },
     /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
     Shutdown,

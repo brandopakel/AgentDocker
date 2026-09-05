@@ -78,6 +78,48 @@ pub struct AgentSpec {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Which branch and commit an agent's checkout is on, as last observed —
+/// by the daemon reading `.git` on a timer, or reported by a hook the
+/// moment it sees a tool run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VcsState {
+    /// `None` when HEAD is detached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The commit HEAD points at; `None` on an unborn branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// Uncommitted changes, when something cheap can tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl VcsState {
+    /// Same branch, commit, and dirtiness — the timestamp does not count.
+    pub fn same_as(&self, other: &VcsState) -> bool {
+        self.branch == other.branch && self.head == other.head && self.dirty == other.dirty
+    }
+
+    /// The first seven characters of the commit, as git prints it.
+    pub fn short_head(&self) -> Option<&str> {
+        self.head.as_deref().map(|head| {
+            let end = head.char_indices().nth(7).map_or(head.len(), |(i, _)| i);
+            &head[..end]
+        })
+    }
+
+    /// `main@3f9c1e0`, `(detached)@3f9c1e0`, or `main (unborn)`.
+    pub fn describe(&self) -> String {
+        match (&self.branch, self.short_head()) {
+            (Some(branch), Some(head)) => format!("{branch}@{head}"),
+            (None, Some(head)) => format!("(detached)@{head}"),
+            (Some(branch), None) => format!("{branch} (unborn)"),
+            (None, None) => "-".to_owned(),
+        }
+    }
+}
+
 /// A running agent process nobody has registered, as `discover` reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredProcess {
@@ -153,6 +195,9 @@ pub struct AgentRecord {
     /// `None` when there was no working directory to derive it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectRef>,
+    /// Branch and head of the checkout, when the agent has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs: Option<VcsState>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<DateTime<Utc>>,
@@ -172,6 +217,7 @@ impl AgentRecord {
             process_started_at: None,
             managed,
             project: None,
+            vcs: None,
             created_at: now,
             started_at: None,
             finished_at: None,

@@ -139,6 +139,7 @@ pub async fn claude_code<B: Backend>(
             let me = ensure_registered(backend, input).await?;
             let agents = all_agents(backend).await?;
             let inbox = drain_inbox(backend, &me).await?;
+            report_vcs(backend, &me, input).await;
             Ok(Some(context_output(
                 "SessionStart",
                 orientation(&me, &agents, &inbox),
@@ -147,6 +148,7 @@ pub async fn claude_code<B: Backend>(
         "UserPromptSubmit" | "PostToolUse" => {
             let me = ensure_registered(backend, input).await?;
             let inbox = drain_inbox(backend, &me).await?;
+            report_vcs(backend, &me, input).await;
             if inbox.is_empty() {
                 return Ok(None);
             }
@@ -350,6 +352,21 @@ fn parent_of(pid: u32) -> Option<(u32, String)> {
     let ppid = parts.next()?.parse().ok()?;
     let comm = parts.collect::<Vec<_>>().join(" ");
     Some((ppid, comm))
+}
+
+/// Tell the daemon which branch and commit the session's directory is on.
+/// Two file reads, no `git` process; the daemon ignores an unchanged
+/// state, and any failure is silent because it is only an observation.
+async fn report_vcs<B: Backend>(backend: &B, me: &AgentRecord, input: &HookInput) {
+    let Some(vcs) = input.cwd.as_deref().and_then(agentdocker_host::vcs::state) else {
+        return;
+    };
+    let _ = backend
+        .call(Request::Report {
+            agent: me.id.to_string(),
+            vcs: Some(vcs),
+        })
+        .await;
 }
 
 async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
@@ -816,6 +833,76 @@ mod tests {
         assert!(text.contains("nowhere ("), "{text}");
         assert!(text.find("mate (").unwrap() < text.find("stranger (").unwrap());
         assert!(text.contains("`--to project`"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn post_tool_use_reports_the_checkout_when_in_a_repository() {
+        let git_ok = std::process::Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !git_ok {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "init.defaultBranch=main",
+                ])
+                .args(args)
+                .env("HOME", dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        assert!(git(&["init", "-q"]));
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "root"]));
+
+        let me = agent("claude-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Messages { messages: vec![] },
+        ]);
+        let mut ev = input("PostToolUse");
+        ev.cwd = Some(repo.clone());
+        assert!(claude_code(&backend, &ev, &opts()).await.unwrap().is_none());
+        let reported = backend
+            .requests()
+            .into_iter()
+            .find_map(|r| match r {
+                Request::Report { agent, vcs } => Some((agent, vcs)),
+                _ => None,
+            })
+            .expect("a report was sent");
+        assert_eq!(reported.0, me.id.as_str());
+        assert_eq!(reported.1.unwrap().branch.as_deref(), Some("main"));
+
+        // Outside a repository nothing is reported.
+        let quiet = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Messages { messages: vec![] },
+        ]);
+        claude_code(&quiet, &input("PostToolUse"), &opts())
+            .await
+            .unwrap();
+        assert!(
+            !quiet
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::Report { .. }))
+        );
     }
 
     #[tokio::test]

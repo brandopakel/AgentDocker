@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use agentdocker_core::ProjectRef;
 use agentdocker_core::{
     AgentRecord, AgentSpec, DiscoveredProcess, Lease, LeaseId, LeaseMode, MessageId, Request,
-    Response, protocol::DEFAULT_LEASE_TTL_SECS,
+    Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -589,6 +589,19 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
                 a.id.short().to_owned(),
                 a.spec.name.clone(),
                 project_cell(a),
+                a.vcs
+                    .as_ref()
+                    .map(|v| match (&v.branch, &v.head) {
+                        (Some(branch), _) => branch.clone(),
+                        (None, Some(_)) => "(detached)".to_owned(),
+                        (None, None) => "-".to_owned(),
+                    })
+                    .unwrap_or_else(|| "-".to_owned()),
+                a.vcs
+                    .as_ref()
+                    .and_then(VcsState::short_head)
+                    .unwrap_or("-")
+                    .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
@@ -608,6 +621,8 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
                 .as_ref()
                 .map(ProjectRef::name)
                 .unwrap_or_else(|| "-".to_owned()),
+            "-".to_owned(),
+            "-".to_owned(),
             p.runtime.clone(),
             "-".to_owned(),
             "unadopted".to_owned(),
@@ -619,7 +634,8 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
     }));
     format::table_dimming(
         &[
-            "AGENT ID", "NAME", "PROJECT", "RUNTIME", "MODEL", "STATUS", "PID", "CREATED",
+            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "PID",
+            "CREATED",
         ],
         &rows,
         |i| i >= first_unadopted,

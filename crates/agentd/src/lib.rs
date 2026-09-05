@@ -81,6 +81,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             reaper.expire_leases();
             reaper.check_liveness();
             ticks += 1;
+            if ticks.is_multiple_of(5) {
+                reaper.refresh_vcs().await;
+            }
             if ticks.is_multiple_of(60) {
                 reaper.prune_events();
             }

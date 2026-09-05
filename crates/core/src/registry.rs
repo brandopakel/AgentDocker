@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef};
+use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef, VcsState};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
@@ -180,6 +180,17 @@ impl Registry {
         record.status = status;
         record.last_seen = now;
         Some(record.clone())
+    }
+
+    /// Record what an agent's checkout looks like. Returns the record and
+    /// whether the branch, head, or dirtiness changed (a fresh timestamp
+    /// alone does not count, so callers persist and announce only real
+    /// changes).
+    pub fn set_vcs(&mut self, id: &AgentId, vcs: VcsState) -> Option<(AgentRecord, bool)> {
+        let record = self.agents.get_mut(id)?;
+        let changed = !record.vcs.as_ref().is_some_and(|old| old.same_as(&vcs));
+        record.vcs = Some(vcs);
+        Some((record.clone(), changed))
     }
 
     /// Record that the agent is alive. Returns `false` if it is unknown.
@@ -368,5 +379,45 @@ mod tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn set_vcs_reports_real_changes_only() {
+        let mut reg = Registry::new();
+        let rec = record("v");
+        let id = rec.id.clone();
+        reg.insert(rec).unwrap();
+        let at = Utc::now();
+        let main = VcsState {
+            branch: Some("main".into()),
+            head: Some("abc".into()),
+            dirty: None,
+            updated_at: at,
+        };
+        assert!(reg.set_vcs(&id, main.clone()).unwrap().1);
+        let later = VcsState {
+            updated_at: at + chrono::Duration::seconds(5),
+            ..main.clone()
+        };
+        assert!(!reg.set_vcs(&id, later).unwrap().1);
+        let feature = VcsState {
+            branch: Some("feature".into()),
+            ..main
+        };
+        let (rec, changed) = reg.set_vcs(&id, feature).unwrap();
+        assert!(changed);
+        assert_eq!(rec.vcs.unwrap().branch.as_deref(), Some("feature"));
+        assert!(
+            reg.set_vcs(
+                &AgentId::from("nope"),
+                VcsState {
+                    branch: None,
+                    head: None,
+                    dirty: None,
+                    updated_at: at,
+                }
+            )
+            .is_none()
+        );
     }
 }

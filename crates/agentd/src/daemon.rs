@@ -19,7 +19,7 @@ use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, DiscoveredProcess,
     Envelope, ErrorCode, Event, EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable,
     MessageId, ProjectId, ProjectRef, ProjectSource, Registry, RegistryError, Request, ResourceKey,
-    Response, topic_matches,
+    Response, VcsState, topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast};
 use tracing::{error, info, warn};
 
-use agentdocker_host::{procinfo, project};
+use agentdocker_host::{procinfo, project, vcs};
 
 use crate::store::Store;
 use crate::supervisor;
@@ -338,6 +338,7 @@ impl Daemon {
                 }
                 Err(response) => *response,
             },
+            Request::Report { agent, vcs } => self.report(&agent, vcs),
             Request::Shutdown => {
                 info!("shutdown requested by a client");
                 self.shutdown.notify_one();
@@ -381,8 +382,10 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "run needs a command to launch");
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
+        let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let mut record = AgentRecord::new(spec, true, Utc::now());
         record.project = project;
+        record.vcs = vcs;
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -435,9 +438,11 @@ impl Daemon {
 
     async fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
         let project = self.project_for(spec.workdir.clone(), true).await;
+        let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let now = Utc::now();
         let mut record = AgentRecord::new(spec, false, now);
         record.project = project;
+        record.vcs = vcs;
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
@@ -539,6 +544,66 @@ impl Daemon {
             ..AgentSpec::default()
         };
         self.register(spec, Some(pid)).await
+    }
+
+    async fn vcs_for(workdir: Option<PathBuf>) -> Option<VcsState> {
+        let dir = workdir?;
+        tokio::task::spawn_blocking(move || vcs::state(&dir))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Keep what an adapter observed; only a real change is persisted and
+    /// announced.
+    fn report(&self, reference: &str, vcs: Option<VcsState>) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.touch(&id);
+        if let Some(vcs) = vcs {
+            self.apply_vcs(&id, vcs);
+        }
+        Response::Ok
+    }
+
+    fn apply_vcs(&self, id: &AgentId, vcs: VcsState) {
+        let Some((record, changed)) = lock(&self.registry).set_vcs(id, vcs.clone()) else {
+            return;
+        };
+        if changed {
+            info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
+            self.persist("agent", |store| store.upsert_agent(&record));
+            self.emit(EventKind::AgentVcsChanged {
+                agent: id.clone(),
+                vcs,
+            });
+        }
+    }
+
+    /// Read every live agent's checkout and record what moved. Called on a
+    /// timer, so branch and head stay right for agents that never report —
+    /// adopted ones, and anything started with `run`.
+    pub async fn refresh_vcs(&self) {
+        let targets: Vec<(AgentId, PathBuf)> = lock(&self.registry)
+            .live()
+            .filter_map(|a| a.spec.workdir.clone().map(|dir| (a.id.clone(), dir)))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let observed = tokio::task::spawn_blocking(move || {
+            targets
+                .into_iter()
+                .filter_map(|(id, dir)| vcs::state(&dir).map(|state| (id, state)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        for (id, state) in observed {
+            self.apply_vcs(&id, state);
+        }
     }
 
     /// The project containing `workdir`, fingerprinted from the cache or by
@@ -2064,5 +2129,85 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
+        let mut branches = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentVcsChanged { vcs, .. } = event.kind {
+                branches.push(vcs.branch);
+            }
+        }
+        branches
+    }
+
+    #[tokio::test]
+    async fn checkout_is_observed_at_creation_refreshed_and_reported() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+
+        // Known from the moment of registration, with no event yet.
+        let a = register_in(&daemon, "a", &repo).await;
+        let initial = a.vcs.clone().expect("checkout read at creation");
+        assert_eq!(initial.branch.as_deref(), Some("main"));
+        assert!(initial.head.is_some());
+        assert!(drain_vcs(&mut events).is_empty());
+
+        // The timer notices a branch switch made outside AgentDocker.
+        assert!(git(dir.path(), &repo, &["checkout", "-q", "-b", "feature"]));
+        daemon.refresh_vcs().await;
+        assert_eq!(drain_vcs(&mut events), vec![Some("feature".to_owned())]);
+        daemon.refresh_vcs().await;
+        assert!(drain_vcs(&mut events).is_empty(), "no change, no event");
+
+        // A hook can report ahead of the timer; the same state is silent,
+        // a different one is announced and visible in the record.
+        let reported = VcsState {
+            branch: Some("feature".to_owned()),
+            head: initial.head.clone(),
+            dirty: None,
+            updated_at: Utc::now(),
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::Report {
+                    agent: "a".to_owned(),
+                    vcs: Some(reported.clone()),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(drain_vcs(&mut events).is_empty());
+        daemon
+            .handle(Request::Report {
+                agent: "a".to_owned(),
+                vcs: Some(VcsState {
+                    branch: Some("hotfix".to_owned()),
+                    ..reported
+                }),
+            })
+            .await;
+        assert_eq!(drain_vcs(&mut events), vec![Some("hotfix".to_owned())]);
+        let Response::Agent { agent } = daemon
+            .handle(Request::Inspect {
+                agent: "a".to_owned(),
+            })
+            .await
+        else {
+            panic!("inspect failed");
+        };
+        assert_eq!(agent.vcs.unwrap().branch.as_deref(), Some("hotfix"));
     }
 }
