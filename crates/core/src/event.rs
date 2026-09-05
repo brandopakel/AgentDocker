@@ -47,6 +47,16 @@ pub enum EventKind {
     WatcherGap {
         reason: String,
     },
+    /// The daemon is spawning its project watcher; registrations wait for
+    /// it rather than go unwatched.
+    WatcherStarting,
+    /// The watcher is up: checkouts are covered from registration on.
+    WatcherStarted,
+    /// The watcher could not start; the ledger and branch tracking are off
+    /// until the daemon restarts.
+    WatcherUnavailable {
+        reason: String,
+    },
     ReadsObserved {
         agent: crate::AgentId,
         paths: Vec<std::path::PathBuf>,

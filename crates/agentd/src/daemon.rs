@@ -1062,16 +1062,19 @@ impl Daemon {
     /// instead of taking startup for no watcher at all.
     pub fn expect_watcher(&self) {
         self.watcher_attach.send_replace(WatcherLink::Starting);
+        self.emit(EventKind::WatcherStarting);
     }
 
     /// Let the watcher hand us its reconcile channel.
     pub fn set_watcher_attach(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
         self.watcher_attach.send_replace(WatcherLink::On(sender));
+        self.emit(EventKind::WatcherStarted);
     }
 
     /// The watcher could not start after all; stop waiting for it.
-    pub fn watcher_off(&self) {
+    pub fn watcher_off(&self, reason: String) {
         self.watcher_attach.send_replace(WatcherLink::Off);
+        self.emit(EventKind::WatcherUnavailable { reason });
     }
 
     /// Have the watcher cover every checkout a live agent works in, now:
@@ -4401,6 +4404,20 @@ mod tests {
             seen.seq > 0,
             "an edit right after registration is in the ledger"
         );
+        let kinds: Vec<EventKind> = daemon
+            .recent_events(50)
+            .into_iter()
+            .map(|e| e.kind)
+            .collect();
+        let starting = kinds
+            .iter()
+            .position(|k| matches!(k, EventKind::WatcherStarting))
+            .expect("starting announced");
+        let started = kinds
+            .iter()
+            .position(|k| matches!(k, EventKind::WatcherStarted))
+            .expect("started announced");
+        assert!(starting < started);
     }
 
     #[tokio::test]

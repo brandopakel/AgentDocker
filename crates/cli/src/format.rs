@@ -149,6 +149,9 @@ pub fn event_line(event: &Event) -> String {
             validation,
             passed,
         } => format!("{agent} validation {validation} passed={passed}"),
+        EventKind::WatcherStarting => "watcher starting".to_owned(),
+        EventKind::WatcherStarted => "watcher started".to_owned(),
+        EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),
         EventKind::WatcherGap { reason } => {
             format!("watcher coverage gap: {reason}; verify content with stale")
         }
