@@ -17,7 +17,8 @@
 //! note to stderr and exits 0, and Claude Code carries on as if the hook
 //! were not there (an edit is allowed rather than denied).
 
-use std::io::Read;
+use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 
@@ -107,7 +108,12 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     return Ok(());
                 }
             };
-            let output = match bounded_claude_code(&client, &input, &opts).await {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            let delivery = HookDelivery {
+                backend: &client,
+                pending: RefCell::new(Vec::new()),
+            };
+            let output = match bounded_claude_code(&delivery, &input, &opts).await {
                 Ok(output) => output,
                 Err(err) => {
                     eprintln!("agentdocker hook ({}): {err:#}", input.hook_event_name);
@@ -115,9 +121,46 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             if let Some(output) = output {
-                println!("{output}");
+                let mut stdout = std::io::stdout().lock();
+                writeln!(stdout, "{output}")?;
+                stdout.flush()?;
+                drop(stdout);
+                // Lost acknowledgements cause duplicates, never lost messages.
+                let pending = delivery.pending.take();
+                for request in pending {
+                    let _ = tokio::time::timeout_at(deadline, client.call_raw(&request)).await;
+                }
             }
             Ok(())
+        }
+    }
+}
+
+/// Read inboxes without consuming them; acknowledge only after output is flushed.
+struct HookDelivery<'a, B> {
+    backend: &'a B,
+    pending: RefCell<Vec<Request>>,
+}
+
+impl<B: Backend> Backend for HookDelivery<'_, B> {
+    async fn call(&self, request: Request) -> Result<Response> {
+        if let Request::Inbox { agent, .. } = request {
+            let response = self
+                .backend
+                .call(Request::Inbox {
+                    agent: agent.clone(),
+                    drain: false,
+                })
+                .await?;
+            if let Response::Messages { messages } = &response {
+                self.pending.borrow_mut().push(Request::AckInbox {
+                    agent,
+                    messages: messages.iter().map(|m| m.id.clone()).collect(),
+                });
+            }
+            Ok(response)
+        } else {
+            self.backend.call(request).await
         }
     }
 }
@@ -1071,6 +1114,46 @@ mod tests {
                 .unwrap();
         assert_eq!(again, 0);
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn timeout_after_reading_inbox_preserves_messages() {
+        struct Slow {
+            queued: RefCell<Vec<Envelope>>,
+        }
+        impl Backend for Slow {
+            async fn call(&self, request: Request) -> Result<Response> {
+                match request {
+                    Request::Inspect { .. } => Ok(Response::Agent {
+                        agent: agent("me", true),
+                    }),
+                    Request::Inbox { drain, .. } => {
+                        assert!(!drain, "hooks must not destructively read inboxes");
+                        Ok(Response::Messages {
+                            messages: self.queued.borrow().clone(),
+                        })
+                    }
+                    Request::List { .. } => std::future::pending().await,
+                    _ => panic!("unexpected request {request:?}"),
+                }
+            }
+        }
+        let slow = Slow {
+            queued: RefCell::new(vec![message("peer", "keep this")]),
+        };
+        let delivery = HookDelivery {
+            backend: &slow,
+            pending: RefCell::new(Vec::new()),
+        };
+        let mut event = input("UserPromptSubmit");
+        event.cwd = None;
+        assert!(
+            bounded_claude_code(&delivery, &event, &opts())
+                .await
+                .is_err()
+        );
+        assert_eq!(slow.queued.borrow().len(), 1);
+        assert_eq!(delivery.pending.borrow().len(), 1);
     }
 
     #[tokio::test]

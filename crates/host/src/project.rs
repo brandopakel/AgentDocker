@@ -48,8 +48,18 @@ pub fn discover(workdir: &Path) -> ProjectRef {
 /// created gets the key it will have once it exists (`/tmp` on macOS is
 /// `/private/tmp` either way).
 pub fn canonical(path: &Path) -> PathBuf {
+    // The public helper accepts relative paths and returns an absolute key.
+    // Resolve the base first so leading parent components cannot disappear.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => return path.to_path_buf(),
+        }
+    };
     let mut result = PathBuf::new();
-    for component in path.components() {
+    for component in absolute.components() {
         match component {
             std::path::Component::ParentDir => {
                 result.pop();
@@ -204,6 +214,15 @@ mod tests {
             &["commit", "-q", "--allow-empty", "-m", "root"]
         ));
         main.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn relative_parent_is_resolved_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            canonical(Path::new("../missing-file")),
+            canonical(&cwd.join("../missing-file"))
+        );
     }
 
     #[test]

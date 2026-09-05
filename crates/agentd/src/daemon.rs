@@ -277,9 +277,10 @@ impl Daemon {
         }
         let mut leases = LeaseTable::new();
         for mut lease in store.load_leases()? {
-            if !registry
-                .get(&lease.holder)
-                .is_some_and(|a| a.status.is_live())
+            if lease.is_expired(Utc::now())
+                || !registry
+                    .get(&lease.holder)
+                    .is_some_and(|a| a.status.is_live())
             {
                 store.delete_lease(&lease.id)?;
                 continue;
@@ -295,6 +296,15 @@ impl Daemon {
                 lease.resource =
                     ResourceKey::new(format!("path:{}", project::canonical(&path).display()));
                 store.upsert_lease(&lease)?;
+            }
+            if leases.holders_of(&lease.resource).iter().any(|held| {
+                held.holder != lease.holder
+                    && (held.mode == LeaseMode::Exclusive || lease.mode == LeaseMode::Exclusive)
+            }) {
+                anyhow::bail!(
+                    "stored lease {} overlaps another live holder after physical migration; stop the holders and retry",
+                    lease.id
+                );
             }
             leases.restore(lease);
         }
@@ -409,6 +419,7 @@ impl Daemon {
                 reply_to,
             } => self.send(from, &to, kind, payload, reply_to).await,
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
+            Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
                 agent,
                 resource,
@@ -1363,6 +1374,20 @@ impl State {
         }
     }
 
+    fn ack_inbox(&mut self, reference: &str, messages: &[MessageId]) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        if let Err(err) = self.store.ack_inbox(&id, messages) {
+            return Response::error(ErrorCode::Internal, err.to_string());
+        }
+        if let Some(queue) = self.inboxes.get_mut(&id) {
+            queue.retain(|message| !messages.contains(&message.id));
+        }
+        Response::Ok
+    }
+
     fn inbox(&mut self, reference: &str, drain: bool) -> Response {
         let id = match self.resolve(reference) {
             Ok(id) => id,
@@ -1695,6 +1720,50 @@ mod tests {
             Response::Messages { messages } => messages,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        for text in ["first", "second"] {
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text": text}),
+                    reply_to: None,
+                })
+                .await;
+        }
+        let first = inbox(&daemon, "receiver", false).await[0].id.clone();
+        for _ in 0..2 {
+            assert!(matches!(
+                daemon
+                    .handle(Request::AckInbox {
+                        agent: "receiver".into(),
+                        messages: vec![first.clone()],
+                    })
+                    .await,
+                Response::Ok
+            ));
+        }
+        let remaining = inbox(&daemon, "receiver", false).await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].payload["text"], "second");
+        assert_eq!(
+            lock(&daemon.state)
+                .store
+                .load_inboxes()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// A pid that certainly no longer exists: a child we already reaped.
