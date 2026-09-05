@@ -179,6 +179,10 @@ impl Store {
         json.map(|json| serde_json::from_str(&json).map_err(Into::into))
             .transpose()
     }
+    #[cfg(test)]
+    pub(crate) fn reject_writes_for_test(&self) {
+        self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
 
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
@@ -353,6 +357,7 @@ impl Store {
         &self,
         agent: &AgentId,
         messages: &[agentdocker_core::MessageId],
+        event: &Event,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for message in messages {
@@ -361,6 +366,7 @@ impl Store {
                 params![agent.as_str(), message.as_str()],
             )?;
         }
+        self.append_event(event)?;
         tx.commit()?;
         Ok(())
     }
@@ -438,8 +444,12 @@ impl Store {
             args.push(Box::new(i64::try_from(since).unwrap_or(i64::MAX)));
             sql.push_str(&format!(" AND seq > ?{}", args.len()));
         }
-        if let Some(path) = &query.path {
-            let path = path.trim_end_matches('/');
+        if let Some(path) = query
+            .path
+            .as_deref()
+            .map(|p| p.trim_end_matches('/'))
+            .filter(|p| !p.is_empty() && *p != ".")
+        {
             args.push(Box::new(path.to_owned()));
             let exact = args.len();
             args.push(Box::new(format!("{path}/")));
@@ -760,6 +770,18 @@ mod tests {
             paths(query(None, None, None, 50)),
             ["src/lib.rs", "src/main.rs", "srcs/other.rs", "README.md"]
         );
+        for root in ["", ".", "./"] {
+            assert_eq!(
+                query(Some(root), None, None, 50),
+                query(None, None, None, 50),
+                "root filter {root:?} includes every project path"
+            );
+            assert_eq!(
+                query(Some(root), Some("a1"), Some(s1), 1),
+                query(None, Some("a1"), Some(s1), 1),
+                "root normalization preserves the other filters"
+            );
+        }
         assert_eq!(
             paths(query(Some("src"), None, None, 50)),
             ["src/lib.rs", "src/main.rs"],
