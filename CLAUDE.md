@@ -28,3 +28,11 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 - Every daemon state change emits an `EventKind`. New behaviour = new event variant.
 - Protocol changes: update `protocol.rs`, the table in `docs/ARCHITECTURE.md`, and the CLI in the same PR.
 - Errors returned to clients use `ErrorCode`; add a variant rather than overloading `Internal`.
+
+## Standard verification workflow
+
+Use `bash scripts/verify.sh check` before opening or updating a ready PR. The standard suite is nextest (zero retries, JUnit), separate doctests, formatting, strict Clippy, installer tests, packaging and release build. Use targeted tests while editing. Each worktree keeps its own Cargo target directory.
+
+Use `bash scripts/verify.sh coverage` to inspect untested branches; `bench` for Criterion and native Unix-socket workloads with code/environment provenance; `fuzz` for bounded nightly protocol/resource-key campaigns. Add meaningful Proptest scenarios for coordination state transitions and retain minimized failures. See `docs/TESTING-AND-BENCHMARKS.md` for tools, contracts and reporting. Never describe a benchmark from different source content or an image as validation of the current state.
+
+GitHub CI and CodeRabbit remain the review workflow. Address valid review findings, explain declined suggestions with evidence, and wait for checks on the final commit before integration. Performance data is initially advisory; correctness remains blocking. Bencher reporting runs only on trusted branch jobs with configured credentials; fork PRs still produce local artifacts. Docker and Podman get separate real-engine evidence.

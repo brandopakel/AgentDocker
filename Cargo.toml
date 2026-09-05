@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["fuzz"]
 members = ["crates/core", "crates/host", "crates/agentd", "crates/cli"]
 
 [workspace.package]
@@ -14,6 +15,8 @@ agentd = { path = "crates/agentd", version = "0.1.0" }
 agentdocker-core = { path = "crates/core", version = "0.1.0" }
 agentdocker-host = { path = "crates/host", version = "0.1.0" }
 anyhow = "1"
+criterion = "0.5.1"
+proptest = "1.6"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 ignore = "0.4"

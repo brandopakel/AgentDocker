@@ -2808,7 +2808,7 @@ mod tests {
         let daemon = open(&dir);
         // The only process signalled is this test's child. trap is installed before READY.
         let mut child = std::process::Command::new("sh")
-            .args(["-c", "trap '' TERM; echo READY; while :; do sleep 1; done"])
+            .args(["-c", "trap '' TERM; echo READY; while :; do :; done"])
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
