@@ -35,6 +35,12 @@ fn main() -> Result<()> {
         (1..=1000).contains(&clients) && (1..=100_000).contains(&iterations),
         "workload out of bounds"
     );
+    anyhow::ensure!(
+        clients
+            .checked_mul(iterations)
+            .is_some_and(|samples| samples <= 1_000_000),
+        "workload retains at most 1,000,000 latency samples"
+    );
     let tmp = tempfile::Builder::new()
         .prefix("ad-load-")
         .tempdir_in("/tmp")?;
