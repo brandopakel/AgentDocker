@@ -74,6 +74,8 @@ const RELEASE_SCAN: usize = 10_000;
 const DIGEST_SCAN: usize = 1_000;
 /// The human's cursor key: `journal --new` reads as this.
 const USER_READER: &str = "user";
+/// Ledger rows an overlap query reads at most, newest first.
+const OVERLAP_SCAN: usize = 50_000;
 
 pub struct Daemon {
     pub home: PathBuf,
@@ -736,6 +738,11 @@ impl Daemon {
                 agent,
                 limit,
             } => self.changes(&project, since_seq, path, agent, limit).await,
+            Request::Overlap {
+                project,
+                since_seq,
+                agent,
+            } => self.overlap(&project, since_seq, agent).await,
             Request::Shutdown => {
                 info!("shutdown requested by a client");
                 self.shutdown.notify_one();
@@ -821,15 +828,31 @@ impl Daemon {
         if spec.command.first().is_none_or(String::is_empty) {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
-        let project = self.project_for(spec.workdir.clone(), true).await;
-        let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let mut record = AgentRecord::new(spec, true, Utc::now());
+        let mut worktree: Option<PathBuf> = None;
+        if record.spec.isolate {
+            match self.isolate(&record).await {
+                Ok(path) => {
+                    record.spec.workdir = Some(path.clone());
+                    worktree = Some(path);
+                }
+                Err(response) => return *response,
+            }
+        }
+        let project = self.project_for(record.spec.workdir.clone(), true).await;
+        let vcs = Self::vcs_for(record.spec.workdir.clone()).await;
         record.project = project;
         record.vcs = vcs;
         let record = match lock(&self.state).insert_record(record) {
             Response::Agent { agent } => agent,
             other => return other,
         };
+        if let Some(path) = worktree {
+            lock(&self.state).emit(EventKind::WorktreeCreated {
+                agent: record.id.clone(),
+                path,
+            });
+        }
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
             self.ensure_watched().await;
@@ -904,6 +927,119 @@ impl Daemon {
             }
         }
         response
+    }
+
+    /// A linked worktree of the agent's repository, made for it under the
+    /// daemon's home, on a branch named after it: `agent/<name>`, or with
+    /// its id appended when that is taken by an earlier run.
+    async fn isolate(&self, record: &AgentRecord) -> Result<PathBuf, Box<Response>> {
+        let invalid = |text: &str| Box::new(Response::error(ErrorCode::Invalid, text));
+        let Some(workdir) = record.spec.workdir.clone() else {
+            return Err(invalid(
+                "isolate needs a working directory inside a git checkout",
+            ));
+        };
+        let base = self
+            .project_for(Some(workdir), true)
+            .await
+            .filter(|p| p.source == ProjectSource::Git)
+            .ok_or_else(|| invalid("isolate needs a working directory inside a git checkout"))?;
+        let name = if record.spec.name.is_empty() {
+            default_name(&record.id)
+        } else {
+            record.spec.name.clone()
+        };
+        let dir = self.home.join("worktrees").join(base.id().short());
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            return Err(Box::new(Response::error(
+                ErrorCode::Internal,
+                format!("cannot create {}: {err}", dir.display()),
+            )));
+        }
+        let root = project::canonical(base.dir());
+        let dir = project::canonical(&dir);
+        let candidates = [
+            (dir.join(&name), format!("agent/{name}")),
+            (
+                dir.join(format!("{name}-{}", record.id.short())),
+                format!("agent/{name}-{}", record.id.short()),
+            ),
+        ];
+        let mut last: Option<Box<Response>> = None;
+        for (path, branch) in candidates {
+            if path.exists() {
+                continue;
+            }
+            match worktrees::add_worktree(root.clone(), &path, &branch).await {
+                Ok(()) => {
+                    info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    return Ok(path);
+                }
+                Err(response) => last = Some(response),
+            }
+        }
+        Err(last.unwrap_or_else(|| invalid("no free worktree path for the agent")))
+    }
+
+    /// Paths changed in more than one physical checkout of a project; with
+    /// an agent, only those involving its checkout.
+    async fn overlap(
+        &self,
+        project: &str,
+        since_seq: Option<u64>,
+        agent: Option<String>,
+    ) -> Response {
+        let mine: Option<(ProjectId, PathBuf)> = match agent {
+            Some(reference) => {
+                let id = match self.resolve(&reference) {
+                    Ok(id) => id,
+                    Err(response) => return *response,
+                };
+                let found = lock(&self.state).registry.get(&id).and_then(|record| {
+                    record
+                        .project
+                        .as_ref()
+                        .map(|p| (p.id(), project::canonical(p.dir())))
+                });
+                match found {
+                    Some(found) => Some(found),
+                    None => {
+                        return Response::error(ErrorCode::Invalid, "the agent is in no project");
+                    }
+                }
+            }
+            None => None,
+        };
+        let project = if project.is_empty() {
+            match &mine {
+                Some((project, _)) => project.clone(),
+                None => {
+                    return Response::error(ErrorCode::Invalid, "name a project or an agent");
+                }
+            }
+        } else {
+            match self.resolve_project(project).await {
+                Ok(id) => id,
+                Err(response) => return *response,
+            }
+        };
+        let query = ChangesQuery {
+            project,
+            since_seq,
+            path: None,
+            agent: None,
+            limit: OVERLAP_SCAN,
+            after: None,
+        };
+        let changes = match lock(&self.state).store.changes(&query) {
+            Ok(changes) => changes,
+            Err(err) => return Response::error(ErrorCode::Internal, err.to_string()),
+        };
+        let mut overlaps = agentdocker_core::overlaps(&changes);
+        if let Some((_, checkout)) = mine {
+            overlaps.retain(|o| o.parties.iter().any(|p| p.checkout == checkout));
+        }
+        Response::Overlap { overlaps }
     }
 
     /// Agent processes of known runtimes that no live agent claims by pid.
@@ -4377,6 +4513,208 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "timed out");
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    async fn status_of(daemon: &Arc<Daemon>, reference: &str) -> AgentStatus {
+        match daemon
+            .handle(Request::Inspect {
+                agent: reference.to_owned(),
+            })
+            .await
+        {
+            Response::Agent { agent } => agent.status,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_isolate_gives_the_agent_its_own_worktree_and_branch() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+        let daemon = open(&dir);
+        let home = register_in(&daemon, "home", &repo).await;
+
+        let mut command = spec("writer");
+        command.workdir = Some(repo.clone());
+        command.isolate = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 0.2".into()];
+        let Response::Agent { agent } = daemon
+            .handle(Request::Run {
+                spec: command.clone(),
+            })
+            .await
+        else {
+            panic!("isolated run failed");
+        };
+        let worktree = agent
+            .spec
+            .workdir
+            .clone()
+            .expect("workdir moved to the worktree");
+        let worktrees = project::canonical(&dir.path().join("worktrees"));
+        assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
+        assert!(worktree.ends_with("writer"), "{}", worktree.display());
+        assert!(worktree.join(".git").exists(), "a linked worktree");
+        assert!(agent.spec.isolate);
+        let project = agent.project.clone().expect("in a project");
+        assert_eq!(
+            project.id(),
+            home.project.as_ref().unwrap().id(),
+            "same repository"
+        );
+        assert_eq!(project.worktree.as_deref(), Some(worktree.as_path()));
+        assert_eq!(
+            agent.vcs.as_ref().and_then(|v| v.branch.as_deref()),
+            Some("agent/writer")
+        );
+        assert!(
+            daemon
+                .recent_events(50)
+                .iter()
+                .any(|e| matches!(&e.kind, EventKind::WorktreeCreated { agent: who, path } if *who == agent.id && *path == worktree))
+        );
+
+        // The same name again, once the first has finished: the path is
+        // taken, so the second gets its id appended.
+        eventually(async || (!status_of(&daemon, "writer").await.is_live()).then_some(())).await;
+        let Response::Agent { agent: again } = daemon
+            .handle(Request::Run {
+                spec: command.clone(),
+            })
+            .await
+        else {
+            panic!("second isolated run failed");
+        };
+        let second = again.spec.workdir.clone().unwrap();
+        assert_ne!(second, worktree);
+        assert!(
+            second
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("writer-")
+        );
+        assert_eq!(
+            again.vcs.as_ref().and_then(|v| v.branch.as_deref()),
+            Some(format!("agent/writer-{}", again.id.short()).as_str())
+        );
+
+        // Not a repository: refused, nothing spawned.
+        let plain = dir.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let mut command = spec("loose");
+        command.workdir = Some(plain);
+        command.isolate = true;
+        command.command = vec!["sh".into(), "-c".into(), "true".into()];
+        assert!(matches!(
+            daemon.handle(Request::Run { spec: command }).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn overlap_names_paths_changed_in_two_checkouts() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis(50),
+        ));
+        let a = register_in(&daemon, "a", &repo).await;
+        let mut command = spec("b");
+        command.workdir = Some(repo.clone());
+        command.isolate = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 5".into()];
+        let Response::Agent { agent: b } = daemon.handle(Request::Run { spec: command }).await
+        else {
+            panic!("isolated run failed");
+        };
+        let worktree = b.spec.workdir.clone().unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a from main\n").unwrap();
+        std::fs::write(worktree.join("src/a.rs"), "a from the worktree\n").unwrap();
+        std::fs::write(worktree.join("src/b.rs"), "only here\n").unwrap();
+        let overlaps = eventually(async || {
+            match daemon
+                .handle(Request::Overlap {
+                    project: repo.to_string_lossy().into_owned(),
+                    since_seq: None,
+                    agent: None,
+                })
+                .await
+            {
+                Response::Overlap { overlaps } if !overlaps.is_empty() => Some(overlaps),
+                _ => None,
+            }
+        })
+        .await;
+        assert_eq!(overlaps.len(), 1, "{overlaps:?}");
+        assert_eq!(overlaps[0].path, Path::new("src/a.rs"));
+        assert_eq!(overlaps[0].parties.len(), 2);
+        assert!(
+            overlaps[0]
+                .parties
+                .iter()
+                .any(|p| p.checkout == project::canonical(&repo))
+        );
+        assert!(
+            overlaps[0]
+                .parties
+                .iter()
+                .any(|p| p.checkout == worktree && p.worktree.is_some())
+        );
+        // Nobody held the files: external on both sides.
+        assert!(overlaps[0].parties.iter().all(|p| p.agents.is_empty()));
+        // Seen from an agent: its checkout must be a party, and an empty
+        // project means its own.
+        let Response::Overlap { overlaps: mine } = daemon
+            .handle(Request::Overlap {
+                project: String::new(),
+                since_seq: None,
+                agent: Some(a.id.to_string()),
+            })
+            .await
+        else {
+            panic!("overlap failed");
+        };
+        assert_eq!(mine.len(), 1);
+        assert!(matches!(
+            daemon
+                .handle(Request::Overlap {
+                    project: String::new(),
+                    since_seq: None,
+                    agent: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

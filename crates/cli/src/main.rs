@@ -244,6 +244,18 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: usize,
     },
+    /// Paths changed in more than one checkout of a project: what will collide when the branches meet.
+    Overlap {
+        /// Project: an id prefix or a path inside it (default: current directory).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only ledger entries after this sequence number.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only overlaps involving this agent's checkout.
+        #[arg(long = "as", value_name = "AGENT")]
+        agent: Option<String>,
+    },
     /// Who changed a file, oldest first.
     Blame {
         path: String,
@@ -401,6 +413,9 @@ struct RunArgs {
     /// Label for organising agents.
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+    /// Give the agent its own linked worktree and branch (agent/<name>) under the daemon home, so its edits are a layer of their own.
+    #[arg(long)]
+    isolate: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -819,6 +834,20 @@ async fn main() -> Result<()> {
                 print_changes(&client, &changes).await?;
             }
         }
+        Command::Overlap {
+            project,
+            since,
+            agent,
+        } => {
+            let request = Request::Overlap {
+                project: project_selector(project.as_deref().unwrap_or(".")),
+                since_seq: since,
+                agent,
+            };
+            if let Response::Overlap { overlaps } = client.call(&request).await? {
+                print_overlaps(&client, &overlaps).await?;
+            }
+        }
         Command::Blame { path, limit } => {
             let absolute = absolute_path(&path);
             let project = PathBuf::from(&absolute)
@@ -861,6 +890,7 @@ async fn main() -> Result<()> {
                 workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: parse_pairs(&args.env)?,
                 labels: parse_pairs(&args.labels)?,
+                isolate: args.isolate,
             };
             if let Response::Agent { agent } = client.call(&Request::Run { spec }).await? {
                 println!("{}", agent.id);
@@ -880,6 +910,7 @@ async fn main() -> Result<()> {
                 workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: BTreeMap::new(),
                 labels: parse_pairs(&args.labels)?,
+                isolate: false,
             };
             let request = Request::Register {
                 spec,
@@ -1449,6 +1480,69 @@ fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
                 .with_context(|| format!("expected KEY=VALUE, got `{pair}`"))
         })
         .collect()
+}
+
+/// One block per path: the path, then each checkout that changed it with
+/// who did it there, how often, and how recently.
+async fn print_overlaps(client: &Client, overlaps: &[agentdocker_core::Overlap]) -> Result<()> {
+    if overlaps.is_empty() {
+        println!("no path was changed in more than one checkout");
+        return Ok(());
+    }
+    let names: BTreeMap<String, String> = match client
+        .call(&Request::List {
+            all: true,
+            project: None,
+            labels: BTreeMap::new(),
+        })
+        .await
+    {
+        Ok(Response::Agents { agents }) => agents
+            .into_iter()
+            .map(|a| (a.id.to_string(), a.spec.name))
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    let now = chrono::Utc::now();
+    for overlap in overlaps {
+        println!("{}", overlap.path.display());
+        for party in &overlap.parties {
+            let who = if party.agents.is_empty() {
+                "external".to_owned()
+            } else {
+                party
+                    .agents
+                    .iter()
+                    .map(|a| {
+                        names
+                            .get(a.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| a.short().to_owned())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let head = party
+                .head
+                .as_deref()
+                .map(|h| format!("@{}", h.chars().take(7).collect::<String>()))
+                .unwrap_or_default();
+            let kind = if party.worktree.is_some() {
+                "worktree"
+            } else {
+                "checkout"
+            };
+            println!(
+                "    {} {}{}  {who} ×{}  {}",
+                kind,
+                party.checkout.display(),
+                head,
+                party.changes,
+                agentdocker_core::journal::ago(now, party.last_at)
+            );
+        }
+    }
+    Ok(())
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
