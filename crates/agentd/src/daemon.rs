@@ -194,14 +194,6 @@ pub struct Observed {
     pub kind: ChangeKind,
 }
 
-/// An unsupervised live agent whose process the reaper must check.
-struct Candidate {
-    id: AgentId,
-    pid: Option<u32>,
-    process_started_at: Option<DateTime<Utc>>,
-    managed: bool,
-}
-
 impl Daemon {
     fn store_op<T>(&self, what: &str, op: impl FnOnce(&Store) -> anyhow::Result<T>) -> Option<T> {
         lock(&self.state).store_op(what, op)
@@ -220,10 +212,134 @@ impl Daemon {
         lock(&self.state).mark_exited(id, status)
     }
     pub fn check_liveness(&self) {
-        lock(&self.state).check_liveness();
+        let candidates: Vec<_> = {
+            let state = lock(&self.state);
+            state
+                .registry
+                .live()
+                .filter(|a| !state.supervised.contains(&a.id))
+                .filter(|a| !(a.managed && a.status == AgentStatus::Created))
+                .cloned()
+                .collect()
+        };
+        for candidate in candidates {
+            let alive = match candidate.pid {
+                Some(pid) => process_exists(pid) && same_process(pid, candidate.process_started_at),
+                None => !candidate.managed,
+            };
+            if alive {
+                continue;
+            }
+            let mut state = lock(&self.state);
+            if !state.supervised.contains(&candidate.id)
+                && state.registry.get(&candidate.id).is_some_and(|a| {
+                    a.status.is_live()
+                        && a.pid == candidate.pid
+                        && a.process_started_at == candidate.process_started_at
+                })
+            {
+                state.mark_exited(&candidate.id, AgentStatus::Exited { code: None });
+            }
+        }
     }
     pub fn stop_all(&self) {
-        lock(&self.state).stop_all();
+        let managed: Vec<_> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| a.managed)
+            .map(|a| a.id.clone())
+            .collect();
+        for id in managed {
+            let _ = self.stop(id.as_str(), false);
+        }
+    }
+
+    fn stop(&self, reference: &str, force: bool) -> Response {
+        let record = {
+            let mut state = lock(&self.state);
+            let id = match state.resolve(reference) {
+                Ok(id) => id,
+                Err(e) => return *e,
+            };
+            let record = state.registry.get(&id).unwrap().clone();
+            if !record.status.is_live() {
+                return Response::error(ErrorCode::Invalid, "agent has already finished");
+            }
+            if record.pid.is_none() {
+                if record.managed {
+                    return Response::error(ErrorCode::Invalid, "agent is still starting");
+                }
+                return match state.mark_exited(&id, AgentStatus::Exited { code: None }) {
+                    Some(agent) => Response::Agent { agent },
+                    None => Response::error(ErrorCode::NotFound, "agent vanished"),
+                };
+            }
+            record
+        };
+        let pid = record.pid.unwrap();
+        let Some(target) = signal_pid(pid) else {
+            return Response::error(ErrorCode::Invalid, "invalid signal target");
+        };
+        // Host inspection and signaling never hold the global coordination guard.
+        let alive = process_exists(pid) && same_process(pid, record.process_started_at);
+        if alive {
+            let Some(started) = record.process_started_at else {
+                return Response::error(
+                    ErrorCode::Forbidden,
+                    "cannot verify process identity before signaling",
+                );
+            };
+            if procinfo::start_time(pid) != Some(started) {
+                return Response::error(
+                    ErrorCode::Forbidden,
+                    "process identity changed or is unavailable",
+                );
+            }
+            if let Err(err) = kill(
+                target,
+                if force {
+                    Signal::SIGKILL
+                } else {
+                    Signal::SIGTERM
+                },
+            ) {
+                if err != Errno::ESRCH {
+                    return Response::error(
+                        ErrorCode::Forbidden,
+                        format!("cannot signal pid {pid}: {err}"),
+                    );
+                }
+            }
+        }
+        let mut state = lock(&self.state);
+        let Some(current) = state.registry.get(&record.id) else {
+            return Response::error(ErrorCode::NotFound, "agent vanished");
+        };
+        if current.pid != record.pid || current.process_started_at != record.process_started_at {
+            return Response::error(ErrorCode::Conflict, "agent identity changed during stop");
+        }
+        if !current.status.is_live() {
+            return Response::Agent {
+                agent: current.clone(),
+            };
+        }
+        if !alive {
+            return Response::Agent {
+                agent: state
+                    .mark_exited(&record.id, AgentStatus::Exited { code: None })
+                    .unwrap(),
+            };
+        }
+        let agent = state
+            .registry
+            .set_status(&record.id, AgentStatus::Stopping, Utc::now())
+            .unwrap();
+        state.persist("agent", |store| store.upsert_agent(&agent));
+        state.emit(EventKind::AgentStopping {
+            agent: record.id,
+            force,
+        });
+        Response::Agent { agent }
     }
     pub fn expire_leases(&self) {
         lock(&self.state).expire_leases();
@@ -403,7 +519,7 @@ impl Daemon {
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
-            Request::Stop { agent, force } => lock(&self.state).stop(&agent, force),
+            Request::Stop { agent, force } => self.stop(&agent, force),
             Request::Remove { agent } => lock(&self.state).remove(&agent),
             Request::List {
                 all,
@@ -1245,67 +1361,6 @@ impl State {
         }
     }
 
-    fn stop(&mut self, reference: &str, force: bool) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        let Some(record) = self.registry.get(&id).cloned() else {
-            return Response::error(ErrorCode::NotFound, "agent vanished");
-        };
-        if !record.status.is_live() {
-            return Response::error(ErrorCode::Invalid, "agent has already finished");
-        }
-        let Some(pid) = record.pid else {
-            if record.managed {
-                return Response::error(ErrorCode::Invalid, "agent is still starting");
-            }
-            return match self.mark_exited(&id, AgentStatus::Exited { code: None }) {
-                Some(agent) => Response::Agent { agent },
-                None => Response::error(ErrorCode::NotFound, "agent vanished"),
-            };
-        };
-        let Some(target) = signal_pid(pid) else {
-            return Response::error(ErrorCode::Invalid, "invalid signal target");
-        };
-        if !same_process(pid, record.process_started_at) || !process_exists(pid) {
-            return match self.mark_exited(&id, AgentStatus::Exited { code: None }) {
-                Some(agent) => Response::Agent { agent },
-                None => Response::error(ErrorCode::NotFound, "agent vanished"),
-            };
-        }
-        let signal = if force {
-            Signal::SIGKILL
-        } else {
-            Signal::SIGTERM
-        };
-        if let Err(err) = kill(target, signal) {
-            return Response::error(
-                ErrorCode::Forbidden,
-                format!("cannot signal pid {pid}: {err}"),
-            );
-        }
-        let agent = self
-            .registry
-            .set_status(&id, AgentStatus::Stopping, Utc::now())
-            .expect("resolved agent");
-        self.persist("agent", |store| store.upsert_agent(&agent));
-        self.emit(EventKind::AgentStopping { agent: id, force });
-        Response::Agent { agent }
-    }
-
-    pub fn stop_all(&mut self) {
-        let managed: Vec<AgentId> = self
-            .registry
-            .live()
-            .filter(|a| a.managed)
-            .map(|a| a.id.clone())
-            .collect();
-        for id in managed {
-            let _ = self.stop(id.as_str(), false);
-        }
-    }
-
     fn remove(&mut self, reference: &str) -> Response {
         let id = match self.resolve(reference) {
             Ok(id) => id,
@@ -1351,42 +1406,6 @@ impl State {
             status,
         });
         Some(record)
-    }
-
-    pub fn check_liveness(&mut self) {
-        let supervised = self.supervised.clone();
-        let candidates: Vec<Candidate> = self
-            .registry
-            .live()
-            .filter(|a| !supervised.contains(&a.id))
-            // A managed agent stays `Created` while `run` is still
-            // spawning it; it has no pid yet and is not gone.
-            .filter(|a| !(a.managed && a.status == AgentStatus::Created))
-            .map(|a| Candidate {
-                id: a.id.clone(),
-                pid: a.pid,
-                process_started_at: a.process_started_at,
-                managed: a.managed,
-            })
-            .collect();
-        for Candidate {
-            id,
-            pid,
-            process_started_at,
-            managed,
-        } in candidates
-        {
-            let alive = match pid {
-                Some(pid) => process_exists(pid) && same_process(pid, process_started_at),
-                // An external agent that gave no pid can only leave by
-                // deregistering; a managed one without a pid never started.
-                None => !managed,
-            };
-            if !alive {
-                warn!(agent = %id.short(), ?pid, "process is gone; recording exit");
-                self.mark_exited(&id, AgentStatus::Exited { code: None });
-            }
-        }
     }
 
     fn touch(&mut self, id: &AgentId) {
