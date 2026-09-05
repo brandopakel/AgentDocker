@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use agentdocker_core::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, Envelope, ErrorCode, Event,
-    EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId, ProjectRef,
-    ProjectSource, Registry, RegistryError, Request, ResourceKey, Response, topic_matches,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, DiscoveredProcess,
+    Envelope, ErrorCode, Event, EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable,
+    MessageId, ProjectId, ProjectRef, ProjectSource, Registry, RegistryError, Request, ResourceKey,
+    Response, topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
@@ -320,6 +321,8 @@ impl Daemon {
             Request::Run { spec } => self.run(spec).await,
             Request::Register { spec, pid } => self.register(spec, pid).await,
             Request::Deregister { agent } => self.deregister(&agent),
+            Request::Discover => self.discover().await,
+            Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
             Request::Stop { agent, force } => self.stop(&agent, force),
             Request::Remove { agent } => self.remove(&agent),
             Request::List {
@@ -457,6 +460,85 @@ impl Daemon {
         });
         info!(agent = %record.id.short(), name = %record.spec.name, "agent registered");
         Response::Agent { agent: record }
+    }
+
+    /// Agent processes of known runtimes that no live agent claims by pid.
+    /// Projects come without fingerprints: this runs on every `ps`, and a
+    /// process nobody adopted should not warm the cache or announce a
+    /// repository.
+    async fn discover(&self) -> Response {
+        let registered: HashSet<u32> = lock(&self.registry).live().filter_map(|a| a.pid).collect();
+        let mine = std::process::id();
+        let processes = tokio::task::spawn_blocking(move || {
+            let mut found: Vec<DiscoveredProcess> = procinfo::processes()
+                .into_iter()
+                .filter(|p| p.pid != mine && !registered.contains(&p.pid))
+                .filter_map(|p| {
+                    let runtime = procinfo::runtime_of(&p.argv)?;
+                    let cwd = procinfo::cwd(p.pid);
+                    Some(DiscoveredProcess {
+                        pid: p.pid,
+                        ppid: p.ppid,
+                        runtime: runtime.to_owned(),
+                        command: p.argv.join(" "),
+                        project: cwd.as_deref().map(project::discover),
+                        cwd,
+                        started_at: procinfo::start_time(p.pid),
+                    })
+                })
+                .collect();
+            found.sort_by(|a, b| {
+                let key = |p: &DiscoveredProcess| {
+                    (
+                        p.project.is_none(),
+                        p.project.as_ref().map(ProjectRef::name),
+                        p.pid,
+                    )
+                };
+                key(a).cmp(&key(b))
+            });
+            found
+        })
+        .await
+        .unwrap_or_default();
+        Response::Processes { processes }
+    }
+
+    /// Register a running process by pid: runtime from the known table
+    /// unless given, working directory from the process, so it lands in
+    /// its project. Adopted agents run no hooks, so they hold no leases
+    /// and report nothing, but they are visible, messageable, and counted.
+    async fn adopt(&self, pid: u32, name: Option<String>, runtime: Option<String>) -> Response {
+        let already = lock(&self.registry)
+            .live()
+            .find(|a| a.pid == Some(pid))
+            .map(|a| a.spec.name.clone());
+        if let Some(name) = already {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("pid {pid} is already agent `{name}`"),
+            );
+        }
+        let found = tokio::task::spawn_blocking(move || {
+            procinfo::inspect(pid).map(|p| (p, procinfo::cwd(pid)))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((process, cwd)) = found else {
+            return Response::error(ErrorCode::NotFound, format!("no process with pid {pid}"));
+        };
+        let runtime = runtime
+            .or_else(|| procinfo::runtime_of(&process.argv).map(str::to_owned))
+            .unwrap_or_else(|| "custom".to_owned());
+        let spec = AgentSpec {
+            name: name.unwrap_or_else(|| format!("{runtime}-{pid}")),
+            runtime,
+            workdir: cwd,
+            labels: BTreeMap::from([("adopted".to_owned(), "true".to_owned())]),
+            ..AgentSpec::default()
+        };
+        self.register(spec, Some(pid)).await
     }
 
     /// The project containing `workdir`, fingerprinted from the cache or by
@@ -1886,5 +1968,101 @@ mod tests {
             panic!("claim failed");
         };
         assert_eq!(lease.resource.as_str(), "task:ISSUE-1");
+    }
+
+    #[tokio::test]
+    async fn discover_finds_known_runtimes_and_adopt_registers_them() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // A process whose executable is called `claude`, working in an
+        // Agentfile project, is what a hook-less Claude Code session looks
+        // like from the process table.
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("Agentfile.toml"), "").unwrap();
+        let fake = dir.path().join("claude");
+        std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
+        let mut child = std::process::Command::new(&fake)
+            .arg("60")
+            .current_dir(&project)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        let found = match daemon.handle(Request::Discover).await {
+            Response::Processes { processes } => processes,
+            other => panic!("unexpected {other:?}"),
+        };
+        let mine = found
+            .iter()
+            .find(|p| p.pid == pid)
+            .expect("the fake claude is discovered");
+        assert_eq!(mine.runtime, "claude-code");
+        assert_eq!(mine.cwd, Some(project.canonicalize().unwrap()));
+        assert_eq!(
+            mine.project.as_ref().map(|p| p.source),
+            Some(ProjectSource::Agentfile)
+        );
+        assert_eq!(mine.default_name(), format!("claude-code-{pid}"));
+
+        let adopted = match daemon
+            .handle(Request::Adopt {
+                pid,
+                name: None,
+                runtime: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(adopted.spec.name, format!("claude-code-{pid}"));
+        assert_eq!(adopted.spec.runtime, "claude-code");
+        assert_eq!(adopted.pid, Some(pid));
+        assert_eq!(
+            adopted.spec.labels.get("adopted").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            adopted.project.as_ref().map(|p| p.root.clone()),
+            Some(project.canonicalize().unwrap())
+        );
+        assert!(process_exists(pid));
+
+        // Registered pids disappear from discovery, and cannot be adopted twice.
+        let found = match daemon.handle(Request::Discover).await {
+            Response::Processes { processes } => processes,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(found.iter().all(|p| p.pid != pid));
+        assert!(matches!(
+            daemon
+                .handle(Request::Adopt {
+                    pid,
+                    name: None,
+                    runtime: None
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::Adopt {
+                    pid: dead_pid(),
+                    name: None,
+                    runtime: None
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
     }
 }

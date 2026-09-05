@@ -11,9 +11,10 @@ mod teams;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use agentdocker_core::ProjectRef;
 use agentdocker_core::{
-    AgentRecord, AgentSpec, Lease, LeaseId, LeaseMode, MessageId, Request, Response,
-    protocol::DEFAULT_LEASE_TTL_SECS,
+    AgentRecord, AgentSpec, DiscoveredProcess, Lease, LeaseId, LeaseMode, MessageId, Request,
+    Response, protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -53,6 +54,21 @@ enum Command {
         /// Only agents carrying this label (repeatable).
         #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
         labels: Vec<String>,
+        /// Do not look for running agent processes nobody registered.
+        #[arg(long)]
+        no_discover: bool,
+    },
+    /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
+    Discover,
+    /// Register a running process found by `discover`, by pid.
+    Adopt {
+        pid: u32,
+        /// Agent name (default: <runtime>-<pid>).
+        #[arg(long)]
+        name: Option<String>,
+        /// Runtime (default: recognised from the command line, else custom).
+        #[arg(long)]
+        runtime: Option<String>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -277,14 +293,39 @@ async fn main() -> Result<()> {
             all,
             project,
             labels,
+            no_discover,
         } => {
             let request = Request::List {
                 all,
                 project: project.as_deref().map(project_selector),
                 labels: parse_pairs(&labels)?,
             };
-            if let Response::Agents { agents } = client.call(&request).await? {
-                print_agents(&agents);
+            let Response::Agents { agents } = client.call(&request).await? else {
+                return Ok(());
+            };
+            let mut unadopted = Vec::new();
+            if !no_discover && project.is_none() && labels.is_empty() {
+                if let Response::Processes { processes } = client.call(&Request::Discover).await? {
+                    unadopted = processes;
+                }
+            }
+            print_agents(&agents, &unadopted);
+            if !unadopted.is_empty() {
+                eprintln!(
+                    "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
+                    unadopted.len()
+                );
+            }
+        }
+        Command::Discover => {
+            if let Response::Processes { processes } = client.call(&Request::Discover).await? {
+                print_processes(&processes);
+            }
+        }
+        Command::Adopt { pid, name, runtime } => {
+            let request = Request::Adopt { pid, name, runtime };
+            if let Response::Agent { agent } = client.call(&request).await? {
+                println!("{}", agent.id);
             }
         }
         Command::Run(args) => {
@@ -538,8 +579,10 @@ fn project_cell(agent: &AgentRecord) -> String {
     }
 }
 
-fn print_agents(agents: &[AgentRecord]) {
-    let rows: Vec<Vec<String>> = agents
+/// Agents, then — dimmed — running agent processes nobody registered,
+/// shown under the name `adopt` would give them.
+fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
+    let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
             vec![
@@ -556,10 +599,61 @@ fn print_agents(agents: &[AgentRecord]) {
             ]
         })
         .collect();
-    format::table(
+    let first_unadopted = rows.len();
+    rows.extend(unadopted.iter().map(|p| {
+        vec![
+            "-".to_owned(),
+            p.default_name(),
+            p.project
+                .as_ref()
+                .map(ProjectRef::name)
+                .unwrap_or_else(|| "-".to_owned()),
+            p.runtime.clone(),
+            "-".to_owned(),
+            "unadopted".to_owned(),
+            p.pid.to_string(),
+            p.started_at
+                .map(format::ago)
+                .unwrap_or_else(|| "-".to_owned()),
+        ]
+    }));
+    format::table_dimming(
         &[
             "AGENT ID", "NAME", "PROJECT", "RUNTIME", "MODEL", "STATUS", "PID", "CREATED",
         ],
+        &rows,
+        |i| i >= first_unadopted,
+    );
+}
+
+fn print_processes(processes: &[DiscoveredProcess]) {
+    let rows: Vec<Vec<String>> = processes
+        .iter()
+        .map(|p| {
+            let mut command: String = p.command.chars().take(60).collect();
+            if p.command.chars().count() > 60 {
+                command.push('…');
+            }
+            vec![
+                p.pid.to_string(),
+                p.runtime.clone(),
+                p.project
+                    .as_ref()
+                    .map(ProjectRef::name)
+                    .unwrap_or_else(|| "-".to_owned()),
+                p.cwd
+                    .as_ref()
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                p.started_at
+                    .map(format::ago)
+                    .unwrap_or_else(|| "-".to_owned()),
+                command,
+            ]
+        })
+        .collect();
+    format::table(
+        &["PID", "RUNTIME", "PROJECT", "CWD", "STARTED", "COMMAND"],
         &rows,
     );
 }

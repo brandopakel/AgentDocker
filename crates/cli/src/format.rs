@@ -6,6 +6,14 @@ use serde_json::Value;
 
 /// Print rows as left-aligned columns, `docker ps` style.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) {
+    table_dimming(headers, rows, |_| false);
+}
+
+/// Like [`table`], with rows for which `dim` is true rendered faint when
+/// stdout is a terminal (and plainly otherwise, so pipes see clean text).
+pub fn table_dimming(headers: &[&str], rows: &[Vec<String>], dim: impl Fn(usize) -> bool) {
+    use std::io::IsTerminal;
+
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
@@ -22,9 +30,15 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) {
             .collect();
         line.join("   ").trim_end().to_owned()
     };
+    let tty = std::io::stdout().is_terminal();
     println!("{}", render(headers.to_vec()));
-    for row in rows {
-        println!("{}", render(row.iter().map(String::as_str).collect()));
+    for (i, row) in rows.iter().enumerate() {
+        let line = render(row.iter().map(String::as_str).collect());
+        if tty && dim(i) {
+            println!("\x1b[2m{line}\x1b[0m");
+        } else {
+            println!("{line}");
+        }
     }
 }
 

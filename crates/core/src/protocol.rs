@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AgentRecord, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId};
+use crate::{
+    AgentRecord, DiscoveredProcess, Envelope, Event, Lease, LeaseId, LeaseMode, MessageId,
+};
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 
@@ -33,6 +35,16 @@ pub enum Request {
     /// Mark an externally managed agent as finished.
     Deregister {
         agent: String,
+    },
+    /// Running agent processes (known runtimes) that nobody registered.
+    Discover,
+    /// Register a running process found by `discover`, by pid.
+    Adopt {
+        pid: u32,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        runtime: Option<String>,
     },
     /// Signal a managed agent to stop (SIGTERM, or SIGKILL when `force`).
     Stop {
@@ -176,6 +188,9 @@ pub enum Response {
     },
     Agents {
         agents: Vec<AgentRecord>,
+    },
+    Processes {
+        processes: Vec<DiscoveredProcess>,
     },
     /// `subscribers` is how many live subscriptions were notified; queued
     /// inbox delivery is not counted.

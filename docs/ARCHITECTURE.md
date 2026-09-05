@@ -112,6 +112,8 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 **Identity.** A `ProjectRef` carries `root`, `worktree`, `source`, and for repositories a `fingerprint`: the lexicographically smallest root commit of `HEAD` (`git rev-list --max-parents=0 HEAD`; smallest so merged unrelated histories are stable). The `ProjectId` is the fingerprint when there is one, else a UUIDv5 of the root path — the same repository is one project across clones and, later, across hosts, and a plain directory is still one project for everyone in it. The fingerprint walks the whole history, so the daemon runs it once per root, in a blocking task with a 3-second timeout, and caches the result in the `projects` table; a lookup that fails (no `git`, no commits, timeout) is remembered in memory only, so every agent in that repository still shares a path-derived id this run and a restart retries. `project_discovered` fires the first time a repository is fingerprinted on this host.
 
+**Discovery.** Agents that never register are still worth seeing. `discover` reads the process table once (`ps -axo pid=,ppid=,args=`, portable across macOS and Linux and complete enough to recognise `node …/@anthropic-ai/claude-code/cli.js` as well as a native `claude`), keeps the rows whose command line matches the known-runtime table in `agentdocker_host::procinfo` (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`), drops pids that live agents already claim, and reads each survivor's working directory (`proc_pidinfo` on macOS, `/proc/<pid>/cwd` on Linux) to place it in a project — without a fingerprint, because this runs on every `ps` and a process nobody adopted should neither warm the cache nor announce a repository. `ps` appends them, dimmed on a terminal and plain in a pipe, under the name `adopt` would give them (`<runtime>-<pid>`) with status `unadopted`, and says so on stderr; `--no-discover` skips it. `adopt <pid>` registers the process with the runtime from the table (overridable), the working directory from the process, the pid for liveness, and the label `adopted=true`. An adopted agent runs no hooks, so it holds no leases and reports nothing, but it is visible, messageable — its inbox fills until something drains it — and counted in its project. It is a heuristic on-ramp and is presented as one.
+
 **What it gives you.** `ps` shows a `PROJECT` column (`repo`, or `repo@wt` inside a linked worktree) and sorts by project; `ps --project .` (any path inside the project) or `--project <id prefix>` filters, as does `-l key=value`; `list {project?, labels?}` is the request behind both. `send --to project` reaches everyone else working in the same project, with inbox fallback like broadcast, and a session's `SessionStart` orientation names the agents in its project before any others. `inspect` shows the full reference. Leases on files inside a project are stored as project-relative `file:` keys (see [Leases](#leases)), so `leases --resource <root>` lists everything held in a project wherever it is checked out.
 
 ## Wire protocol
@@ -129,6 +131,8 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
 | `register {spec, pid?}` | `agent` | for processes the daemon did not start; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
+| `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
+| `adopt {pid, name?, runtime?}` | `agent` | registers such a process; `invalid` if a live agent already has the pid |
 | `stop {agent, force?}` | `agent` | SIGTERM, or SIGKILL with `force`; status updates when the process actually exits |
 | `remove {agent}` | `ok` | forget a finished agent |
 | `list {all?, project?, labels?}` | `agents` | live only unless `all`; `project` is an id prefix or an absolute path inside it; `labels` must all match |
@@ -219,9 +223,9 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 See [Projects](#projects). Compared with the original plan, derivation lives only in the daemon (clients just send a working directory), which keeps one code path and one fingerprint cache so every agent in a repository gets the same id; `ps` shows a `PROJECT` column and sorts by project rather than printing headings, so its output still pipes into `awk`. The `project:` destination and project-aware hook orientation followed in PR 2.
 
-#### Discovery and adoption
+#### Discovery and adoption *(done)*
 
-Agents that never register are still worth seeing. `agentdocker discover` enumerates processes (macOS `proc_listpids` + `proc_pidpath` + `PROC_PIDVNODEPATHINFO` for the cwd; Linux `/proc/<pid>/exe` and `/proc/<pid>/cwd`), matches the executable's basename against a table of known runtimes (`claude`, `codex`, `gemini`, `cursor-agent`, `aider`, `goose`, extensible via config), drops pids already registered, and prints them grouped by derived project. `ps` includes them as dimmed rows tagged `unadopted` unless `--no-discover`. `agentdocker adopt <pid>` registers the process (`runtime` from the table, `workdir` from its cwd, name `<runtime>-<pid>`, pid for liveness). An adopted agent runs no hooks, so it cannot claim or report reads, but it is visible, messageable (its inbox fills; nothing drains it until the human or an adapter does), and counted in its project. This is a heuristic on-ramp, documented as such.
+See [Projects](#projects). The known-runtime table is code for now; making it configurable waits for the daemon config file that admission policy (Phase 5) introduces.
 
 #### Branch and head
 
@@ -407,7 +411,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
 | 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
-| 5 | `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
+| 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | read sets, project watcher, ledger (`changes` table, `blame`, `changes`) | 3 | 3, 6 |
 | 8 | staleness notices; hook deny-once on stale edits | 3 | 7 |
@@ -429,7 +433,6 @@ Listed here so the wire-protocol table above stays a description of what exists.
 |---|---|---|
 | `claim {…}` | adds `error(deadlock)` | 5 |
 | `report {agent, vcs?, reads?, writes?}` | `ok` | 2–3 |
-| `adopt {pid}` | `agent` | 2 |
 | `release {…, summary?}`, `release_all {…, summary?}` | `lease` / `leases` | 3 |
 | `changes {project, since?, path?, agent?, limit?}` | `changes` | 3 |
 | `journal {project, since_seq?, until_seq?, agent?, branch?, kind?, path?, grep?, limit?, digest?}` | `journal` or `digest` | 3 |

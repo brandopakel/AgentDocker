@@ -78,6 +78,32 @@ pub struct AgentSpec {
     pub labels: BTreeMap<String, String>,
 }
 
+/// A running agent process nobody has registered, as `discover` reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredProcess {
+    pub pid: u32,
+    pub ppid: u32,
+    /// From the known-runtime table: `claude-code`, `codex`, ...
+    pub runtime: String,
+    /// The command line, as `ps` shows it.
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// The project containing `cwd`, without a fingerprint — the id is
+    /// assigned when the process is adopted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+impl DiscoveredProcess {
+    /// The name `adopt` gives the agent unless told otherwise.
+    pub fn default_name(&self) -> String {
+        format!("{}-{}", self.runtime, self.pid)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AgentStatus {
