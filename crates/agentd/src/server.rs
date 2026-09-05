@@ -172,7 +172,7 @@ async fn stream_events(
             () = client_closed(reader) => break,
             received = receiver.recv() => match received {
                 Ok(event) => {
-                    if last_replayed.is_some_and(|seen| event.seq <= seen) {
+                    if event.seq != 0 && last_replayed.is_some_and(|seen| event.seq <= seen) {
                         continue;
                     }
                     write(writer, &Response::Event { event }).await?;

@@ -123,6 +123,17 @@ pub fn message_line(message: &Envelope) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::WatcherGap { reason } => {
+            format!("watcher coverage gap: {reason}; verify content with stale")
+        }
+        EventKind::ReadsObserved { agent, paths } => {
+            format!("{agent} observed {} paths", paths.len())
+        }
+        EventKind::AgentStale { agent, paths } => format!(
+            "{agent} has stale context for {} paths; reread",
+            paths.len()
+        ),
+
         EventKind::InboxAcknowledged { agent, messages } => {
             format!("{agent} acknowledged {} messages", messages.len())
         }
@@ -200,6 +211,18 @@ pub fn event_line(event: &Event) -> String {
             project.root.display(),
             project.name()
         ),
+        EventKind::FileChanged { change } => {
+            let by = change
+                .by
+                .agent()
+                .map_or_else(|| "external".to_owned(), |a| a.short().to_owned());
+            format!(
+                "file {:<9} {} by {by} [{}]",
+                change.kind.to_string(),
+                change.path.display(),
+                change.project.short()
+            )
+        }
         EventKind::AgentVcsChanged { agent, vcs } => {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }

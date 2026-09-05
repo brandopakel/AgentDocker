@@ -13,6 +13,7 @@ mod daemon;
 mod server;
 mod store;
 mod supervisor;
+mod watcher;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,13 +83,16 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             reaper.check_liveness();
             ticks += 1;
             if ticks.is_multiple_of(5) {
-                reaper.refresh_vcs().await;
+                reaper.refresh_vcs(None).await;
             }
             if ticks.is_multiple_of(60) {
                 reaper.prune_events();
+                reaper.prune_changes();
             }
         }
     });
+
+    watcher::spawn(daemon.clone());
 
     let result = tokio::select! {
         served = server::serve(daemon.clone()) => served,

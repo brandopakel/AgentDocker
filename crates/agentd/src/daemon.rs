@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use agentdocker_core::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, Claimed, Destination, DiscoveredProcess,
-    Envelope, ErrorCode, Event, EventKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable,
-    MessageId, ProjectId, ProjectRef, ProjectSource, Registry, RegistryError, Request, ResourceKey,
-    Response, VcsState, topic_matches,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
+    Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, Lease, LeaseError,
+    LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId, ProjectRef, ProjectSource, Registry,
+    RegistryError, Request, ResourceKey, Response, VcsState, topic_matches,
 };
 use chrono::{DateTime, Duration, Utc};
 use nix::errno::Errno;
@@ -26,12 +26,13 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use agentdocker_host::{procinfo, project, vcs};
 
-use crate::store::Store;
+use crate::store::{ChangesQuery, Store};
 use crate::supervisor;
+mod working;
 
 /// Messages queued per agent while it has no live subscription.
 const INBOX_CAPACITY: usize = 1000;
@@ -40,6 +41,8 @@ const INBOX_CAPACITY: usize = 1000;
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Stored event history is trimmed to this many entries.
 const EVENT_HISTORY: usize = 10_000;
+/// The ledger keeps this many entries per project.
+const CHANGE_HISTORY: usize = 100_000;
 /// Longest a claim may wait for a conflicting lease to clear.
 const MAX_WAIT_SECS: u64 = 600;
 /// How long `git` may take to find a repository's root commit before the
@@ -171,6 +174,25 @@ fn physical_file(key: &ResourceKey, project: Option<&ProjectRef>) -> Option<Path
         return None;
     }
     Some(project.dir().join(relative))
+}
+
+/// A directory the watcher keeps an eye on: the main root or a linked
+/// worktree of a project some live agent works in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Checkout {
+    pub dir: PathBuf,
+    pub project: ProjectId,
+    /// `Some(dir)` when this checkout is a linked worktree.
+    pub worktree: Option<PathBuf>,
+}
+
+/// One file change the watcher saw, before attribution.
+#[derive(Clone, Debug)]
+pub struct Observed {
+    pub checkout: Checkout,
+    /// Relative to the checkout.
+    pub path: PathBuf,
+    pub kind: ChangeKind,
 }
 
 impl Daemon {
@@ -548,6 +570,9 @@ impl Daemon {
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
+            Request::Observe { agent, paths } => self.observe(&agent, paths).await,
+            Request::Stale { agent, paths } => self.stale(&agent, paths).await,
+            Request::Reads { agent } => self.reads(&agent),
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),
@@ -573,6 +598,13 @@ impl Daemon {
                 Err(response) => *response,
             },
             Request::Report { agent, vcs } => lock(&self.state).report(&agent, vcs),
+            Request::Changes {
+                project,
+                since_seq,
+                path,
+                agent,
+                limit,
+            } => self.changes(&project, since_seq, path, agent, limit).await,
             Request::Shutdown => {
                 info!("shutdown requested by a client");
                 self.shutdown.notify_one();
@@ -784,11 +816,17 @@ impl Daemon {
     /// Read every live agent's checkout and record what moved. Called on a
     /// timer, so branch and head stay right for agents that never report —
     /// adopted ones, and anything started with `run`.
-    pub async fn refresh_vcs(&self) {
+    pub async fn refresh_vcs(&self, dir: Option<&Path>) {
         let targets: Vec<(AgentId, PathBuf)> = lock(&self.state)
             .registry
             .live()
-            .filter_map(|a| a.spec.workdir.clone().map(|dir| (a.id.clone(), dir)))
+            .filter(|a| dir.is_none_or(|dir| a.project.as_ref().is_some_and(|p| p.dir() == dir)))
+            .filter_map(|a| {
+                a.spec
+                    .workdir
+                    .clone()
+                    .map(|workdir| (a.id.clone(), workdir))
+            })
             .collect();
         if targets.is_empty() {
             return;
@@ -803,6 +841,165 @@ impl Daemon {
         .unwrap_or_default();
         for (id, state) in observed {
             self.apply_vcs(&id, state);
+        }
+    }
+
+    /// The checkouts the watcher should cover: every distinct directory a
+    /// live agent works in whose project is a repository or an Agentfile
+    /// root. Plain directories are left alone — a recursive watch on a
+    /// home directory is what inotify cannot afford.
+    pub fn watch_targets(&self) -> Vec<Checkout> {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        lock(&self.state)
+            .registry
+            .live()
+            .filter_map(|a| a.project.as_ref())
+            .filter(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
+            .filter(|p| seen.insert(p.dir().to_path_buf()))
+            .map(|p| Checkout {
+                dir: p.dir().to_path_buf(),
+                project: p.id(),
+                worktree: p.worktree.clone(),
+            })
+            .collect()
+    }
+
+    /// What the watcher saw in one debounced batch: file changes become
+    /// ledger entries (persisted in `changes`, announced live as
+    /// `file_changed`), and checkouts whose HEAD moved get their agents'
+    /// branch and head re-read.
+    pub async fn record_fs_changes(&self, observed: Vec<Observed>, vcs_touched: Vec<Checkout>) {
+        let dirs: Vec<PathBuf> = {
+            let mut dirs: Vec<PathBuf> = observed.iter().map(|o| o.checkout.dir.clone()).collect();
+            dirs.sort();
+            dirs.dedup();
+            dirs
+        };
+        let heads: HashMap<PathBuf, Option<String>> = tokio::task::spawn_blocking(move || {
+            dirs.into_iter()
+                .map(|dir| {
+                    let head = vcs::state(&dir).and_then(|s| s.head);
+                    (dir, head)
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+        let observed = tokio::task::spawn_blocking(move || {
+            observed
+                .into_iter()
+                .map(|entry| {
+                    let physical =
+                        project::try_canonical(&entry.checkout.dir.join(&entry.path)).ok();
+                    (entry, physical)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let now = Utc::now();
+        for (
+            Observed {
+                checkout,
+                path,
+                kind,
+            },
+            physical,
+        ) in observed
+        {
+            let mut state = lock(&self.state);
+            let by = physical
+                .as_deref()
+                .map_or(Attribution::External, |path| state.attribute(path));
+            let mut change = Change {
+                seq: 0,
+                project: checkout.project.clone(),
+                checkout: Some(checkout.dir.clone()),
+                worktree: checkout.worktree.clone(),
+                path,
+                kind,
+                at: now,
+                by,
+                head: heads.get(&checkout.dir).cloned().flatten(),
+            };
+            let Some(seq) = state.store_op("change", |store| store.append_change(&change)) else {
+                continue;
+            };
+            change.seq = seq;
+            state.warn_readers(&change, physical.as_deref());
+            debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
+            let _ = state
+                .events
+                .send(Event::new(EventKind::FileChanged { change }, now));
+        }
+        for checkout in vcs_touched {
+            self.refresh_vcs(Some(&checkout.dir)).await;
+        }
+    }
+
+    async fn changes(
+        &self,
+        project: &str,
+        since_seq: Option<u64>,
+        path: Option<String>,
+        agent: Option<String>,
+        limit: usize,
+    ) -> Response {
+        let project = match self.resolve_project(project).await {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let agent = match agent.map(|reference| self.resolve(&reference)).transpose() {
+            Ok(agent) => agent,
+            Err(response) => return *response,
+        };
+        // An absolute path is made relative to the checkout containing it.
+        let path = match path {
+            Some(raw) if Path::new(&raw).is_absolute() => {
+                let given = PathBuf::from(&raw);
+                let (absolute, discovery_dir) = tokio::task::spawn_blocking(move || {
+                    let absolute = project::canonical(&given);
+                    let discovery_dir = if absolute.is_dir() {
+                        Some(absolute.clone())
+                    } else {
+                        absolute.parent().map(Path::to_path_buf)
+                    };
+                    (absolute, discovery_dir)
+                })
+                .await
+                .unwrap_or_else(|_| (PathBuf::from(&raw), None));
+                match self.project_for(discovery_dir, false).await {
+                    Some(found) => match absolute.strip_prefix(found.dir()) {
+                        Ok(relative) => Some(relative.to_string_lossy().into_owned()),
+                        Err(_) => Some(raw),
+                    },
+                    None => Some(raw),
+                }
+            }
+            other => other,
+        };
+        let query = ChangesQuery {
+            project,
+            since_seq,
+            path,
+            agent,
+            limit: limit.clamp(1, 10_000),
+        };
+        match lock(&self.state).store.changes(&query) {
+            Ok(changes) => Response::Changes { changes },
+            Err(err) => Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("ledger query failed: {err}"),
+            ),
+        }
+    }
+
+    /// Trim the ledger. Called occasionally from the reaper.
+    pub fn prune_changes(&self) {
+        match lock(&self.state).store.prune_changes(CHANGE_HISTORY) {
+            Ok(0) => {}
+            Ok(removed) => info!(removed, "pruned the ledger"),
+            Err(err) => error!(%err, "failed to prune the ledger"),
         }
     }
 
@@ -1151,6 +1348,46 @@ impl Daemon {
 }
 
 impl State {
+    /// Execute a store operation as part of the current ordered transition.
+    fn store_op<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Option<T> {
+        if self.storage_error.is_some() {
+            return None;
+        }
+        match op(&self.store) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                error!(%what, %err, "store operation failed");
+                self.storage_error = Some(format!("{what}: {err}"));
+                None
+            }
+        }
+    }
+    fn attribute(&self, path: &Path) -> Attribution {
+        let key = ResourceKey::new(format!("path:{}", path.display()));
+        let leases = &self.leases;
+        let mut overlapping: Vec<&Lease> = leases
+            .all()
+            .into_iter()
+            .filter(|l| {
+                l.mode == LeaseMode::Exclusive
+                    && !l.is_expired(Utc::now())
+                    && l.resource.overlaps(&key)
+            })
+            .collect();
+        overlapping.sort_by_key(|l| (l.mode != LeaseMode::Exclusive, l.acquired_at));
+        match overlapping.first() {
+            Some(lease) => Attribution::Agent {
+                agent: lease.holder.clone(),
+                lease: lease.id.clone(),
+                note: lease.note.clone(),
+            },
+            None => Attribution::External,
+        }
+    }
     fn storage_failure(&self) -> Option<Response> {
         self.storage_error.as_ref().map(|error| {
             Response::error(
@@ -2573,9 +2810,9 @@ mod tests {
 
         // The timer notices a branch switch made outside AgentDocker.
         assert!(git(dir.path(), &repo, &["checkout", "-q", "-b", "feature"]));
-        daemon.refresh_vcs().await;
+        daemon.refresh_vcs(None).await;
         assert_eq!(drain_vcs(&mut events), vec![Some("feature".to_owned())]);
-        daemon.refresh_vcs().await;
+        daemon.refresh_vcs(None).await;
         assert!(drain_vcs(&mut events).is_empty(), "no change, no event");
 
         // A hook can report ahead of the timer; the same state is silent,
@@ -3022,5 +3259,232 @@ mod tests {
                 .collect::<Vec<_>>(),
             received
         );
+    }
+
+    async fn ledger(daemon: &Arc<Daemon>, project: &Path, path: Option<&str>) -> Vec<Change> {
+        match daemon
+            .handle(Request::Changes {
+                project: project.to_string_lossy().into_owned(),
+                since_seq: None,
+                path: path.map(str::to_owned),
+                agent: None,
+                limit: 50,
+            })
+            .await
+        {
+            Response::Changes { changes } => changes,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn watcher_attribution_uses_physical_aliases_and_root_queries_include_all_paths() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("Agentfile.toml"), "").unwrap();
+        let target = repo.join("src/lib.rs");
+        std::fs::write(&target, "before").unwrap();
+        std::os::unix::fs::symlink("src/lib.rs", repo.join("alias.rs")).unwrap();
+        std::os::unix::fs::symlink("src", repo.join("alias-dir")).unwrap();
+        let daemon = open(&dir);
+        let agent = register_in(&daemon, "writer", &repo).await;
+        register_in(&daemon, "reader", &repo).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Observe {
+                    agent: "reader".into(),
+                    paths: vec!["src/lib.rs".into()],
+                })
+                .await,
+            Response::Reads { .. }
+        ));
+        let Response::Lease { lease } = claim(
+            &daemon,
+            "writer",
+            &format!("path:{}", repo.join("alias.rs").display()),
+        )
+        .await
+        else {
+            panic!("claim failed");
+        };
+        let checkout = daemon.watch_targets().pop().unwrap();
+        std::fs::write(&target, "after").unwrap();
+        daemon
+            .record_fs_changes(
+                ["alias.rs", "alias-dir/lib.rs", "notes.md"]
+                    .into_iter()
+                    .map(|path| Observed {
+                        checkout: checkout.clone(),
+                        path: path.into(),
+                        kind: ChangeKind::Modified,
+                    })
+                    .collect(),
+                vec![],
+            )
+            .await;
+        let attributed = Attribution::Agent {
+            agent: agent.id,
+            lease: lease.id,
+            note: None,
+        };
+        let entries = ledger(&daemon, &repo, None).await;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].by, attributed);
+        assert_eq!(entries[1].by, attributed);
+        assert_eq!(entries[2].by, Attribution::External);
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "reader".into(),
+                drain: true,
+            })
+            .await
+        else {
+            panic!("inbox failed");
+        };
+        assert_eq!(messages.len(), 2, "both alias changes warn the reader");
+        for message in messages {
+            assert_eq!(message.kind, "stale");
+            assert_eq!(
+                message.payload["paths"],
+                json!([project::canonical(&target)])
+            );
+        }
+        let root = repo.to_string_lossy();
+        for filter in ["", ".", "./", root.as_ref()] {
+            assert_eq!(ledger(&daemon, &repo, Some(filter)).await, entries);
+        }
+        assert_eq!(ledger(&daemon, &repo, Some("alias-dir")).await.len(), 1);
+
+        // A deleted regular file still has its normalized physical key. A
+        // removed symlink no longer supplies evidence of its former target.
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_file(repo.join("alias.rs")).unwrap();
+        daemon
+            .record_fs_changes(
+                ["alias-dir/lib.rs", "alias.rs"]
+                    .into_iter()
+                    .map(|path| Observed {
+                        checkout: checkout.clone(),
+                        path: path.into(),
+                        kind: ChangeKind::Removed,
+                    })
+                    .collect(),
+                vec![],
+            )
+            .await;
+        let entries = ledger(&daemon, &repo, None).await;
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[3].by, attributed);
+        assert_eq!(entries[4].by, Attribution::External);
+    }
+
+    /// Poll until `check` passes or five seconds elapse.
+    async fn eventually<T>(mut check: impl AsyncFnMut() -> Option<T>) -> T {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(value) = check().await {
+                return value;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "timed out");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn watcher_records_attributed_changes_and_refreshes_branches() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        let daemon = open(&dir);
+        let a = register_in(&daemon, "a", &repo).await;
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(50),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        // `a` holds src/lib.rs; nobody holds notes.md; target/ is ignored.
+        let lib = repo.join("src/lib.rs");
+        let Response::Lease { lease } =
+            claim(&daemon, "a", &format!("path:{}", lib.display())).await
+        else {
+            panic!("claim failed");
+        };
+        std::fs::write(&lib, "fn a() {}\n").unwrap();
+        std::fs::write(repo.join("notes.md"), "hi\n").unwrap();
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join("target/out.bin"), "x").unwrap();
+
+        let (mine, theirs) = eventually(async || {
+            let entries = ledger(&daemon, &repo, None).await;
+            let mine = entries
+                .iter()
+                .find(|c| c.path == Path::new("src/lib.rs"))?
+                .clone();
+            let theirs = entries
+                .iter()
+                .find(|c| c.path == Path::new("notes.md"))?
+                .clone();
+            Some((mine, theirs))
+        })
+        .await;
+        assert_eq!(
+            mine.by,
+            Attribution::Agent {
+                agent: a.id.clone(),
+                lease: lease.id.clone(),
+                note: None,
+            }
+        );
+        assert!(mine.seq > 0);
+        assert!(mine.head.is_some(), "head recorded");
+        assert_eq!(theirs.by, Attribution::External);
+        // Queries narrow by path (absolute, made relative by the daemon).
+        let by_path = ledger(&daemon, &repo, Some(&lib.to_string_lossy())).await;
+        assert!(!by_path.is_empty() && by_path.iter().all(|c| c.path == Path::new("src/lib.rs")));
+        std::fs::write(repo.join("watcher-marker"), "processed").unwrap();
+        eventually(async || {
+            ledger(&daemon, &repo, None)
+                .await
+                .iter()
+                .any(|c| c.path == Path::new("watcher-marker"))
+                .then_some(())
+        })
+        .await;
+        assert!(
+            ledger(&daemon, &repo, None)
+                .await
+                .iter()
+                .all(|c| !c.path.starts_with("target")),
+            "ignored paths never reach the ledger"
+        );
+
+        // A branch switch reaches the record through the watcher, not a poll.
+        assert!(git(dir.path(), &repo, &["checkout", "-q", "-b", "feature"]));
+        eventually(async || {
+            match daemon
+                .handle(Request::Inspect {
+                    agent: "a".to_owned(),
+                })
+                .await
+            {
+                Response::Agent { agent }
+                    if agent.vcs.as_ref().and_then(|v| v.branch.as_deref()) == Some("feature") =>
+                {
+                    Some(())
+                }
+                _ => None,
+            }
+        })
+        .await;
     }
 }
