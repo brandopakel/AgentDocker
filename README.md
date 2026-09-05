@@ -229,3 +229,5 @@ agentdocker resume --as replacement <checkpoint-id> --acknowledge
 ```
 
 Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. It never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+
+Development verification uses `bash scripts/verify.sh check`. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md) for nextest, coverage, Criterion/Bencher, native socket load tests and bounded fuzzing.

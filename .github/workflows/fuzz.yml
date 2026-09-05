@@ -1,0 +1,33 @@
+name: Scheduled fuzzing
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: fuzz
+          workspaces: fuzz
+      - run: cargo install --locked cargo-fuzz --version 0.13.2
+      - run: bash scripts/verify.sh fuzz
+        env:
+          FUZZ_SECONDS: '120'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: fuzz-inputs
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
