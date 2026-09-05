@@ -38,6 +38,7 @@ use agentdocker_host::{procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod images;
 mod recovery;
 mod working;
 mod worktrees;
@@ -616,6 +617,8 @@ impl Daemon {
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
         match request {
+            Request::BuildImage { spec } => self.build_image(spec).await,
+            Request::Images => self.images(),
             Request::Observe { agent, paths } => self.observe(&agent, paths).await,
             Request::Stale { agent, paths } => self.stale(&agent, paths).await,
             Request::Reads { agent } => self.reads(&agent),

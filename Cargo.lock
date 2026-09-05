@@ -65,8 +65,10 @@ dependencies = [
  "criterion",
  "ignore",
  "libc",
+ "serde_json",
  "sha2",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

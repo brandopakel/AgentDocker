@@ -24,6 +24,9 @@ impl Drop for ChildGroup {
 
 pub struct Output {
     pub success: bool,
+    /// Standard output only, for structured engine responses.
+    pub stdout: String,
+    /// Standard output followed by standard error, for diagnostics.
     pub text: String,
 }
 
@@ -33,13 +36,14 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         .first()
         .ok_or_else(|| io::Error::other("empty command"))?;
     let mut log = tempfile::tempfile()?;
+    let mut errors = tempfile::tempfile()?;
     let mut command = Command::new(program);
     command
         .args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
-        .stderr(log.try_clone()?)
+        .stderr(errors.try_clone()?)
         .process_group(0);
     let mut child = ChildGroup {
         child: command.spawn()?,
@@ -51,7 +55,13 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
             child.reaped = true;
             break status;
         }
-        if started.elapsed() >= timeout || log.metadata()?.len() > 4 * 1024 * 1024 {
+        if started.elapsed() >= timeout
+            || log
+                .metadata()?
+                .len()
+                .saturating_add(errors.metadata()?.len())
+                > 4 * 1024 * 1024
+        {
             return Err(io::Error::other("command exceeded time or output limit"));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -63,8 +73,16 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
     if bytes.len() > 4 * 1024 * 1024 {
         return Err(io::Error::other("command output exceeded 4 MiB"));
     }
+    errors.seek(SeekFrom::Start(0))?;
+    let mut stderr = Vec::new();
+    errors.take(4 * 1024 * 1024 + 1).read_to_end(&mut stderr)?;
+    if bytes.len().saturating_add(stderr.len()) > 4 * 1024 * 1024 {
+        return Err(io::Error::other("command output exceeded 4 MiB"));
+    }
+    let stdout = String::from_utf8_lossy(&bytes).into_owned();
     Ok(Output {
         success: status.success(),
-        text: String::from_utf8_lossy(&bytes).into_owned(),
+        text: format!("{stdout}{}", String::from_utf8_lossy(&stderr)),
+        stdout,
     })
 }

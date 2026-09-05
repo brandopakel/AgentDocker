@@ -37,6 +37,10 @@ pub struct DigestRequest {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    BuildImage {
+        spec: crate::ImageBuildSpec,
+    },
+    Images,
     WorktreeCreate {
         agent: String,
         path: String,
@@ -347,6 +351,8 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    EngineUnavailable,
+    BuildFailed,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -356,6 +362,12 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    ImageBuild {
+        build: crate::ImageBuild,
+    },
+    ImageBuilds {
+        builds: Vec<crate::ImageBuild>,
+    },
     Worktree {
         path: std::path::PathBuf,
         branch: String,
