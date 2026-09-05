@@ -151,7 +151,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `release {agent, lease}` | `lease` | holder only |
 | `release_all {agent}` | `leases` | every lease the agent holds; the reply lists them |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; a `path:` filter also matches its `file:` form |
-| `events {replay?}` | stream of `event` | replays the last `replay` stored events, then live until the client disconnects |
+| `events {replay?}` | stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
 | `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
@@ -371,7 +371,7 @@ Settled on 2026-09-04. **The daemon is never sandboxed; the sandbox is a propert
 
 Two consequences were pulled forward because sandboxes depend on them:
 
-- **Project-relative resources** (done; [Leases](#leases)). Inside a container the same file has a different absolute path, so leases — and, in Phase 3, read sets and the ledger — name files by project id and relative path. The daemon translates; sandboxed clients still send whatever path they see.
+- **Physical resources** (done; [Leases](#leases)). Lease keys are canonical physical absolute host paths. Logical project IDs and relative paths help clients describe overlap and translate paths, but are not lease identities. Container paths require an authenticated mapping to a specific host checkout before claims and overlap filters use those same physical keys.
 - **Per-agent tokens.** The socket is the one deliberate hole in a sandbox, so a sandboxed agent must not be able to impersonate another sender or stop other agents. `run` and `register` mint a token, returned in the response and passed to managed agents as `AGENTDOCKER_TOKEN`; a request carrying `token` is bound to that agent id (its `agent`/`from` must match) and may only act on itself. Sandboxed runtimes always get one and the daemon requires it from them; local shells and hooks use a host-only endpoint. Containers receive only an authenticated endpoint or identity-bound proxy; omitting a token never falls back to host authority. Registered mount mappings translate container paths into the bound physical checkout before authorization and resource lookup. Tokens are stored hashed beside the record and revoked when the agent exits. This is the identity admission policy (Phase 5) binds rules to, and it closes the `from` open question for the case that matters.
 
 #### Handoff bundles
@@ -413,7 +413,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 |---|---|---|---|
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
-| 3 | ✅ project-relative `file:` lease keys, translated by the daemon | 2 | 1 |
+| 3 | ✅ physical `path:` lease keys with validated `file:` input aliases | 2 | 1 |
 | 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
