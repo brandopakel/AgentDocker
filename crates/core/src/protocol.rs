@@ -223,6 +223,10 @@ pub enum Response {
     Log {
         line: String,
     },
+    /// A live stream skipped messages; events can be recovered with replay.
+    Lagged {
+        skipped: u64,
+    },
     Ok,
     /// Terminates a stream that finished on the daemon's side.
     End,

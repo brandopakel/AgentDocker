@@ -21,6 +21,11 @@ pub enum EventKind {
         agent: AgentId,
         pid: Option<u32>,
     },
+    /// Stop requested; the process still owns its leases until observed exit.
+    AgentStopping {
+        agent: AgentId,
+        force: bool,
+    },
     AgentExited {
         agent: AgentId,
         status: AgentStatus,

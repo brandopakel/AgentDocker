@@ -80,7 +80,15 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
                 tail,
             } => return stream_logs(&daemon, &agent, follow, tail, &mut reader, &mut writer).await,
             unary => {
-                let response = daemon.handle(unary).await;
+                let response = if matches!(&unary, Request::Claim { .. }) {
+                    tokio::select! {
+                        biased;
+                        () = claim_eof(&mut reader) => return Ok(()),
+                        response = daemon.handle(unary) => response,
+                    }
+                } else {
+                    daemon.handle(unary).await
+                };
                 write(&mut writer, &response).await?;
             }
         }
@@ -92,6 +100,15 @@ async fn write(writer: &mut OwnedWriteHalf, response: &Response) -> io::Result<(
     let mut line = serde_json::to_string(response).map_err(io::Error::other)?;
     line.push('\n');
     writer.write_all(line.as_bytes()).await
+}
+
+/// Observe EOF without consuming a pipelined next request. When input is already
+/// buffered, preserve it for the normal request loop after this claim completes.
+async fn claim_eof(reader: &mut Reader) {
+    match reader.get_mut().fill_buf().await {
+        Ok([]) | Err(_) => {}
+        Ok(_) => std::future::pending::<()>().await,
+    }
 }
 
 /// Resolves when the client closes its side (or sends garbage).
@@ -129,6 +146,7 @@ async fn stream_messages(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "subscriber fell behind the message bus");
+                    write(writer, &Response::Lagged { skipped }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -163,6 +181,7 @@ async fn stream_events(
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     warn!(skipped, "event subscriber fell behind");
+                    write(writer, &Response::Lagged { skipped }).await?;
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -250,4 +269,59 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
     }
     let read = bytes.len() as u64;
     (read, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn disconnected_waiter_never_acquires_after_release() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+        for name in ["holder", "waiter"] {
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                })
+                .await;
+        }
+        daemon
+            .handle(Request::Claim {
+                agent: "holder".into(),
+                resource: "task:wait".into(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        let mut events = daemon.subscribe_events();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let running = tokio::spawn(handle(daemon.clone(), server));
+        client.write_all(b"{\"op\":\"claim\",\"agent\":\"waiter\",\"resource\":\"task:wait\",\"wait_secs\":5}\n").await.unwrap();
+        while !matches!(
+            events.recv().await.unwrap().kind,
+            EventKind::LeaseConflict { .. }
+        ) {}
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        daemon
+            .handle(Request::ReleaseAll {
+                agent: "holder".into(),
+            })
+            .await;
+        assert!(
+            matches!(daemon.handle(Request::Leases{agent:Some("waiter".into()),resource:None}).await,Response::Leases{leases} if leases.is_empty())
+        );
+    }
 }

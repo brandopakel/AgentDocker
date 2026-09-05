@@ -139,6 +139,9 @@ impl Client {
             }
             match into_result(serde_json::from_str(&line)?)? {
                 Response::End => return Ok(()),
+                Response::Lagged { skipped } => eprintln!(
+                    "agentdocker: stream skipped {skipped} items; use events --replay to recover event history"
+                ),
                 response => {
                     if !on_response(response)? {
                         return Ok(());

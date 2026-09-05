@@ -7,7 +7,11 @@
 //! loose ref file is missing. Dirtiness is not computed here — it needs
 //! the index and a walk — and stays `None` until something cheap exists.
 
+#[cfg(test)]
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::VcsState;
@@ -17,12 +21,16 @@ use crate::project::resolve;
 
 /// The checkout containing `dir`, or `None` outside any repository.
 pub fn state(dir: &Path) -> Option<VcsState> {
+    let observed_at = Utc::now();
     let (gitdir, common) = git_dirs(dir)?;
-    let head = fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let head = read_metadata(&gitdir.join("HEAD"), 4096)?;
     let head = head.trim();
     let (branch, sha) = match head.strip_prefix("ref:") {
         Some(refname) => {
             let refname = refname.trim();
+            if !valid_ref(refname) {
+                return None;
+            }
             let branch = refname
                 .strip_prefix("refs/heads/")
                 .unwrap_or(refname)
@@ -30,13 +38,14 @@ pub fn state(dir: &Path) -> Option<VcsState> {
             (Some(branch), resolve_ref(&common, refname))
         }
         None if head.is_empty() => return None,
-        None => (None, Some(head.to_owned())),
+        None if valid_oid(head) => (None, Some(head.to_owned())),
+        None => return None,
     };
     Some(VcsState {
         branch,
         head: sha,
         dirty: None,
-        updated_at: Utc::now(),
+        updated_at: observed_at,
     })
 }
 
@@ -50,11 +59,11 @@ fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
             return Some((dot_git.clone(), dot_git));
         }
         if dot_git.is_file() {
-            let text = fs::read_to_string(&dot_git).ok()?;
+            let text = read_metadata(&dot_git, 4096)?;
             let gitdir = resolve(ancestor, text.trim().strip_prefix("gitdir:")?.trim());
-            let common = match fs::read_to_string(gitdir.join("commondir")) {
-                Ok(common) => resolve(&gitdir, common.trim()),
-                Err(_) => gitdir.clone(),
+            let common = match read_metadata(&gitdir.join("commondir"), 4096) {
+                Some(common) => resolve(&gitdir, common.trim()),
+                None => gitdir.clone(),
             };
             return Some((gitdir, common));
         }
@@ -62,20 +71,59 @@ fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+/// Read only bounded regular files. O_NONBLOCK also prevents FIFO open from hanging.
+pub(crate) fn read_metadata(path: &Path, limit: u64) -> Option<String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(limit + 1).read_to_string(&mut text).ok()?;
+    (text.len() as u64 <= limit).then_some(text)
+}
+
+/// Ref names must stay below refs/, without traversal or terminal control characters.
+fn valid_ref(name: &str) -> bool {
+    name.starts_with("refs/")
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && !name.chars().any(|c| c.is_control() || c == '\\')
+}
+
+/// Git repositories currently use SHA-1 or SHA-256 object identifiers.
+fn valid_oid(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn resolve_ref(common: &Path, refname: &str) -> Option<String> {
-    if let Ok(loose) = fs::read_to_string(common.join(refname)) {
-        let sha = loose.trim();
-        if !sha.is_empty() && !sha.starts_with("ref:") {
-            return Some(sha.to_owned());
+    if !valid_ref(refname) {
+        return None;
+    }
+    let root = common.canonicalize().ok()?;
+    if let Ok(path) = root.join(refname).canonicalize() {
+        if !path.starts_with(&root) {
+            return None;
+        }
+        if let Some(loose) = read_metadata(&path, 4096) {
+            let sha = loose.trim();
+            if valid_oid(sha) {
+                return Some(sha.to_owned());
+            }
         }
     }
-    let packed = fs::read_to_string(common.join("packed-refs")).ok()?;
+    let packed = read_metadata(&root.join("packed-refs"), 4 * 1024 * 1024)?;
     packed
         .lines()
         .filter(|line| !line.starts_with('#') && !line.starts_with('^'))
         .find_map(|line| {
             let (sha, name) = line.split_once(' ')?;
-            (name.trim() == refname).then(|| sha.to_owned())
+            (name.trim() == refname && valid_oid(sha)).then(|| sha.to_owned())
         })
 }
 
@@ -206,5 +254,34 @@ mod tests {
         assert_eq!(vcs.head, None);
         assert_eq!(vcs.describe(), "main (unborn)");
         assert_eq!(state(tmp.path()), None);
+    }
+
+    #[test]
+    fn unsafe_or_unbounded_metadata_is_not_read() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".git");
+        fs::create_dir(&dot).unwrap();
+        for name in ["/etc/passwd", "refs/../../secret", "refs/heads/x\nINJECT"] {
+            fs::write(dot.join("HEAD"), format!("ref: {name}")).unwrap();
+            assert_eq!(state(tmp.path()), None);
+        }
+        fs::write(dot.join("HEAD"), "x".repeat(8192)).unwrap();
+        assert_eq!(state(tmp.path()), None);
+        fs::remove_file(dot.join("HEAD")).unwrap();
+        let name = std::ffi::CString::new(dot.join("HEAD").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert_eq!(state(tmp.path()), None);
+    }
+
+    #[test]
+    fn loose_refs_cannot_escape_through_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let dot = tmp.path().join(".git");
+        fs::create_dir_all(dot.join("refs/heads")).unwrap();
+        fs::write(dot.join("HEAD"), "ref: refs/heads/main").unwrap();
+        let secret = tmp.path().join("secret");
+        fs::write(&secret, "a".repeat(40)).unwrap();
+        std::os::unix::fs::symlink(secret, dot.join("refs/heads/main")).unwrap();
+        assert_eq!(state(tmp.path()).unwrap().head, None);
     }
 }

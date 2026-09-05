@@ -138,6 +138,9 @@ pub fn event_line(event: &Event) -> String {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
             format!("agent started    {}{pid}", agent.short())
         }
+        EventKind::AgentStopping { agent, force } => {
+            format!("agent stopping   {} force={force}", agent.short())
+        }
         EventKind::AgentExited { agent, status } => {
             format!("agent exited     {} {status}", agent.short())
         }
@@ -199,5 +202,40 @@ pub fn event_line(event: &Event) -> String {
         }
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
     };
-    format!("{}  {body}", clock(event.at))
+    format!("{}  {}", clock(event.at), single_line(&body))
+}
+
+/// Escape control characters so untrusted metadata cannot create terminal commands or extra rows.
+fn single_line(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn control_characters_cannot_inject_event_rows() {
+        let event = agentdocker_core::Event::new(
+            agentdocker_core::EventKind::AgentVcsChanged {
+                agent: "test".into(),
+                vcs: agentdocker_core::VcsState {
+                    branch: Some("x\n\u{1b}[2J".into()),
+                    head: None,
+                    dirty: None,
+                    updated_at: chrono::Utc::now(),
+                },
+            },
+            chrono::Utc::now(),
+        );
+        let text = super::event_line(&event);
+        assert!(!text.chars().any(char::is_control));
+        assert!(text.contains("\\n"));
+    }
 }

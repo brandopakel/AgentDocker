@@ -107,7 +107,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     return Ok(());
                 }
             };
-            let output = match claude_code(&client, &input, &opts).await {
+            let output = match bounded_claude_code(&client, &input, &opts).await {
                 Ok(output) => output,
                 Err(err) => {
                     eprintln!("agentdocker hook ({}): {err:#}", input.hook_event_name);
@@ -120,6 +120,20 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Bound the entire hook, including reads from a listening but unresponsive daemon.
+async fn bounded_claude_code<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    opts: &ClaudeCodeArgs,
+) -> Result<Option<Value>> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        claude_code(backend, input, opts),
+    )
+    .await
+    .context("coordination exceeded the one-second hook budget")?
 }
 
 fn read_event() -> Result<HookInput> {
@@ -1057,5 +1071,26 @@ mod tests {
                 .unwrap();
         assert_eq!(again, 0);
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unresponsive_backend_cannot_exceed_hook_budget() {
+        struct Never;
+        impl Backend for Never {
+            async fn call(&self, _: Request) -> Result<Response> {
+                std::future::pending().await
+            }
+        }
+        let input = HookInput {
+            hook_event_name: "SessionStart".into(),
+            session_id: "timeout".into(),
+            ..HookInput::default()
+        };
+        let opts = ClaudeCodeArgs {
+            ttl: 600,
+            no_wake: false,
+        };
+        let result = bounded_claude_code(&Never, &input, &opts).await;
+        assert!(result.unwrap_err().to_string().contains("hook budget"));
     }
 }

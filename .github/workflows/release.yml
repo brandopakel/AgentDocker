@@ -42,3 +42,19 @@ jobs:
           tar: unix
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  formula:
+    name: Generate verified Homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download checksums and publish generated formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern '*.sha256' --dir checksums
+          python3 packaging/homebrew/generate.py "$RELEASE_TAG" checksums agentdocker.rb
+          ruby -c agentdocker.rb
+          gh release upload "$RELEASE_TAG" agentdocker.rb --clobber

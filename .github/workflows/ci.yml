@@ -29,5 +29,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Installer and formula regression tests
+        run: python3 -m unittest discover -s tests
+      - name: Package workspace
+        run: cargo package --workspace --no-verify --allow-dirty
       - name: Build release binaries
         run: cargo build --workspace --release

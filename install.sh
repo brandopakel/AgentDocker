@@ -34,9 +34,27 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "downloading $url"
 curl -fsSL "$url" -o "$tmp/$archive"
-curl -fsSL "$url.sha256" -o "$tmp/$archive.sha256" 2>/dev/null && (
-    cd "$tmp" && { sha256sum -c "$archive.sha256" >/dev/null 2>&1 || shasum -a 256 -c "$archive.sha256" >/dev/null; }
-) || echo "install.sh: no checksum to verify" >&2
+curl -fsSL "$url.sha256" -o "$tmp/$archive.sha256" || {
+    echo "install.sh: checksum download failed; nothing installed" >&2
+    exit 1
+}
+# Accept only one checksum for the archive being installed. Never let a checksum
+# file name arbitrary local paths or silently turn a mismatch into success.
+expected="$(awk 'NR == 1 { print $1 }' "$tmp/$archive.sha256")"
+case "$expected" in
+    *[!0-9a-fA-F]* | "") echo "install.sh: invalid checksum" >&2; exit 1 ;;
+esac
+[ "${#expected}" -eq 64 ] || { echo "install.sh: invalid checksum length" >&2; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$tmp/$archive" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')"
+else
+    echo "install.sh: sha256sum or shasum is required; nothing installed" >&2
+    exit 1
+fi
+expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
+[ "$actual" = "$expected" ] || { echo "install.sh: checksum mismatch; nothing installed" >&2; exit 1; }
 tar -xzf "$tmp/$archive" -C "$tmp"
 
 mkdir -p "$dir"
