@@ -313,6 +313,11 @@ pub async fn claude_code<B: Backend>(
             }
             let inbox = drain_inbox(backend, &me).await?;
             report_vcs(backend, &me, input).await;
+            let agents = if inbox.is_empty() {
+                Vec::new()
+            } else {
+                all_agents(backend).await?
+            };
             // Only a prompt carries journal text; a tool result never does.
             let digest = if input.hook_event_name == "UserPromptSubmit" {
                 journal_digest(
@@ -330,7 +335,6 @@ pub async fn claude_code<B: Backend>(
             }
             let mut text = String::new();
             if !inbox.is_empty() {
-                let agents = all_agents(backend).await?;
                 text = format!(
                     "AgentDocker: {} new message(s) from other agents:\n{}",
                     inbox.len(),
@@ -713,12 +717,21 @@ fn journal_text(digest: &str) -> String {
 /// cut fell in. Cost does not grow with the transcript.
 fn transcript_tail(path: &Path) -> Option<String> {
     use std::io::{Seek, SeekFrom};
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let len = metadata.len();
     let start = len.saturating_sub(TRANSCRIPT_TAIL);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
+    file.take(TRANSCRIPT_TAIL).read_to_end(&mut bytes).ok()?;
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if start > 0 {
         let cut = text.find('\n')?;
@@ -1132,10 +1145,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "hi")],
             },
+            Response::Agents { agents: vec![] },
             digest_reply(
                 "Since you last looked (1 entry):\n- 1m ago   codex-1 [main] noted: \"x\"\n",
             ),
-            Response::Agents { agents: vec![] },
         ]);
         let out = claude_code(&backend, &input("UserPromptSubmit"), &opts())
             .await
@@ -1764,5 +1777,53 @@ mod tests {
         };
         let result = bounded_claude_code(&Never, &input, &opts).await;
         assert!(result.unwrap_err().to_string().contains("hook budget"));
+    }
+    #[test]
+    fn transcript_tail_is_bounded_and_refuses_symlinks_and_special_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript");
+        std::fs::write(&path, "line\n".repeat(TRANSCRIPT_TAIL as usize)).unwrap();
+        assert!(transcript_tail(&path).unwrap().len() <= TRANSCRIPT_TAIL as usize);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(transcript_tail(&link), None);
+        let pipe = dir.path().join("pipe");
+        let raw = std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated test path.
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+        assert_eq!(transcript_tail(&pipe), None);
+        assert_eq!(transcript_tail(dir.path()), None);
+    }
+
+    #[tokio::test]
+    async fn prompt_name_lookup_failure_precedes_cursor_advancement() {
+        struct FailingNames(Mock);
+        impl Backend for FailingNames {
+            async fn call(&self, request: Request) -> Result<Response> {
+                if matches!(request, Request::List { .. }) {
+                    anyhow::bail!("names unavailable");
+                }
+                self.0.call(request).await
+            }
+        }
+        let me = agent("claude-01234567", true);
+        let backend = FailingNames(Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::Messages {
+                messages: vec![message("someone", "hello")],
+            },
+        ]));
+        assert!(
+            claude_code(&backend, &input("UserPromptSubmit"), &opts())
+                .await
+                .is_err()
+        );
+        assert!(
+            !backend
+                .0
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::Journal { .. }))
+        );
     }
 }
