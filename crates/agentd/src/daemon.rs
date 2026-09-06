@@ -103,6 +103,10 @@ pub struct Daemon {
     /// `discover` and `runtimes` answer at once and a scan on the tick can
     /// announce what appeared and what went.
     discovered: Mutex<Discovered>,
+    /// One scan at a time: the tick and an on-demand `discover` must not
+    /// interleave their reads and writes of the set above, or a process
+    /// could be announced twice or never.
+    scanning: tokio::sync::Mutex<()>,
     container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
     container_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -671,6 +675,7 @@ impl Daemon {
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
             discovered: Mutex::new(Discovered::default()),
+            scanning: tokio::sync::Mutex::new(()),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
         })
@@ -1177,6 +1182,7 @@ impl Daemon {
     /// scan and every one that went — exited, or adopted meanwhile. Runs
     /// on the daemon's tick, so nobody has to ask.
     pub async fn scan_agents(&self) -> Vec<DiscoveredProcess> {
+        let _one_at_a_time = self.scanning.lock().await;
         let found = self.scan().await;
         let registered: HashSet<u32> = lock(&self.state)
             .registry
