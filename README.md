@@ -38,6 +38,16 @@ Pin the source: the default branch moves, and `--locked` pins dependencies, not 
 
 The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running and where.
 
+Then wire in the agents you already have:
+
+```sh
+agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
+agentdocker setup             # register the MCP server with each, install the Claude Code hooks (--dry-run shows what would change)
+agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
+```
+
+The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
+
 ## Quick start
 
 ```sh

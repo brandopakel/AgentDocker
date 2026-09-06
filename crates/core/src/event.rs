@@ -111,6 +111,23 @@ pub enum EventKind {
         agent: crate::AgentId,
         messages: Vec<crate::MessageId>,
     },
+    /// A process of a known agent runtime appeared that no registered
+    /// agent claims; `adopt` makes it one.
+    AgentDiscovered {
+        pid: u32,
+        runtime: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<std::path::PathBuf>,
+    },
+    /// A discovered process is no longer unregistered: it exited, or it
+    /// was adopted.
+    AgentVanished {
+        pid: u32,
+        runtime: String,
+        adopted: bool,
+    },
     AgentCreated {
         agent: AgentId,
         name: String,

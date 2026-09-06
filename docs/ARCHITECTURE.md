@@ -176,7 +176,8 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
-| `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
+| `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid, from the daemon's last scan (every five seconds; a scan older than four seconds is redone) |
+| `runtimes` | `runtimes {runtimes: RuntimeInfo[]}` | the agent tools on this machine — CLI and version, desktop apps, config directory, whether the MCP server and hooks are wired in — with the unregistered running processes of each |
 | `adopt {pid, name?, runtime?}` | `agent` | registers such a process; `invalid` if a live agent already has the pid |
 | `stop {agent, force?}` | `agent` | validated SIGTERM/SIGKILL; returns `stopping` until observed exit, retaining leases |
 | `remove {agent}` | `ok` | forget a finished agent |
@@ -250,7 +251,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_discovered` (a known agent process nobody registered appeared), `agent_vanished` (it exited, or was `adopted`), `agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
@@ -446,9 +447,9 @@ An agent handing work to another should not have to write its state down; the da
 
 ### Phase 5 — the machine and the human
 
-#### Runtime inventory, setup, and continuous discovery
+#### Runtime inventory, setup, and continuous discovery *(done)*
 
-`agentdocker runtimes` lists the agent tools on this machine: for each known runtime (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`) whether its CLI is on `PATH` and which version, its desktop app where one exists (Claude, Cursor, VS Code, Windsurf — by bundle on macOS, by binary on Linux), its config directory, and whether AgentDocker is wired in: hooks installed for Claude Code, the MCP server registered in Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Gemini's `~/.gemini/settings.json`, or Cursor's `~/.cursor/mcp.json`. `agentdocker setup [<runtime> | --all] [--dry-run]` writes the missing registrations idempotently, keeping a backup of every file it touches, and prints what it changed. The inventory is host I/O in `agentdocker-host::runtimes`; the daemon serves it as `runtimes {}` so the desktop app and the CLI share one answer. The request, response and events are listed under [planned protocol additions](#planned-protocol-and-event-additions) until row 18 lands.
+`agentdocker runtimes` lists the agent tools on this machine: for each known runtime (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`) whether its CLI is on `PATH` and which version, its desktop app where one exists (Claude, Cursor, VS Code, Windsurf — by bundle on macOS, by binary on Linux), its config directory, and whether AgentDocker is wired in: hooks installed for Claude Code, the MCP server registered in Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Gemini's `~/.gemini/settings.json`, or Cursor's `~/.cursor/mcp.json`. `agentdocker setup [<runtime> | --all] [--dry-run]` writes the missing registrations idempotently, keeping a backup of every file it touches, and prints what it changed. The inventory is host I/O in `agentdocker-host::runtimes`; the daemon serves it as `runtimes {}` so the desktop app and the CLI share one answer.
 
 **Planned for roadmap row 18:** the daemon will run the process scan every five seconds, cache its last result for `discover`, and emit replayable `agent_discovered {pid, runtime, project?, cwd?}` and `agent_vanished {pid, runtime, adopted}` events when processes enter or leave discovery. The planned `adopt --all` command will register each discovered process. These are design intent until row 18 lands; automatic adoption remains a later policy decision.
 
@@ -508,7 +509,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
-| 18 | runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
+| 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
 | 19 | native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events, notifications | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 
@@ -527,11 +528,10 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
-| `runtimes {}` | `runtimes {runtimes: RuntimeInfo[]}` — the agent tools on this machine, per runtime: CLI and version, desktop apps, config directory, MCP and hooks wiring, unregistered running processes | 5 |
 
 Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `agent_discovered {pid, runtime, project?, cwd?}` and `agent_vanished {pid, runtime, adopted}` (announced by the daemon's own process scan; stored and replayable like every other event; design intent until row 18 lands), `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 

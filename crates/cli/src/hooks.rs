@@ -885,7 +885,7 @@ impl<I: Iterator> PartitionMapBy for I {}
 
 // ----- install --------------------------------------------------------------
 
-fn install_hooks(args: &InstallArgs) -> Result<()> {
+pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     match args.host {
         Host::ClaudeCode => {}
     }
@@ -911,7 +911,7 @@ fn install_hooks(args: &InstallArgs) -> Result<()> {
     if added == 0 {
         // Nothing to add, so leave the file byte-for-byte alone: a rewrite
         // would re-sort and re-indent the user's whole settings document.
-        println!("{}: hooks already installed", path.display());
+        eprintln!("{}: hooks already installed", path.display());
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -922,7 +922,7 @@ fn install_hooks(args: &InstallArgs) -> Result<()> {
         format!("{}\n", serde_json::to_string_pretty(&settings)?),
     )
     .with_context(|| format!("cannot write {}", path.display()))?;
-    println!(
+    eprintln!(
         "{}: added {added} hook entries running `{command}`",
         path.display()
     );
