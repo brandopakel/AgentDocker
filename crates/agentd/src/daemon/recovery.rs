@@ -201,7 +201,29 @@ impl Daemon {
             .registry
             .get(&agent)
             .and_then(ContainerEnvironment::of);
-        let environment_matches = checkpoint.environment == environment;
+        let environment_matches =
+            ContainerEnvironment::matches(&checkpoint.environment, &environment);
+        // A checkpoint made by a handoff carries a bundle: it may name its
+        // recipient, ask for its leases to move, and say where the sender
+        // had read the journal to.
+        let bundle = match state
+            .store
+            .document::<agentdocker_core::HandoffBundle>("handoff", id)
+        {
+            Ok(bundle) => bundle,
+            Err(e) => return internal(e),
+        };
+        if acknowledge
+            && bundle
+                .as_ref()
+                .and_then(|b| b.to.as_ref())
+                .is_some_and(|to| to != &agent)
+        {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "handoff is addressed to another agent",
+            );
+        }
         if acknowledge {
             if !stale.is_empty() || !checkout_matches || !environment_matches {
                 return Response::error(
@@ -240,27 +262,94 @@ impl Daemon {
                     );
                 }
                 checkpoint.accepted_by = Some(agent.clone());
-                let mut event = Event::new(
+                let now = Utc::now();
+                // Ownership moves with acceptance, in the same transaction:
+                // a bundle that asked for it hands its leases over here.
+                let transferred = match &bundle {
+                    Some(b) if b.transfer_leases => state.leases.transfer_selected(
+                        &b.from,
+                        &agent,
+                        &b.leases.iter().map(|lease| lease.id.clone()).collect(),
+                        now,
+                    ),
+                    _ => Vec::new(),
+                };
+                let mut events = vec![Event::new(
                     EventKind::HandoffAccepted {
                         agent: agent.clone(),
                         checkpoint: id.into(),
                     },
-                    Utc::now(),
-                );
-                event.seq = state.next_seq;
+                    now,
+                )];
+                if let Some(b) = &bundle {
+                    events.extend(transferred.iter().map(|lease| {
+                        Event::new(
+                            EventKind::LeaseTransferred {
+                                lease: lease.clone(),
+                                from: b.from.clone(),
+                                to: agent.clone(),
+                            },
+                            now,
+                        )
+                    }));
+                }
+                // The recipient continues reading the journal where the
+                // sender left off: the cursor and its event commit with the
+                // acceptance, never after it.
+                let cursor = bundle
+                    .as_ref()
+                    .and_then(|b| Some((b.project.clone()?, b.journal_cursor?)))
+                    .filter(|(project, seq)| {
+                        state
+                            .cursor(agent.as_str(), project)
+                            .is_none_or(|current| current < *seq)
+                    });
+                if let Some((project, seq)) = &cursor {
+                    events.push(Event::new(
+                        EventKind::JournalRead {
+                            reader: agent.to_string(),
+                            project: project.clone(),
+                            seq: *seq,
+                        },
+                        now,
+                    ));
+                }
+                for (offset, event) in events.iter_mut().enumerate() {
+                    event.seq = state.next_seq + offset as u64;
+                }
                 state.persist("handoff acceptance", |store| {
                     store.accept_handoff(
                         &checkpoint,
                         &agent,
                         &reads.into_values().collect::<Vec<_>>(),
-                        &event,
+                        &transferred,
+                        cursor
+                            .as_ref()
+                            .map(|(project, seq)| (agent.as_str(), project, *seq, now)),
+                        &events,
                     )
                 });
                 if let Some(error) = state.storage_failure() {
+                    // The table already moved these leases; put exactly
+                    // them back so memory matches what was (not) written.
+                    if let Some(b) = &bundle {
+                        for lease in &transferred {
+                            let mut back = lease.clone();
+                            back.holder = b.from.clone();
+                            state.leases.restore(back);
+                        }
+                    }
                     return error;
                 }
-                state.next_seq += 1;
-                let _ = state.events.send(event);
+                state.next_seq += events.len() as u64;
+                if let Some((project, seq)) = cursor {
+                    state
+                        .journal_cursors
+                        .insert((agent.to_string(), project), seq);
+                }
+                for event in events {
+                    let _ = state.events.send(event);
+                }
             }
         }
         let validations = match state
@@ -269,7 +358,11 @@ impl Daemon {
         {
             Ok(v) => v
                 .into_iter()
-                .filter(|v| checkout_matches && environment_matches && v.environment == environment)
+                .filter(|v| {
+                    checkout_matches
+                        && environment_matches
+                        && ContainerEnvironment::matches(&v.environment, &environment)
+                })
                 .collect(),
             Err(e) => return internal(e),
         };
@@ -504,7 +597,7 @@ impl Drop for ValidationGroup {
         }
     }
 }
-fn internal(error: impl std::fmt::Display) -> Response {
+pub(super) fn internal(error: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Internal, error.to_string())
 }
 

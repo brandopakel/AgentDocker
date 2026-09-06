@@ -1,6 +1,7 @@
 //! Restricted endpoint credentials are hashed, scoped to one agent/checkout,
 //! checked on every request, and never accepted on the host control endpoint.
 use super::*;
+use agentdocker_core::paths;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -31,6 +32,18 @@ impl Daemon {
         let (agent, host_root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
+        };
+        // A grant names the socket the container will use; without the
+        // endpoint there is nothing to grant access to.
+        let socket = match self.restricted() {
+            RestrictedEndpoint::On(socket) => socket,
+            RestrictedEndpoint::Starting => paths::container_socket(&self.home),
+            RestrictedEndpoint::Off(reason) => {
+                return Response::error(
+                    ErrorCode::Unavailable,
+                    format!("the container endpoint is off: {reason}"),
+                );
+            }
         };
         let container_root = PathBuf::from(container_root);
         if !container_root.is_absolute()
@@ -67,7 +80,7 @@ impl Daemon {
         Response::Access {
             grant: id,
             token,
-            socket: agentdocker_core::paths::container_socket(&self.home),
+            socket,
             expires_at,
         }
     }
@@ -78,6 +91,12 @@ impl Daemon {
         record: &mut AgentRecord,
     ) -> Result<(), agentdocker_host::containers::ContainerError> {
         use agentdocker_host::containers::ContainerError;
+        if !matches!(self.restricted(), RestrictedEndpoint::On(_)) {
+            return Err(ContainerError::with_code(
+                ErrorCode::Unavailable,
+                "authenticated workspace endpoint stopped before grant creation".into(),
+            ));
+        }
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let w = record
@@ -104,13 +123,13 @@ impl Daemon {
             .create_new(true)
             .mode(0o600)
             .open(access.directory.join("token"))
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         file.write_all(token.as_bytes())
             .and_then(|()| file.sync_all())
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         std::fs::File::open(&access.directory)
             .and_then(|f| f.sync_all())
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         let mut state = lock(&self.state);
         let mut event = Event::new(
             EventKind::AccessGranted {
@@ -124,7 +143,10 @@ impl Daemon {
             store.put_document_with_event("access", &id, &grant, &event)
         });
         if let Some(error) = &state.storage_error {
-            return Err(ContainerError(error.clone()));
+            return Err(ContainerError::with_code(
+                ErrorCode::StorageUnavailable,
+                error.clone(),
+            ));
         }
         state.next_seq += 1;
         let _ = state.events.send(event);

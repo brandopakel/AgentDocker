@@ -16,4 +16,7 @@ pub mod command;
 pub mod containers;
 pub mod engine;
 
+pub mod dirs;
 pub mod transport;
+
+pub mod relay;

@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -161,6 +161,9 @@ pub struct ChangesQuery {
     pub limit: usize,
     /// Only changes seen at or after this time.
     pub after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only changes below this sequence number: the page before one
+    /// already read, for a reader that walks the ledger newest first.
+    pub before_seq: Option<u64>,
 }
 
 impl Store {
@@ -202,19 +205,65 @@ impl Store {
         Ok(())
     }
 
+    /// Commit acceptance, the inherited read set, any leases that moved
+    /// to the recipient, and every event announcing it, in one
+    /// transaction.
     pub fn accept_handoff(
         &self,
         checkpoint: &agentdocker_core::Checkpoint,
         agent: &AgentId,
         reads: &[agentdocker_core::ReadMark],
-        event: &Event,
+        transferred: &[Lease],
+        cursor: Option<(&str, &ProjectId, u64, DateTime<Utc>)>,
+        events: &[Event],
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
         self.put_document("reads", agent.as_str(), &reads)?;
+        for lease in transferred {
+            self.upsert_lease(lease)?;
+        }
+        if let Some((reader, project, seq, now)) = cursor {
+            self.set_journal_cursor(reader, project, seq, now)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Store a bundle brought from elsewhere with the checkpoint that
+    /// `resume` will accept it under, and the event, together.
+    pub fn import_handoff(
+        &self,
+        checkpoint: &agentdocker_core::Checkpoint,
+        bundle: &agentdocker_core::HandoffBundle,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document("checkpoint", &checkpoint.id, checkpoint)?;
+        self.put_document("handoff", &bundle.id, bundle)?;
         self.append_event(event)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Bundles an agent sent or is addressed to; all of them without one.
+    /// Oldest first.
+    pub fn handoffs(
+        &self,
+        agent: Option<&AgentId>,
+    ) -> Result<Vec<agentdocker_core::HandoffBundle>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='handoff'
+             AND (?1 IS NULL OR json_extract(json, '$.from') = ?1 OR json_extract(json, '$.to') = ?1)
+             ORDER BY json_extract(json, '$.created_at'), id",
+        )?;
+        let rows = stmt.query_map(params![agent.map(AgentId::as_str)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     /// Return recovery documents in stable id order.
@@ -362,7 +411,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=4)) => {
+            Some(Ok(1..=6)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -664,6 +713,10 @@ impl Store {
         if let Some(after) = &query.after {
             args.push(Box::new(after.to_rfc3339()));
             sql.push_str(&format!(" AND julianday(at) >= julianday(?{})", args.len()));
+        }
+        if let Some(before) = query.before_seq {
+            args.push(Box::new(i64::try_from(before).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" AND seq < ?{}", args.len()));
         }
         args.push(Box::new(i64::try_from(query.limit).unwrap_or(i64::MAX)));
         sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", args.len()));
@@ -1221,7 +1274,7 @@ mod tests {
 
     #[test]
     fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=4 {
+        for version in 1..=6 {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1238,7 +1291,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "5");
+            assert_eq!(version, "7");
         }
     }
 
@@ -1291,6 +1344,7 @@ mod tests {
                     agent: agent.map(AgentId::from),
                     limit,
                     after: None,
+                    before_seq: None,
                 })
                 .unwrap()
                 .into_iter()
@@ -1354,6 +1408,7 @@ mod tests {
                 agent: None,
                 limit: 1,
                 after: None,
+                before_seq: None,
             })
             .unwrap();
         assert_eq!(stored[0].seq, s4, "the blob carries its seq");
@@ -1372,6 +1427,7 @@ mod tests {
                     agent: None,
                     limit: 50,
                     after: None,
+                    before_seq: None,
                 })
                 .unwrap()
                 .len(),
@@ -1728,5 +1784,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             [2]
         );
+    }
+
+    #[test]
+    fn changes_page_downward_with_before_seq() {
+        use agentdocker_core::{Attribution, Change, ChangeKind, ProjectId};
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        for i in 0..5 {
+            store
+                .append_change(&Change {
+                    seq: 0,
+                    project: project.clone(),
+                    checkout: None,
+                    worktree: None,
+                    path: format!("f{i}").into(),
+                    kind: ChangeKind::Modified,
+                    at: Utc::now(),
+                    by: Attribution::External,
+                    head: None,
+                })
+                .unwrap();
+        }
+        let page = |before: Option<u64>, limit: usize| {
+            store
+                .changes(&ChangesQuery {
+                    project: project.clone(),
+                    since_seq: None,
+                    path: None,
+                    agent: None,
+                    limit,
+                    after: None,
+                    before_seq: before,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|c| c.seq)
+                .collect::<Vec<_>>()
+        };
+        let newest = page(None, 2);
+        assert_eq!(newest.len(), 2);
+        let older = page(Some(newest[0]), 2);
+        assert_eq!(older.len(), 2);
+        assert!(older.iter().all(|s| *s < newest[0]));
+        let oldest = page(Some(older[0]), 2);
+        assert_eq!(oldest.len(), 1);
+        assert!(page(Some(oldest[0]), 2).is_empty());
     }
 }

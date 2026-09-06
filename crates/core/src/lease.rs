@@ -312,6 +312,57 @@ impl LeaseTable {
         ids.iter().filter_map(|id| self.leases.remove(id)).collect()
     }
 
+    /// Move every live lease of `from` to `to` in one step: what a handoff
+    /// does at acceptance. Returns the leases as they now are, oldest
+    /// first. Nothing is checked for conflicts: one holder may hold
+    /// overlapping leases.
+    pub fn transfer(&mut self, from: &AgentId, to: &AgentId, now: DateTime<Utc>) -> Vec<Lease> {
+        self.expire(now);
+        let mut moved: Vec<Lease> = self
+            .leases
+            .values_mut()
+            .filter(|l| l.holder == *from)
+            .map(|l| {
+                l.holder = to.clone();
+                l.clone()
+            })
+            .collect();
+        moved.sort_by(|a, b| {
+            a.acquired_at
+                .cmp(&b.acquired_at)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        moved
+    }
+
+    /// Transfer only still-live leases explicitly offered in a handoff. Expiry
+    /// remains the daemon's own event/persistence transition.
+    pub fn transfer_selected(
+        &mut self,
+        from: &AgentId,
+        to: &AgentId,
+        ids: &std::collections::HashSet<LeaseId>,
+        now: DateTime<Utc>,
+    ) -> Vec<Lease> {
+        let mut moved: Vec<_> = self
+            .leases
+            .values_mut()
+            .filter(|lease| {
+                lease.holder == *from && ids.contains(&lease.id) && !lease.is_expired(now)
+            })
+            .map(|lease| {
+                lease.holder = to.clone();
+                lease.clone()
+            })
+            .collect();
+        moved.sort_by(|a, b| {
+            a.acquired_at
+                .cmp(&b.acquired_at)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        moved
+    }
+
     /// Remove and return every lease whose TTL has passed.
     pub fn expire(&mut self, now: DateTime<Utc>) -> Vec<Lease> {
         let ids: Vec<LeaseId> = self
@@ -384,6 +435,48 @@ mod tests {
 
     fn key(s: &str) -> ResourceKey {
         ResourceKey::new(s)
+    }
+
+    #[test]
+    fn selected_transfer_keeps_unoffered_and_expired_leases_for_their_own_transitions() {
+        let now = Utc::now();
+        let mut table = LeaseTable::default();
+        let mut ids = Vec::new();
+        for (resource, holder, seconds) in [
+            ("task:offered", "a", 60),
+            ("task:later", "a", 60),
+            ("task:expired", "a", 1),
+            ("task:peer", "c", 60),
+        ] {
+            ids.push(
+                table
+                    .claim(
+                        key(resource),
+                        agent(holder),
+                        LeaseMode::Exclusive,
+                        Duration::seconds(seconds),
+                        None,
+                        now,
+                    )
+                    .unwrap()
+                    .into_lease()
+                    .id,
+            );
+        }
+        let selected = [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+            .into_iter()
+            .collect();
+        let moved = table.transfer_selected(
+            &agent("a"),
+            &agent("b"),
+            &selected,
+            now + Duration::seconds(5),
+        );
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].id, ids[0]);
+        assert_eq!(table.get(&ids[1]).unwrap().holder, agent("a"));
+        assert_eq!(table.get(&ids[2]).unwrap().holder, agent("a"));
+        assert_eq!(table.get(&ids[3]).unwrap().holder, agent("c"));
     }
 
     fn ttl() -> Duration {
@@ -728,5 +821,59 @@ mod tests {
         assert_eq!(t.release_all(&agent("a")).len(), 2);
         assert_eq!(t.by_holder(&agent("a")).len(), 0);
         assert_eq!(t.all().len(), 1);
+    }
+
+    #[test]
+    fn transfer_moves_live_leases_to_the_new_holder() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        let kept = t
+            .claim(
+                key("path:/r/a"),
+                agent("a"),
+                LeaseMode::Exclusive,
+                ttl(),
+                Some("x".into()),
+                now,
+            )
+            .unwrap()
+            .into_lease();
+        t.claim(
+            key("task:2"),
+            agent("a"),
+            LeaseMode::Shared,
+            Duration::seconds(1),
+            None,
+            now,
+        )
+        .unwrap();
+        t.claim(
+            key("task:3"),
+            agent("c"),
+            LeaseMode::Exclusive,
+            ttl(),
+            None,
+            now,
+        )
+        .unwrap();
+        let later = now + Duration::seconds(5);
+        let moved = t.transfer(&agent("a"), &agent("b"), later);
+        assert_eq!(moved.len(), 1, "the expired one is gone, not moved");
+        assert_eq!(moved[0].id, kept.id);
+        assert_eq!(moved[0].holder, agent("b"));
+        assert_eq!(
+            moved[0].note.as_deref(),
+            Some("x"),
+            "everything but the holder survives"
+        );
+        assert!(t.by_holder(&agent("a")).is_empty());
+        assert_eq!(t.by_holder(&agent("b")).len(), 1);
+        assert_eq!(t.by_holder(&agent("c")).len(), 1);
+        assert!(
+            t.release(&kept.id, &agent("a")).is_err(),
+            "the old holder no longer may"
+        );
+        assert!(t.release(&kept.id, &agent("b")).is_ok());
+        assert!(t.transfer(&agent("nobody"), &agent("b"), later).is_empty());
     }
 }

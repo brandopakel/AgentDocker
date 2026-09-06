@@ -158,6 +158,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         workdir,
         env: BTreeMap::new(),
         labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
+        isolate: false,
     };
     match client
         .call(&Request::Register {
@@ -307,6 +308,23 @@ impl<B: Backend> McpServer<B> {
                     "list_checkpoints" => "checkpoints",
                     "validate" => "validate",
                     _ => "validations",
+                };
+                self.forward(tagged_request(arguments, op, &me)?).await
+            }
+            "overlap" => {
+                let args: OverlapArgs = parse(arguments)?;
+                self.forward(Request::Overlap {
+                    project: String::new(),
+                    since_seq: args.since,
+                    agent: Some(me),
+                })
+                .await
+            }
+            "handoff" | "list_handoffs" => {
+                let op = if name == "handoff" {
+                    "handoff"
+                } else {
+                    "handoffs"
                 };
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
@@ -559,6 +577,12 @@ struct JournalNoteArgs {
 }
 
 #[derive(Deserialize, Default)]
+struct OverlapArgs {
+    #[serde(default)]
+    since: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
 struct ReadJournalArgs {
     #[serde(default)]
     since: Option<u64>,
@@ -643,6 +667,9 @@ fn render(response: Response) -> Value {
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
+        Response::Handoff { bundle } => text_result(&json!(bundle), false),
+        Response::Overlap { overlaps } => text_result(&json!({ "overlaps": overlaps }), false),
+        Response::Handoffs { bundles } => text_result(&json!({ "handoffs": bundles }), false),
         Response::Ok => text_result(&json!({ "ok": true }), false),
         other => text_result(&json!(other), false),
     }
@@ -656,8 +683,38 @@ fn tool_definitions() -> Vec<Value> {
         json!({"name":"worktree_diff","description":"Host endpoint only: show tracked uncommitted changes in this session's physical checkout.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"integrate_worktree","description":"Host endpoint only: preview validated committed source from a linked checkout. apply=true prepares an uncommitted merge and retains a target-checkout lease for review; it never commits automatically.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"validation":{"type":"string"},"apply":{"type":"boolean"}},"required":["source","validation"],"additionalProperties":false}}),
         json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
-        json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session without transferring leases.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
+        json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session; leases move to it only when the accepted handoff bundle asked for that, and a plain checkpoint never transfers them.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
         json!({"name":"list_checkpoints","description":"List this agent's durable checkpoints.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({
+            "name": "handoff",
+            "description": "Hand this agent's work to another agent: a checkpoint addressed to it, with this agent's leases, reads, changes, uncommitted diff, unread messages and journal entries bundled around it, announced to the recipient as a `handoff` message. Leases are released now unless `transfer_leases`, which moves them when the recipient accepts (resume_checkpoint with acknowledge).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix." },
+                    "task": { "type": "string", "description": "What the recipient should continue." },
+                    "note": { "type": "string", "description": "Anything the daemon does not already know." },
+                    "transfer_leases": { "type": "boolean", "default": false },
+                    "key": { "type": "string", "description": "Retries with the same key return the same bundle." }
+                },
+                "required": ["to"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "overlap",
+            "description": "Paths this agent's checkout and another checkout of the same repository have both changed, from the ledger: what will collide when the branches meet. Coordinate before integrating.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "since": { "type": "integer", "minimum": 0, "description": "Only ledger entries after this sequence number." } },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_handoffs",
+            "description": "Handoff bundles this agent sent or is addressed to, oldest first.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
         json!({"name":"validate","description":"Run a validation command and retain its log, exit status and code fingerprints. Passing requires unchanged content and no surviving child processes.","inputSchema":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}},"timeout_secs":{"type":"integer","minimum":1,"maximum":600}},"required":["command"],"additionalProperties":false}}),
         json!({"name":"validation_results","description":"Show validation evidence for this agent.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"observe_paths","description":"Record content immediately BEFORE reading files or searching a directory. Do not report old tool results as fresh observations.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"],"additionalProperties":false}}),
@@ -903,6 +960,9 @@ mod tests {
                 "save_checkpoint",
                 "resume_checkpoint",
                 "list_checkpoints",
+                "handoff",
+                "overlap",
+                "list_handoffs",
                 "validate",
                 "validation_results",
                 "observe_paths",

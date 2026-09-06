@@ -23,6 +23,13 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    WorktreeCleanup {
+        agent: crate::AgentId,
+        path: std::path::PathBuf,
+        worktree_removed: bool,
+        branch_removed: bool,
+        reason: Option<String>,
+    },
     IntegrationPrepared {
         agent: crate::AgentId,
         source_head: String,
@@ -43,6 +50,24 @@ pub enum EventKind {
         agent: crate::AgentId,
         checkpoint: String,
     },
+    /// A handoff bundle was made; `to` is absent for an export.
+    HandoffSent {
+        from: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<AgentId>,
+        handoff: String,
+    },
+    /// A bundle from another host was brought here for `agent`.
+    HandoffImported {
+        agent: AgentId,
+        handoff: String,
+    },
+    /// A lease moved to a handoff's recipient at acceptance.
+    LeaseTransferred {
+        lease: Lease,
+        from: AgentId,
+        to: AgentId,
+    },
     ValidationStarted {
         agent: AgentId,
         validation: String,
@@ -53,6 +78,25 @@ pub enum EventKind {
         passed: bool,
     },
     WatcherGap {
+        reason: String,
+    },
+    /// The daemon is spawning its project watcher; registrations wait for
+    /// it rather than go unwatched.
+    WatcherStarting,
+    /// The watcher is up: checkouts are covered from registration on.
+    WatcherStarted,
+    /// The watcher could not start; the ledger and branch tracking are off
+    /// until the daemon restarts.
+    WatcherUnavailable {
+        reason: String,
+    },
+    /// The restricted container endpoint is serving on this socket.
+    RestrictedEndpointListening {
+        socket: std::path::PathBuf,
+    },
+    /// The restricted container endpoint could not be served; the host
+    /// socket keeps working and new grants are refused.
+    RestrictedEndpointUnavailable {
         reason: String,
     },
     ReadsObserved {

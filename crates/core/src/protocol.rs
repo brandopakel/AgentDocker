@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::handoff::HandoffBundle;
 use crate::journal::{Digest, SummarySource};
 use crate::{
     AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
@@ -90,6 +91,36 @@ pub enum Request {
     Checkpoints {
         #[serde(default)]
         agent: Option<String>,
+    },
+    /// Hand work to another agent: a checkpoint addressed to `to` with the
+    /// sender's state bundled around it, announced to `to` as a `handoff`
+    /// message. Without `to` the bundle is an export nobody is addressed
+    /// to yet. Leases are released unless `transfer_leases`, which moves
+    /// them at acceptance instead.
+    Handoff {
+        agent: String,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        task: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        transfer_leases: bool,
+        /// Retries with the same key return the same bundle.
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// Bundles sent by or addressed to an agent; every bundle without one.
+    Handoffs {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// Bring a bundle exported on another host here, addressed to `agent`
+    /// and re-homed to its checkout; `resume` then accepts it as usual.
+    Import {
+        agent: String,
+        bundle: Box<HandoffBundle>,
     },
     Validate {
         agent: String,
@@ -307,6 +338,17 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         digest: Option<DigestRequest>,
     },
+    /// Paths changed in more than one physical checkout of a project:
+    /// what will collide when the branches meet. With `agent`, only the
+    /// overlaps involving that agent's checkout; an empty `project` then
+    /// means the agent's own.
+    Overlap {
+        project: String,
+        #[serde(default)]
+        since_seq: Option<u64>,
+        #[serde(default)]
+        agent: Option<String>,
+    },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
         project: String,
@@ -364,6 +406,9 @@ pub enum ErrorCode {
     StorageUnavailable,
     EngineUnavailable,
     BuildFailed,
+    /// A part of the daemon is off — the restricted container endpoint
+    /// could not be served — so what needs it is refused, not broken.
+    Unavailable,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -405,6 +450,12 @@ pub enum Response {
     Checkpoints {
         checkpoints: Vec<crate::Checkpoint>,
     },
+    Handoff {
+        bundle: HandoffBundle,
+    },
+    Handoffs {
+        bundles: Vec<HandoffBundle>,
+    },
     Recovery {
         recovery: crate::Recovery,
     },
@@ -426,6 +477,10 @@ pub enum Response {
     Pong {
         version: String,
         uptime_secs: u64,
+        /// The restricted container endpoint's socket while it is serving;
+        /// absent when it is off or still starting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restricted: Option<std::path::PathBuf>,
     },
     Agent {
         agent: AgentRecord,
@@ -438,6 +493,9 @@ pub enum Response {
     },
     Changes {
         changes: Vec<Change>,
+    },
+    Overlap {
+        overlaps: Vec<crate::Overlap>,
     },
     /// `subscribers` is how many live subscriptions were notified; queued
     /// inbox delivery is not counted.

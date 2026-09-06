@@ -35,6 +35,14 @@ impl Daemon {
         else {
             return Ok(());
         };
+        let socket = match self.restricted() {
+            RestrictedEndpoint::On(socket) => socket,
+            _ => {
+                return Err(ContainerError::unavailable(
+                    "authenticated workspace endpoint is not serving".into(),
+                ));
+            }
+        };
         let old = {
             let mut state = lock(&self.state);
             if state
@@ -51,40 +59,66 @@ impl Daemon {
             listener: None,
             bridge: None,
         };
-        if access.vm.is_none() {
+        if access.relay.is_some() {
+            transport.listener = Some(super::relay::start(record.clone(), socket).await?);
+        } else if access.vm.is_none() {
             let path = access.socket_directory.join("endpoint.sock");
             if path.exists() {
                 if tokio::net::UnixStream::connect(&path).await.is_ok() {
-                    return Err(ContainerError(
+                    return Err(ContainerError::unavailable(
                         "workspace endpoint is already in use".into(),
                     ));
                 }
-                std::fs::remove_file(&path).map_err(|e| ContainerError(e.to_string()))?;
+                std::fs::remove_file(&path)
+                    .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             }
-            let listener =
-                tokio::net::UnixListener::bind(&path).map_err(|e| ContainerError(e.to_string()))?;
+            let listener = tokio::net::UnixListener::bind(&path)
+                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| ContainerError(e.to_string()))?;
-            let socket = agentdocker_core::paths::container_socket(&self.home);
+                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             transport.listener = Some(tokio::spawn(async move {
                 crate::server::serve_workspace(listener, socket).await;
             }));
         } else {
             let access: WorkspaceAccess = access.clone();
-            let socket = agentdocker_core::paths::container_socket(&self.home);
             transport.bridge = tokio::task::spawn_blocking(move || {
                 agentdocker_host::transport::bridge(&access, &socket)
             })
             .await
-            .map_err(|e| ContainerError(e.to_string()))??;
+            .map_err(|e| ContainerError::unavailable(e.to_string()))??;
         }
         lock(&self.state)
             .transports
             .insert(record.id.clone(), transport);
         Ok(())
     }
-    pub(super) fn retire_transport(&self, id: &AgentId) {
+    pub(super) async fn retire_transport(&self, id: &AgentId) -> Result<(), ContainerError> {
         let old = lock(&self.state).transports.remove(id);
         drop(old);
+        if let Some(record) = self
+            .container_record(id)
+            .filter(super::relay::needs_cleanup)
+        {
+            tokio::task::spawn_blocking(move || agentdocker_host::relay::cleanup(&record))
+                .await
+                .map_err(|e| ContainerError::unavailable(e.to_string()))??;
+            self.update_container(id, |record| {
+                record
+                    .container
+                    .as_mut()
+                    .unwrap()
+                    .workspace
+                    .as_mut()
+                    .unwrap()
+                    .access
+                    .as_mut()
+                    .unwrap()
+                    .relay
+                    .as_mut()
+                    .unwrap()
+                    .retired = true
+            })?;
+        }
+        Ok(())
     }
 }

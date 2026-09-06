@@ -1,10 +1,12 @@
 # AgentDocker
 
-**Docker for AI agents.** One daemon that creates, supervises, organises, and — above all — connects every agent running on your machines, whatever model or vendor is behind it.
+**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
-> Status: **early**. The daemon, CLI, messaging, and lease system work end-to-end on a single host. Runtime adapters, persistence, and multi-host federation are on the [roadmap](#roadmap).
+The product direction is an installed desktop app for macOS, Linux and Windows that automatically shows active agents and inventories installed CLIs and desktop apps. Docker and Podman inspire the orchestration model; normal local use requires neither engine. Container execution is an optional adapter. See [product direction and next delivery steps](docs/PRODUCT-DIRECTION.md).
+
+> Status: **early**. The native daemon, CLI, persistence, coordination and verified handoffs work on macOS and Linux. The desktop GUI, installed-tool inventory, automatic background discovery and Windows support remain to be built. Multi-host federation is separate future work.
 
 ## The Docker analogy
 
@@ -200,7 +202,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml).
 
 ## License
 
@@ -230,15 +232,29 @@ agentdocker resume --as replacement <checkpoint-id>
 agentdocker resume --as replacement <checkpoint-id> --acknowledge
 ```
 
-Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. It never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+Review the returned assumptions, stale paths, and matching validation evidence before accepting. Changed content blocks acceptance; re-establish the affected context and save a new checkpoint. Acceptance persists across restart and binds the handoff to one replacement session. A plain checkpoint never transfers file leases. Validation records identify the code before and after execution and retain the command's log; changed code, failed checks, timeouts, and surviving subprocesses do not count as passing evidence.
+
+## Hand work to another agent
+
+```sh
+agentdocker handoff reviewer --as worker --task "Finish the parser" --note "tests are in src/parser.rs" --transfer-leases
+agentdocker handoffs --as reviewer
+agentdocker resume --as reviewer <handoff-id> --acknowledge
+agentdocker export --as worker > bundle.json      # carry it to another host by hand
+agentdocker import --as replacement < bundle.json
+```
+
+A handoff is a checkpoint addressed to someone, with everything the daemon already knows about the sender bundled around it: the leases it holds, what it read and at which versions, the changes it made, its uncommitted diff when it worked in a worktree, the messages it never read, and its journal entries. The recipient is told by message and accepts with `resume --acknowledge`; that is when ownership moves — leases transfer if the sender asked, the read set is seeded so staleness carries over, and the recipient continues reading the project journal where the sender stopped. An exported bundle imported on another host is accepted the same way, once the content matches; leases never cross hosts.
 
 ## Worktrees and authenticated containers
 
-Use `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
+Use `agentdocker run --isolate --name writer -- codex …` to launch an agent in a linked worktree of its own (branch `agent/writer`, beside the daemon state directory), add `--image-build BUILD --mount-checkout` to run it inside a recorded image, or use `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
 
 `agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Docker/Podman image builds and managed lifecycle recovery are implemented: `image-build --engine docker|podman`, `run --image-build BUILD -- COMMAND`, `stop`, and `restart`. Managed commands default to no host mounts or networking. Opt into authenticated checkout mounts with `--mount-checkout`, Podman VM transport with `--podman-machine`, and networking with `--network bridge`. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
 
 Development verification uses `bash scripts/verify.sh check`. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md) for nextest, coverage, Criterion/Bencher, native socket load tests and bounded fuzzing.
 
 
-Managed image runs can opt into an authenticated checkout with `run --image-build BUILD --mount-checkout`; use `--podman-machine NAME` on macOS and `--network bridge` when network access is needed. Image validation runs in a fresh container with read-only source and records the image alongside the content fingerprint. Changed image or source prevents reuse during recovery. See [container engines](docs/CONTAINER-ENGINES.md#authenticated-managed-workspaces) for UID mapping, VM transport and test-output paths.
+Managed image runs can opt into an authenticated checkout with `run --image-build BUILD --mount-checkout`; use `--podman-machine NAME` for a Podman VM and `--network bridge` when network access is needed. Image validation runs in a fresh container with read-only source and records the image alongside the content fingerprint. Changed image or source prevents reuse during recovery. See [container engines](docs/CONTAINER-ENGINES.md#authenticated-managed-workspaces) for UID mapping, VM transport and test-output paths.
+
+Docker Desktop uses a private engine-volume socket relay for mounted runs; `--engine-relay` selects it explicitly on Linux Docker or rootless Podman. The relay preserves the agent's `none` network default and exposes no engine socket or host TCP listener. Actual Desktop verification remains separate from the Linux/Podman test results.

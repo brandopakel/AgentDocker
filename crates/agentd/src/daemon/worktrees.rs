@@ -22,6 +22,149 @@ fn failure(e: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Invalid, e.to_string())
 }
 
+/// `git worktree add -b <branch> <path> HEAD` in `root`, for a new path
+/// outside the checkout and a branch name git accepts. Shared by
+/// `worktree-create` and `run --isolate`.
+pub(super) async fn add_worktree(
+    root: PathBuf,
+    path: &Path,
+    branch: &str,
+) -> Result<(), Box<Response>> {
+    if path.exists() || path.starts_with(&root) {
+        return Err(Box::new(failure(
+            "worktree path must be new and outside the current checkout",
+        )));
+    }
+    match git(
+        root.clone(),
+        vec![
+            "check-ref-format".into(),
+            "--branch".into(),
+            branch.to_owned(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success && !branch.starts_with('-') => {}
+        _ => return Err(Box::new(failure("invalid branch name"))),
+    }
+    match git(
+        root,
+        vec![
+            "worktree".into(),
+            "add".into(),
+            "-b".into(),
+            branch.to_owned(),
+            "--".into(),
+            path.to_string_lossy().into_owned(),
+            "HEAD".into(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => Ok(()),
+        Ok(output) => Err(Box::new(failure(output.text))),
+        Err(e) => Err(Box::new(failure(e))),
+    }
+}
+
+/// Remove only a clean, unstarted isolated checkout whose branch did not advance.
+/// Git's normal (non-force) removal/deletion checks remain authoritative.
+pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Option<String>) {
+    let Some(path) = record.spec.workdir.clone() else {
+        return (false, false, Some("missing checkout path".into()));
+    };
+    let Some(project) = &record.project else {
+        return (false, false, Some("missing repository identity".into()));
+    };
+    let Some(vcs) = &record.vcs else {
+        return (
+            false,
+            false,
+            Some("missing original branch identity".into()),
+        );
+    };
+    let (Some(head), Some(branch)) = (&vcs.head, &vcs.branch) else {
+        return (
+            false,
+            false,
+            Some("missing original branch identity".into()),
+        );
+    };
+    let checks = [
+        (
+            path.clone(),
+            vec![
+                "status".into(),
+                "--porcelain".into(),
+                "--untracked-files=all".into(),
+                "--ignored".into(),
+            ],
+            String::new(),
+        ),
+        (
+            path.clone(),
+            vec!["rev-parse".into(), "HEAD".into()],
+            head.clone(),
+        ),
+        (
+            path.clone(),
+            vec!["symbolic-ref".into(), "--short".into(), "HEAD".into()],
+            branch.clone(),
+        ),
+        (
+            project.root.clone(),
+            vec!["rev-parse".into(), "HEAD".into()],
+            head.clone(),
+        ),
+    ];
+    for (root, args, expected) in checks {
+        match git(root, args).await {
+            Ok(output) if output.success && output.stdout.trim() == expected => {}
+            _ => {
+                return (
+                    false,
+                    false,
+                    Some("checkout or branch changed; retained for inspection".into()),
+                );
+            }
+        }
+    }
+    match git(
+        project.root.clone(),
+        vec![
+            "worktree".into(),
+            "remove".into(),
+            "--".into(),
+            path.to_string_lossy().into_owned(),
+        ],
+    )
+    .await
+    {
+        Ok(output) if output.success => {}
+        _ => {
+            return (
+                false,
+                false,
+                Some("Git refused non-force worktree removal".into()),
+            );
+        }
+    }
+    match git(
+        project.root.clone(),
+        vec!["branch".into(), "-d".into(), "--".into(), branch.clone()],
+    )
+    .await
+    {
+        Ok(output) if output.success => (true, true, None),
+        _ => (
+            true,
+            false,
+            Some("worktree removed; Git retained the branch".into()),
+        ),
+    }
+}
+
 impl Daemon {
     pub(super) async fn worktree_create(
         &self,
@@ -37,42 +180,14 @@ impl Daemon {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
-        if path.exists() || path.starts_with(&root) {
-            return failure("worktree path must be new and outside the current checkout");
+        if let Err(response) = add_worktree(root, &path, &branch).await {
+            return *response;
         }
-        match git(
-            root.clone(),
-            vec!["check-ref-format".into(), "--branch".into(), branch.clone()],
-        )
-        .await
-        {
-            Ok(output) if output.success && !branch.starts_with('-') => {}
-            _ => return failure("invalid branch name"),
-        }
-        match git(
-            root,
-            vec![
-                "worktree".into(),
-                "add".into(),
-                "-b".into(),
-                branch.clone(),
-                "--".into(),
-                path.to_string_lossy().into_owned(),
-                "HEAD".into(),
-            ],
-        )
-        .await
-        {
-            Ok(output) if output.success => {
-                lock(&self.state).emit(EventKind::WorktreeCreated {
-                    agent,
-                    path: path.clone(),
-                });
-                Response::Worktree { path, branch }
-            }
-            Ok(output) => failure(output.text),
-            Err(e) => failure(e),
-        }
+        lock(&self.state).emit(EventKind::WorktreeCreated {
+            agent,
+            path: path.clone(),
+        });
+        Response::Worktree { path, branch }
     }
 
     pub(super) async fn worktree_diff(&self, reference: &str) -> Response {
@@ -148,7 +263,10 @@ impl Daemon {
             .registry
             .get(&agent)
             .and_then(agentdocker_core::container::ContainerEnvironment::of);
-        if evidence.environment != target_environment {
+        if !agentdocker_core::container::ContainerEnvironment::matches(
+            &evidence.environment,
+            &target_environment,
+        ) {
             return Response::error(
                 ErrorCode::Conflict,
                 "validation image environment differs from the integration target",
@@ -403,6 +521,35 @@ mod tests {
                 .await,
             Response::Integration { applied: false, .. }
         ));
+        let mut image_evidence = validation.clone();
+        image_evidence.environment = Some(agentdocker_core::container::ContainerEnvironment {
+            inputs: None,
+            image_id: "sha256:image".into(),
+            build: "build".into(),
+            engine: agentdocker_core::ContainerEngine::Docker,
+            connection: None,
+            network: Default::default(),
+            user: None,
+            env: Default::default(),
+        });
+        image_evidence.container = Some(agentdocker_core::recovery::ValidationContainer {
+            agent: validation.agent.clone(),
+            id: "container".into(),
+        });
+        assert!(image_evidence.passed());
+        lock(&daemon.state)
+            .store
+            .put_document("validation", &validation.id, &image_evidence)
+            .unwrap();
+        assert!(
+            matches!(daemon.integrate("target",source.clone(),validation.id.clone(),true).await,Response::Error {code:ErrorCode::Conflict,message,..} if message.contains("environment"))
+        );
+        assert!(!root.join(".git/MERGE_HEAD").exists());
+        assert!(lock(&daemon.state).leases.is_empty());
+        lock(&daemon.state)
+            .store
+            .put_document("validation", &validation.id, &validation)
+            .unwrap();
         std::fs::write(branch.join("file"), "three").unwrap();
         assert!(matches!(
             daemon
