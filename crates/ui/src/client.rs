@@ -56,6 +56,16 @@ impl Client {
         &self.socket
     }
 
+    /// Send one request and hand back the raw connection, for a caller
+    /// that then speaks a duplex protocol on it — `attach`.
+    pub fn open(&self, request: &Request) -> Result<UnixStream> {
+        let mut stream = self.connect()?;
+        let mut line = serde_json::to_string(request)?;
+        line.push('\n');
+        stream.write_all(line.as_bytes())?;
+        Ok(stream)
+    }
+
     /// One request, one reply; an error reply is an `Err`.
     pub fn call(&self, request: &Request) -> Result<Response> {
         let stream = self.connect()?;
