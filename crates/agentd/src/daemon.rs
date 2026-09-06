@@ -5383,6 +5383,30 @@ mod tests {
         // Resizing is accepted while it lives.
         session.resize(100, 30).unwrap();
 
+        // Attaching late still shows what it printed, and shows it once:
+        // the scrollback and the live stream are taken together.
+        let (seen, mut live) = session.attach();
+        let seen = String::from_utf8_lossy(&seen).into_owned();
+        assert!(seen.contains("I_HAVE_A_TTY"), "the screen so far: {seen:?}");
+        session.input.send(b"after\n".to_vec()).await.unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut got = String::new();
+            while let Ok(bytes) = live.recv().await {
+                got.push_str(&String::from_utf8_lossy(&bytes));
+                if got.contains("after") {
+                    return got;
+                }
+            }
+            got
+        })
+        .await
+        .unwrap_or_default();
+        assert!(next.contains("after"), "and what comes next: {next:?}");
+        assert!(
+            !next.contains("I_HAVE_A_TTY"),
+            "without repeating the history: {next:?}"
+        );
+
         // When it ends, so does the terminal: an attach afterwards has
         // nothing to connect to.
         daemon

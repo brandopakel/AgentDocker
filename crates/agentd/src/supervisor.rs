@@ -26,16 +26,24 @@ pub struct Spawned {
     pub session: Option<Session>,
 }
 
+/// What a client attaching late is shown before the live stream: enough
+/// to see where the agent got to, not its whole history — the log has
+/// that.
+const SCROLLBACK: usize = 64 * 1024;
+
 /// A managed agent's terminal, as the daemon holds it: what it prints,
-/// what can be typed at it, and how big its window is.
+/// what can be typed at it, how big its window is, and what it printed
+/// just before you looked.
 #[derive(Clone)]
 pub struct Session {
-    /// Everything the agent writes, to whoever is attached. Late joiners
-    /// get what comes next; the log has the rest.
+    /// Everything the agent writes, to whoever is attached.
     pub output: broadcast::Sender<Vec<u8>>,
     /// Keystrokes on their way to the agent.
     pub input: mpsc::Sender<Vec<u8>>,
     master: Arc<OwnedFd>,
+    /// The last [`SCROLLBACK`] bytes it printed, raw, so an attaching
+    /// client sees the screen rather than an empty one.
+    scrollback: Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
 }
 
 impl Session {
@@ -44,6 +52,28 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
         agentdocker_host::pty::set_window_size(self.master.as_raw_fd(), cols, rows)
     }
+
+    /// What to show now, and what comes next. Taken together under one
+    /// lock so a byte cannot fall between them or arrive twice: anything
+    /// already broadcast is in the scrollback, anything broadcast later
+    /// reaches the receiver.
+    pub fn attach(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
+        let history = lock_scrollback(&self.scrollback);
+        let seen: Vec<u8> = history.iter().copied().collect();
+        let live = self.output.subscribe();
+        drop(history);
+        (seen, live)
+    }
+}
+
+/// A poisoned scrollback is still readable bytes; nothing here can leave
+/// it inconsistent.
+fn lock_scrollback(
+    scrollback: &std::sync::Mutex<std::collections::VecDeque<u8>>,
+) -> std::sync::MutexGuard<'_, std::collections::VecDeque<u8>> {
+    scrollback
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Launch the agent's command with its output captured to a log file.
@@ -118,16 +148,25 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             let master = Arc::new(pty.into_master());
             let (output, _) = broadcast::channel::<Vec<u8>>(256);
             let (input, keystrokes) = mpsc::channel::<Vec<u8>>(64);
-            // One task reads the terminal into the log and to whoever is
-            // attached; another types into it.
+            let scrollback = Arc::new(std::sync::Mutex::new(
+                std::collections::VecDeque::<u8>::new(),
+            ));
+            // One task reads the terminal into the log, the scrollback and
+            // whoever is attached; another types into it.
             let reader = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
-            tokio::spawn(pump_terminal(reader, tx, output.clone()));
+            tokio::spawn(pump_terminal(
+                reader,
+                tx,
+                output.clone(),
+                scrollback.clone(),
+            ));
             let writer = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
             tokio::spawn(type_into_terminal(writer, keystrokes));
             Some(Session {
                 output,
                 input,
                 master,
+                scrollback,
             })
         }
         None => {
@@ -157,6 +196,7 @@ async fn pump_terminal(
     mut terminal: tokio::fs::File,
     log: mpsc::Sender<String>,
     output: broadcast::Sender<Vec<u8>>,
+    scrollback: Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
 ) {
     use tokio::io::AsyncReadExt;
     let mut buffer = vec![0_u8; 8192];
@@ -169,8 +209,16 @@ async fn pump_terminal(
             Ok(read) => read,
         };
         let chunk = &buffer[..read];
-        // No receiver simply means nobody is watching right now.
-        let _ = output.send(chunk.to_vec());
+        {
+            // Remember it, then hand it on, both under the one lock, so a
+            // client attaching sees every byte exactly once.
+            let mut history = lock_scrollback(&scrollback);
+            history.extend(chunk.iter().copied());
+            let excess = history.len().saturating_sub(SCROLLBACK);
+            history.drain(..excess);
+            // No receiver simply means nobody is watching right now.
+            let _ = output.send(chunk.to_vec());
+        }
         line.push_str(&String::from_utf8_lossy(chunk));
         while let Some(end) = line.find('\n') {
             let complete: String = line.drain(..=end).collect();
