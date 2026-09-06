@@ -259,6 +259,27 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
     }
 }
 
+/// Recognize the direct adapter invocation, including a quoted executable path.
+/// Mentions and arbitrary shell wrappers remain unverified.
+pub fn hook_command_matches(command: &str, marker: &str) -> bool {
+    let Some(words) = shlex::split(command) else {
+        return false;
+    };
+    words.len() == 3
+        && Path::new(&words[0]).file_name().and_then(|n| n.to_str()) == Some(marker)
+        && words[1] == "hook"
+        && words[2] == "claude-code"
+}
+
+/// Render the executable as one shell argument, including spaces and quotes.
+pub fn claude_hook_command(exe: &Path) -> std::io::Result<String> {
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("hook executable path is not UTF-8"))?;
+    shlex::try_join([exe, "hook", "claude-code"])
+        .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
 /// Whether the runtime's user-level hooks run AgentDocker's adapter.
 pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
     if !spec.hooks {
@@ -271,30 +292,43 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Wiring::Missing;
     };
-    // Every entry is `{matcher?, hooks: [{type, command}]}` under an event
-    // key; ask each command what it runs.
+    // Every required event must include our command with the full matcher.
     let wired = value
         .get("hooks")
         .and_then(|h| h.as_object())
         .is_some_and(|events| {
-            events.values().any(|entries| {
-                entries.as_array().is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        entry
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .is_some_and(|hooks| {
-                                hooks.iter().any(|hook| {
-                                    hook.get("command")
-                                        .and_then(|c| c.as_str())
-                                        .is_some_and(|c| {
-                                            c.contains(marker) && c.contains("hook claude-code")
-                                        })
-                                })
+            agentdocker_core::runtime::CLAUDE_CODE_HOOKS
+                .iter()
+                .all(|(event, matcher)| {
+                    events
+                        .get(*event)
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|entries| {
+                            entries.iter().any(|entry| {
+                                let actual = entry.get("matcher").and_then(|v| v.as_str());
+                                let covers = actual == Some("*")
+                                    || match matcher {
+                                        Some(expected) => actual == Some(*expected),
+                                        None => actual.is_none() || actual == Some(""),
+                                    };
+                                covers
+                                    && entry.get("hooks").and_then(|h| h.as_array()).is_some_and(
+                                        |hooks| {
+                                            hooks.iter().any(|hook| {
+                                                hook.get("type").and_then(|v| v.as_str())
+                                                    == Some("command")
+                                                    && hook
+                                                        .get("command")
+                                                        .and_then(|v| v.as_str())
+                                                        .is_some_and(|c| {
+                                                            hook_command_matches(c, marker)
+                                                        })
+                                            })
+                                        },
+                                    )
                             })
-                    })
+                        })
                 })
-            })
         });
     if wired {
         Wiring::Wired
@@ -374,7 +408,11 @@ mod tests {
         assert_eq!(by("claude-desktop").hooks, Wiring::Unsupported);
         assert!(claude.config_dir.is_some());
         assert_eq!(claude.mcp, Wiring::Missing, "another server is not ours");
-        assert_eq!(claude.hooks, Wiring::Wired);
+        assert_eq!(
+            claude.hooks,
+            Wiring::Missing,
+            "one event is not the complete adapter"
+        );
         let codex = by("codex");
         assert!(codex.installed());
         assert_eq!(codex.mcp, Wiring::Wired);

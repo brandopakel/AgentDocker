@@ -103,13 +103,25 @@ pub struct Daemon {
     /// The restricted container endpoint: where it serves, or why it does
     /// not. Grants need it; the host socket does not.
     restricted: Mutex<RestrictedEndpoint>,
-    /// Known agent processes nobody registered, from the last scan, so
-    /// `discover` and `runtimes` answer at once and a scan on the tick can
-    /// announce what appeared and what went.
     /// One scan at a time: the tick and an on-demand `discover` must not
-    /// interleave their reads and writes of the set above, or a process
-    /// could be announced twice or never.
-    scanning: tokio::sync::Mutex<()>,
+    /// interleave scans. A flag and notification allow callers to join a
+    /// pending scan without holding any lock across async work.
+    scanning: std::sync::atomic::AtomicBool,
+    scan_finished: Notify,
+}
+
+/// Release the scan slot and wake joiners on completion or cancellation.
+struct ScanGuard<'a> {
+    scanning: &'a std::sync::atomic::AtomicBool,
+    finished: &'a Notify,
+}
+
+impl Drop for ScanGuard<'_> {
+    fn drop(&mut self) {
+        self.scanning
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.finished.notify_waiters();
+    }
 }
 
 /// The last process scan.
@@ -682,7 +694,8 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
-            scanning: tokio::sync::Mutex::new(()),
+            scanning: std::sync::atomic::AtomicBool::new(false),
+            scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             watcher_attach: watch::channel(WatcherLink::Off).0,
@@ -1228,7 +1241,39 @@ impl Daemon {
     /// Serialize scans, then reconcile their results with the current registry
     /// in one synchronous transition. Registration may advance while ps runs.
     pub async fn scan_agents(&self) -> Result<Vec<DiscoveredProcess>, String> {
-        let _one_at_a_time = self.scanning.lock().await;
+        use std::sync::atomic::Ordering;
+        loop {
+            // Register before checking the flag so completion between the
+            // check and await cannot be missed.
+            let finished = self.scan_finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            if self
+                .scanning
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+            finished.await;
+            let state = lock(&self.state);
+            if let Some(error) = &state.discovered.error {
+                return Err(error.clone());
+            }
+            if state
+                .discovered
+                .at
+                .is_some_and(|at| at.elapsed() < DISCOVERY_FRESH)
+            {
+                return Ok(state.discovered.processes.clone());
+            }
+            // The previous owner was cancelled without a fresh result. Try
+            // to become the scanner instead of fabricating an empty result.
+        }
+        let _clear = ScanGuard {
+            scanning: &self.scanning,
+            finished: &self.scan_finished,
+        };
         self.apply_scan(self.scan().await)
     }
 
@@ -4120,6 +4165,37 @@ mod tests {
             cwd: None,
             project: None,
             started_at: Some(started_at),
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_discovery_joins_the_inflight_scan_and_preserves_its_failure() {
+        use std::sync::atomic::Ordering;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let row = discovery_row(123456, Utc::now());
+        for result in [Ok(vec![row]), Err("scan failed".to_owned())] {
+            assert!(!daemon.scanning.swap(true, Ordering::AcqRel));
+            let flight = ScanGuard {
+                scanning: &daemon.scanning,
+                finished: &daemon.scan_finished,
+            };
+            let joined = daemon.scan_agents();
+            tokio::pin!(joined);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut joined)
+                    .await
+                    .is_err()
+            );
+            let committed = daemon.apply_scan(result);
+            drop(flight);
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), joined)
+                    .await
+                    .unwrap(),
+                committed
+            );
+            assert!(!daemon.scanning.load(Ordering::Acquire));
         }
     }
 

@@ -9,6 +9,19 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// The complete Claude Code hook adapter, shared by installation and inventory.
+pub const CLAUDE_CODE_EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
+
+/// Events required for complete observation and lifecycle coverage.
+pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("PreToolUse", Some(CLAUDE_CODE_EDIT_MATCHER)),
+    ("PostToolUse", None),
+    ("Stop", None),
+    ("SessionEnd", None),
+];
+
 /// How a runtime registers MCP servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpWiring {
