@@ -81,6 +81,17 @@ fn tolerated(argv: &[&str]) -> Cmd {
     }
 }
 
+/// The socket an installed service is told to use: the one asked for, or
+/// — when the home is too long for a socket name and the daemon would
+/// pick a short directory by its environment — the path resolved here, so
+/// the service manager's environment cannot send the daemon elsewhere
+/// than the clients look.
+fn service_socket(home: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| (paths::socket_dir(home) != home).then(|| paths::socket_path(home)))
+}
+
 /// Everything the service definition needs to know.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -104,10 +115,12 @@ impl Layout {
         std::fs::create_dir_all(&home)?;
         let uid = std::fs::metadata(&home)?.uid();
         let user_home = std::env::home_dir().context("no home directory")?;
+        let home = home.canonicalize().unwrap_or(home);
+        let socket = service_socket(&home, socket);
         Ok(Self {
             agentd: agentd.canonicalize().unwrap_or(agentd),
-            home: home.canonicalize().unwrap_or(home),
-            socket: socket.map(Path::to_path_buf),
+            home,
+            socket,
             uid,
             user_home,
         })
@@ -416,6 +429,7 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
         if let Ok(Response::Pong {
             version,
             uptime_secs,
+            ..
         }) = client.call(&Request::Ping).await
         {
             println!("agentd {version} up {}", format::span_secs(uptime_secs));
@@ -506,15 +520,30 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
                 Ok(Response::Pong {
                     version,
                     uptime_secs,
-                }) => println!(
-                    "daemon    agentd {version} up {} at {}",
-                    format::span_secs(uptime_secs),
-                    socket.display()
-                ),
-                _ => println!(
-                    "daemon    not running (clients start it on demand at {})",
-                    socket.display()
-                ),
+                    restricted,
+                }) => {
+                    println!(
+                        "daemon    agentd {version} up {} at {}",
+                        format::span_secs(uptime_secs),
+                        socket.display()
+                    );
+                    match restricted {
+                        Some(path) => println!("container {}", path.display()),
+                        None => println!(
+                            "container endpoint off (see the daemon log); grants are refused"
+                        ),
+                    }
+                }
+                _ => {
+                    println!(
+                        "daemon    not running (clients start it on demand at {})",
+                        socket.display()
+                    );
+                    println!(
+                        "container {}",
+                        paths::container_socket(&layout.home).display()
+                    );
+                }
             }
             println!("log       {}", layout.log().display());
         }
@@ -534,6 +563,25 @@ mod tests {
             uid: 501,
             user_home: PathBuf::from("/Users/me"),
         }
+    }
+
+    #[test]
+    fn a_long_home_pins_the_resolved_socket_into_the_service() {
+        let short = PathBuf::from("/Users/me/.agentdocker");
+        assert_eq!(service_socket(&short, None), None);
+        assert_eq!(
+            service_socket(&short, Some(Path::new("/tmp/x.sock"))),
+            Some(PathBuf::from("/tmp/x.sock"))
+        );
+        let long = PathBuf::from(format!("/Users/me/{}", "d".repeat(paths::SOCKET_PATH_MAX)));
+        let pinned = service_socket(&long, None).expect("resolved for the service");
+        assert!(paths::fits_socket(&pinned));
+        assert!(pinned.ends_with("agentd.sock"));
+        let mut layout = layout();
+        layout.home = long;
+        layout.socket = Some(pinned.clone());
+        assert!(layout.argv().contains(&"--socket".to_owned()));
+        assert!(launchd_plist(&layout).contains(&pinned.to_string_lossy().into_owned()));
     }
 
     #[test]

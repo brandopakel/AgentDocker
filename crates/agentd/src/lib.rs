@@ -96,9 +96,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
 
+    let restricted = paths::container_socket(&daemon.home);
     let result = tokio::select! {
         served = server::serve(daemon.clone()) => served,
-        served = server::serve_restricted(daemon.clone()) => served,
+        () = server::restricted_endpoint(daemon.clone(), restricted.clone()) => Ok(()),
         () = shutdown_signal() => {
             info!("shutting down on signal");
             daemon.emit(EventKind::DaemonStopping { reason: "signal".to_owned() });
@@ -113,7 +114,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     daemon.stop_all().await;
     let _ = std::fs::remove_file(&daemon.socket);
-    let _ = std::fs::remove_file(agentdocker_core::paths::container_socket(&daemon.home));
+    let _ = std::fs::remove_file(&restricted);
     result
 }
 

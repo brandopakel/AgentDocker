@@ -389,6 +389,9 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    /// A part of the daemon is off — the restricted container endpoint
+    /// could not be served — so what needs it is refused, not broken.
+    Unavailable,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -451,6 +454,10 @@ pub enum Response {
     Pong {
         version: String,
         uptime_secs: u64,
+        /// The restricted container endpoint's socket while it is serving;
+        /// absent when it is off or still starting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restricted: Option<std::path::PathBuf>,
     },
     Agent {
         agent: AgentRecord,

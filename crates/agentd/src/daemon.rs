@@ -93,6 +93,17 @@ pub struct Daemon {
     /// from the next tick. Starts `Off`; the daemon's main says when a
     /// watcher is coming so registrations wait for it instead.
     watcher_attach: watch::Sender<WatcherLink>,
+    /// The restricted container endpoint: where it serves, or why it does
+    /// not. Grants need it; the host socket does not.
+    restricted: Mutex<RestrictedEndpoint>,
+}
+
+/// The restricted endpoint's state, as `ping` and `grant-access` see it.
+#[derive(Clone, Debug)]
+pub enum RestrictedEndpoint {
+    Starting,
+    On(PathBuf),
+    Off(String),
 }
 
 /// Whether registrations can ask the watcher to cover their checkout.
@@ -614,6 +625,7 @@ impl Daemon {
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             watcher_attach: watch::channel(WatcherLink::Off).0,
+            restricted: Mutex::new(RestrictedEndpoint::Starting),
         })
     }
 
@@ -726,6 +738,10 @@ impl Daemon {
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),
+                restricted: match self.restricted() {
+                    RestrictedEndpoint::On(socket) => Some(socket),
+                    _ => None,
+                },
             },
             Request::Run { spec } => self.run(spec).await,
             Request::Register { spec, pid } => self.register(spec, pid).await,
@@ -1267,6 +1283,23 @@ impl Daemon {
     pub fn watcher_off(&self, reason: String) {
         self.watcher_attach.send_replace(WatcherLink::Off);
         self.emit(EventKind::WatcherUnavailable { reason });
+    }
+
+    /// The restricted endpoint is serving on `socket`.
+    pub fn restricted_listening(&self, socket: PathBuf) {
+        *lock(&self.restricted) = RestrictedEndpoint::On(socket.clone());
+        self.emit(EventKind::RestrictedEndpointListening { socket });
+    }
+
+    /// The restricted endpoint could not be served; grants are refused
+    /// from here on and the host socket carries on.
+    pub fn restricted_unavailable(&self, reason: String) {
+        *lock(&self.restricted) = RestrictedEndpoint::Off(reason.clone());
+        self.emit(EventKind::RestrictedEndpointUnavailable { reason });
+    }
+
+    pub fn restricted(&self) -> RestrictedEndpoint {
+        lock(&self.restricted).clone()
     }
 
     /// Have the watcher cover every checkout a live agent works in, now:
