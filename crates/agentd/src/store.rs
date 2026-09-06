@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -167,6 +167,29 @@ pub struct ChangesQuery {
 }
 
 impl Store {
+    /// Container identity/status, exit lease cleanup and replay history commit together.
+    pub fn container_transition(
+        &self,
+        record: &AgentRecord,
+        leases: &[LeaseId],
+        journal: &[JournalEntry],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(record)?;
+        for id in leases {
+            self.conn
+                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+        }
+        for entry in journal {
+            self.insert_journal(entry)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// Commit acceptance and inherited observations in the same transaction.
     pub fn put_document_with_event<T: serde::Serialize + ?Sized>(
         &self,
@@ -388,10 +411,11 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1 | 2)) => {
+            Some(Ok(1..=4)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
-                // None. The daemon maps legacy file keys idempotently on load.
+                // None. v4 distinguishes container lifetime from host PIDs.
+                // The daemon maps legacy file keys idempotently on load.
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     params![SCHEMA_VERSION.to_string()],
@@ -401,6 +425,11 @@ impl Store {
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
             ),
         }
+        let had_fts: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='journal_fts')",
+            [],
+            |row| row.get(0),
+        )?;
         let fts = match conn.execute_batch(JOURNAL_FTS) {
             Ok(()) => true,
             Err(err) => {
@@ -408,6 +437,31 @@ impl Store {
                 false
             }
         };
+        if fts {
+            let complete: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='journal_fts_complete'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if !had_fts || complete.as_deref() != Some("1") {
+                let tx = conn.unchecked_transaction()?;
+                conn.execute(
+                    "INSERT INTO journal_fts(journal_fts) VALUES('delete-all')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO journal_fts(rowid, summary) SELECT id, summary FROM journal",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES('journal_fts_complete', '1')",
+                    [],
+                )?;
+                tx.commit()?;
+            }
+        }
         Ok(Self { conn, fts })
     }
 
@@ -811,6 +865,9 @@ impl Store {
                 "INSERT INTO journal_fts (rowid, summary) VALUES (?1, ?2)",
                 params![id, entry.summary],
             )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='journal_fts_complete'", [])?;
         }
         Ok(())
     }
@@ -856,8 +913,15 @@ impl Store {
                 " AND seq IN (SELECT seq FROM journal_paths WHERE project = ?1 AND (path = ?{exact} OR (path >= ?{lower} AND path < ?{upper})))"
             ));
         }
-        if let Some(grep) = &query.grep {
-            if self.fts {
+        if let Some(grep) = query
+            .grep
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            // FTS has no tokens for punctuation-only text. Match that literal
+            // text with LIKE whether or not FTS is available.
+            if self.fts && grep.chars().any(char::is_alphanumeric) {
                 // Quote the whole phrase so user text is never FTS syntax.
                 args.push(Box::new(format!("\"{}\"", grep.replace('"', "\"\""))));
                 sql.push_str(&format!(
@@ -901,6 +965,9 @@ impl Store {
                 "DELETE FROM journal_fts WHERE rowid IN (SELECT id FROM journal WHERE project = ?1 AND seq < ?2)",
                 params![project.as_str(), before],
             )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='journal_fts_complete'", [])?;
         }
         self.conn.execute(
             "DELETE FROM journal_paths WHERE project = ?1 AND seq < ?2",
@@ -1084,7 +1151,7 @@ mod tests {
     fn leases_round_trip() {
         let store = Store::in_memory().unwrap();
         let now = Utc::now();
-        let lease = Lease {
+        let mut lease = Lease {
             id: LeaseId::generate(),
             resource: ResourceKey::new("task:1"),
             holder: AgentId::from("a"),
@@ -1096,6 +1163,9 @@ mod tests {
         };
         store.upsert_lease(&lease).unwrap();
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
+        lease.change_seq = Some(42);
+        store.upsert_lease(&lease).unwrap();
+        assert_eq!(store.load_leases().unwrap(), [lease.clone()]);
         store.delete_lease(&lease.id).unwrap();
         assert!(store.load_leases().unwrap().is_empty());
     }
@@ -1200,6 +1270,29 @@ mod tests {
         assert_eq!(projects.len(), 2);
         assert_eq!(projects[Path::new("/repo")], "ccc");
         assert_eq!(projects[Path::new("/other")], "bbb");
+    }
+
+    #[test]
+    fn legacy_schemas_upgrade_to_container_lifetime_guard() {
+        for version in 1..=4 {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES('schema_version', ?1)",
+                [version.to_string()],
+            )
+            .unwrap();
+            let store = Store::init(conn).unwrap();
+            let version: String = store
+                .conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='schema_version'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(version, "5");
+        }
     }
 
     #[test]
@@ -1666,5 +1759,77 @@ mod tests {
         let oldest = page(Some(older[0]), 2);
         assert_eq!(oldest.len(), 1);
         assert!(page(Some(oldest[0]), 2).is_empty());
+    }
+
+    fn search_entry(seq: u64, summary: &str) -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "project":"search", "seq":seq, "at":Utc::now(), "agent_name":"writer",
+            "kind":"note", "summary":summary, "summary_source":"explicit"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn empty_and_punctuation_searches_agree_with_and_without_fts() {
+        let mut store = Store::in_memory().unwrap();
+        store
+            .append_journal(&search_entry(1, "100% ... _ done"))
+            .unwrap();
+        store
+            .append_journal(&search_entry(2, "ordinary text"))
+            .unwrap();
+        for term in ["", "  ", "%", "...", "_", "!"] {
+            let mut query = JournalQuery::new(ProjectId::from("search"), 50);
+            query.grep = Some(term.into());
+            let indexed = store.journal(&query).unwrap();
+            store.fts = false;
+            let fallback = store.journal(&query).unwrap();
+            store.fts = true;
+            assert_eq!(indexed, fallback, "{term:?}");
+            if term.trim().is_empty() {
+                assert_eq!(indexed.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn fts_rebuilds_after_fallback_writes_deletions_and_missing_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .append_journal(&search_entry(1, "old searchable"))
+            .unwrap();
+        let store = store.without_fts();
+        store.prune_journal(&ProjectId::from("search"), 2).unwrap();
+        store
+            .append_journal(&search_entry(2, "new searchable"))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let mut query = JournalQuery::new(ProjectId::from("search"), 50);
+        query.grep = Some("searchable".into());
+        assert_eq!(
+            store
+                .journal(&query)
+                .unwrap()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        // Losing an index while retaining the completion marker also rebuilds.
+        store.conn.execute("DROP TABLE journal_fts", []).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store
+                .journal(&query)
+                .unwrap()
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
     }
 }

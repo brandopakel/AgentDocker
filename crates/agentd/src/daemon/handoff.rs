@@ -3,6 +3,7 @@
 //! `resume` (in `recovery`), which is where ownership moves.
 use super::recovery::internal;
 use super::*;
+use agentdocker_core::container::ContainerEnvironment;
 use agentdocker_core::handoff::{BUNDLE_ROWS, HANDOFF_SCHEMA};
 use agentdocker_core::{Checkpoint, HandoffBundle};
 use agentdocker_host::command;
@@ -337,10 +338,13 @@ impl Daemon {
             Err(e) => return internal(e),
         }
         let now = Utc::now();
-        let project = state
-            .registry
-            .get(&agent)
+        let importer = state.registry.get(&agent).cloned();
+        let project = importer
+            .as_ref()
             .and_then(|r| r.project.as_ref().map(ProjectRef::id));
+        // Acceptance compares the checkpoint's environment with the
+        // accepting agent's; an imported bundle is bound to the importer's.
+        let environment = importer.as_ref().and_then(ContainerEnvironment::of);
         let mut bundle = match bundle.imported(agent.clone(), checkout.clone(), now) {
             Ok(bundle) => bundle,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
@@ -358,6 +362,7 @@ impl Daemon {
             version: bundle.version.clone(),
             accepted_by: None,
             release_leases: true,
+            environment,
         };
         let mut event = Event::new(
             EventKind::HandoffImported {

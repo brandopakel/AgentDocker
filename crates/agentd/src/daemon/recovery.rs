@@ -1,6 +1,7 @@
 //! Journal checkpoints are persisted before optional lease release. A replacement
 //! explicitly accepts only after content verification; acceptance never transfers locks.
 use super::*;
+use agentdocker_core::container::ContainerEnvironment;
 use agentdocker_core::{Checkpoint, ReadMark, Recovery, Validation};
 use agentdocker_host::content;
 use std::os::unix::process::CommandExt;
@@ -117,6 +118,10 @@ impl Daemon {
             next_steps,
             reads,
             version,
+            environment: state
+                .registry
+                .get(&agent)
+                .and_then(ContainerEnvironment::of),
             accepted_by: None,
             release_leases: release,
         };
@@ -213,11 +218,16 @@ impl Daemon {
                 "handoff is addressed to another agent",
             );
         }
+        let environment = state
+            .registry
+            .get(&agent)
+            .and_then(ContainerEnvironment::of);
+        let environment_matches = checkpoint.environment == environment;
         if acknowledge {
-            if !stale.is_empty() || !checkout_matches {
+            if !stale.is_empty() || !checkout_matches || !environment_matches {
                 return Response::error(
                     ErrorCode::Conflict,
-                    "handoff content changed; review it, reread, and create a new checkpoint before accepting",
+                    "handoff content or image environment changed; review it, reread, and create a new checkpoint before accepting",
                 );
             }
             if checkpoint.accepted_by.as_ref().is_some_and(|a| a != &agent) {
@@ -340,7 +350,10 @@ impl Daemon {
             .store
             .matching_validations(&checkpoint.checkout, &checkpoint.version)
         {
-            Ok(v) => v,
+            Ok(v) => v
+                .into_iter()
+                .filter(|v| checkout_matches && environment_matches && v.environment == environment)
+                .collect(),
             Err(e) => return internal(e),
         };
         Response::Recovery {
@@ -348,6 +361,7 @@ impl Daemon {
                 checkpoint,
                 stale,
                 checkout_matches,
+                environment_matches,
                 validations,
             },
         }
@@ -369,7 +383,7 @@ impl Daemon {
     }
 
     pub(super) async fn validate(
-        &self,
+        self: &Arc<Self>,
         reference: &str,
         command: Vec<String>,
         timeout_secs: u64,
@@ -388,6 +402,16 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
+        let container_record = self.container_record(&agent);
+        if container_record
+            .as_ref()
+            .is_some_and(|r| r.container.as_ref().unwrap().workspace.is_none())
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "image validation requires a mounted checkout; launch with --mount-checkout",
+            );
+        }
         let root = checkout.clone();
         let (before, head) = match tokio::task::spawn_blocking(move || {
             content::fingerprint(&root)
@@ -430,6 +454,9 @@ impl Daemon {
             timed_out: false,
             descendants_survived: false,
             log,
+            environment: container_record.as_ref().and_then(ContainerEnvironment::of),
+            container: None,
+            error: None,
         };
         {
             let mut state = lock(&self.state);
@@ -460,35 +487,49 @@ impl Daemon {
             state.next_seq += 1;
             let _ = state.events.send(event);
         }
-        let mut cmd = tokio::process::Command::new(&command[0]);
-        cmd.args(&command[1..])
-            .current_dir(&checkout)
-            .stdin(Stdio::null())
-            .stdout(output)
-            .stderr(error)
-            .kill_on_drop(true);
-        cmd.as_std_mut().process_group(0);
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) => return internal(e),
-        };
-        let pid = child.id().and_then(signal_pid).unwrap();
-        let mut group = ValidationGroup(Some(Pid::from_raw(-pid.as_raw())));
-        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await
-        {
-            Ok(Ok(status)) => validation.exit_code = status.code(),
-            Ok(Err(e)) => return internal(e),
-            Err(_) => {
-                validation.timed_out = true;
-                let _ = kill(group.0.unwrap(), Signal::SIGKILL);
-                let _ = child.wait().await;
+        if let Some(record) = container_record {
+            drop(output);
+            drop(error);
+            if let Err(message) = self
+                .validate_container(record, &mut validation, timeout_secs)
+                .await
+            {
+                // The durable runner deadline remains active if the engine is unavailable.
+                let _ = std::fs::write(&validation.log, &message);
+                validation.error = Some(message);
             }
+        } else {
+            let mut cmd = tokio::process::Command::new(&command[0]);
+            cmd.args(&command[1..])
+                .current_dir(&checkout)
+                .stdin(Stdio::null())
+                .stdout(output)
+                .stderr(error)
+                .kill_on_drop(true);
+            cmd.as_std_mut().process_group(0);
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(e) => return internal(e),
+            };
+            let pid = child.id().and_then(signal_pid).unwrap();
+            let mut group = ValidationGroup(Some(Pid::from_raw(-pid.as_raw())));
+            match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait())
+                .await
+            {
+                Ok(Ok(status)) => validation.exit_code = status.code(),
+                Ok(Err(e)) => return internal(e),
+                Err(_) => {
+                    validation.timed_out = true;
+                    let _ = kill(group.0.unwrap(), Signal::SIGKILL);
+                    let _ = child.wait().await;
+                }
+            }
+            if !validation.timed_out && kill(group.0.unwrap(), None).is_ok() {
+                validation.descendants_survived = true;
+                let _ = kill(group.0.unwrap(), Signal::SIGKILL);
+            }
+            group.0 = None;
         }
-        if !validation.timed_out && kill(group.0.unwrap(), None).is_ok() {
-            validation.descendants_survived = true;
-            let _ = kill(group.0.unwrap(), Signal::SIGKILL);
-        }
-        group.0 = None;
         validation.finished_at = Utc::now();
         validation.after = tokio::task::spawn_blocking(move || content::fingerprint(&checkout))
             .await
@@ -553,6 +594,7 @@ pub(super) fn internal(error: impl std::fmt::Display) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     async fn fixture(tmp: &tempfile::TempDir) -> (Arc<Daemon>, PathBuf) {
         let root = tmp.path().join("checkout");
         std::fs::create_dir(&root).unwrap();

@@ -28,23 +28,55 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y podman
           fi
-      - run: cargo build --locked --bin agentd
+      - run: cargo build --locked --workspace --bins
       - name: Build fixture and test real engine
+        shell: bash
         env:
           TEST_ENGINE: ${{ matrix.engine }}
+          AGENTDOCKER_NO_AUTOSTART: 1
         run: |
           "$TEST_ENGINE" version
-          "$TEST_ENGINE" build -t agentdocker-protocol-test:ci -f tests/containers/Containerfile tests/containers
           fixture=$(mktemp -d /tmp/ad-container-XXXXXX)
           mkdir -p artifacts
           target/debug/agentd --home "$fixture/state" --socket "$fixture/host.sock" > artifacts/container-daemon.log 2>&1 &
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" || true' EXIT
+          ready=false
           for attempt in $(seq 1 100); do
-            test -S "$fixture/state/container.sock" && break
+            if target/debug/agentdocker --socket "$fixture/host.sock" ping >/dev/null 2>&1 && test -S "$fixture/state/container.sock"; then
+              ready=true
+              break
+            fi
             sleep 0.1
           done
-          python3 tests/containers/smoke.py --engine "$TEST_ENGINE" --host-socket "$fixture/host.sock" --engine-socket "$fixture/state/container.sock" --root "$fixture" --image agentdocker-protocol-test:ci | tee artifacts/container-result.json
+          test "$ready" = true
+          target/debug/agentdocker --socket "$fixture/host.sock" image-build --json --engine "$TEST_ENGINE" tests/containers -f Containerfile > artifacts/image-build.json
+          image_id=$(python3 -c 'import json; print(json.load(open("artifacts/image-build.json"))["build"]["image_id"])')
+          python3 tests/containers/smoke.py --engine "$TEST_ENGINE" --host-socket "$fixture/host.sock" --engine-socket "$fixture/state/container.sock" --root "$fixture" --image "$image_id" | tee artifacts/container-result.json
+          kill "$daemon_pid"
+          wait "$daemon_pid"
+          target/debug/agentd --home "$fixture/state" --socket "$fixture/host.sock" >> artifacts/container-daemon.log 2>&1 &
+          daemon_pid=$!
+          ready=false
+          for attempt in $(seq 1 100); do
+            if target/debug/agentdocker --socket "$fixture/host.sock" ping >/dev/null 2>&1 && test -S "$fixture/state/container.sock"; then
+              ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          test "$ready" = true
+          target/debug/agentdocker --socket "$fixture/host.sock" images > artifacts/image-builds-restored.json
+          python3 -c 'import json; built=json.load(open("artifacts/image-build.json"))["build"]; restored=json.load(open("artifacts/image-builds-restored.json"))["builds"]; assert restored == [built], "image provenance did not survive restart"'
+          python3 tests/containers/lifecycle.py --engine "$TEST_ENGINE" --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root "$fixture/lifecycle" --result artifacts/lifecycle-result.json
+      - name: Managed workspace and image validation
+        shell: bash
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+          AGENTDOCKER_NO_AUTOSTART: 1
+        run: |
+          fixture=$(mktemp -d /tmp/ad-workspace-XXXXXX)
+          python3 tests/containers/workspace.py --engine "$TEST_ENGINE" --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root "$fixture/run" --result artifacts/workspace-result.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

@@ -51,7 +51,7 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 A failed SQLite write latches `storage_unavailable`: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported.
 
-Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 3 upgrades schemas 1 and 2 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 3, including dedicated process-group tracking and `stopping` status.
+Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 5 upgrades schemas 1 through 4 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 5, which preserves image-bound validation, runner deadlines, and container lifetime independently of host PIDs; process-group tracking and `stopping` status remain supported.
 
 On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
 
@@ -155,7 +155,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 
 ```json
 {"op":"claim","agent":"writer","resource":"path:/repo/src","mode":"exclusive","ttl_secs":300,"note":"refactoring"}
-{"type":"lease","lease":{"id":"3f1c...","resource":"path:/repo/src","holder":"9a2b...","mode":"exclusive","acquired_at":"...","expires_at":"...","note":"refactoring"}}
+{"type":"lease","lease":{"id":"3f1c...","resource":"path:/repo/src","holder":"9a2b...","mode":"exclusive","acquired_at":"...","change_seq":42,"expires_at":"...","note":"refactoring"}}
 ```
 
 | Request | Response | Notes |
@@ -167,7 +167,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
 | `authenticate {token}` | `ok` | restricted endpoint only; precedes one scoped request |
 | `ping` | `pong` | version, uptime, and `restricted`: the container endpoint's socket while it serves |
+| `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
+| `images` | `image_builds {builds}` | retained build evidence, including after restart |
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; with `spec.isolate` the agent first gets its own linked worktree under `<home>/worktrees/<project>/<name>` on branch `agent/<name>` (its id appended when that is taken) and runs there |
+| `run_container {spec, build, options?}` | `agent` | host-only; retained image with durable identity/intent; opt-in checkout/scoped endpoint mounts, Podman VM transport, and bridge networking |
+| `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
 | `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
@@ -197,7 +201,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `inbox {agent, drain?}` | `messages` | |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
-| `renew {agent, lease, ttl_secs?}` | `lease` | |
+| `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
 | `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
 | `release_all {agent, summary?, summary_source?}` | `leases` | every lease the agent holds; the reply lists them |
 | `journal_add {agent, summary}` | `journal_entry` | a note in the agent's project journal |
@@ -205,11 +209,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `journal_prune {project, before_seq}` | `pruned` | drops entries below `before_seq` |
 | `leases {agent?, resource?}` | `leases` | `resource` filter uses overlap, not equality; `file:` inputs resolve through the same physical checkout alias |
 | `events {replay?,ready?}` | optional `events_ready`, then stream of `event` or `lagged {skipped: u64}` | replays the last `replay` stored events, then live until the client disconnects |
-| `logs {agent, follow?, tail?}` | stream of `log`, then `end` | |
+| `logs {agent, follow?, tail?}` | stream of `log`, then `end` | containers: verified engine snapshot, max 10,000 lines/4 MiB, no follow |
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
 
-Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|unavailable|internal","message":"...","details":{...}?}`. `unavailable` is a part of the daemon that is off — the restricted container endpoint — refusing what needs it.
+Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|unavailable|engine_unavailable|build_failed|internal","message":"...","details":{...}?}`. `unavailable` is a part of the daemon that is off — the restricted container endpoint — refusing what needs it.
 
 ## Leases
 
@@ -240,11 +244,13 @@ Four destinations:
 
 **Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
-Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live messages/events; the CLI prints it on stderr and continues.
+Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
 
 ## Events
 
 `agent_created` (with the project id), `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `agent_vcs_changed`, `journal_appended`, `journal_read`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+
+`file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
 ## Process supervision
 
@@ -256,7 +262,7 @@ The host control socket is mode `0600` and trusts the owning user. The separate 
 
 ## Roadmap
 
-Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, managed VM transport and image-bound validation provenance remain planned. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
+Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop workspace transport remains unsupported. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
 ### The thesis
 
@@ -498,7 +504,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-Shipped events include `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The inbox notification uses the separate message kind `stale`.
+Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 Planned events: `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
@@ -561,3 +567,12 @@ New leases retain `change_seq`, the last assigned change sequence at acquisition
 `events {replay?,ready:true}` first returns `events_ready` after the live subscription is active, then sends replay and live events. The default `ready:false` retains the original response stream. `journal --follow` waits for readiness before its snapshot and deduplicates the tail against the greater of the requested `since_seq` and the last snapshot entry. A lagged stream exits with an error directing the reader to recover retained entries with `--since`.
 
 Scoped container clients may add notes as their bound agent and read the mapped checkout journal. A digest may advance only that agent's cursor. Other checkout roots, cursor impersonation and journal pruning remain forbidden on the restricted endpoint.
+
+Journal grep ignores empty/whitespace-only filters. Punctuation-only filters use literal substring matching with or without FTS5. The FTS completion marker forces a transactional rebuild after fallback writes or loss of the index. Journal display escapes stored control characters before adding structural digest newlines. `journal --new` defaults its reader to AGENTDOCKER_AGENT_ID when set, otherwise user.
+
+Managed container records add optional `container: {build, engine, connection, image_id, name, owner, id, intent, start_attempted, last_error}` to `AgentRecord`; legacy records omit it. Engine observations decide their lifetime, independent of any local CLI PID. See [managed container commands](CONTAINER-ENGINES.md#managed-container-commands) for intent persistence, recovery, shutdown and mount limitations.
+
+
+Managed `run_container` options are `mount_checkout` (default false), `podman_machine` (optional rootless VM name), and `network` (`none` default, or `bridge`). The CLI exposes `--mount-checkout`, `--podman-machine` and `--network`. Mounted workspace records retain checked paths and UID mapping plus a grant ID; raw credentials and SSH controls are excluded. Grant creation commits with `access_granted`; record/mount transitions use `container_updated`. Per-run transport handles are reconstructed from durable records and retired after confirmed exit. Transport errors never block a requested stop or establish exit.
+
+Container `validate` runs in a fresh image container with a read-only checkout, no coordination credential, and a persisted kill deadline. Its record commits before engine I/O. Container evidence requires positive exit, matching content and the retained image environment. `checkpoint` retains that environment; `recovery` adds `environment_matches`, returns usable validation only for matching current content/environment, and rejects acknowledgement on either mismatch. Integration also compares the validation environment to its target. See [CONTAINER-ENGINES.md](CONTAINER-ENGINES.md) for transport capabilities and command examples.

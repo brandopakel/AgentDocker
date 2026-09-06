@@ -135,7 +135,7 @@ impl JournalEntry {
             Some(branch) => format!("{} [{branch}]", self.agent_name),
             None => self.agent_name.clone(),
         };
-        match self.kind {
+        let line = match self.kind {
             JournalKind::Release => {
                 let named: Vec<String> = self
                     .paths
@@ -160,7 +160,16 @@ impl JournalEntry {
             JournalKind::Commit | JournalKind::Join | JournalKind::Leave | JournalKind::Handoff => {
                 format!("{who} {}", self.summary)
             }
+        };
+        let mut escaped = String::new();
+        for ch in line.chars() {
+            if ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}') {
+                escaped.extend(ch.escape_default());
+            } else {
+                escaped.push(ch);
+            }
         }
+        escaped
     }
 
     /// `line()` with a relative time in front: `- 4m ago   codex-1 …`.
@@ -216,11 +225,19 @@ impl JournalFilter {
                 },
                 _ => wanted.as_path(),
             };
-            if !entry.paths.iter().any(|p| p.starts_with(relative)) {
+            if !relative.as_os_str().is_empty()
+                && relative != Path::new(".")
+                && !entry.paths.iter().any(|p| p.starts_with(relative))
+            {
                 return false;
             }
         }
-        if let Some(grep) = &self.grep {
+        if let Some(grep) = self
+            .grep
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if !entry.summary.to_lowercase().contains(&grep.to_lowercase()) {
                 return false;
             }
@@ -259,7 +276,7 @@ pub struct Digest {
     /// The newest seq the digest accounts for; an advancing cursor moves
     /// here. Entries the branch filter hid count as seen too.
     pub head_seq: u64,
-    /// Entries rendered verbatim.
+    /// Entries selected for rendering; the final text may be truncated to fit.
     pub shown: usize,
     /// Older entries folded into the leading count line.
     pub collapsed: usize,
@@ -301,9 +318,10 @@ impl Reader<'_> {
 }
 
 /// Render what happened after `cursor` for a reader, within a budget:
-/// the newest entries verbatim, older ones folded into one leading count,
+/// the newest entries, older ones folded into one leading count,
 /// other branches folded into one trailing count. `entries` are oldest
-/// first; anything at or before the cursor is ignored.
+/// first; anything at or before the cursor is ignored. The rendered text is
+/// truncated if the newest entry or the counts alone exceed the character budget.
 pub fn digest(
     entries: &[JournalEntry],
     cursor: u64,
@@ -365,12 +383,23 @@ pub fn digest(
         text
     };
     // The newest entries stay; when the budget bites, the oldest fold
-    // first. One entry is always shown when any matched.
+    // first. Keep the newest entry when any matched, truncating the final text
+    // only if this entry or the counts alone cannot fit.
     let mut shown = matched.len().min(budget.max_entries.max(1));
     let mut text = render(shown);
     while text.chars().count() > budget.max_chars && shown > 1 {
         shown -= 1;
         text = render(shown);
+    }
+    if text.chars().count() > budget.max_chars {
+        let end = text
+            .char_indices()
+            .nth(budget.max_chars.saturating_sub(1))
+            .map_or(0, |(at, _)| at);
+        text.truncate(end);
+        if budget.max_chars > 0 {
+            text.push('…');
+        }
     }
     Digest {
         text,
@@ -895,7 +924,7 @@ mod tests {
         assert!(lines[2].contains("committed abc"));
         assert!(lines[3].contains("lexer done"));
 
-        // The character budget does the same, and always shows one.
+        // The character budget selects the newest entry and truncates if needed.
         let d = digest(
             &entries,
             0,
@@ -908,7 +937,8 @@ mod tests {
         );
         assert_eq!(d.shown, 1, "{}", d.text);
         assert_eq!(d.collapsed, 3);
-        assert!(d.text.contains("lexer done"));
+        assert_eq!(d.text.chars().count(), 120);
+        assert!(d.text.ends_with('…'));
         let d = digest(
             &entries,
             0,
@@ -919,7 +949,41 @@ mod tests {
             },
             now,
         );
-        assert_eq!(d.shown, 1, "one entry even when it does not fit");
+        assert_eq!(d.shown, 1, "the newest entry is selected even if truncated");
+        assert_eq!(d.text, "…");
+    }
+
+    #[test]
+    fn digest_caps_escaped_unicode_and_branch_only_text() {
+        let now = Utc::now();
+        let entries = [at(
+            1,
+            JournalKind::Note,
+            "writer",
+            Some("feature"),
+            &"界\n\u{1b}".repeat(1000),
+        )];
+        for branch in [None, Some("main")] {
+            for max_chars in [0, 1, 30, 120, 500] {
+                let d = digest(
+                    &entries,
+                    0,
+                    &Reader {
+                        branch,
+                        ..Reader::default()
+                    },
+                    DigestBudget {
+                        max_entries: 5,
+                        max_chars,
+                    },
+                    now,
+                );
+                assert!(d.text.chars().count() <= max_chars, "{}", d.text);
+                assert!(!d.text.contains('\u{1b}'));
+                assert_eq!(d.head_seq, 1);
+                assert_eq!(d.other_branches, usize::from(branch.is_some()));
+            }
+        }
     }
 
     #[test]
@@ -1079,5 +1143,23 @@ mod tests {
         assert_eq!(kept[0], PathBuf::from("f0000"));
         assert_eq!(JournalKind::parse("note"), Some(JournalKind::Note));
         assert_eq!(JournalKind::parse("nope"), None);
+    }
+    #[test]
+    fn stored_controls_cannot_inject_journal_lines_or_terminal_escapes() {
+        let mut entry = entry(
+            JournalKind::Note,
+            "hello\nforged\u{1b}[31m",
+            SummarySource::Explicit,
+        );
+        entry.agent_name = "agent\rforged".into();
+        entry.branch = Some("main\tbad".into());
+        let line = entry.line();
+        assert!(!line.chars().any(char::is_control));
+        assert!(line.contains("hello\\nforged\\u{1b}[31m"));
+        assert!(line.contains("agent\\rforged"));
+        assert!(line.contains("main\\tbad"));
+        entry.kind = JournalKind::Release;
+        entry.paths = vec!["src/evil\npath".into()];
+        assert!(!entry.line().chars().any(char::is_control));
     }
 }

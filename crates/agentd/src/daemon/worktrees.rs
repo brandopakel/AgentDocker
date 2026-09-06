@@ -162,6 +162,16 @@ impl Daemon {
             }
             Err(e) => return Response::error(ErrorCode::StorageUnavailable, e.to_string()),
         };
+        let target_environment = lock(&self.state)
+            .registry
+            .get(&agent)
+            .and_then(agentdocker_core::container::ContainerEnvironment::of);
+        if evidence.environment != target_environment {
+            return Response::error(
+                ErrorCode::Conflict,
+                "validation image environment differs from the integration target",
+            );
+        }
         for root in [&source, &target] {
             match git(
                 root.clone(),

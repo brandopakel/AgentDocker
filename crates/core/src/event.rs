@@ -11,6 +11,14 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    ContainerUpdated {
+        agent: AgentId,
+    },
+    ImageBuilt {
+        build: String,
+        engine: crate::ContainerEngine,
+        image_id: String,
+    },
     WorktreeCreated {
         agent: crate::AgentId,
         path: std::path::PathBuf,

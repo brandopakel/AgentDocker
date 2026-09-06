@@ -204,6 +204,33 @@ async fn stream_logs(
         Ok(id) => id,
         Err(response) => return write(writer, &response).await,
     };
+    if let Some(record) = daemon.container_record(&id) {
+        if follow {
+            return write(
+                writer,
+                &Response::error(
+                    ErrorCode::Invalid,
+                    "container logs currently support snapshots; omit --follow",
+                ),
+            )
+            .await;
+        }
+        match daemon.container_logs(record, tail).await {
+            Ok(text) => {
+                for line in text.lines() {
+                    write(writer, &Response::Log { line: line.into() }).await?;
+                }
+                return write(writer, &Response::End).await;
+            }
+            Err(e) => {
+                return write(
+                    writer,
+                    &Response::error(ErrorCode::EngineUnavailable, e.to_string()),
+                )
+                .await;
+            }
+        }
+    }
     let path = daemon.log_path(&id);
     let (mut offset, existing) = read_from(&path, 0).await;
     let lines: Vec<&str> = existing.lines().collect();
@@ -346,6 +373,20 @@ fn prepare_socket_parent(home: &Path, socket: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// A directory-mounted proxy reconnects to the restricted socket after daemon restart.
+pub(crate) async fn serve_workspace(listener: UnixListener, target: std::path::PathBuf) {
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let target = target.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_secs(30), async move {
+                let mut upstream = UnixStream::connect(target).await?;
+                tokio::io::copy_bidirectional(&mut stream, &mut upstream).await
+            })
+            .await;
+        });
+    }
 }
 
 async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {

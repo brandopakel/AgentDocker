@@ -38,6 +38,10 @@ pub struct DigestRequest {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    BuildImage {
+        spec: crate::ImageBuildSpec,
+    },
+    Images,
     WorktreeCreate {
         agent: String,
         path: String,
@@ -145,6 +149,17 @@ pub enum Request {
     /// Spawn `spec.command` and supervise it.
     Run {
         spec: crate::AgentSpec,
+    },
+    /// Launch a command inside a retained immutable image, with optional scoped mounts.
+    RunContainer {
+        spec: crate::AgentSpec,
+        build: String,
+        #[serde(default)]
+        options: crate::container::ContainerRunOptions,
+    },
+    /// Replace a managed container after observing its exit; returns a new agent ID.
+    RestartContainer {
+        agent: String,
     },
     /// Announce an already-running process (e.g. a Claude Code session).
     Register {
@@ -392,6 +407,8 @@ pub enum ErrorCode {
     /// A part of the daemon is off — the restricted container endpoint
     /// could not be served — so what needs it is refused, not broken.
     Unavailable,
+    EngineUnavailable,
+    BuildFailed,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -401,6 +418,12 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    ImageBuild {
+        build: crate::ImageBuild,
+    },
+    ImageBuilds {
+        builds: Vec<crate::ImageBuild>,
+    },
     Worktree {
         path: std::path::PathBuf,
         branch: String,
@@ -592,5 +615,23 @@ mod tests {
                 ready: false
             }
         );
+    }
+    #[test]
+    fn lease_acquisition_sequence_is_optional_on_wire_and_round_trips() {
+        let value = serde_json::json!({"id":"lease", "resource":"task:test", "holder":"agent", "mode":"exclusive",
+            "acquired_at":"2026-09-05T00:00:00Z", "expires_at":"2026-09-05T00:01:00Z"});
+        let mut lease: Lease = serde_json::from_value(value).unwrap();
+        assert_eq!(lease.change_seq, None);
+        assert!(
+            serde_json::to_value(&lease)
+                .unwrap()
+                .get("change_seq")
+                .is_none()
+        );
+        lease.change_seq = Some(42);
+        let response = Response::Lease { lease };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["lease"]["change_seq"], 42);
+        assert_eq!(serde_json::from_value::<Response>(wire).unwrap(), response);
     }
 }

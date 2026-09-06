@@ -34,3 +34,5 @@ pub use recovery::{Checkpoint, Recovery, Validation};
 
 pub mod handoff;
 pub use handoff::{HandoffBundle, HandoffDiff};
+pub mod container;
+pub use container::{ContainerEngine, ImageBuild, ImageBuildSpec};

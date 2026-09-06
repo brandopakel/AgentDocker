@@ -71,7 +71,7 @@ agentdocker logs -f writer
 agentdocker stop writer
 ```
 
-Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
+Host processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
 
 ```sh
 agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
@@ -248,6 +248,9 @@ A handoff is a checkpoint addressed to someone, with everything the daemon alrea
 
 Use `agentdocker run --isolate --name writer -- codex …` to launch an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
 
-`agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Managed Docker/Podman lifecycle and image-build provenance are the next engine-adapter work; this endpoint supports externally managed containers now. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
+`agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Docker/Podman image builds and managed lifecycle recovery are implemented: `image-build --engine docker|podman`, `run --image-build BUILD -- COMMAND`, `stop`, and `restart`. Managed commands default to no host mounts or networking. Opt into authenticated checkout mounts with `--mount-checkout`, Podman VM transport with `--podman-machine`, and networking with `--network bridge`. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
 
 Development verification uses `bash scripts/verify.sh check`. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md) for nextest, coverage, Criterion/Bencher, native socket load tests and bounded fuzzing.
+
+
+Managed image runs can opt into an authenticated checkout with `run --image-build BUILD --mount-checkout`; use `--podman-machine NAME` on macOS and `--network bridge` when network access is needed. Image validation runs in a fresh container with read-only source and records the image alongside the content fingerprint. Changed image or source prevents reuse during recovery. See [container engines](docs/CONTAINER-ENGINES.md#authenticated-managed-workspaces) for UID mapping, VM transport and test-output paths.

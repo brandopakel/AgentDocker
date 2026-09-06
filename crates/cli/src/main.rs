@@ -42,6 +42,28 @@ struct Cli {
 enum Command {
     /// Check that agentd is reachable.
     Ping,
+    /// Build an image with an explicit engine and retain immutable input provenance.
+    ImageBuild {
+        #[arg(long)]
+        /// Container engine: docker or podman (required; no fallback).
+        engine: agentdocker_core::ContainerEngine,
+        #[arg(long)]
+        /// Docker context or Podman connection name.
+        connection: Option<String>,
+        /// Local directory to capture as build context (maximum 256 MiB).
+        context: PathBuf,
+        #[arg(short = 'f', long, default_value = "Containerfile")]
+        /// Recipe path relative to the context.
+        file: PathBuf,
+        #[arg(long, default_value_t = 600)]
+        /// Engine build timeout in seconds (1–3600).
+        timeout: u64,
+        #[arg(long)]
+        /// Print the complete JSON record instead of only its ID.
+        json: bool,
+    },
+    /// List retained image build records, including finished sessions.
+    Images,
     /// Create a new linked checkout and branch without changing existing files.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -288,6 +310,8 @@ enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Replace a managed container after confirming exit; print the new agent ID.
+    Restart { agent: String },
     /// Forget a finished agent.
     Rm { agent: String },
     /// Show everything known about an agent, as JSON.
@@ -394,6 +418,18 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Run inside this recorded image build (mounts and network are opt-in).
+    #[arg(long)]
+    image_build: Option<String>,
+    /// Mount the checkout and a private authenticated coordination endpoint.
+    #[arg(long, requires = "image_build")]
+    mount_checkout: bool,
+    /// Running rootless Podman machine for macOS checkout/socket transport.
+    #[arg(long, requires = "mount_checkout")]
+    podman_machine: Option<String>,
+    /// Container networking (none or bridge); host networking is unavailable.
+    #[arg(long, requires = "image_build", value_parser = ["none", "bridge"])]
+    network: Option<String>,
     /// Agent name (default: generated).
     #[arg(long)]
     name: Option<String>,
@@ -485,7 +521,7 @@ struct JournalArgs {
     /// With --new: show entries from every branch instead of counting them.
     #[arg(long, requires = "new")]
     all_branches: bool,
-    /// With --new: read as this agent (id, prefix, or name) instead of as the human.
+    /// With --new: reader identity (defaults to AGENTDOCKER_AGENT_ID, then user).
     #[arg(long = "as", value_name = "AGENT", requires = "new")]
     reader: Option<String>,
 }
@@ -558,6 +594,33 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.socket);
 
     match cli.command {
+        Command::ImageBuild {
+            engine,
+            connection,
+            context,
+            file,
+            timeout,
+            json,
+        } => {
+            let context = std::env::current_dir()?.join(context);
+            let response = client
+                .call(&Request::BuildImage {
+                    spec: agentdocker_core::ImageBuildSpec {
+                        engine,
+                        connection,
+                        context,
+                        recipe: file,
+                        timeout_secs: timeout,
+                    },
+                })
+                .await?;
+            match response {
+                Response::ImageBuild { build } if !json => println!("{}", build.id),
+                response @ Response::ImageBuild { .. } => print_json(&response)?,
+                _ => bail!("unexpected image build response"),
+            }
+        }
+        Command::Images => print_json(&client.call(&Request::Images).await?)?,
         Command::Observe { agent, paths } => {
             print_json(&client.call(&Request::Observe { agent, paths }).await?)?;
         }
@@ -893,7 +956,22 @@ async fn main() -> Result<()> {
                 labels: parse_pairs(&args.labels)?,
                 isolate: args.isolate,
             };
-            if let Response::Agent { agent } = client.call(&Request::Run { spec }).await? {
+            let request = match args.image_build {
+                Some(build) => Request::RunContainer {
+                    spec,
+                    build,
+                    options: agentdocker_core::container::ContainerRunOptions {
+                        mount_checkout: args.mount_checkout,
+                        podman_machine: args.podman_machine,
+                        network: match args.network.as_deref().unwrap_or("none") {
+                            "bridge" => agentdocker_core::container::ContainerNetwork::Bridge,
+                            _ => agentdocker_core::container::ContainerNetwork::None,
+                        },
+                    },
+                },
+                None => Request::Run { spec },
+            };
+            if let Response::Agent { agent } = client.call(&request).await? {
                 println!("{}", agent.id);
             }
         }
@@ -926,6 +1004,13 @@ async fn main() -> Result<()> {
         }
         Command::Stop { agent, force } => {
             if let Response::Agent { agent } = client.call(&Request::Stop { agent, force }).await? {
+                println!("{}", agent.id);
+            }
+        }
+        Command::Restart { agent } => {
+            if let Response::Agent { agent } =
+                client.call(&Request::RestartContainer { agent }).await?
+            {
                 println!("{}", agent.id);
             }
         }
@@ -1159,7 +1244,10 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                 grep: None,
                 limit: args.limit,
                 digest: Some(agentdocker_core::DigestRequest {
-                    reader: args.reader.unwrap_or_else(|| "user".to_owned()),
+                    reader: args
+                        .reader
+                        .or_else(|| std::env::var("AGENTDOCKER_AGENT_ID").ok())
+                        .unwrap_or_else(|| "user".to_owned()),
                     max_entries: args.limit,
                     max_chars: 100_000,
                     all_branches: args.all_branches,

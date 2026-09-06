@@ -205,6 +205,9 @@ pub struct AgentRecord {
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
+    /// Engine identity and intent for a managed container; never a host PID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<crate::container::ManagedContainer>,
     /// The project derived from `spec.workdir` when the agent was created;
     /// `None` when there was no working directory to derive it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,6 +234,7 @@ impl AgentRecord {
             process_started_at: None,
             process_group: None,
             managed,
+            container: None,
             project: None,
             vcs: None,
             created_at: now,
@@ -265,5 +269,15 @@ mod tests {
     fn status_serialises_with_state_tag() {
         let json = serde_json::to_string(&AgentStatus::Exited { code: Some(1) }).unwrap();
         assert_eq!(json, r#"{"state":"exited","code":1}"#);
+    }
+
+    #[test]
+    fn legacy_agent_records_omit_container_identity() {
+        let record = AgentRecord::new(AgentSpec::default(), true, Utc::now());
+        let json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("container").is_none());
+        let restored: AgentRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, record);
+        assert!(restored.container.is_none());
     }
 }
