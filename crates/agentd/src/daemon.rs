@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
+use agentdocker_core::paths;
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
     Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
@@ -42,6 +43,7 @@ mod containers;
 mod handoff;
 mod images;
 mod recovery;
+mod relay;
 mod transport;
 mod working;
 mod worktrees;
@@ -91,6 +93,8 @@ pub struct Daemon {
     /// Asks the watcher to flush pending observations now; set once the
     /// watcher runs. Never held across an await.
     watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
+    container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
+    container_slots: Arc<tokio::sync::Semaphore>,
     /// Asks the watcher to reconcile its watches now, so a checkout is
     /// covered from the moment its first agent is registered rather than
     /// from the next tick. Starts `Off`; the daemon's main says when a
@@ -107,8 +111,6 @@ pub struct Daemon {
     /// interleave their reads and writes of the set above, or a process
     /// could be announced twice or never.
     scanning: tokio::sync::Mutex<()>,
-    container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
-    container_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// The last process scan.
@@ -132,11 +134,17 @@ pub enum RestrictedEndpoint {
 /// Whether registrations can ask the watcher to cover their checkout.
 #[derive(Clone)]
 enum WatcherLink {
-    /// No watcher runs: tests, or it failed to start.
+    /// Explicitly embedded without a watcher (unit tests).
     Off,
+    Unavailable(String),
     /// One is being spawned; wait for it rather than skip it.
     Starting,
-    On(mpsc::Sender<oneshot::Sender<()>>),
+    On(mpsc::Sender<WatcherAttachment>),
+}
+
+pub(crate) struct WatcherAttachment {
+    pub checkout: PathBuf,
+    pub ack: oneshot::Sender<Result<(), String>>,
 }
 
 /// One synchronous transition owns memory, persistence and publication.
@@ -672,12 +680,12 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
-            watcher_attach: watch::channel(WatcherLink::Off).0,
-            restricted: Mutex::new(RestrictedEndpoint::Starting),
             discovered: Mutex::new(Discovered::default()),
             scanning: tokio::sync::Mutex::new(()),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
+            watcher_attach: watch::channel(WatcherLink::Off).0,
+            restricted: Mutex::new(RestrictedEndpoint::Starting),
         })
     }
 
@@ -923,12 +931,10 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
         let mut record = AgentRecord::new(spec, true, Utc::now());
-        let mut worktree: Option<PathBuf> = None;
         if record.spec.isolate {
             match self.isolate(&record).await {
                 Ok(path) => {
                     record.spec.workdir = Some(path.clone());
-                    worktree = Some(path);
                 }
                 Err(response) => return *response,
             }
@@ -937,19 +943,26 @@ impl Daemon {
         let vcs = Self::vcs_for(record.spec.workdir.clone()).await;
         record.project = project;
         record.vcs = vcs;
-        let record = match lock(&self.state).insert_record(record) {
+        let inserted = lock(&self.state).insert_record(record.clone());
+        let record = match inserted {
             Response::Agent { agent } => agent,
-            other => return other,
+            other => {
+                self.cleanup_isolate(&record).await;
+                return other;
+            }
         };
-        if let Some(path) = worktree {
-            lock(&self.state).emit(EventKind::WorktreeCreated {
-                agent: record.id.clone(),
-                path,
-            });
-        }
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
-            self.ensure_watched().await;
+            if let Err(reason) = self.ensure_watched(&record).await {
+                self.mark_exited(
+                    &record.id,
+                    AgentStatus::Failed {
+                        reason: reason.clone(),
+                    },
+                );
+                self.cleanup_isolate(&record).await;
+                return Response::error(ErrorCode::Unavailable, reason);
+            }
         }
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
@@ -991,6 +1004,7 @@ impl Daemon {
                         reason: format!("{err:#}"),
                     },
                 );
+                self.cleanup_isolate(&record).await;
                 Response::error(ErrorCode::Internal, format!("{err:#}"))
             }
         }
@@ -1017,14 +1031,41 @@ impl Daemon {
         // the checkout is watched by the time it goes out.
         if let Response::Agent { agent } = &response {
             if watchable(agent) {
-                self.ensure_watched().await;
+                if let Err(reason) = self.ensure_watched(agent).await {
+                    // An externally started process may already be writing. Keep its
+                    // identity and protection, but do not report coverage as successful.
+                    return Response::error(
+                        ErrorCode::Unavailable,
+                        format!(
+                            "agent {} registered but checkout coverage is unavailable: {reason}",
+                            agent.id
+                        ),
+                    );
+                }
             }
         }
         response
     }
 
+    async fn cleanup_isolate(&self, record: &AgentRecord) {
+        if !record.spec.isolate {
+            return;
+        }
+        let Some(path) = &record.spec.workdir else {
+            return;
+        };
+        let (worktree_removed, branch_removed, reason) = worktrees::cleanup_unstarted(record).await;
+        self.emit(EventKind::WorktreeCleanup {
+            agent: record.id.clone(),
+            path: path.clone(),
+            worktree_removed,
+            branch_removed,
+            reason,
+        });
+    }
+
     /// A linked worktree of the agent's repository, made for it under the
-    /// daemon's home, on a branch named after it: `agent/<name>`, or with
+    /// daemon's sibling worktree directory, on a branch named after it: `agent/<name>`, or with
     /// its id appended when that is taken by an earlier run.
     async fn isolate(&self, record: &AgentRecord) -> Result<PathBuf, Box<Response>> {
         let invalid = |text: &str| Box::new(Response::error(ErrorCode::Invalid, text));
@@ -1050,7 +1091,7 @@ impl Daemon {
                 "agent name `{name}` cannot name a worktree and branch: use letters, digits, '-', '_' and '.', not starting with '-' or '.', without '..' or a '.lock' ending"
             )));
         }
-        let dir = self.home.join("worktrees").join(base.id().short());
+        let dir = paths::worktree_dir(&self.home).join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
                 ErrorCode::Internal,
@@ -1074,6 +1115,10 @@ impl Daemon {
             match worktrees::add_worktree(root.clone(), &path, &branch).await {
                 Ok(()) => {
                     info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    self.emit(EventKind::WorktreeCreated {
+                        agent: record.id.clone(),
+                        path: path.clone(),
+                    });
                     return Ok(path);
                 }
                 Err(response) => last = Some(response),
@@ -1153,6 +1198,7 @@ impl Daemon {
             };
             before_seq = Some(oldest);
             changes.extend(page);
+            tokio::task::yield_now().await;
         }
         let mut overlaps = agentdocker_core::overlaps(&changes);
         if let Some((_, checkout)) = mine {
@@ -1429,14 +1475,15 @@ impl Daemon {
     }
 
     /// Let the watcher hand us its reconcile channel.
-    pub fn set_watcher_attach(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
+    pub(crate) fn set_watcher_attach(&self, sender: mpsc::Sender<WatcherAttachment>) {
         self.watcher_attach.send_replace(WatcherLink::On(sender));
         self.emit(EventKind::WatcherStarted);
     }
 
     /// The watcher could not start after all; stop waiting for it.
     pub fn watcher_off(&self, reason: String) {
-        self.watcher_attach.send_replace(WatcherLink::Off);
+        self.watcher_attach
+            .send_replace(WatcherLink::Unavailable(reason.clone()));
         self.emit(EventKind::WatcherUnavailable { reason });
     }
 
@@ -1461,8 +1508,14 @@ impl Daemon {
     /// registration awaits this so the agent's first edit is never made in
     /// the gap before the next reconcile tick. Bounded, and a no-op when no
     /// watcher runs.
-    async fn ensure_watched(&self) {
-        let _ = tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
+    async fn ensure_watched(&self, record: &AgentRecord) -> Result<(), String> {
+        let checkout = record
+            .project
+            .as_ref()
+            .ok_or("agent has no watchable checkout")?
+            .dir()
+            .to_path_buf();
+        tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
             let mut link = self.watcher_attach.subscribe();
             let sender = match link
                 .wait_for(|link| !matches!(link, WatcherLink::Starting))
@@ -1470,16 +1523,22 @@ impl Daemon {
             {
                 Ok(link) => match &*link {
                     WatcherLink::On(sender) => sender.clone(),
-                    _ => return,
+                    WatcherLink::Off => return Ok(()),
+                    WatcherLink::Unavailable(reason) => return Err(reason.clone()),
+                    WatcherLink::Starting => unreachable!(),
                 },
-                Err(_) => return,
+                Err(_) => return Err("watcher stopped during startup".into()),
             };
             let (ack, done) = oneshot::channel();
-            if sender.send(ack).await.is_ok() {
-                let _ = done.await;
-            }
+            sender
+                .send(WatcherAttachment { checkout, ack })
+                .await
+                .map_err(|_| "watcher stopped before attachment".to_string())?;
+            done.await
+                .map_err(|_| "watcher stopped before confirming coverage".to_string())?
         })
-        .await;
+        .await
+        .map_err(|_| "watcher did not confirm checkout coverage within 500 ms".to_string())?
     }
 
     /// Only path leases need pending filesystem observations for their summary.
@@ -4870,7 +4929,8 @@ mod tests {
             &repo,
             &["commit", "-q", "--allow-empty", "-m", "root"]
         ));
-        let daemon = open(&dir);
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
         let home = register_in(&daemon, "home", &repo).await;
 
         let mut command = spec("writer");
@@ -4890,7 +4950,7 @@ mod tests {
             .workdir
             .clone()
             .expect("workdir moved to the worktree");
-        let worktrees = project::canonical(&dir.path().join("worktrees"));
+        let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
         assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
         assert!(worktree.ends_with("writer"), "{}", worktree.display());
         assert!(worktree.join(".git").exists(), "a linked worktree");
@@ -4978,6 +5038,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn launch_refuses_failed_or_unconfirmed_checkout_coverage() {
+        if !have_git() {
+            return;
+        }
+        for failure in ["startup", "attachment", "timeout"] {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            assert!(git(dir.path(), &repo, &["init", "-q"]));
+            assert!(git(
+                dir.path(),
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", "root"]
+            ));
+            let daemon = open(&dir);
+            daemon.expect_watcher();
+            let (tx, mut rx) = mpsc::channel::<WatcherAttachment>(1);
+            let responder = if failure == "startup" {
+                daemon.watcher_off("startup failed".into());
+                None
+            } else if failure == "attachment" {
+                daemon.set_watcher_attach(tx);
+                let expected = project::canonical(&repo);
+                Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    assert_eq!(request.checkout, expected);
+                    request
+                        .ack
+                        .send(Err("watch installation failed".into()))
+                        .unwrap();
+                }))
+            } else {
+                None
+            };
+            let mut command = spec("blocked-writer");
+            command.workdir = Some(repo.clone());
+            command.command = vec!["sh".into(), "-c".into(), "touch should-not-exist".into()];
+            let response = daemon.handle(Request::Run { spec: command }).await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::Unavailable,
+                        ..
+                    }
+                ),
+                "{failure}: {response:?}"
+            );
+            assert!(!repo.join("should-not-exist").exists());
+            assert!(lock(&daemon.state).supervised.is_empty());
+            assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_isolated_launches_clean_up_only_unchanged_worktrees() {
+        if !have_git() {
+            return;
+        }
+        for failure in ["duplicate", "watcher", "edited"] {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            assert!(git(dir.path(), &repo, &["init", "-q"]));
+            assert!(git(
+                dir.path(),
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", "root"]
+            ));
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let mut responder = None;
+            if failure == "duplicate" {
+                register_in(&daemon, "blocked", &repo).await;
+            } else if failure == "watcher" {
+                daemon.watcher_off("cannot start".into());
+            } else {
+                let (tx, mut rx) = mpsc::channel::<WatcherAttachment>(1);
+                daemon.set_watcher_attach(tx);
+                responder = Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    std::fs::write(request.checkout.join("keep-me"), "user edit").unwrap();
+                    request.ack.send(Err("attachment failed".into())).unwrap();
+                }));
+            }
+            let mut command = spec("blocked");
+            command.isolate = true;
+            command.workdir = Some(repo.clone());
+            command.command = vec!["sh".into(), "-c".into(), "touch should-not-run".into()];
+            assert!(matches!(
+                daemon.handle(Request::Run { spec: command }).await,
+                Response::Error { .. }
+            ));
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+            let events = daemon.recent_events(30);
+            let (path, removed) = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::WorktreeCleanup {
+                        path,
+                        worktree_removed,
+                        ..
+                    } => Some((path.clone(), *worktree_removed)),
+                    _ => None,
+                })
+                .expect("cleanup is observable");
+            assert!(!path.join("should-not-run").exists());
+            if failure == "edited" {
+                assert!(!removed);
+                assert_eq!(
+                    std::fs::read_to_string(path.join("keep-me")).unwrap(),
+                    "user edit"
+                );
+            } else {
+                assert!(removed, "{failure}");
+                assert!(!path.exists());
+                assert!(
+                    git(dir.path(), &repo, &["branch", "agent/blocked"]),
+                    "failed branch was removed and its name is reusable"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn overlap_names_paths_changed_in_two_checkouts() {
         if !have_git() {
             return;
@@ -4990,7 +5180,8 @@ mod tests {
         assert!(git(dir.path(), &repo, &["init", "-q"]));
         assert!(git(dir.path(), &repo, &["add", "."]));
         assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
-        let daemon = open(&dir);
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
         daemon.expect_watcher();
         tokio::spawn(crate::watcher::run(
             daemon.clone(),

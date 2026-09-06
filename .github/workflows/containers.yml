@@ -77,6 +77,14 @@ jobs:
         run: |
           fixture=$(mktemp -d /tmp/ad-workspace-XXXXXX)
           python3 tests/containers/workspace.py --engine "$TEST_ENGINE" --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root "$fixture/run" --result artifacts/workspace-result.json
+      - name: Engine-volume socket relay
+        shell: bash
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+          AGENTDOCKER_NO_AUTOSTART: 1
+        run: |
+          fixture=$(mktemp -d /tmp/ad-relay-XXXXXX)
+          python3 tests/containers/workspace.py --relay --engine "$TEST_ENGINE" --daemon target/debug/agentd --cli target/debug/agentdocker --context tests/containers --root "$fixture/run" --result artifacts/relay-result.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

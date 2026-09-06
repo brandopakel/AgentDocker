@@ -3,7 +3,6 @@
 //! `resume` (in `recovery`), which is where ownership moves.
 use super::recovery::internal;
 use super::*;
-use agentdocker_core::container::ContainerEnvironment;
 use agentdocker_core::handoff::{BUNDLE_ROWS, HANDOFF_SCHEMA};
 use agentdocker_core::{Checkpoint, HandoffBundle};
 use agentdocker_host::command;
@@ -199,6 +198,7 @@ impl Daemon {
             next_steps: checkpoint.next_steps.clone(),
             checkout: checkpoint.checkout.clone(),
             version: checkpoint.version.clone(),
+            environment: checkpoint.environment.clone(),
             vcs: record.vcs.clone(),
             leases,
             transfer_leases,
@@ -290,6 +290,13 @@ impl Daemon {
         }
         // The bounds this daemon's own bundles and checkpoints keep, before
         // anything is written.
+        if bundle.from_name.len() > 256 || bundle.version.len() > 256 || !bundle.fits_import_limit()
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "bundle sender/version or total serialized size exceeds the import limit",
+            );
+        }
         let notes = bundle.task.len()
             + bundle.note.as_ref().map_or(0, String::len)
             + bundle
@@ -338,13 +345,10 @@ impl Daemon {
             Err(e) => return internal(e),
         }
         let now = Utc::now();
-        let importer = state.registry.get(&agent).cloned();
-        let project = importer
-            .as_ref()
+        let project = state
+            .registry
+            .get(&agent)
             .and_then(|r| r.project.as_ref().map(ProjectRef::id));
-        // Acceptance compares the checkpoint's environment with the
-        // accepting agent's; an imported bundle is bound to the importer's.
-        let environment = importer.as_ref().and_then(ContainerEnvironment::of);
         let mut bundle = match bundle.imported(agent.clone(), checkout.clone(), now) {
             Ok(bundle) => bundle,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
@@ -360,9 +364,9 @@ impl Daemon {
             next_steps: bundle.next_steps.clone(),
             reads: bundle.read_set.clone(),
             version: bundle.version.clone(),
+            environment: bundle.environment.clone(),
             accepted_by: None,
             release_leases: true,
-            environment,
         };
         let mut event = Event::new(
             EventKind::HandoffImported {
@@ -468,6 +472,75 @@ mod tests {
             Response::Messages { messages } => messages,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn imported_image_handoff_preserves_provenance_and_refuses_native_acceptance() {
+        use agentdocker_core::container::{ContainerEnvironment, ContainerNetwork, ImageInputs};
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Handoff { mut bundle } = daemon
+            .handle(Request::Handoff {
+                agent: "sender".into(),
+                to: None,
+                task: None,
+                note: None,
+                transfer_leases: false,
+                key: None,
+            })
+            .await
+        else {
+            panic!("export failed")
+        };
+        bundle.environment = Some(ContainerEnvironment {
+            inputs: Some(ImageInputs {
+                context_version: "input".into(),
+                recipe_version: "recipe".into(),
+                os: "linux".into(),
+                architecture: "arm64".into(),
+                variant: None,
+            }),
+            image_id: "sha256:immutable".into(),
+            build: "foreign-id".into(),
+            engine: agentdocker_core::ContainerEngine::Podman,
+            connection: Some("foreign-connection".into()),
+            network: ContainerNetwork::None,
+            user: Some("1000:1000".into()),
+            env: Default::default(),
+        });
+        let other = tempfile::tempdir().unwrap();
+        let (elsewhere, _) = fixture(&other).await;
+        let Response::Handoff { bundle: imported } =
+            elsewhere.import("recipient", bundle.clone()).await
+        else {
+            panic!("import failed")
+        };
+        assert_eq!(imported.environment, bundle.environment);
+        let Response::Recovery { recovery } =
+            elsewhere.resume("recipient", &imported.id, false).await
+        else {
+            panic!("preview failed")
+        };
+        assert_eq!(recovery.checkpoint.environment, bundle.environment);
+        assert!(recovery.checkout_matches);
+        assert!(!recovery.environment_matches);
+        assert!(matches!(
+            elsewhere.resume("recipient", &imported.id, true).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        drop(elsewhere);
+        let restored =
+            Arc::new(Daemon::open(other.path().join("state"), other.path().join("sock")).unwrap());
+        let saved: Checkpoint = lock(&restored.state)
+            .store
+            .document("checkpoint", &imported.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.environment, bundle.environment);
+        assert!(saved.accepted_by.is_none());
     }
 
     #[tokio::test]
@@ -588,6 +661,7 @@ mod tests {
                 ..
             }
         ));
+        let later = claim(&daemon, "sender", "task:acquired-after-handoff").await;
         // The recipient can: leases move, reads seed, cursor follows.
         let Response::Recovery { recovery } = daemon.resume("recipient", &bundle.id, true).await
         else {
@@ -599,7 +673,14 @@ mod tests {
         assert_eq!(moved[0].holder, accepted_by);
         assert_eq!(moved[0].id, held.id);
         assert_eq!(moved[0].note.as_deref(), Some("mine"));
-        assert!(holders(&daemon, "sender").await.is_empty());
+        assert_eq!(
+            holders(&daemon, "sender")
+                .await
+                .iter()
+                .map(|l| &l.id)
+                .collect::<Vec<_>>(),
+            vec![&later.id]
+        );
         assert!(matches!(daemon.reads("recipient"), Response::Reads { reads } if reads.len() == 1));
         let events = daemon.recent_events(100);
         assert!(
@@ -650,6 +731,7 @@ mod tests {
         let after = holders(&daemon, "recipient").await;
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].id, held.id);
+        assert_eq!(holders(&daemon, "sender").await[0].id, later.id);
     }
 
     #[tokio::test]
@@ -754,6 +836,21 @@ mod tests {
                 ..
             }
         ));
+        for field in ["sender", "version", "total"] {
+            let mut oversized = bundle.clone();
+            match field {
+                "sender" => oversized.from_name = "x".repeat(257),
+                "version" => oversized.version = "x".repeat(257),
+                _ => oversized.note = Some("x".repeat(agentdocker_core::handoff::IMPORT_BYTES + 1)),
+            }
+            assert!(matches!(
+                elsewhere.import("recipient", oversized).await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
         let mut escaping = bundle.clone();
         escaping.read_set = vec![mark(bundle.checkout.join("../../etc/passwd"))];
         assert!(matches!(
