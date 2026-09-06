@@ -427,6 +427,9 @@ struct RunArgs {
     /// Running rootless Podman machine for macOS checkout/socket transport.
     #[arg(long, requires = "mount_checkout")]
     podman_machine: Option<String>,
+    /// Use an engine-volume coordination socket (automatic on Docker Desktop).
+    #[arg(long, requires = "mount_checkout")]
+    engine_relay: bool,
     /// Container networking (none or bridge); host networking is unavailable.
     #[arg(long, requires = "image_build", value_parser = ["none", "bridge"])]
     network: Option<String>,
@@ -963,6 +966,7 @@ async fn main() -> Result<()> {
                     spec,
                     build,
                     options: agentdocker_core::container::ContainerRunOptions {
+                        engine_relay: args.engine_relay,
                         mount_checkout: args.mount_checkout,
                         podman_machine: args.podman_machine,
                         network: match args.network.as_deref().unwrap_or("none") {

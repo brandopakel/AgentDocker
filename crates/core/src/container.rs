@@ -123,6 +123,9 @@ pub struct ManagedContainer {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerRunOptions {
+    /// Use an engine-volume socket and a CLI stream relay across a VM boundary.
+    #[serde(default)]
+    pub engine_relay: bool,
     #[serde(default)]
     pub mount_checkout: bool,
     #[serde(default)]
@@ -169,10 +172,22 @@ pub struct GitMounts {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceAccess {
+    #[serde(default)]
+    pub relay: Option<EngineRelay>,
     pub grant: String,
     pub directory: PathBuf,
     pub socket_directory: PathBuf,
     pub vm: Option<PodmanVm>,
+}
+
+/// Rebuildable transport resources, separate from the agent writer's identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineRelay {
+    pub name: String,
+    pub volume: String,
+    pub build: ImageBuild,
+    #[serde(default)]
+    pub retired: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

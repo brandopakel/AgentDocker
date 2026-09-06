@@ -59,7 +59,9 @@ impl Daemon {
             listener: None,
             bridge: None,
         };
-        if access.vm.is_none() {
+        if access.relay.is_some() {
+            transport.listener = Some(super::relay::start(record.clone(), socket).await?);
+        } else if access.vm.is_none() {
             let path = access.socket_directory.join("endpoint.sock");
             if path.exists() {
                 if tokio::net::UnixStream::connect(&path).await.is_ok() {
@@ -89,8 +91,33 @@ impl Daemon {
             .insert(record.id.clone(), transport);
         Ok(())
     }
-    pub(super) fn retire_transport(&self, id: &AgentId) {
+    pub(super) async fn retire_transport(&self, id: &AgentId) -> Result<(), ContainerError> {
         let old = lock(&self.state).transports.remove(id);
         drop(old);
+        if let Some(record) = self
+            .container_record(id)
+            .filter(super::relay::needs_cleanup)
+        {
+            tokio::task::spawn_blocking(move || agentdocker_host::relay::cleanup(&record))
+                .await
+                .map_err(|e| ContainerError(e.to_string()))??;
+            self.update_container(id, |record| {
+                record
+                    .container
+                    .as_mut()
+                    .unwrap()
+                    .workspace
+                    .as_mut()
+                    .unwrap()
+                    .access
+                    .as_mut()
+                    .unwrap()
+                    .relay
+                    .as_mut()
+                    .unwrap()
+                    .retired = true
+            })?;
+        }
+        Ok(())
     }
 }
