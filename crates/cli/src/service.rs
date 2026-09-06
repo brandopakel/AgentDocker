@@ -498,7 +498,8 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             if installed(&layout, macos) {
                 execute(&start_plan(&layout, macos), false)?;
             } else {
-                Client::new(socket.clone())
+                layout
+                    .client()
                     .with_start_timeout(Some(Duration::from_secs(5)))
                     .call(&Request::Ping)
                     .await?;
