@@ -147,6 +147,20 @@ pub fn event_line(event: &Event) -> String {
         EventKind::HandoffAccepted { agent, checkpoint } => {
             format!("{agent} accepted handoff {checkpoint}")
         }
+        EventKind::HandoffSent { from, to, handoff } => match to {
+            Some(to) => format!("{} handed off {handoff} to {}", from.short(), to.short()),
+            None => format!("{} exported handoff {handoff}", from.short()),
+        },
+        EventKind::HandoffImported { agent, handoff } => {
+            format!("{} imported handoff {handoff}", agent.short())
+        }
+        EventKind::LeaseTransferred { lease, from, to } => format!(
+            "lease moved      {} {} from {} to {}",
+            lease.id,
+            resource(&lease.resource),
+            from.short(),
+            to.short()
+        ),
         EventKind::ValidationStarted { agent, validation } => {
             format!("{agent} started validation {validation}")
         }
@@ -155,6 +169,15 @@ pub fn event_line(event: &Event) -> String {
             validation,
             passed,
         } => format!("{agent} validation {validation} passed={passed}"),
+        EventKind::WatcherStarting => "watcher starting".to_owned(),
+        EventKind::WatcherStarted => "watcher started".to_owned(),
+        EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),
+        EventKind::RestrictedEndpointListening { socket } => {
+            format!("container endpoint at {}", socket.display())
+        }
+        EventKind::RestrictedEndpointUnavailable { reason } => {
+            format!("container endpoint off ({reason})")
+        }
         EventKind::WatcherGap { reason } => {
             format!("watcher coverage gap: {reason}; verify content with stale")
         }

@@ -133,6 +133,9 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
             .and_then(Value::as_array)
             .ok_or_else(|| ContainerError("container omitted mount evidence".into()))?;
         let mut expected = vec![(&w.checkout, "/workspace", !w.read_only)];
+        if let Some(g) = &w.git {
+            expected.push((&g.common, "/run/agentdocker-git", !w.read_only));
+        }
         if let Some(a) = &w.access {
             expected.extend([
                 (&a.directory, "/run/agentdocker-auth", false),
@@ -232,6 +235,22 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
                 if w.read_only { ",readonly" } else { "" }
             ),
         ]);
+        if let Some(g) = &w.git {
+            args.extend([
+                "--mount".into(),
+                format!(
+                    "type=bind,src={},dst=/run/agentdocker-git{}",
+                    g.common.display(),
+                    if w.read_only { ",readonly" } else { "" }
+                ),
+            ]);
+            let directory = Path::new("/run/agentdocker-git").join(&g.directory);
+            args.extend([
+                format!("--env=GIT_DIR={}", directory.display()),
+                "--env=GIT_COMMON_DIR=/run/agentdocker-git".into(),
+                "--env=GIT_WORK_TREE=/workspace".into(),
+            ]);
+        }
         if let Some(a) = &w.access {
             args.extend([
                 "--mount".into(),
@@ -360,6 +379,7 @@ mod tests {
             chrono::Utc::now(),
         );
         r.container = Some(ManagedContainer {
+            inputs: None,
             engine,
             connection: Some("chosen".into()),
             build: "build".into(),
@@ -422,6 +442,7 @@ mod tests {
         use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
         let mut record = record(ContainerEngine::Docker);
         record.container.as_mut().unwrap().workspace = Some(ContainerWorkspace {
+            git: None,
             checkout: "/checkout".into(),
             user: "1000:1000".into(),
             keep_id: false,
@@ -458,6 +479,55 @@ mod tests {
                 "{path}"
             );
         }
+        let mut extra_volume = raw.clone();
+        extra_volume[0]["Mounts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Type":"volume","Name":"unapproved","Destination":"/data","RW":true}));
+        assert!(parse_inspection(&record, &extra_volume.to_string()).is_err());
+        record
+            .container
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .git = Some(agentdocker_core::container::GitMounts {
+            directory: "worktrees/worker".into(),
+            common: "/repo/.git".into(),
+        });
+        assert!(
+            parse_inspection(&record, &raw.to_string()).is_err(),
+            "Git metadata mount is required"
+        );
+        raw[0]["Mounts"].as_array_mut().unwrap().push(json!({"Type":"bind","Source":"/repo/.git","Destination":"/run/agentdocker-git","RW":true}));
+        assert!(parse_inspection(&record, &raw.to_string()).is_ok());
+        record
+            .container
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .read_only = true;
+        assert!(
+            parse_inspection(&record, &raw.to_string()).is_err(),
+            "validation cannot use writable Git or source"
+        );
+        raw[0]["Mounts"][0]["RW"] = json!(false);
+        raw[0]["Mounts"][3]["RW"] = json!(false);
+        assert!(parse_inspection(&record, &raw.to_string()).is_ok());
+        let git_args = create_args(&record);
+        assert!(
+            git_args
+                .iter()
+                .any(|a| a == "--env=GIT_DIR=/run/agentdocker-git/worktrees/worker")
+        );
+        assert!(
+            git_args
+                .iter()
+                .any(|a| a == "type=bind,src=/repo/.git,dst=/run/agentdocker-git,readonly")
+        );
         raw[0]["Mounts"].as_array_mut().unwrap().push(
             json!({"Type":"bind","Source":"/engine.sock","Destination":"/engine.sock","RW":true}),
         );

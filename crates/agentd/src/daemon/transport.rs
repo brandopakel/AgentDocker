@@ -35,6 +35,14 @@ impl Daemon {
         else {
             return Ok(());
         };
+        let socket = match self.restricted() {
+            RestrictedEndpoint::On(socket) => socket,
+            _ => {
+                return Err(ContainerError(
+                    "authenticated workspace endpoint is not serving".into(),
+                ));
+            }
+        };
         let old = {
             let mut state = lock(&self.state);
             if state
@@ -65,13 +73,11 @@ impl Daemon {
                 tokio::net::UnixListener::bind(&path).map_err(|e| ContainerError(e.to_string()))?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| ContainerError(e.to_string()))?;
-            let socket = agentdocker_core::paths::container_socket(&self.home);
             transport.listener = Some(tokio::spawn(async move {
                 crate::server::serve_workspace(listener, socket).await;
             }));
         } else {
             let access: WorkspaceAccess = access.clone();
-            let socket = agentdocker_core::paths::container_socket(&self.home);
             transport.bridge = tokio::task::spawn_blocking(move || {
                 agentdocker_host::transport::bridge(&access, &socket)
             })

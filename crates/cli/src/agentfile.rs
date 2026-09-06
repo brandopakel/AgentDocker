@@ -52,6 +52,9 @@ pub struct AgentEntry {
     /// Relative paths resolve against the Agentfile's directory.
     #[serde(default)]
     pub workdir: Option<PathBuf>,
+    /// Give the agent its own linked worktree and branch when it runs.
+    #[serde(default)]
+    pub isolate: bool,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -135,6 +138,7 @@ impl Agentfile {
                     workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                     env: entry.env.clone(),
                     labels,
+                    isolate: entry.isolate,
                 }
             })
             .collect();

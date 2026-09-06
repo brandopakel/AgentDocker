@@ -147,6 +147,52 @@ enum Command {
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
     },
+    /// Hand this agent's work to another: a checkpoint addressed to it, with leases, reads, changes, diff, unread messages and journal bundled around it.
+    Handoff {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// The recipient: id, name or unique prefix.
+        to: String,
+        #[arg(long)]
+        /// What the recipient should continue.
+        task: Option<String>,
+        #[arg(long)]
+        /// Anything the daemon does not already know.
+        note: Option<String>,
+        #[arg(long)]
+        /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
+        transfer_leases: bool,
+        #[arg(long)]
+        /// Retries with the same key return the same bundle.
+        key: Option<String>,
+    },
+    /// List handoff bundles sent by or addressed to an agent; all of them without --as.
+    Handoffs {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix.
+        agent: Option<String>,
+    },
+    /// Write this agent's work as a bundle nobody is addressed to yet, as JSON on stdout, to carry to another host.
+    Export {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        #[arg(long)]
+        /// What whoever imports it should continue.
+        task: Option<String>,
+        #[arg(long)]
+        /// Anything the daemon does not already know.
+        note: Option<String>,
+    },
+    /// Bring an exported bundle here for an agent, from a file or stdin; it is then accepted with `resume`.
+    Import {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Bundle JSON file (default: stdin).
+        file: Option<PathBuf>,
+    },
     /// Execute a check and retain its command, log, and before/after code fingerprints.
     Validate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -219,6 +265,18 @@ enum Command {
         agent: Option<String>,
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: usize,
+    },
+    /// Paths changed in more than one checkout of a project: what will collide when the branches meet.
+    Overlap {
+        /// Project: an id prefix or a path inside it (default: current directory).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only ledger entries after this sequence number.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only overlaps involving this agent's checkout.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
     },
     /// Who changed a file, oldest first.
     Blame {
@@ -391,6 +449,9 @@ struct RunArgs {
     /// Label for organising agents.
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+    /// Give the agent its own linked worktree and branch (agent/<name>) under the daemon home, so its edits are a layer of their own.
+    #[arg(long)]
+    isolate: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -614,6 +675,61 @@ async fn main() -> Result<()> {
         Command::Checkpoints { agent } => {
             print_json(&client.call(&Request::Checkpoints { agent }).await?)?
         }
+        Command::Handoff {
+            agent,
+            to,
+            task,
+            note,
+            transfer_leases,
+            key,
+        } => {
+            let request = Request::Handoff {
+                agent,
+                to: Some(to),
+                task,
+                note,
+                transfer_leases,
+                key,
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => println!("{}", bundle.id),
+                other => bail!("unexpected reply to handoff: {other:?}"),
+            }
+        }
+        Command::Handoffs { agent } => {
+            print_json(&client.call(&Request::Handoffs { agent }).await?)?
+        }
+        Command::Export { agent, task, note } => {
+            let request = Request::Handoff {
+                agent,
+                to: None,
+                task,
+                note,
+                transfer_leases: false,
+                key: None,
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => print_json(&bundle)?,
+                other => bail!("unexpected reply to export: {other:?}"),
+            }
+        }
+        Command::Import { agent, file } => {
+            let raw = match &file {
+                Some(path) => std::fs::read_to_string(path)
+                    .with_context(|| format!("cannot read {}", path.display()))?,
+                None => std::io::read_to_string(std::io::stdin())?,
+            };
+            let bundle: agentdocker_core::HandoffBundle =
+                serde_json::from_str(&raw).context("not a handoff bundle")?;
+            let request = Request::Import {
+                agent,
+                bundle: Box::new(bundle),
+            };
+            match client.call(&request).await? {
+                Response::Handoff { bundle } => println!("{}", bundle.id),
+                other => bail!("unexpected reply to import: {other:?}"),
+            }
+        }
         Command::Validations { agent } => {
             print_json(&client.call(&Request::Validations { agent }).await?)?
         }
@@ -730,6 +846,7 @@ async fn main() -> Result<()> {
             if let Response::Pong {
                 version,
                 uptime_secs,
+                ..
             } = client.call(&Request::Ping).await?
             {
                 println!("agentd {version} up {}", format::span_secs(uptime_secs));
@@ -781,6 +898,20 @@ async fn main() -> Result<()> {
                 print_changes(&client, &changes).await?;
             }
         }
+        Command::Overlap {
+            project,
+            since,
+            agent,
+        } => {
+            let request = Request::Overlap {
+                project: project_selector(project.as_deref().unwrap_or(".")),
+                since_seq: since,
+                agent,
+            };
+            if let Response::Overlap { overlaps } = client.call(&request).await? {
+                print_overlaps(&client, &overlaps).await?;
+            }
+        }
         Command::Blame { path, limit } => {
             let absolute = absolute_path(&path);
             let project = PathBuf::from(&absolute)
@@ -823,6 +954,7 @@ async fn main() -> Result<()> {
                 workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: parse_pairs(&args.env)?,
                 labels: parse_pairs(&args.labels)?,
+                isolate: args.isolate,
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -857,6 +989,7 @@ async fn main() -> Result<()> {
                 workdir: Some(workdir.canonicalize().unwrap_or(workdir)),
                 env: BTreeMap::new(),
                 labels: parse_pairs(&args.labels)?,
+                isolate: false,
             };
             let request = Request::Register {
                 spec,
@@ -1436,6 +1569,69 @@ fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
                 .with_context(|| format!("expected KEY=VALUE, got `{pair}`"))
         })
         .collect()
+}
+
+/// One block per path: the path, then each checkout that changed it with
+/// who did it there, how often, and how recently.
+async fn print_overlaps(client: &Client, overlaps: &[agentdocker_core::Overlap]) -> Result<()> {
+    if overlaps.is_empty() {
+        println!("no path was changed in more than one checkout");
+        return Ok(());
+    }
+    let names: BTreeMap<String, String> = match client
+        .call(&Request::List {
+            all: true,
+            project: None,
+            labels: BTreeMap::new(),
+        })
+        .await
+    {
+        Ok(Response::Agents { agents }) => agents
+            .into_iter()
+            .map(|a| (a.id.to_string(), a.spec.name))
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    let now = chrono::Utc::now();
+    for overlap in overlaps {
+        println!("{}", overlap.path.display());
+        for party in &overlap.parties {
+            let who = if party.agents.is_empty() {
+                "external".to_owned()
+            } else {
+                party
+                    .agents
+                    .iter()
+                    .map(|a| {
+                        names
+                            .get(a.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| a.short().to_owned())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let head = party
+                .head
+                .as_deref()
+                .map(|h| format!("@{}", h.chars().take(7).collect::<String>()))
+                .unwrap_or_default();
+            let kind = if party.worktree.is_some() {
+                "worktree"
+            } else {
+                "checkout"
+            };
+            println!(
+                "    {} {}{}  {who} ×{}  {}",
+                kind,
+                party.checkout.display(),
+                head,
+                party.changes,
+                agentdocker_core::journal::ago(now, party.last_at)
+            );
+        }
+    }
+    Ok(())
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {

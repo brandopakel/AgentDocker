@@ -120,12 +120,29 @@ impl Daemon {
         if let Some(connection) = connection {
             build.spec.connection = Some(connection);
         }
-        let project = self.project_for(spec.workdir.clone(), true).await;
-        let vcs = Self::vcs_for(spec.workdir.clone()).await;
+        if spec.isolate && !options.mount_checkout {
+            return Response::error(
+                ErrorCode::Invalid,
+                "container isolation requires --mount-checkout",
+            );
+        }
+        if options.mount_checkout && !matches!(self.restricted(), RestrictedEndpoint::On(_)) {
+            return Response::error(
+                ErrorCode::Unavailable,
+                "authenticated workspace endpoint is not serving",
+            );
+        }
         let mut record = AgentRecord::new(spec, true, Utc::now());
-        record.project = project;
-        record.vcs = vcs;
+        if record.spec.isolate {
+            record.spec.workdir = match self.isolate(&record).await {
+                Ok(path) => Some(path),
+                Err(response) => return *response,
+            };
+        }
+        record.project = self.project_for(record.spec.workdir.clone(), true).await;
+        record.vcs = Self::vcs_for(record.spec.workdir.clone()).await;
         record.container = Some(ManagedContainer {
+            inputs: Some(agentdocker_core::container::ImageInputs::from(&build)),
             build: build.id,
             engine: build.spec.engine,
             connection: build.spec.connection,
@@ -146,13 +163,13 @@ impl Daemon {
             let socket = self.socket.clone();
             record = match tokio::task::spawn_blocking(move || {
                 agentdocker_host::transport::prepare(&mut record, &home, &socket)?;
-                Ok::<_, ContainerError>(record)
+                Ok::<_, agentdocker_host::transport::TransportError>(record)
             })
             .await
             {
                 Ok(Ok(record)) => record,
-                Ok(Err(e)) => return Response::error(ErrorCode::Invalid, e.to_string()),
-                Err(e) => return Response::error(ErrorCode::EngineUnavailable, e.to_string()),
+                Ok(Err(e)) => return Response::error(e.code, e.message),
+                Err(e) => return Response::error(ErrorCode::Internal, e.to_string()),
             };
             if let Err(e) = self.workspace_grant(&mut record) {
                 return Response::error(ErrorCode::StorageUnavailable, e.to_string());
@@ -172,6 +189,26 @@ impl Daemon {
                 other => return other,
             }
         };
+        if record.spec.isolate {
+            lock(&self.state).emit(EventKind::WorktreeCreated {
+                agent: record.id.clone(),
+                path: record.spec.workdir.clone().unwrap(),
+            });
+        }
+        if watchable(&record) {
+            if let Err(reason) = self.ensure_watched(&record).await {
+                lock(&self.state).container_busy.remove(&record.id);
+                // No create has been attempted; this is a failed preparation, not
+                // an assertion about an engine-managed writer's exit.
+                let _ = self.update_container(&record.id, |r| {
+                    r.status = AgentStatus::Failed {
+                        reason: reason.clone(),
+                    };
+                    r.container.as_mut().unwrap().last_error = Some(reason.clone());
+                });
+                return Response::error(ErrorCode::Unavailable, reason);
+            }
+        }
         if let Err(e) = self.drive_container(record.id.clone(), true).await {
             return Response::error(
                 ErrorCode::EngineUnavailable,
@@ -243,7 +280,9 @@ impl Daemon {
             );
         }
         let c = record.container.unwrap();
-        self.run_container_on(record.spec, c.build, c.options, c.connection)
+        let mut spec = record.spec;
+        spec.isolate = false;
+        self.run_container_on(spec, c.build, c.options, c.connection)
             .await
     }
 
@@ -552,6 +591,7 @@ impl Daemon {
     ) -> Result<(), String> {
         let mut spec = parent.spec.clone();
         spec.name = format!("validation-{}", validation.id);
+        spec.isolate = false;
         spec.command = validation.command.clone();
         let mut runner = AgentRecord::new(spec, true, Utc::now());
         runner.project = parent.project.clone();
@@ -574,6 +614,7 @@ impl Daemon {
         if let Response::Error { message, .. } = response {
             return Err(message);
         }
+        let mut poll = std::time::Duration::from_millis(100);
         loop {
             let record = self.current_container(&id).map_err(|e| e.to_string())?;
             if let AgentStatus::Exited { code } = record.status {
@@ -593,7 +634,15 @@ impl Daemon {
                 std::fs::write(&validation.log, logs).map_err(|e| e.to_string())?;
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let remaining = record
+                .container
+                .as_ref()
+                .unwrap()
+                .deadline
+                .map(|deadline| (deadline - Utc::now()).to_std().unwrap_or_default())
+                .unwrap_or(poll);
+            tokio::time::sleep(poll.min(remaining)).await;
+            poll = (poll * 2).min(std::time::Duration::from_secs(2));
             self.drive_container(id.clone(), false)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -725,6 +774,44 @@ mod tests {
             panic!("claim failed")
         };
         lease
+    }
+
+    #[tokio::test]
+    async fn unavailable_endpoint_refuses_mounted_launch_before_engine_or_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        daemon.restricted_unavailable("test endpoint stopped".into());
+        let response = daemon
+            .run_container(
+                AgentSpec {
+                    name: "worker".into(),
+                    command: vec!["sh".into()],
+                    workdir: Some(tmp.path().into()),
+                    ..Default::default()
+                },
+                "build".into(),
+                ContainerRunOptions {
+                    mount_checkout: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Unavailable,
+                ..
+            }
+        ));
+        assert!(lock(&fake.actions).is_empty());
+        assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+        assert!(!agentdocker_core::paths::workspace_dir(tmp.path()).exists());
+        assert!(matches!(
+            daemon.handle(Request::Ping).await,
+            Response::Pong { .. }
+        ));
     }
 
     #[tokio::test]

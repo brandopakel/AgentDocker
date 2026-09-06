@@ -86,6 +86,7 @@ mod tests {
             .with_timezone(&Utc);
         let mut record = AgentRecord::new(AgentSpec::default(), true, now);
         record.container = Some(ManagedContainer {
+            inputs: None,
             build: "build".into(),
             engine: ContainerEngine::Docker,
             connection: Some("local".into()),

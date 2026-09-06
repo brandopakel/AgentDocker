@@ -9,7 +9,7 @@ podman build -t agentdocker-protocol-test:local -f tests/containers/Containerfil
 
 Run an isolated native daemon, then `python3 tests/containers/smoke.py --engine podman --host-socket <host.sock> --engine-socket <container.sock-as-seen-by-engine> --root <shared-test-directory> --image agentdocker-protocol-test:local`. The test registers its own agents and grants, and revokes/deregisters them on completion. It retains only nonsecret fixtures. It checks authentication, impersonation, traversal, host-admin denial, read → change → stale → reread, physical alias conflict and revocation without early lease loss. Output records the selected engine and built image ID.
 
-On native Linux the engine socket path is the daemon home's `container.sock`. The fixture disables SELinux labeling for its test-owned mounts; production adapters must choose an explicit labeling policy. No host control or Docker/Podman engine socket is mounted.
+On native Linux the engine socket path is the daemon home's `container.sock`, or — for a home path too long for a socket name — the `container.sock` that `agentdocker daemon status` reports. The fixture disables SELinux labeling for its test-owned mounts; production adapters must choose an explicit labeling policy. No host control or Docker/Podman engine socket is mounted.
 
 On macOS, bind mounting a host Unix socket through the VM filesystem is not assumed to work. The development check used a dedicated Podman VM and an SSH reverse Unix-socket forward of **only** `container.sock` to `/tmp/ad-container-e2e.sock` in that VM. The checkout/token paths were under Podman's shared `/private` directory. Use `podman machine inspect` for that machine's SSH port/key and `ssh -N -R <vm-socket>:<host-container.sock> ...` with a verified host key and `ExitOnForwardFailure=yes`. Keep the bridge alive for the test and close it afterward. Never forward `host.sock`.
 
@@ -23,3 +23,5 @@ python3 tests/containers/workspace.py --engine podman --daemon target/debug/agen
 ```
 
 On macOS, add `--machine NAME` for a running rootless Podman machine whose connection matches the build. Use a short fixture root because Unix sockets have pathname limits. The fixture exercises AgentDocker's managed SSH forward; SSH credentials and control files never enter the container. It removes only fixture-owned, label-verified containers and stops its daemon. It retains test files/logs and cached images; the caller owns VM startup/shutdown. Docker Desktop transport is unsupported.
+
+The managed workspace fixture also uses a deliberately long daemon home to exercise short private socket paths, starts an isolated image worker that immediately edits a file, checks the resulting ledger observation and Git status, validates with read-only Git metadata, and resumes an image handoff after restart. An identical rebuild with a different local build ID is accepted; changed source blocks lease transfer until restored.

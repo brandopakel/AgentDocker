@@ -27,6 +27,7 @@ subprocess.run(['git','init','-q',str(checkout)],check=True)
 (checkout / '.gitignore').write_text('response.json\nrequest.json\nheartbeat\n')
 subprocess.run(['git','-C',str(checkout),'add','.'],check=True)
 subprocess.run(['git','-C',str(checkout),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture'],check=True)
+home = root/('state-'+80*'x')
 host = root/'host.sock'
 log = (root/'daemon.log').open('ab')
 daemon = None
@@ -57,7 +58,7 @@ def wait(action, predicate, seconds=40):
 
 def start():
     global daemon
-    daemon=subprocess.Popen([str(Path(a.daemon).resolve()),'--home',str(root/'state'),'--socket',str(host)],stdout=log,stderr=subprocess.STDOUT)
+    daemon=subprocess.Popen([str(Path(a.daemon).resolve()),'--home',str(home),'--socket',str(host)],stdout=log,stderr=subprocess.STDOUT)
     wait(lambda:rpc({'op':'ping'}),lambda r:r['type']=='pong')
 
 def inspect(agent): return expect(rpc({'op':'inspect','agent':agent}),'agent')['agent']
@@ -122,7 +123,7 @@ try:
     worker=launch('workspace-worker',build)
     wid=worker['id']
     wait(lambda:(checkout/'heartbeat').read_text(),bool)
-    token=root/'state'/'mounts'/wid/'token'
+    token=Path(worker['container']['workspace']['access']['directory'])/'token'
     assert token.stat().st_mode & 0o777 == 0o600
     assert token.read_text() not in json.dumps(worker)
     assert expect(scoped({'op':'ping'}),'pong')
@@ -173,7 +174,7 @@ try:
     runner=remember(runners[0])
     daemon.kill();daemon.wait(timeout=20);daemon=None
     try: pending.result(timeout=10)
-    except (OSError,ValueError): pass
+    except (OSError,ValueError,concurrent.futures.TimeoutError): pass
     pool.shutdown(wait=True)
     start()
     retired=wait(lambda:inspect(runner['id']),lambda r:r['status']['state']=='exited')
@@ -208,6 +209,57 @@ try:
     expect(rpc({'op':'revoke_access','grant':other['container']['workspace']['access']['grant']}),'ok')
     assert expect(scoped({'op':'ping'}),'error')['code']=='forbidden'
     results.append('image/build environment gates recovery and revocation is enforced')
+    # Combine the managed engine with linked worktrees, first-write watching and handoff.
+    git_context=root/'git-image'
+    shutil.copytree(Path(a.context).resolve(),git_context)
+    with (git_context/'Containerfile').open('a') as recipe:
+        recipe.write('\nRUN apk add --no-cache git\n')
+    git_spec={'engine':a.engine,'context':str(git_context),'recipe':'Containerfile','timeout_secs':600}
+    git_build=expect(rpc({'op':'build_image','spec':git_spec}),'image_build')['build']
+    options={'mount_checkout':True,'podman_machine':a.machine,'network':'none'}
+    original=(checkout/'source').read_text()
+    isolated=remember(expect(rpc({'op':'run_container','build':git_build['id'],'options':options,'spec':{
+        'name':'isolated-writer','workdir':str(checkout),'isolate':True,
+        'command':['python3','-u','-c',"from pathlib import Path; import time; Path('source').write_text('isolated first write'); time.sleep(600)"]}}),'agent')['agent'])
+    isolated_root=Path(isolated['spec']['workdir'])
+    assert not isolated_root.is_relative_to(home)
+    wait(lambda:(isolated_root/'source').read_text(),lambda text:text=='isolated first write')
+    assert (checkout/'source').read_text()==original
+    active_container=isolated['container']['id']
+    assert expect(scoped({'op':'ping'}),'pong')
+    status=engine('container','exec',active_container,'git','--no-optional-locks','status','--porcelain').decode()
+    assert ' M source' in status,status
+    rows=wait(lambda:rpc({'op':'changes','project':str(isolated_root),'path':'source'}).get('changes',[]),
+        lambda rows:any(r.get('checkout')==str(isolated_root) and r['kind']=='modified' for r in rows))
+    checked=expect(rpc({'op':'validate','agent':isolated['id'],'command':['git','--no-optional-locks','status','--porcelain'],'timeout_secs':20}),'validation')
+    assert checked['passed'],checked
+    assert ' M source' in Path(checked['validation']['log']).read_text()
+    results.append('isolated image checkout records its first write and supports Git plus read-only validation')
+
+    rebuilt=expect(rpc({'op':'build_image','spec':git_spec}),'image_build')['build']
+    assert rebuilt['id']!=git_build['id'] and rebuilt['image_id']==git_build['image_id']
+    recipient=remember(expect(rpc({'op':'run_container','build':rebuilt['id'],'options':options,'spec':{
+        'name':'image-recipient','workdir':str(isolated_root),'command':['python3','-u','-c',WORKER]}}),'agent')['agent'])
+    held=expect(rpc({'op':'claim','agent':isolated['id'],'resource':'task:integrated-handoff','ttl_secs':300}),'lease')['lease']
+    bundle=expect(rpc({'op':'handoff','agent':isolated['id'],'to':recipient['id'],'task':'finish isolated work','transfer_leases':True}),'handoff')['bundle']
+    assert bundle['schema']==2 and bundle['environment']['inputs']['context_version']==git_build['context_version']
+    assert bundle['environment']['image_id']==git_build['image_id']
+    daemon.kill();daemon.wait(timeout=20);daemon=None
+    start()
+    preview=expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':False}),'recovery')['recovery']
+    assert preview['environment_matches'] and preview['checkout_matches'],preview
+    assert preview['checkpoint']['environment']==bundle['environment']
+    (isolated_root/'source').write_text('changed after handoff')
+    assert expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':True}),'error')['code']=='conflict'
+    retained=expect(rpc({'op':'leases','agent':isolated['id']}),'leases')['leases']
+    assert held['id'] in [lease['id'] for lease in retained]
+    (isolated_root/'source').write_text('isolated first write')
+    accepted=expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':True}),'recovery')['recovery']
+    assert accepted['checkpoint']['accepted_by']==recipient['id']
+    transferred=expect(rpc({'op':'leases','agent':recipient['id']}),'leases')['leases']
+    assert held['id'] in [lease['id'] for lease in transferred]
+    assert not expect(rpc({'op':'leases','agent':isolated['id']}),'leases')['leases']
+    results.append('image handoff survives restart, accepts identical rebuilt inputs and transfers leases only after source verification')
     payload={'result':'passed','engine':a.engine,'machine':a.machine,'scenarios':results}
     Path(a.result).write_text(json.dumps(payload,indent=2)+'\n')
     print(json.dumps(payload),flush=True)
