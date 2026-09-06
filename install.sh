@@ -63,7 +63,15 @@ for bin in agentdocker agentd; do
     [ -n "$src" ] || { echo "install.sh: $bin missing from $archive" >&2; exit 1; }
     install -m 0755 "$src" "$dir/$bin"
 done
-echo "installed agentdocker and agentd into $dir"
+installed="agentdocker and agentd"
+# The desktop app ships in the macOS archives only; elsewhere it is built
+# from source with `cargo install --path crates/ui --locked`.
+ui="$(find "$tmp" -type f -name agentdocker-ui | head -n 1)"
+if [ -n "$ui" ]; then
+    install -m 0755 "$ui" "$dir/agentdocker-ui"
+    installed="$installed, agentdocker-ui"
+fi
+echo "installed $installed into $dir"
 
 case ":$PATH:" in
     *":$dir:"*) ;;

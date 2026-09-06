@@ -6,7 +6,7 @@ Coding agents are cheap to start and easy to lose track of. Run three of them ag
 
 It is bare metal: a native per-user daemon and a native CLI talking over a Unix socket. Nothing is served over HTTP, nothing needs a browser, and nothing needs Docker — a container is one optional way to sandbox an agent, not the product.
 
-> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees and handoff are available on macOS and Linux. Still to come: a native desktop app, discovery of the agent tools installed on a machine and one-command setup for each, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
+> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees, handoff, runtime discovery/setup and a native desktop window are available on macOS and Linux. Still to come: desktop notifications, human-agent interaction, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
 
 ## The Docker analogy
 
@@ -44,7 +44,10 @@ Then wire in the agents you already have:
 agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
 agentdocker setup             # register the MCP server with each, install the Claude Code hooks (--dry-run shows what would change)
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
+agentdocker ui                # the desktop app: the same, live, in a window
 ```
+
+The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Released macOS archives carry all three binaries; elsewhere, build the app with `cargo install --path crates/ui --locked`.
 
 The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
 
@@ -245,12 +248,13 @@ An agent can optionally run in an image with no networking or host mounts by def
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Four crates:
+Five crates:
 
-- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
-- `crates/host` — host filesystem, process, Git, and container-engine inspection shared by both binaries.
-- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, event stream, SQLite write-through store so state survives restarts.
+- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
+- `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
+- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
+- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents by project, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
@@ -263,7 +267,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(next)*: an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; the daemon watching for running agents on its own; a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, leases, the journal and events, with notifications; the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
+- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events; next, desktop notifications and the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 
 ## Development

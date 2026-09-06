@@ -1,0 +1,27 @@
+[package]
+name = "agentdocker-ui"
+description = "The AgentDocker desktop app: a native window over the agentd socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# eframe/egui 0.36 need a newer compiler than the rest of the workspace.
+# Kept here so `cargo install --path crates/cli` still builds on 1.87.
+rust-version = "1.95"
+
+[[bin]]
+name = "agentdocker-ui"
+path = "src/main.rs"
+
+[dependencies]
+agentdocker-core.workspace = true
+agentdocker-host.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+eframe.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true
