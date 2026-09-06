@@ -47,6 +47,10 @@ pub fn fits_socket(path: &Path) -> bool {
 /// two directories. Deterministic, so the daemon and its clients compute
 /// the same place independently.
 pub fn socket_dir(home: &Path) -> PathBuf {
+    socket_dir_in(home, &runtime_dir())
+}
+
+fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     if fits_socket(&home.join(CONTAINER_SOCKET)) && fits_socket(&home.join(HOST_SOCKET)) {
         return home.to_path_buf();
     }
@@ -56,17 +60,30 @@ pub fn socket_dir(home: &Path) -> PathBuf {
     )
     .simple()
     .to_string();
-    runtime_dir().join(format!("agentdocker-{}", &hash[..12]))
+    let name = format!("agentdocker-{}", &hash[..12]);
+    let candidate = runtime.join(&name);
+    if fits_socket(&candidate.join(CONTAINER_SOCKET)) && fits_socket(&candidate.join(HOST_SOCKET)) {
+        return candidate;
+    }
+    Path::new("/tmp").join(name)
 }
 
 /// Workspace state needs more socket room than the public endpoints (including
 /// OpenSSH's temporary control-socket suffix). Keep credentials private per home.
 pub fn workspace_dir(home: &Path) -> PathBuf {
-    let candidate = home.join("mounts");
-    let longest = candidate
+    workspace_dir_in(home, &runtime_dir())
+}
+const WORKSPACE_SOCKET_MAX: usize = 103;
+const CANONICAL_PREFIX_ALLOWANCE: usize = 8;
+fn workspace_fits(root: &Path) -> bool {
+    let longest = root
         .join(format!("bridge-{}", "0".repeat(32)))
         .join(format!("ctl.{}", "0".repeat(16)));
-    if longest.as_os_str().len() + 8 <= 103 {
+    longest.as_os_str().len() + CANONICAL_PREFIX_ALLOWANCE <= WORKSPACE_SOCKET_MAX
+}
+fn workspace_dir_in(home: &Path, runtime: &Path) -> PathBuf {
+    let candidate = home.join("mounts");
+    if workspace_fits(&candidate) {
         return candidate;
     }
     let hash = uuid::Uuid::new_v5(
@@ -75,14 +92,22 @@ pub fn workspace_dir(home: &Path) -> PathBuf {
     )
     .simple()
     .to_string();
-    runtime_dir().join(format!("adw-{}", &hash[..12]))
+    let name = format!("adw-{}", &hash[..12]);
+    let candidate = runtime.join(&name);
+    if workspace_fits(&candidate) {
+        return candidate;
+    }
+    Path::new("/tmp").join(name)
 }
 
 /// Persistent linked checkouts are siblings of daemon state, never inside it.
 pub fn worktree_dir(home: &Path) -> PathBuf {
-    let mut name = home.as_os_str().to_os_string();
+    let mut name = home
+        .file_name()
+        .unwrap_or(std::ffi::OsStr::new("agentdocker"))
+        .to_os_string();
     name.push(".worktrees");
-    PathBuf::from(name)
+    home.with_file_name(name)
 }
 
 /// The user's runtime directory for short-lived, private files: the
@@ -188,7 +213,7 @@ mod tests {
                 .join(format!("bridge-{}", "a".repeat(32)))
                 .join(format!("ctl.{}", "b".repeat(16)));
             assert!(
-                control.as_os_str().len() + 8 <= 103,
+                control.as_os_str().len() + CANONICAL_PREFIX_ALLOWANCE <= WORKSPACE_SOCKET_MAX,
                 "{}",
                 control.display()
             );
@@ -196,6 +221,22 @@ mod tests {
             assert!(!worktree_dir(&home).starts_with(&home));
             assert_ne!(worktree_dir(&home), mounts);
         }
+    }
+
+    #[test]
+    fn an_overlong_runtime_directory_also_falls_back_and_worktrees_ignore_trailing_slashes() {
+        let home = PathBuf::from(format!("/tmp/{}", "h".repeat(120)));
+        let runtime = PathBuf::from(format!("/tmp/{}", "r".repeat(120)));
+        let sockets = socket_dir_in(&home, &runtime);
+        assert_eq!(sockets.parent(), Some(Path::new("/tmp")));
+        assert!(fits_socket(&sockets.join(CONTAINER_SOCKET)));
+        let workspace = workspace_dir_in(&home, &runtime);
+        assert!(workspace_fits(&workspace));
+        assert_eq!(workspace.parent(), Some(Path::new("/tmp")));
+        assert_eq!(
+            worktree_dir(Path::new("/tmp/state/")),
+            Path::new("/tmp/state.worktrees")
+        );
     }
 
     #[test]

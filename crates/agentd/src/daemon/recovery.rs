@@ -266,7 +266,12 @@ impl Daemon {
                 // Ownership moves with acceptance, in the same transaction:
                 // a bundle that asked for it hands its leases over here.
                 let transferred = match &bundle {
-                    Some(b) if b.transfer_leases => state.leases.transfer(&b.from, &agent, now),
+                    Some(b) if b.transfer_leases => state.leases.transfer_selected(
+                        &b.from,
+                        &agent,
+                        &b.leases.iter().map(|lease| lease.id.clone()).collect(),
+                        now,
+                    ),
                     _ => Vec::new(),
                 };
                 let mut events = vec![Event::new(

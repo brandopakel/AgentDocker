@@ -161,6 +161,7 @@ impl Daemon {
         if record.container.as_ref().unwrap().options.mount_checkout {
             let home = self.home.clone();
             let socket = self.socket.clone();
+            let rollback = record.clone();
             record = match tokio::task::spawn_blocking(move || {
                 agentdocker_host::transport::prepare(&mut record, &home, &socket)?;
                 if record.container.as_ref().unwrap().options.engine_relay {
@@ -171,10 +172,17 @@ impl Daemon {
             .await
             {
                 Ok(Ok(record)) => record,
-                Ok(Err(e)) => return Response::error(e.code, e.message),
-                Err(e) => return Response::error(ErrorCode::Internal, e.to_string()),
+                Ok(Err(e)) => {
+                    self.cleanup_isolate(&rollback).await;
+                    return Response::error(e.code, e.message);
+                }
+                Err(e) => {
+                    self.cleanup_isolate(&rollback).await;
+                    return Response::error(ErrorCode::Internal, e.to_string());
+                }
             };
             if let Err(e) = self.workspace_grant(&mut record) {
+                self.cleanup_isolate(&record).await;
                 return Response::error(ErrorCode::StorageUnavailable, e.to_string());
             }
         }
@@ -182,22 +190,21 @@ impl Daemon {
     }
 
     pub(super) async fn launch_container(self: &Arc<Self>, record: AgentRecord) -> Response {
-        let record = {
+        let inserted = {
             let mut state = lock(&self.state);
-            match state.insert_record(record) {
-                Response::Agent { agent } => {
-                    state.container_busy.insert(agent.id.clone());
-                    agent
-                }
-                other => return other,
+            let response = state.insert_record(record.clone());
+            if let Response::Agent { agent } = &response {
+                state.container_busy.insert(agent.id.clone());
+            }
+            response
+        };
+        let record = match inserted {
+            Response::Agent { agent } => agent,
+            other => {
+                self.cleanup_isolate(&record).await;
+                return other;
             }
         };
-        if record.spec.isolate {
-            lock(&self.state).emit(EventKind::WorktreeCreated {
-                agent: record.id.clone(),
-                path: record.spec.workdir.clone().unwrap(),
-            });
-        }
         if watchable(&record) {
             if let Err(reason) = self.ensure_watched(&record).await {
                 lock(&self.state).container_busy.remove(&record.id);
@@ -209,6 +216,7 @@ impl Daemon {
                     };
                     r.container.as_mut().unwrap().last_error = Some(reason.clone());
                 });
+                self.cleanup_isolate(&record).await;
                 return Response::error(ErrorCode::Unavailable, reason);
             }
         }
@@ -648,7 +656,11 @@ impl Daemon {
                 .deadline
                 .map(|deadline| (deadline - Utc::now()).to_std().unwrap_or_default())
                 .unwrap_or(poll);
-            tokio::time::sleep(poll.min(remaining)).await;
+            tokio::time::sleep(
+                poll.min(remaining)
+                    .max(std::time::Duration::from_millis(100)),
+            )
+            .await;
             poll = (poll * 2).min(std::time::Duration::from_secs(2));
             self.drive_container(id.clone(), false)
                 .await
