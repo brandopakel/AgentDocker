@@ -110,12 +110,18 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
     }
 }
 
+/// The first executable file of that name on the path. A data file that
+/// happens to share the name is not a CLI.
 fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
     roots
         .path
         .iter()
         .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
 }
 
 /// The first line of `<cli> --version`, trimmed to something table-sized.
@@ -163,9 +169,22 @@ pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                 .get("mcpServers")
                 .and_then(|s| s.as_object())
                 .is_some_and(|servers| {
-                    servers
-                        .values()
-                        .any(|server| server.to_string().contains(marker))
+                    servers.values().any(|server| {
+                        let command = server
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| c.contains(marker));
+                        let args =
+                            server
+                                .get("args")
+                                .and_then(|a| a.as_array())
+                                .is_some_and(|args| {
+                                    args.iter()
+                                        .filter_map(|a| a.as_str())
+                                        .any(|a| a.contains(marker))
+                                });
+                        command || args
+                    })
                 });
             if wired {
                 Wiring::Wired
@@ -184,9 +203,24 @@ pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                 .get("mcp_servers")
                 .and_then(|s| s.as_table())
                 .is_some_and(|servers| {
-                    servers
-                        .values()
-                        .any(|server| server.to_string().contains(marker))
+                    servers.values().any(|server| {
+                        server.as_table().is_some_and(|server| {
+                            let command = server
+                                .get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|c| c.contains(marker));
+                            let args =
+                                server
+                                    .get("args")
+                                    .and_then(|a| a.as_array())
+                                    .is_some_and(|args| {
+                                        args.iter()
+                                            .filter_map(|a| a.as_str())
+                                            .any(|a| a.contains(marker))
+                                    });
+                            command || args
+                        })
+                    })
                 });
             if wired {
                 Wiring::Wired
@@ -209,10 +243,31 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Wiring::Missing;
     };
+    // Every entry is `{matcher?, hooks: [{type, command}]}` under an event
+    // key; ask each command what it runs.
     let wired = value
         .get("hooks")
-        .map(|h| h.to_string())
-        .is_some_and(|text| text.contains(marker) && text.contains("hook claude-code"));
+        .and_then(|h| h.as_object())
+        .is_some_and(|events| {
+            events.values().any(|entries| {
+                entries.as_array().is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .is_some_and(|hooks| {
+                                hooks.iter().any(|hook| {
+                                    hook.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .is_some_and(|c| {
+                                            c.contains(marker) && c.contains("hook claude-code")
+                                        })
+                                })
+                            })
+                    })
+                })
+            })
+        });
     if wired {
         Wiring::Wired
     } else {
@@ -269,6 +324,16 @@ mod tests {
         )
         .unwrap();
 
+        // A file that is not executable is not a CLI, and a name in some
+        // other field is a mention, not a registration.
+        std::fs::write(roots.path[0].join("gemini"), "not a program").unwrap();
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(
+            home.join(".gemini/settings.json"),
+            r#"{"mcpServers":{"x":{"command":"cat","env":{"NOTE":"agentdocker"}}}}"#,
+        )
+        .unwrap();
+
         let all = inventory(&roots, "agentdocker");
         assert_eq!(all.len(), RUNTIMES.len());
         let by = |name: &str| all.iter().find(|r| r.name == name).unwrap().clone();
@@ -285,8 +350,12 @@ mod tests {
         assert_eq!(codex.mcp, Wiring::Wired);
         assert_eq!(codex.hooks, Wiring::Unsupported);
         let gemini = by("gemini-cli");
-        assert!(!gemini.installed());
-        assert_eq!(gemini.mcp, Wiring::Missing);
+        assert!(!gemini.installed(), "a non-executable file is not a CLI");
+        assert_eq!(
+            gemini.mcp,
+            Wiring::Missing,
+            "a name outside command and args is not wiring"
+        );
         assert_eq!(by("aider").mcp, Wiring::Unsupported);
     }
 

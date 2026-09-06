@@ -81,10 +81,13 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                     runtime.name,
                     home.join(".claude/settings.json").display()
                 ),
-                _ => install_hooks(&InstallArgs {
-                    host: Host::ClaudeCode,
-                    user: true,
-                })?,
+                _ => {
+                    back_up(&home.join(".claude/settings.json"))?;
+                    install_hooks(&InstallArgs {
+                        host: Host::ClaudeCode,
+                        user: true,
+                    })?;
+                }
             }
         }
     }
@@ -105,6 +108,24 @@ fn entry(exe: &Path, runtime: &str) -> Value {
         "command": exe.to_string_lossy(),
         "args": ["mcp", "--runtime", runtime],
     })
+}
+
+/// Whether a JSON MCP server entry runs this binary: by the command it
+/// runs or an argument it passes, never by text that merely names us.
+fn runs_agentdocker(server: &Value) -> bool {
+    let command = server
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.contains("agentdocker"));
+    let args = server
+        .get("args")
+        .and_then(Value::as_array)
+        .is_some_and(|args| {
+            args.iter()
+                .filter_map(Value::as_str)
+                .any(|a| a.contains("agentdocker"))
+        });
+    command || args
 }
 
 /// Keep the previous version of a file we are about to rewrite.
@@ -140,10 +161,9 @@ pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
     let Some(servers) = servers.as_object_mut() else {
         bail!("{}: mcpServers is not an object", path.display());
     };
-    if servers
-        .values()
-        .any(|s| s.to_string().contains("agentdocker"))
-    {
+    // Ours by key, or by what it runs: either way there is nothing to add,
+    // and a second entry must never clobber a key that exists.
+    if servers.contains_key("agentdocker") || servers.values().any(runs_agentdocker) {
         return Ok(Outcome::Present);
     }
     if dry_run {
@@ -291,6 +311,29 @@ mod tests {
         assert_eq!(doc["theme"], "dark", "the rest of the file survives");
         assert_eq!(doc["mcpServers"]["x"]["command"], "y");
         assert!(other.with_extension("agentdocker-backup").exists());
+        // An entry under our key that runs something else is still the
+        // user's: leave it, rather than overwrite it.
+        let keyed = tmp.path().join("keyed.json");
+        std::fs::write(
+            &keyed,
+            r#"{"mcpServers":{"agentdocker":{"command":"/my/wrapper"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            register_json(&keyed, exe, "cursor", false).unwrap(),
+            Outcome::Present
+        );
+        // A name in some other field is a mention, not a registration.
+        let mention = tmp.path().join("mention.json");
+        std::fs::write(
+            &mention,
+            r#"{"mcpServers":{"notes":{"command":"cat","env":{"NOTE":"agentdocker"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            register_json(&mention, exe, "cursor", false).unwrap(),
+            Outcome::Added
+        );
         assert!(register_json(&tmp.path().join("bad.json"), exe, "x", false).is_ok());
         std::fs::write(tmp.path().join("list.json"), "[]").unwrap();
         assert!(register_json(&tmp.path().join("list.json"), exe, "x", false).is_err());
@@ -331,6 +374,28 @@ mod tests {
             Outcome::Present
         );
         assert!(path.with_extension("agentdocker-backup").exists());
+        // A table under our key is never appended twice: that is not even
+        // valid TOML.
+        let keyed = tmp.path().join("keyed.toml");
+        std::fs::write(
+            &keyed,
+            "[mcp_servers.agentdocker]\ncommand = \"/my/wrapper\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            register_toml(&keyed, exe, "codex", false).unwrap(),
+            Outcome::Present
+        );
+        let mention = tmp.path().join("mention.toml");
+        std::fs::write(
+            &mention,
+            "[mcp_servers.notes]\ncommand = \"cat\"\nenv = { NOTE = \"agentdocker\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            register_toml(&mention, exe, "codex", false).unwrap(),
+            Outcome::Added
+        );
         let fresh = tmp.path().join("new/config.toml");
         assert_eq!(
             register_toml(&fresh, exe, "codex", false).unwrap(),
