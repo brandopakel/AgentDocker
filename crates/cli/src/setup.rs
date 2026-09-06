@@ -128,7 +128,11 @@ fn runs_agentdocker(server: &Value) -> bool {
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
+    server
+        .get("args")
+        .and_then(Value::as_array)
+        .is_some_and(|args| args.iter().all(Value::is_string))
+        && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
         && server.get("disabled").and_then(Value::as_bool) != Some(true)
         && server.get("enabled").and_then(Value::as_bool) != Some(false)
 }
@@ -279,7 +283,11 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
                 .flatten()
                 .filter_map(|v| v.as_str())
                 .collect();
-            server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+            server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .is_some_and(|args| args.iter().all(|arg| arg.is_str()))
+                && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
                 && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
         };
         if servers

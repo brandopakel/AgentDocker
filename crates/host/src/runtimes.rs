@@ -212,7 +212,11 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
                             .flatten()
                             .filter_map(|a| a.as_str())
                             .collect();
-                        server.get("disabled").and_then(|v| v.as_bool()) != Some(true)
+                        server
+                            .get("args")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|args| args.iter().all(|arg| arg.is_string()))
+                            && server.get("disabled").and_then(|v| v.as_bool()) != Some(true)
                             && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
                             && mcp_command_matches(command, &args, marker)
                     })
@@ -245,7 +249,11 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
                                 .flatten()
                                 .filter_map(|a| a.as_str())
                                 .collect();
-                            server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+                            server
+                                .get("args")
+                                .and_then(|v| v.as_array())
+                                .is_some_and(|args| args.iter().all(|arg| arg.is_str()))
+                                && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
                                 && mcp_command_matches(command, &args, marker)
                         })
                     })
@@ -441,6 +449,7 @@ mod tests {
             ("cat", "[\"agentdocker-notes\"]", true, Wiring::Missing),
             ("/opt/agentdocker", "[\"mcp\"]", false, Wiring::Missing),
             ("/opt/agentdocker", "[\"ps\"]", true, Wiring::Missing),
+            ("/opt/agentdocker", "[42, \"mcp\"]", true, Wiring::Missing),
         ] {
             let config = format!(
                 "[mcp_servers.agentdocker]\ncommand = {command:?}\nargs = {args}\nenabled = {enabled}\n"
