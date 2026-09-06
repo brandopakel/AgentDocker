@@ -519,9 +519,29 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 `agentdocker attach <agent>` connects your terminal to it. The local terminal goes into raw mode under a guard that restores it however the command ends, `SIGWINCH` is forwarded as `attach_resize` so full-screen agents lay out correctly, and Ctrl-] detaches. Attaching and detaching are only a client coming and going: the terminal belongs to the daemon, so the agent neither notices nor stops. A slow reader is told it missed bytes rather than being allowed to stall the agent.
 
-What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with the daemon, so `attach` afterwards has nothing to reconnect to and an agent that reads its terminal may see it close. Fixing that needs the terminal to be owned by something that outlives `agentd`: a small per-agent holder, or passing the descriptor back over the socket with `SCM_RIGHTS`. That is the remainder of row 23.
+Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
+
+What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with `agentd`, so `attach` afterwards has nothing to reconnect to.
+
+**What herdr does about this, and what it means for us.** Worth knowing precisely, because the answer is less magical than the marketing suggests, and it sets our own target. Their server owns the terminals, so sessions survive client detach, sleep, and network loss — the same property we now have. When the *server itself* restarts, their own documentation is explicit that running processes are not preserved: "Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes." What is restored is structure — workspaces, tabs, panes, cwd, layout, focus — and panes "come back as new shells in their saved directories", optionally replaying recent screen contents, optionally letting an agent resume its own conversation if it reported a session reference. Only a *planned* upgrade preserves processes, behind an experimental `--handoff` flag: the old server duplicates its pty master descriptors and passes them to the new one over a private Unix socket with `SCM_RIGHTS`, so, in their words, it "does not move the child processes. It moves ownership of the terminals those processes are already attached to."
+
+So the target splits in two, and the second half is where we are better placed than they are.
+
+Row 27 is the **snapshot restore**: `agentd` already persists every `AgentRecord`, and a managed agent's record already carries its command, working directory, environment and `tty`, so a restarted daemon can bring back the agents that were running, in the right directories. Where herdr can only offer a fresh shell and, at best, an agent resuming its own conversation, we can hand a relaunched agent the working set it actually needs: the checkpoint it last saved, the read set that says what it had looked at and whether any of it has changed since, the journal since its cursor, and the leases it held. That is the same feature done with evidence rather than with a directory name, and it costs us little because all of it is already stored.
+
+Row 28 is the **descriptor handoff**: `agentdocker daemon reload` passing pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade does not disturb a running agent. The same mechanism herdr uses, for the same reason, and worth having once upgrades are frequent enough to notice.
 
 This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
+
+#### The app's terminal and command bar
+
+A window that can only look at things is half a product: everything the CLI can do has to be reachable from it. Two different needs, and they want different answers.
+
+**Attaching** needs a real terminal. Now that a managed agent has a pty and `attach` streams it, the app should render one: a terminal view per agent, driven by the same `attach` protocol the CLI uses, with a vt parser turning the byte stream into a screen and keystrokes going back the other way. That is row 29, and it is what turns the app from a dashboard into a console.
+
+**Everything else** should not be a form per command. The CLI is the complete surface and it keeps growing; hand-built widgets for each would always lag behind it, and every new row on this roadmap would mean a new dialogue. Instead the app gets a command bar that runs `agentdocker …` and renders the result, with buttons only for the handful of things done constantly — stop, adopt, set up a runtime, approve or block a review, close a channel. The buttons are shortcuts to the same commands, so there is one surface to keep correct rather than two.
+
+What the app must not become is a multiplexer: panes, layouts, and tiling are herdr's and tmux's ground, and building them here would spend our effort on their strength rather than ours.
 
 #### Terminal multiplexers
 
@@ -573,12 +593,15 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
-| 23 | 🔄 PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run` ✅, `attach` and detach ✅, window size ✅; a terminal that outlives a daemon restart is outstanding | 5 | — |
+| 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
+| 27 | snapshot restore: a restarted daemon brings back the agents that were running, in their directories, each handed its checkpoint, read set, journal cursor and held leases rather than a bare shell | 5 | 23 |
+| 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
 | 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
+| 29 | the app's terminal view over `attach`, plus a command bar that runs any `agentdocker` command and renders it | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 23 (sessions, the one thing herdr has that we do not), 14 (the human as an agent, where the desktop app's notifications come from), 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
+Order from here: 29 (the app's terminal and command bar, so everything the CLI can do is reachable from the window), 14 (the human as an agent, where the app's notifications come from), 27, 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 

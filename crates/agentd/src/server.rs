@@ -291,10 +291,16 @@ async fn stream_attach(
     if let (Some(cols), Some(rows)) = (cols, rows) {
         let _ = session.resize(cols, rows);
     }
-    // Subscribe before saying yes, so nothing printed between the two is
-    // missed.
-    let mut output = session.output.subscribe();
+    // What it printed already, and what it prints next, taken together so
+    // nothing falls between them or arrives twice.
+    let (seen, mut output) = session.attach();
     write(writer, &Response::EventsReady).await?;
+    if !seen.is_empty() {
+        let frame = Response::Output {
+            data: agentdocker_core::protocol::encode_bytes(&seen),
+        };
+        write(writer, &frame).await?;
+    }
     loop {
         tokio::select! {
             received = output.recv() => match received {
