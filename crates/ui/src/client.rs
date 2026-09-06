@@ -77,7 +77,12 @@ impl Client {
 
     /// Follow the event stream until the daemon ends it, the connection
     /// drops, or `on` returns `false`.
-    pub fn events(&self, replay: usize, mut on: impl FnMut(Event) -> bool) -> Result<()> {
+    pub fn events(
+        &self,
+        replay: usize,
+        mut on_ready: impl FnMut(),
+        mut on: impl FnMut(Event) -> bool,
+    ) -> Result<()> {
         let stream = self.connect()?;
         stream.set_write_timeout(Some(CALL_TIMEOUT))?;
         let mut reader = BufReader::new(stream);
@@ -94,6 +99,7 @@ impl Client {
                 return Ok(());
             }
             match serde_json::from_str::<Response>(&buffer)? {
+                Response::EventsReady => on_ready(),
                 Response::Event { event } => {
                     if !on(event) {
                         return Ok(());
@@ -101,6 +107,9 @@ impl Client {
                 }
                 Response::End => return Ok(()),
                 Response::Error { message, .. } => bail!("{message}"),
+                Response::Lagged { skipped } => {
+                    bail!("event stream missed {skipped} events; reconnecting to refresh snapshots")
+                }
                 _ => {}
             }
         }
@@ -244,6 +253,43 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn event_readiness_recovers_an_idle_connection_and_lag_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Request>(&request).unwrap(),
+                Request::Events { ready: true, .. }
+            ));
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"events_ready\"}\n{\"type\":\"lagged\",\"skipped\":7}\n")
+                .unwrap();
+        });
+        let client = Client {
+            socket,
+            home: tmp.path().into(),
+            autostart: false,
+        };
+        let mut ready = false;
+        let error = client
+            .events(
+                100,
+                || ready = true,
+                |_| panic!("no event needed for readiness"),
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(ready);
+        assert!(error.to_string().contains("missed 7 events"));
+    }
 
     #[test]
     fn untrusted_existing_fallback_is_rejected_before_connection() {

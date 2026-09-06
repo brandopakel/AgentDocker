@@ -175,8 +175,11 @@ impl App {
                 Msg::Connected => {
                     if self.connected.is_err() {
                         self.connected = Ok(());
-                        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered] {
+                        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Runtimes] {
                             self.send(cmd);
+                        }
+                        if let Some(project) = &self.journal_project {
+                            self.send(Cmd::Journal(project.clone()));
                         }
                     }
                 }
@@ -614,6 +617,7 @@ fn summary(kind: &EventKind) -> String {
             pid,
             runtime,
             adopted,
+            ..
         } => format!(
             "agent {}: {runtime} pid {pid}",
             if *adopted { "adopted" } else { "gone" }
@@ -784,21 +788,28 @@ fn setup(runtime: &str) -> String {
         .and_then(|me| me.parent().map(|dir| dir.join("agentdocker")))
         .filter(|sibling| sibling.is_file())
         .unwrap_or_else(|| std::path::PathBuf::from("agentdocker"));
-    match std::process::Command::new(&cli)
-        .args(["setup", runtime])
-        .output()
-    {
+    let Some(cli_arg) = cli.to_str() else {
+        return "CLI path is not UTF-8".into();
+    };
+    let argv = [cli_arg.to_owned(), "setup".into(), runtime.to_owned()];
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => return error.to_string(),
+    };
+    match agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(60)) {
         Ok(output) => {
-            let text = String::from_utf8_lossy(if output.status.success() {
-                &output.stdout
-            } else {
-                &output.stderr
-            });
-            text.lines()
+            let text = output
+                .text
+                .lines()
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
                 .collect::<Vec<_>>()
-                .join(" · ")
+                .join(" · ");
+            if output.success {
+                text
+            } else {
+                format!("Setup failed: {text}")
+            }
         }
         Err(err) => format!("cannot run {}: {err}", cli.display()),
     }
@@ -809,11 +820,20 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
         loop {
             let tx_events = tx.clone();
             let ctx_events = ctx.clone();
-            let result = client.events(100, move |event| {
-                let sent = tx_events.send(Msg::Event(Box::new(event))).is_ok();
-                ctx_events.request_repaint();
-                sent
-            });
+            let ready_tx = tx.clone();
+            let ready_ctx = ctx.clone();
+            let result = client.events(
+                100,
+                move || {
+                    let _ = ready_tx.send(Msg::Connected);
+                    ready_ctx.request_repaint();
+                },
+                move |event| {
+                    let sent = tx_events.send(Msg::Event(Box::new(event))).is_ok();
+                    ctx_events.request_repaint();
+                    sent
+                },
+            );
             let reason = match result {
                 Ok(()) => "event stream ended".to_owned(),
                 Err(err) => err.to_string(),
@@ -830,6 +850,29 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
+        let (tx, requests) = channel::<Cmd>();
+        let (messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        app.connected = Err("offline".into());
+        app.journal_project = Some("project-a".into());
+        messages.send(Msg::Connected).unwrap();
+        app.drain();
+        let received: Vec<_> = requests.try_iter().collect();
+        assert!(app.connected.is_ok());
+        assert_eq!(received.len(), 5);
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Runtimes)));
+        assert!(
+            received
+                .iter()
+                .any(|cmd| matches!(cmd, Cmd::Journal(project) if project == "project-a"))
+        );
+    }
 
     #[test]
     fn a_replayed_event_is_taken_once() {
@@ -876,6 +919,7 @@ mod tests {
         assert_eq!(span(7200), "2h");
         let found = EventKind::AgentDiscovered {
             pid: 42,
+            started_at: None,
             runtime: "codex".into(),
             project: None,
             cwd: None,

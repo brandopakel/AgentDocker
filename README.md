@@ -6,7 +6,7 @@ Coding agents are cheap to start and easy to lose track of. Run three of them ag
 
 It is bare metal: a native per-user daemon and a native CLI talking over a Unix socket. Nothing is served over HTTP, nothing needs a browser, and nothing needs Docker — a container is one optional way to sandbox an agent, not the product.
 
-> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees and handoff are available on macOS and Linux. Still to come: a native desktop app, discovery of the agent tools installed on a machine and one-command setup for each, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
+> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees, handoff, runtime discovery/setup and a native desktop window are available on macOS and Linux. Still to come: desktop notifications, human-agent interaction, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
 
 ## The Docker analogy
 
