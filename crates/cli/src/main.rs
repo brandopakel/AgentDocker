@@ -960,6 +960,7 @@ async fn main() -> Result<()> {
                 else {
                     bail!("unexpected reply to discover");
                 };
+                let mut failed = 0;
                 for process in processes {
                     match client
                         .call_raw(&Request::Adopt {
@@ -971,10 +972,14 @@ async fn main() -> Result<()> {
                     {
                         Response::Agent { agent } => println!("{}", agent.id),
                         Response::Error { message, .. } => {
+                            failed += 1;
                             eprintln!("pid {}: {message}", process.pid);
                         }
                         _ => {}
                     }
+                }
+                if failed > 0 {
+                    bail!("{failed} process(es) could not be adopted");
                 }
             } else if let Some(pid) = pid {
                 let request = Request::Adopt { pid, name, runtime };

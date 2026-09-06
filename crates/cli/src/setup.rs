@@ -173,13 +173,22 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
     let table: toml::Table = existing
         .parse()
         .with_context(|| format!("{} is not valid TOML", path.display()))?;
+    // A table under our key must never be appended twice — that is not
+    // valid TOML — whatever it runs; and an entry under another key that
+    // runs us is enough too.
     let present = table
         .get("mcp_servers")
         .and_then(|s| s.as_table())
         .is_some_and(|servers| {
-            servers
-                .values()
-                .any(|s| s.to_string().contains("agentdocker"))
+            servers.contains_key("agentdocker")
+                || servers.values().any(|s| {
+                    s.as_table().is_some_and(|server| {
+                        server
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| c.contains("agentdocker"))
+                    })
+                })
         });
     if present {
         return Ok(Outcome::Present);

@@ -445,7 +445,7 @@ An agent handing work to another should not have to write its state down; the da
 
 #### Runtime inventory, setup, and continuous discovery *(done)*
 
-`agentdocker runtimes` lists the agent tools on this machine: for each known runtime (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`) whether its CLI is on `PATH` and which version, its desktop app where one exists (Claude, Cursor, VS Code, Windsurf — by bundle on macOS, by binary on Linux), its config directory, and whether AgentDocker is wired in: hooks installed for Claude Code, the MCP server registered in Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Gemini's `~/.gemini/settings.json`, or Cursor's `~/.cursor/mcp.json`. `agentdocker setup [<runtime> | --all] [--dry-run]` writes the missing registrations idempotently, keeping a backup of every file it touches, and prints what it changed. The inventory is host I/O in `agentdocker-host::runtimes`; the daemon serves it as `runtimes {}` so the desktop app and the CLI share one answer. The request, response and events are listed under [planned protocol additions](#planned-protocol-and-event-additions) until row 18 lands.
+`agentdocker runtimes` lists the agent tools on this machine: for each known runtime (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`) whether its CLI is on `PATH` and which version, its desktop app where one exists (Claude, Cursor, VS Code, Windsurf — by bundle on macOS, by binary on Linux), its config directory, and whether AgentDocker is wired in: hooks installed for Claude Code, the MCP server registered in Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Gemini's `~/.gemini/settings.json`, or Cursor's `~/.cursor/mcp.json`. `agentdocker setup [<runtime> | --all] [--dry-run]` writes the missing registrations idempotently, keeping a backup of every file it touches, and prints what it changed. The inventory is host I/O in `agentdocker-host::runtimes`; the daemon serves it as `runtimes {}` so the desktop app and the CLI share one answer.
 
 Discovery becomes continuous: the daemon runs the same process scan `discover` runs every five seconds, keeps the result, and announces `agent_discovered {pid, runtime, project}` when a known agent process appears and `agent_vanished {pid}` when one goes; `discover` answers from the last scan, and `adopt --all` registers every discovered process at once. Adopting automatically is a policy decision and waits for the policy file below.
 
@@ -524,11 +524,10 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 | `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
-| `runtimes {}` | `runtimes {runtimes: RuntimeInfo[]}` — the agent tools on this machine, per runtime: CLI and version, desktop apps, config directory, MCP and hooks wiring, unregistered running processes | 5 |
 
 Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `agent_discovered {pid, runtime, project?, cwd?}` and `agent_vanished {pid, runtime, adopted}` (announced by the daemon's own process scan; stored and replayable like every other event; design intent until row 18 lands), `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 
