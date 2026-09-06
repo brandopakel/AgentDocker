@@ -39,7 +39,7 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             .collect::<Result<_>>()?
     };
     if targets.is_empty() {
-        println!("no agent tools found on this machine; see `agentdocker runtimes`");
+        eprintln!("no agent tools found on this machine; see `agentdocker runtimes`");
         return Ok(());
     }
     let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
@@ -49,8 +49,8 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             continue;
         };
         match (spec.mcp, runtime.mcp) {
-            (_, Wiring::Wired) => println!("{}: MCP server already registered", runtime.name),
-            (McpWiring::None, _) => println!(
+            (_, Wiring::Wired) => eprintln!("{}: MCP server already registered", runtime.name),
+            (McpWiring::None, _) => eprintln!(
                 "{}: no MCP registration known for it; point it at `{} mcp --runtime {}` by hand",
                 runtime.name,
                 exe.display(),
@@ -75,8 +75,8 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         }
         if spec.hooks {
             match runtime.hooks {
-                Wiring::Wired => println!("{}: hooks already installed", runtime.name),
-                _ if dry_run => println!(
+                Wiring::Wired => eprintln!("{}: hooks already installed", runtime.name),
+                _ if dry_run => eprintln!(
                     "{}: would install hooks in {}",
                     runtime.name,
                     home.join(".claude/settings.json").display()
@@ -96,9 +96,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
 
 fn report(runtime: &str, what: &str, path: &Path, outcome: Outcome) {
     match outcome {
-        Outcome::Added => println!("{runtime}: registered the {what} in {}", path.display()),
-        Outcome::Present => println!("{runtime}: {what} already registered in {}", path.display()),
-        Outcome::Planned => println!("{runtime}: would register the {what} in {}", path.display()),
+        Outcome::Added => eprintln!("{runtime}: registered the {what} in {}", path.display()),
+        Outcome::Present => eprintln!("{runtime}: {what} already registered in {}", path.display()),
+        Outcome::Planned => eprintln!("{runtime}: would register the {what} in {}", path.display()),
     }
 }
 

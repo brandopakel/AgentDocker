@@ -109,8 +109,18 @@ pub struct Daemon {
     discovered: Mutex<Discovered>,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave their reads and writes of the set above, or a process
-    /// could be announced twice or never.
-    scanning: tokio::sync::Mutex<()>,
+    /// could be announced twice or never. A flag, not a lock, because no
+    /// lock may be held while the scan itself runs.
+    scanning: std::sync::atomic::AtomicBool,
+}
+
+/// Clears the single-flight flag however the scan ends.
+struct ScanGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for ScanGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// The last process scan.
@@ -681,7 +691,7 @@ impl Daemon {
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             discovered: Mutex::new(Discovered::default()),
-            scanning: tokio::sync::Mutex::new(()),
+            scanning: std::sync::atomic::AtomicBool::new(false),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             watcher_attach: watch::channel(WatcherLink::Off).0,
@@ -1228,17 +1238,35 @@ impl Daemon {
     /// scan and every one that went — exited, or adopted meanwhile. Runs
     /// on the daemon's tick, so nobody has to ask.
     pub async fn scan_agents(&self) -> Vec<DiscoveredProcess> {
-        let _one_at_a_time = self.scanning.lock().await;
+        use std::sync::atomic::Ordering;
+        // Single flight, with no lock held while the scan runs: a caller
+        // that finds one already going takes what the last one left rather
+        // than start a second.
+        if self.scanning.swap(true, Ordering::AcqRel) {
+            return lock(&self.discovered).processes.clone();
+        }
+        let _clear = ScanGuard(&self.scanning);
         let found = self.scan().await;
-        let registered: HashSet<u32> = lock(&self.state)
-            .registry
-            .live()
-            .filter_map(|a| a.pid)
-            .collect();
-        let previous = std::mem::take(&mut lock(&self.discovered).processes);
-        let now_pids: HashSet<u32> = found.iter().map(|p| p.pid).collect();
+        // An agent can be registered while that scan runs, so the registry
+        // is read where the result is committed, not before: a process
+        // adopted meanwhile is neither re-listed nor announced again.
+        let registered: HashSet<u32> = {
+            let state = lock(&self.state);
+            state.registry.live().filter_map(|a| a.pid).collect()
+        };
+        let (fresh, previous) = {
+            let mut cache = lock(&self.discovered);
+            let fresh: Vec<DiscoveredProcess> = found
+                .into_iter()
+                .filter(|p| !registered.contains(&p.pid))
+                .collect();
+            cache.at = Some(Instant::now());
+            let previous = std::mem::replace(&mut cache.processes, fresh.clone());
+            (fresh, previous)
+        };
+        let now_pids: HashSet<u32> = fresh.iter().map(|p| p.pid).collect();
         let then_pids: HashSet<u32> = previous.iter().map(|p| p.pid).collect();
-        for process in found.iter().filter(|p| !then_pids.contains(&p.pid)) {
+        for process in fresh.iter().filter(|p| !then_pids.contains(&p.pid)) {
             self.emit(EventKind::AgentDiscovered {
                 pid: process.pid,
                 runtime: process.runtime.clone(),
@@ -1253,10 +1281,7 @@ impl Daemon {
                 adopted: registered.contains(&process.pid),
             });
         }
-        let mut cache = lock(&self.discovered);
-        cache.at = Some(Instant::now());
-        cache.processes = found.clone();
-        found
+        fresh
     }
 
     /// The agent tools on this machine, with how many unregistered
@@ -4156,7 +4181,12 @@ mod tests {
             panic!("discover failed");
         };
         assert!(processes.iter().all(|p| p.pid != pid));
-        daemon.scan_agents().await;
+        // The process is still running, but it is somebody's agent now:
+        // a later scan neither lists it nor announces it again.
+        assert!(
+            daemon.scan_agents().await.iter().all(|p| p.pid != pid),
+            "an adopted process is not rediscovered while it runs"
+        );
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
                 .any(|e| matches!(e.kind, EventKind::AgentVanished { pid: p, .. } if p == pid)),
