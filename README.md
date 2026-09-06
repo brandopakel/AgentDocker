@@ -1,10 +1,12 @@
 # AgentDocker
 
-**Docker for AI agents.** One daemon that creates, supervises, organises, and — above all — connects every agent running on your machines, whatever model or vendor is behind it.
+**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
-> Status: **early**. The daemon, CLI, messaging, and lease system work end-to-end on a single host. Runtime adapters, persistence, and multi-host federation are on the [roadmap](#roadmap).
+The product direction is an installed desktop app for macOS, Linux and Windows that automatically shows active agents and inventories installed CLIs and desktop apps. Docker and Podman inspire the orchestration model; normal local use requires neither engine. Container execution is an optional adapter. See [product direction and next delivery steps](docs/PRODUCT-DIRECTION.md).
+
+> Status: **early**. The native daemon, CLI, persistence, coordination and verified handoffs work on macOS and Linux. The desktop GUI, installed-tool inventory, automatic background discovery and Windows support remain to be built. Multi-host federation is separate future work.
 
 ## The Docker analogy
 
@@ -246,11 +248,13 @@ A handoff is a checkpoint addressed to someone, with everything the daemon alrea
 
 ## Worktrees and authenticated containers
 
-Use `agentdocker run --isolate --name writer -- codex …` to launch an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
+Use `agentdocker run --isolate --name writer -- codex …` to launch an agent in a linked worktree of its own (branch `agent/writer`, beside the daemon state directory), add `--image-build BUILD --mount-checkout` to run it inside a recorded image, or use `agentdocker worktree-create --as writer ../agent-work --branch agent/work` to create an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Register the source session there, commit its changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration. Add `--apply` to prepare an uncommitted merge. Review and commit/abort with Git, then release the target lease.
 
 `agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` writes a private token and prints its grant ID. Containers receive only the separate `container.sock`, the token file, and their mapped checkout. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside the container. `revoke-access <grant>` disables new requests while preserving existing protection. Docker/Podman image builds and managed lifecycle recovery are implemented: `image-build --engine docker|podman`, `run --image-build BUILD -- COMMAND`, `stop`, and `restart`. Managed commands default to no host mounts or networking. Opt into authenticated checkout mounts with `--mount-checkout`, Podman VM transport with `--podman-machine`, and networking with `--network bridge`. See the [engine plan](docs/CONTAINER-ENGINES.md) and [shared real-engine tests](tests/containers/README.md).
 
 Development verification uses `bash scripts/verify.sh check`. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md) for nextest, coverage, Criterion/Bencher, native socket load tests and bounded fuzzing.
 
 
-Managed image runs can opt into an authenticated checkout with `run --image-build BUILD --mount-checkout`; use `--podman-machine NAME` on macOS and `--network bridge` when network access is needed. Image validation runs in a fresh container with read-only source and records the image alongside the content fingerprint. Changed image or source prevents reuse during recovery. See [container engines](docs/CONTAINER-ENGINES.md#authenticated-managed-workspaces) for UID mapping, VM transport and test-output paths.
+Managed image runs can opt into an authenticated checkout with `run --image-build BUILD --mount-checkout`; use `--podman-machine NAME` for a Podman VM and `--network bridge` when network access is needed. Image validation runs in a fresh container with read-only source and records the image alongside the content fingerprint. Changed image or source prevents reuse during recovery. See [container engines](docs/CONTAINER-ENGINES.md#authenticated-managed-workspaces) for UID mapping, VM transport and test-output paths.
+
+Docker Desktop uses a private engine-volume socket relay for mounted runs; `--engine-relay` selects it explicitly on Linux Docker or rootless Podman. The relay preserves the agent's `none` network default and exposes no engine socket or host TCP listener. Actual Desktop verification remains separate from the Linux/Podman test results.

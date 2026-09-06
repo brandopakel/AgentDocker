@@ -28,7 +28,7 @@ use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::daemon::{Checkout, Daemon, Observed};
+use crate::daemon::{Checkout, Daemon, Observed, WatcherAttachment};
 
 const RECONCILE_EVERY: Duration = Duration::from_secs(1);
 const FLUSH_EVERY: Duration = Duration::from_millis(100);
@@ -82,15 +82,16 @@ pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Du
     daemon.set_watcher_flush(flush_tx);
     // A registration asks for an immediate reconcile through this channel,
     // so the new agent's checkout is watched before the reply goes out.
-    let (attach_tx, mut attach_rx) =
-        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(8);
+    let (attach_tx, mut attach_rx) = tokio::sync::mpsc::channel::<WatcherAttachment>(8);
     daemon.set_watcher_attach(attach_tx);
     loop {
         tokio::select! {
             _ = reconcile.tick() => reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries),
-            Some(ack) = attach_rx.recv() => {
+            Some(request) = attach_rx.recv() => {
                 reconcile_watches(&daemon, &mut watcher, &mut watched, &mut retries);
-                let _ = ack.send(());
+                let result=if watched.contains_key(&request.checkout) { Ok(()) }
+                    else { Err(format!("no watcher covers {}",request.checkout.display())) };
+                let _ = request.ack.send(result);
             }
             Some(event) = rx.recv() => {
                 if pending.len() < 4096 { pending.push(event); }
@@ -189,8 +190,20 @@ fn reconcile_watches(
         let own_git = checkout.dir.join(".git");
         let gitdir = vcs::git_dirs(&checkout.dir)
             .map(|(gitdir, _)| gitdir)
-            .filter(|gitdir| *gitdir != own_git)
-            .filter(|gitdir| watcher.watch(gitdir, RecursiveMode::NonRecursive).is_ok());
+            .filter(|gitdir| *gitdir != own_git);
+        if let Some(gitdir) = &gitdir {
+            if let Err(err) = watcher.watch(gitdir, RecursiveMode::NonRecursive) {
+                let _ = watcher.unwatch(&checkout.dir);
+                retries.insert(checkout.dir.clone(), std::time::Instant::now());
+                daemon.emit(agentdocker_core::EventKind::WatcherGap {
+                    reason: format!(
+                        "cannot watch Git metadata {}: {err}; retrying in 30 seconds",
+                        gitdir.display()
+                    ),
+                });
+                continue;
+            }
+        }
         info!(checkout = %checkout.dir.display(), project = %checkout.project.short(), "watching");
         watched.insert(checkout.dir.clone(), Watched { checkout, gitdir });
     }
