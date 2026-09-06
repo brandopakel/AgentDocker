@@ -43,6 +43,7 @@ mod access;
 mod channels;
 mod containers;
 mod handoff;
+pub mod humans;
 mod images;
 mod recovery;
 mod relay;
@@ -198,6 +199,12 @@ struct State {
     /// Which checkouts have changed each path, so the second one is a
     /// collision the daemon can act on without scanning the ledger.
     contested: HashMap<(ProjectId, PathBuf), HashSet<PathBuf>>,
+    /// Questions somebody is blocked on, by message id: an answer names
+    /// one and only the question knows who is waiting for it.
+    questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Where desktop notifications are handed off to be posted. `None`
+    /// until the daemon starts its notifier, and in tests.
+    notifier: Option<mpsc::Sender<humans::Notice>>,
 }
 
 struct JournalRing {
@@ -711,6 +718,8 @@ impl Daemon {
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
+                questions: HashMap::new(),
+                notifier: None,
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
@@ -722,6 +731,15 @@ impl Daemon {
             restricted: Mutex::new(RestrictedEndpoint::Starting),
             sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Start posting desktop notifications for messages that reach a
+    /// person. Separate from `open` so tests, which have no desktop and
+    /// want no side effects, simply never call it.
+    pub fn notify_desktop(self: &Arc<Self>) {
+        let (tx, rx) = mpsc::channel(64);
+        lock(&self.state).notifier = Some(tx);
+        tokio::spawn(humans::notifier(rx));
     }
 
     pub fn log_path(&self, id: &AgentId) -> PathBuf {
@@ -892,6 +910,19 @@ impl Daemon {
                 payload,
                 reply_to,
             } => self.send(from, &to, kind, payload, reply_to).await,
+            Request::Me { workdir } => self.me(workdir).await,
+            Request::Ask {
+                from,
+                to,
+                question,
+                timeout_secs,
+            } => self.ask(from, to, question, timeout_secs).await,
+            Request::Answer {
+                from,
+                message,
+                text,
+            } => self.answer(from, message, text).await,
+            Request::Questions { agent } => self.questions(agent),
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
             Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
@@ -2082,23 +2113,36 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
-        let from = match lock(&self.state).registry.resolve(&from) {
-            Ok(id) => id.to_string(),
-            Err(RegistryError::NotFound(_)) => from,
-            Err(err) => return registry_error(err),
-        };
-        let to = match Destination::parse(to) {
-            Destination::Agent(reference) => match self.resolve(reference.as_str()) {
-                Ok(id) => Destination::Agent(id),
-                Err(response) => return *response,
-            },
-            Destination::Project(selector) => match self.resolve_project(selector.as_str()).await {
-                Ok(id) => Destination::Project(id),
-                Err(response) => return *response,
-            },
-            other => other,
+        let (from, to) = match self.endpoints(from, to).await {
+            Ok(pair) => pair,
+            Err(response) => return *response,
         };
         lock(&self.state).send(from, to, kind, payload, reply_to)
+    }
+
+    /// Turn a sender name and a destination shorthand into what the bus
+    /// routes on. `ask` needs the resolved pair as well as the send, so
+    /// that it can record who is waiting for the answer.
+    async fn endpoints(
+        &self,
+        from: String,
+        to: &str,
+    ) -> Result<(String, Destination), Box<Response>> {
+        let from = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => id.to_string(),
+            // An unregistered sender is allowed: `agentd` and a bare
+            // `user` both speak without a record of their own.
+            Err(RegistryError::NotFound(_)) => from,
+            Err(err) => return Err(Box::new(registry_error(err))),
+        };
+        let to = match Destination::parse(to) {
+            Destination::Agent(reference) => Destination::Agent(self.resolve(reference.as_str())?),
+            Destination::Project(selector) => {
+                Destination::Project(self.resolve_project(selector.as_str()).await?)
+            }
+            other => other,
+        };
+        Ok((from, to))
     }
 
     /// Open a live subscription. Returns the filter plus the raw receiver so
@@ -3250,6 +3294,10 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
+        // A person is not polling a socket, so a message that reaches one
+        // is worth an interruption. Queued or live, the notification is
+        // the same: it is the arrival that matters, not the route.
+        self.notify_humans(&envelope, &recipients);
         let offline: Vec<AgentId> = {
             let live = &self.live_subscribers;
             recipients
@@ -3451,6 +3499,290 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    // ----- the human as an agent -----------------------------------------
+
+    async fn me(daemon: &Arc<Daemon>) -> AgentRecord {
+        match daemon.handle(Request::Me { workdir: None }).await {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn me_is_idempotent_and_outlives_the_liveness_check() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        let first = me(&daemon).await;
+        assert_eq!(first.spec.name, agentdocker_core::HUMAN);
+        assert_eq!(first.spec.runtime, agentdocker_core::HUMAN_RUNTIME);
+        assert_eq!(first.pid, None, "a person is not a process");
+
+        let again = me(&daemon).await;
+        assert_eq!(again.id, first.id, "the same person, not a second one");
+
+        // A record with no pid has nothing for liveness to check, so the
+        // human is still here after a sweep that reaps dead processes.
+        daemon.check_liveness();
+        assert!(daemon.is_live(&first.id));
+    }
+
+    #[tokio::test]
+    async fn ask_returns_the_answer_that_names_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let human = me(&daemon).await;
+        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let answering = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                // Wait for the question to be recorded, then answer it.
+                let id = loop {
+                    let Response::Questions { questions } = daemon
+                        .handle(Request::Questions {
+                            agent: Some("user".to_owned()),
+                        })
+                        .await
+                    else {
+                        panic!("questions did not answer with questions")
+                    };
+                    if let Some(question) = questions.first() {
+                        assert_eq!(question.text, "ship it?");
+                        break question.id.clone();
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                };
+                daemon
+                    .handle(Request::Answer {
+                        from: None,
+                        message: id,
+                        text: "yes".to_owned(),
+                    })
+                    .await
+            })
+        };
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: asker.id.to_string(),
+                to: "user".to_owned(),
+                question: "ship it?".to_owned(),
+                timeout_secs: 10,
+            })
+            .await;
+        let Response::Answer { from, text, .. } = response else {
+            panic!("unexpected {response:?}")
+        };
+        assert_eq!(text, "yes");
+        assert_eq!(from, human.id.to_string());
+        answering.await.unwrap();
+
+        // The question is no longer waiting for anyone.
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert!(questions.is_empty(), "answered, so no longer open");
+
+        // And the asker can still read the answer, because an answer is an
+        // ordinary message as well as the end of a wait.
+        let waiting = inbox(&daemon, asker.id.as_str(), true).await;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].kind, "answer");
+    }
+
+    #[tokio::test]
+    async fn ask_times_out_rather_than_waiting_forever() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: asker.id.to_string(),
+                to: "user".to_owned(),
+                question: "anyone there?".to_owned(),
+                timeout_secs: 1,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Timeout,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+        // Nobody is blocked on it any more, so it is not still open.
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert!(questions.is_empty());
+        // The question itself still reached the human's inbox: a timeout
+        // is the asker giving up, not the message being withdrawn.
+        let waiting = inbox(&daemon, "user", true).await;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].kind, "question");
+    }
+
+    #[tokio::test]
+    async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: "user".to_owned(),
+                to: "user".to_owned(),
+                question: "   ".to_owned(),
+                timeout_secs: 1,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        let response = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: MessageId::from("nosuchquestion".to_owned()),
+                text: "hello?".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn questions_are_listed_only_for_whoever_was_asked() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+
+        // Two questions in flight, to different agents. Neither is
+        // answered, so both asks are still waiting when we look.
+        let to_human = {
+            let daemon = daemon.clone();
+            let from = alpha.id.to_string();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Ask {
+                        from,
+                        to: "user".to_owned(),
+                        question: "for the human".to_owned(),
+                        timeout_secs: 30,
+                    })
+                    .await
+            })
+        };
+        let to_beta = {
+            let daemon = daemon.clone();
+            let from = alpha.id.to_string();
+            let beta = beta.id.to_string();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Ask {
+                        from,
+                        to: beta,
+                        question: "for beta".to_owned(),
+                        timeout_secs: 30,
+                    })
+                    .await
+            })
+        };
+
+        let both = loop {
+            let Response::Questions { questions } =
+                daemon.handle(Request::Questions { agent: None }).await
+            else {
+                panic!("questions did not answer with questions")
+            };
+            if questions.len() == 2 {
+                break questions;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert!(both[0].asked_at >= both[1].asked_at, "newest first");
+
+        let Response::Questions { questions } = daemon
+            .handle(Request::Questions {
+                agent: Some("user".to_owned()),
+            })
+            .await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].text, "for the human");
+
+        to_human.abort();
+        to_beta.abort();
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does_not() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let human = me(&daemon).await;
+        let worker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let (tx, mut notices) = mpsc::channel(8);
+        lock(&daemon.state).notifier = Some(tx);
+
+        daemon
+            .handle(Request::Send {
+                from: worker.id.to_string(),
+                to: human.id.to_string(),
+                kind: "chat".to_owned(),
+                payload: json!({ "text": "look at this" }),
+                reply_to: None,
+            })
+            .await;
+        let notice = notices.try_recv().expect("a person is worth interrupting");
+        assert_eq!(notice.from, "worker", "by name, not by id");
+        assert_eq!(notice.kind, "chat");
+        assert_eq!(notice.text, "look at this");
+
+        daemon
+            .handle(Request::Send {
+                from: "user".to_owned(),
+                to: worker.id.to_string(),
+                kind: "chat".to_owned(),
+                payload: json!({ "text": "carry on" }),
+                reply_to: None,
+            })
+            .await;
+        assert!(
+            notices.try_recv().is_err(),
+            "a program has no desktop to interrupt"
+        );
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

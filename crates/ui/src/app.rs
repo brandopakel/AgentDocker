@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
 use agentdocker_core::{
-    AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease, ProjectRef, Request,
-    Response, RuntimeInfo,
+    AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease, MessageId, ProjectRef,
+    Question, Request, Response, RuntimeInfo,
 };
 use chrono::Utc;
 use egui::{Color32, RichText};
@@ -29,6 +29,7 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Agents,
+    Questions,
     Terminal,
     Console,
     Runtimes,
@@ -38,8 +39,9 @@ enum Screen {
 }
 
 impl Screen {
-    const ALL: [Screen; 7] = [
+    const ALL: [Screen; 8] = [
         Screen::Agents,
+        Screen::Questions,
         Screen::Terminal,
         Screen::Console,
         Screen::Runtimes,
@@ -51,6 +53,7 @@ impl Screen {
     fn title(self) -> &'static str {
         match self {
             Screen::Agents => "Agents",
+            Screen::Questions => "Questions",
             Screen::Terminal => "Terminal",
             Screen::Console => "Console",
             Screen::Runtimes => "Runtimes",
@@ -68,6 +71,10 @@ enum Cmd {
     Runtimes,
     Discovered,
     Journal(String),
+    /// Register the person at the keyboard, so agents can address them.
+    Me,
+    Questions,
+    Answer(MessageId, String),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -84,6 +91,7 @@ enum Msg {
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Vec<JournalEntry>),
+    Questions(Vec<Question>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
@@ -114,6 +122,11 @@ pub struct App {
     terminal: Option<Terminal>,
     console_input: String,
     console_output: String,
+    /// Questions put to the human, and what is being typed in reply to
+    /// each. The draft is keyed by message id so answering one question
+    /// does not disturb another half-written answer.
+    questions: Vec<Question>,
+    answers: BTreeMap<MessageId, String>,
 }
 
 impl App {
@@ -123,7 +136,16 @@ impl App {
         let (msg_tx, msg_rx) = channel::<Msg>();
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
         spawn_events(client.clone(), msg_tx, cc.egui_ctx.clone());
-        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Runtimes] {
+        // The window is a person being present, so the person is an
+        // agent for as long as it is open.
+        for cmd in [
+            Cmd::Me,
+            Cmd::Agents,
+            Cmd::Leases,
+            Cmd::Discovered,
+            Cmd::Runtimes,
+            Cmd::Questions,
+        ] {
             let _ = cmd_tx.send(cmd);
         }
         Self {
@@ -147,6 +169,8 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            questions: Vec::new(),
+            answers: BTreeMap::new(),
         }
     }
 
@@ -174,6 +198,8 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            questions: Vec::new(),
+            answers: BTreeMap::new(),
         }
     }
 
@@ -194,11 +220,25 @@ impl App {
                         self.journal = entries;
                     }
                 }
+                Msg::Questions(questions) => {
+                    // Forget drafts for questions nobody is waiting on any
+                    // more, so the map does not grow with the session.
+                    self.answers
+                        .retain(|id, _| questions.iter().any(|q| q.id == *id));
+                    self.questions = questions;
+                }
                 Msg::Event(event) => self.on_event(*event),
                 Msg::Connected => {
                     if self.connected.is_err() {
                         self.connected = Ok(());
-                        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Runtimes] {
+                        for cmd in [
+                            Cmd::Me,
+                            Cmd::Agents,
+                            Cmd::Leases,
+                            Cmd::Discovered,
+                            Cmd::Runtimes,
+                            Cmd::Questions,
+                        ] {
                             self.send(cmd);
                         }
                         if let Some(project) = &self.journal_project {
@@ -219,7 +259,7 @@ impl App {
         // worker. Coming back re-reads everything anyway.
         if self.connected.is_ok() && self.last_refresh.elapsed() >= REFRESH {
             self.last_refresh = Instant::now();
-            for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered] {
+            for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Questions] {
                 self.send(cmd);
             }
         }
@@ -260,6 +300,11 @@ impl App {
             | EventKind::LeaseTransferred { .. } => self.send(Cmd::Leases),
             EventKind::AgentDiscovered { .. } | EventKind::AgentVanished { .. } => {
                 self.send(Cmd::Discovered);
+            }
+            // A question is worth showing the moment it is asked, not on
+            // the next two-second sweep: somebody is blocked on it.
+            EventKind::MessageSent { kind, .. } if kind == "question" || kind == "answer" => {
+                self.send(Cmd::Questions);
             }
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
@@ -481,6 +526,65 @@ impl App {
     fn attach(&mut self, agent: String, ctx: egui::Context) {
         if let Some(client) = &self.client {
             self.terminal = Some(Terminal::attach(client.clone(), agent, ctx));
+        }
+    }
+
+    /// What agents are waiting on the person at the keyboard.
+    ///
+    /// An agent that asks a question is blocked until it is answered, so
+    /// this screen is the one part of the window where doing nothing has
+    /// a cost. The question and the answer box sit together: reading it
+    /// and replying to it should not be two places.
+    fn questions_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            "Questions agents have put to you. Each one has an agent waiting on the answer; \
+             unanswered, it gives up when its time runs out.",
+        );
+        ui.add_space(6.0);
+        if self.questions.is_empty() {
+            ui.label(RichText::new("Nothing is waiting on you.").weak());
+            return;
+        }
+        let mut answered: Option<(MessageId, String)> = None;
+        let questions = self.questions.clone();
+        for question in &questions {
+            let left = (question.expires_at - Utc::now()).num_seconds().max(0);
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(self.name_of(&question.from)).strong());
+                    ui.label(RichText::new(format!("· {} left", span(left))).weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(question.id.to_string()).weak().monospace());
+                    });
+                });
+                ui.add_space(2.0);
+                ui.label(&question.text);
+                ui.add_space(4.0);
+                let draft = self.answers.entry(question.id.clone()).or_default();
+                let mut send = false;
+                let entry = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("your answer"),
+                );
+                if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    send = true;
+                }
+                if ui.button("Answer").clicked() {
+                    send = true;
+                }
+                if send && !draft.trim().is_empty() {
+                    answered = Some((question.id.clone(), draft.clone()));
+                }
+            });
+            ui.add_space(4.0);
+        }
+        if let Some((id, text)) = answered {
+            self.answers.remove(&id);
+            // Drop it from the list at once: the daemon forgets an
+            // answered question, and the next sweep would anyway.
+            self.questions.retain(|q| q.id != id);
+            self.send(Cmd::Answer(id, text));
         }
     }
 
@@ -727,6 +831,9 @@ impl eframe::App for App {
                         "Agents ({})",
                         self.agents.iter().filter(|a| a.status.is_live()).count()
                     ),
+                    Screen::Questions if !self.questions.is_empty() => {
+                        format!("Questions ({})", self.questions.len())
+                    }
                     Screen::Leases => format!("Leases ({})", self.leases.len()),
                     Screen::Events => format!("Events ({})", self.events.len()),
                     other => other.title().to_owned(),
@@ -745,6 +852,7 @@ impl eframe::App for App {
             }
             egui::ScrollArea::vertical().show(ui, |ui| match self.screen {
                 Screen::Agents => self.agents_screen(ui),
+                Screen::Questions => self.questions_screen(ui),
                 Screen::Console => self.console_screen(ui),
                 Screen::Terminal => {}
                 Screen::Runtimes => self.runtimes_screen(ui),
@@ -895,6 +1003,28 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Journal { entries, .. } => Some(Msg::Journal(project, entries)),
             _ => None,
         },
+        Cmd::Me => match client.call(&Request::Me {
+            workdir: std::env::current_dir().ok(),
+        })? {
+            Response::Agent { .. } => None,
+            _ => None,
+        },
+        Cmd::Questions => match client.call(&Request::Questions {
+            agent: Some(agentdocker_core::HUMAN.to_owned()),
+        })? {
+            Response::Questions { questions } => Some(Msg::Questions(questions)),
+            _ => None,
+        },
+        Cmd::Answer(message, text) => Some(
+            match client.call(&Request::Answer {
+                from: None,
+                message,
+                text,
+            }) {
+                Ok(_) => Msg::Status("answered".to_owned()),
+                Err(err) => Msg::Status(err.to_string()),
+            },
+        ),
         Cmd::Adopt(pid) => Some(
             match client.call(&Request::Adopt {
                 pid,
@@ -1099,11 +1229,13 @@ mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 5);
+        assert_eq!(received.len(), 7);
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Runtimes)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Questions)));
         assert!(
             received
                 .iter()

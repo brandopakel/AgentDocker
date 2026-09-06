@@ -212,6 +212,10 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
+| `me {workdir?}` | `agent` | register the person at the keyboard as the agent `user`, runtime `human`, or return the one already registered; `workdir` moves them to that project. No pid, so liveness never expires it |
+| `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout)` | sends a `question` message and holds the connection until an answer names it; timeout defaults to 300 s and is clamped to 1–86,400 |
+| `answer {from?, message, text}` | `sent` | reply to a waiting question by its id; who to reply to comes from the question, not the caller; `from` defaults to `user` |
+| `questions {agent?}` | `questions {questions: Question[]}` | what is still waiting, newest first; `agent` narrows to the ones put to that agent |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
 | `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
@@ -488,7 +492,7 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 
 #### Native desktop app *(done)*
 
-`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs any `agentdocker` command and shows what it said, because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human and for stale-context warnings are planned with the human-as-agent item below. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
+`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs any `agentdocker` command and shows what it said, because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so they arrive whether or not the window is open. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
 
 #### Wait queue and deadlock detection
 
@@ -497,9 +501,15 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 - **FIFO queue.** Core `WaitQueue` (pure) records waiting requests per resource in arrival order; when a lease clears, only the oldest waiter on an overlapping resource may take it, so a newcomer cannot starve someone already waiting. `lease_waiting {resource, requester, position}` is emitted when a request starts waiting and `lease_wait_timeout {resource, requester}` when it gives up (the response stays `error(conflict)` with the blocking leases, as now). Waiters remain connection-scoped and are never persisted: a daemon restart drops every waiting client, which reconnects and re-queues.
 - **Deadlock detection.** Waiters form a graph: an edge from each waiter to every holder of a blocking lease. Core `WaitGraph` (pure, tested) maintains it and, on every new wait, searches for a cycle through the requester. If one exists the claim is refused immediately with `ErrorCode::Deadlock` and `details.cycle` listing the agents and resources, and `lease_deadlock {cycle}` is emitted; the newcomer is always the victim, which is deterministic and needs no priorities. TTLs already bound how long a deadlock can last; detection makes it instant and explains it. Priority-based victim selection stays an open question.
 
-#### The human as an agent
+#### The human as an agent *(done)*
 
-Orchestration needs an escalation path, and it should live inside the same model rather than beside it. `agentdocker me` registers the human as a persistent agent named `user` with runtime `human` (the `from: user` convention already exists), never expired by liveness. `ask {from, to, question, timeout_secs}` sends `kind: question` and blocks the caller until an `answer` with a matching `reply_to` arrives or `ErrorCode::Timeout`; MCP exposes `ask_human`, hooks expose nothing (a model asks in prose). Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker answer <message id> "…"` replies, and the daemon raises a desktop notification (`osascript` / `terminal-notifier` on macOS, `notify-send` on Linux) for anything addressed to `user`, throttled to one per sender per minute.
+Orchestration needs an escalation path, and it lives inside the same model rather than beside it. `agentdocker me` registers the person at the keyboard as a persistent agent named `user` with runtime `human` (the `from: user` convention already existed) and prints its id, so `export AGENTDOCKER_AGENT_ID=$(agentdocker me)` is the whole of joining as yourself. It is idempotent — a second call returns the same record, and moves it to the project the shell is in — and the record has no pid, so the liveness sweep has nothing to check and never expires it. From then on a person is addressable like anything else: messages queue in their inbox, `watch --me` streams them, the journal keeps their cursor, and `ps` lists them.
+
+`ask {from, to, question, timeout_secs?}` sends a `question` message and holds the connection until an `answer` naming it arrives, or answers `error(timeout)`. The daemon keeps the outstanding questions in memory, because an answer names a question by id and only the question knows who is waiting on it; `answer {message, text}` is therefore a one-argument act whether a person or an agent does it. An answer is an ordinary message as well as the end of a wait, so it also reaches the asker's inbox: an `ask` that timed out still leaves the answer where the asker can read it. A question that nobody answers stays in the recipient's inbox after the asker gives up — a timeout is the asker giving up, not the message being withdrawn.
+
+Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker questions [--me]` lists what is waiting, `agentdocker answer <message id> "…"` replies, and the desktop app has a Questions screen where the question and the box you answer it in sit together. MCP exposes `ask_human`, `answer_question` and `open_questions`; hooks expose nothing, because a model asks in prose.
+
+The one thing genuinely different about a person is that they are not polling a socket, so the daemon raises a desktop notification for any message that reaches an agent whose runtime is `human` — `terminal-notifier` then `osascript` on macOS, `notify-send` on Linux — throttled to one per sender per minute. It is best-effort by design: a headless box has none of these tools, and that is not an error, because the message is still queued, still in the inbox, still on the event stream. Notifications are built under the state lock and posted on another thread, so a desktop that is slow to draw one never delays a coordination request.
 
 #### Admission policy and budgets
 
@@ -584,7 +594,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
-| 14 | human agent, `ask` / `answer`, notifications | 5 | 2 |
+| 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
@@ -601,7 +611,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 14 (the human as an agent, where the app's notifications come from), 27, 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 27, 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -615,11 +625,10 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
-| `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
 Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. `Timeout` is shipped (`ask`); `Deadlock` follows with row 13.
 
 ## Open questions
 

@@ -18,6 +18,7 @@ pub mod engine;
 pub mod runtimes;
 
 pub mod dirs;
+pub mod notify;
 pub mod pty;
 pub mod transport;
 
