@@ -49,6 +49,18 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The daemon's home as every process should spell it: the configured
+/// path, canonical when it exists, so a symlinked `AGENTDOCKER_HOME` names
+/// the same socket directory from the daemon, every client, and an
+/// installed service alike.
+pub fn home() -> PathBuf {
+    canonical_home(paths::default_home())
+}
+
+pub fn canonical_home(home: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&home).unwrap_or(home)
+}
+
 /// The directory a home's sockets live in, existing and safe: the home
 /// itself is simply created, a fallback under the runtime directory must
 /// be private. Both binaries call this before binding or locking there.
@@ -86,6 +98,22 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let err = ensure_private_dir(&file).unwrap_err().to_string();
         assert!(err.contains("not a directory"), "{err}");
+    }
+
+    #[test]
+    fn a_symlinked_home_resolves_to_one_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(canonical_home(link), real.canonicalize().unwrap());
+        let missing = tmp.path().join("not-yet");
+        assert_eq!(
+            canonical_home(missing.clone()),
+            missing,
+            "a home that does not exist yet is left as given"
+        );
     }
 
     #[test]
