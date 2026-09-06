@@ -39,7 +39,7 @@ const RUNTIME: &str = "claude-code";
 /// How much of a transcript's end is read for the `Stop` summary.
 const TRANSCRIPT_TAIL: u64 = 64 * 1024;
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-const EDIT_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob";
+const EDIT_MATCHER: &str = agentdocker_core::runtime::CLAUDE_CODE_EDIT_MATCHER;
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh"];
 
 #[derive(Args, Debug)]
@@ -897,16 +897,18 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     } else {
         PathBuf::from(".claude").join("settings.json")
     };
-    let mut settings: Value = if path.exists() {
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("{} is not valid JSON", path.display()))?
-    } else {
-        json!({})
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(raw) => Some(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let mut settings: Value = match existing.as_deref() {
+        Some(raw) => serde_json::from_str(raw)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?,
+        None => json!({}),
     };
     let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
-    let command = format!("{} hook claude-code", exe.display());
+    let command = agentdocker_host::runtimes::claude_hook_command(&exe)?;
     let added = merge_claude_code_hooks(&mut settings, &command)?;
     if added == 0 {
         // Nothing to add, so leave the file byte-for-byte alone: a rewrite
@@ -914,12 +916,10 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
         eprintln!("{}: hooks already installed", path.display());
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(
+    crate::setup::write_config(
         &path,
-        format!("{}\n", serde_json::to_string_pretty(&settings)?),
+        existing.as_deref(),
+        &format!("{}\n", serde_json::to_string_pretty(&settings)?),
     )
     .with_context(|| format!("cannot write {}", path.display()))?;
     eprintln!(
@@ -933,14 +933,6 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
 /// command already runs `hook claude-code` are left alone, so this is safe
 /// to run repeatedly. Returns how many entries were added.
 pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<usize> {
-    const EVENTS: &[(&str, Option<&str>)] = &[
-        ("SessionStart", None),
-        ("UserPromptSubmit", None),
-        ("PreToolUse", Some(EDIT_MATCHER)),
-        ("PostToolUse", None),
-        ("Stop", None),
-        ("SessionEnd", None),
-    ];
     let root = settings
         .as_object_mut()
         .context("settings must be a JSON object")?;
@@ -951,11 +943,12 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
         .context("`hooks` must be a JSON object")?;
     let mut added = 0;
     let managed = |hook: &Value| {
-        hook["command"]
-            .as_str()
-            .is_some_and(|c| c.contains("hook claude-code"))
+        hook["type"] == json!("command")
+            && hook["command"]
+                .as_str()
+                .is_some_and(|c| agentdocker_host::runtimes::hook_command_matches(c, "agentdocker"))
     };
-    for (event, matcher) in EVENTS {
+    for (event, matcher) in agentdocker_core::runtime::CLAUDE_CODE_HOOKS {
         let entries = hooks
             .entry(*event)
             .or_insert_with(|| json!([]))
@@ -1621,6 +1614,53 @@ mod tests {
                 .is_none()
         );
         assert_eq!(backend.requests().len(), 1);
+    }
+
+    #[test]
+    fn hook_inventory_requires_the_complete_installed_adapter_and_preserves_mentions() {
+        use agentdocker_core::runtime::{Wiring, spec};
+        use agentdocker_host::runtimes::{claude_hook_command, hooks_wiring};
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("space ' and $()/agentdocker");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = claude_hook_command(&bin).unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"hook\nclaude-code\n");
+
+        let mention =
+            json!({"hooks":[{"type":"command", "command":"echo 'agentdocker hook claude-code'"}]});
+        let mut settings = json!({"hooks":{"Stop":[mention.clone()]}});
+        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 6);
+        assert_eq!(settings["hooks"]["Stop"][0], mention);
+        let file = tmp.path().join(".claude/settings.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let runtime = spec("claude-code").unwrap();
+        for (change, expected) in [
+            (None, Wiring::Wired),
+            (Some("matcher"), Wiring::Missing),
+            (Some("event"), Wiring::Missing),
+        ] {
+            let mut candidate = settings.clone();
+            match change {
+                Some("matcher") => candidate["hooks"]["PreToolUse"][0]["matcher"] = json!("Edit"),
+                Some("event") => {
+                    candidate["hooks"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("SessionEnd");
+                }
+                _ => {}
+            }
+            std::fs::write(&file, serde_json::to_vec(&candidate).unwrap()).unwrap();
+            assert_eq!(hooks_wiring(runtime, tmp.path(), "agentdocker"), expected);
+        }
     }
 
     #[test]
