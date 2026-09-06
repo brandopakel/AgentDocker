@@ -4,10 +4,10 @@
 //! macOS and the BSDs, 108 on Linux — while a home directory can be as long
 //! as anyone likes. The rules here keep the two apart: a home whose path
 //! leaves no room for `container.sock` gets its sockets in a short private
-//! directory instead — under `$XDG_RUNTIME_DIR` where a session manager
-//! provides one, else `/tmp` — named by a stable hash of the home's own
-//! bytes, so the daemon and every client, whatever their environment,
-//! agree on the place without a pointer file or a running daemon to ask.
+//! directory under `/tmp` instead — the one place every process of a user
+//! sees the same way, whatever its environment — named by a stable hash of
+//! the home's own bytes, so the daemon and every client agree on the place
+//! without a pointer file or a running daemon to ask.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -40,12 +40,12 @@ pub fn fits_socket(path: &Path) -> bool {
 }
 
 /// Where a home's sockets live: the home itself when both socket names fit
-/// there, else `agentdocker-<hash of the home>` under the runtime directory
-/// (`$XDG_RUNTIME_DIR`, else `/tmp` — never a per-shell `$TMPDIR`, which
-/// would let two environments of one user disagree). The hash is over the
-/// path's own bytes, so two homes that differ only outside UTF-8 still get
-/// two directories. Deterministic, so the daemon and its clients compute
-/// the same place independently.
+/// there, else `agentdocker-<hash of the home>` under `/tmp` — never an
+/// environment-dependent directory such as `$TMPDIR` or
+/// `$XDG_RUNTIME_DIR`, which a service, a cron job and a shell can each
+/// see differently. The hash is over the path's own bytes, so two homes
+/// that differ only outside UTF-8 still get two directories. Deterministic,
+/// so the daemon and its clients compute the same place independently.
 pub fn socket_dir(home: &Path) -> PathBuf {
     socket_dir_in(home, &runtime_dir())
 }
@@ -110,13 +110,11 @@ pub fn worktree_dir(home: &Path) -> PathBuf {
     home.with_file_name(name)
 }
 
-/// The user's runtime directory for short-lived, private files: the
-/// session manager's when it names one, else `/tmp`.
+/// Where the short socket directories live. `/tmp` is world-writable, so
+/// the directory itself is created private and checked for ownership
+/// before anything binds in it (see `agentdocker_host::dirs`).
 fn runtime_dir() -> PathBuf {
-    env::var_os("XDG_RUNTIME_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    PathBuf::from("/tmp")
 }
 
 /// `$AGENTDOCKER_SOCKET`, or `agentd.sock` in the home's socket directory.

@@ -30,7 +30,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(socket: Option<PathBuf>) -> Self {
-        let socket = socket.unwrap_or_else(|| paths::socket_path(&paths::default_home()));
+        let socket = socket.unwrap_or_else(|| paths::socket_path(&dirs::home()));
         let disabled = std::env::var_os("AGENTDOCKER_TOKEN_FILE").is_some()
             || std::env::var_os("AGENTDOCKER_NO_AUTOSTART")
                 .is_some_and(|value| !value.is_empty() && value != "0");
@@ -58,6 +58,9 @@ impl Client {
                 paths::SOCKET_PATH_MAX
             );
         }
+        dirs::check_socket_parent(&self.socket).with_context(|| {
+            format!("socket directory for {} is unusable", self.socket.display())
+        })?;
         let stream = match UnixStream::connect(&self.socket).await {
             Ok(stream) => stream,
             Err(err) if absent(&err) && self.autostart.is_some() => {
@@ -105,7 +108,7 @@ impl Client {
     /// starting, so only the wait is needed. Two clients racing here may
     /// both spawn a daemon; the loser exits when it finds the lock taken.
     async fn start_daemon(&self, timeout: Duration) -> Result<UnixStream> {
-        let home = paths::default_home();
+        let home = dirs::home();
         let lock_path = paths::lock_path(&self.socket);
         if let Some(parent) = lock_path.parent() {
             if parent == paths::socket_dir(&home) && parent != home {
@@ -123,37 +126,12 @@ impl Client {
         // Our own child, when we started one: its exit is known at once,
         // so a daemon that dies on startup fails this call in milliseconds
         // with its last words, not after the whole timeout.
-        let mut child = if vacant {
+        let child = if vacant {
             Some(spawn_agentd(&self.socket, &home)?)
         } else {
             None
         };
-        let deadline = Instant::now() + timeout;
-        loop {
-            match UnixStream::connect(&self.socket).await {
-                Ok(stream) => return Ok(stream),
-                Err(err) if absent(&err) && Instant::now() < deadline => {
-                    if let Some(status) = child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
-                        bail!(
-                            "agentd exited ({status}) before listening on {}:\n{}",
-                            self.socket.display(),
-                            log_tail(&log_path, 6)
-                        );
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!(
-                            "agentd did not come up at {} within {timeout:?} (see {}):\n{}",
-                            self.socket.display(),
-                            log_path.display(),
-                            log_tail(&log_path, 6)
-                        )
-                    });
-                }
-            }
-        }
+        wait_for_start(&self.socket, &log_path, timeout, child).await
     }
 
     /// Send one request and read exactly one response. Error responses
@@ -246,6 +224,57 @@ impl Client {
     }
 }
 
+/// Retain startup ownership until the daemon accepts a connection. A failed or
+/// cancelled startup reaps only the child this client created.
+struct StartingChild(Option<std::process::Child>);
+impl Drop for StartingChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+async fn wait_for_start(
+    socket: &Path,
+    log_path: &Path,
+    timeout: Duration,
+    child: Option<std::process::Child>,
+) -> Result<UnixStream> {
+    let mut child = StartingChild(child);
+    let deadline = Instant::now() + timeout;
+    loop {
+        dirs::check_socket_parent(socket)?;
+        match UnixStream::connect(socket).await {
+            Ok(stream) => {
+                child.0.take();
+                return Ok(stream);
+            }
+            Err(err) if absent(&err) && Instant::now() < deadline => {
+                if let Some(status) = child.0.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+                    bail!(
+                        "agentd exited ({status}) before listening on {}:\n{}",
+                        socket.display(),
+                        log_tail(log_path, 6)
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "agentd did not come up at {} within {timeout:?} (see {}):\n{}",
+                        socket.display(),
+                        log_path.display(),
+                        log_tail(log_path, 6)
+                    )
+                });
+            }
+        }
+    }
+}
+
 /// No socket file, or nobody listening on it.
 fn absent(err: &std::io::Error) -> bool {
     matches!(
@@ -273,6 +302,8 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
     Command::new(&exe)
         .arg("--socket")
         .arg(socket)
+        .arg("--home")
+        .arg(home)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
@@ -513,6 +544,69 @@ mod stream_tests {
         assert_eq!(log_tail(&tmp.path().join("missing"), 3), "");
         std::fs::write(&log, "one\ntwo\n").unwrap();
         assert_eq!(log_tail(&log, 5), "  one\n  two");
+    }
+
+    #[tokio::test]
+    async fn untrusted_existing_fallback_socket_is_rejected_without_connecting() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("h".repeat(120));
+        let parent = paths::socket_dir(&home);
+        dirs::ensure_private_dir(&parent).unwrap();
+        let socket = parent.join(paths::HOST_SOCKET);
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = Client::new(Some(socket.clone()))
+            .with_start_timeout(None)
+            .call(&Request::Ping)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("writable by others"), "{err:#}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                .await
+                .is_err()
+        );
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        drop(listener);
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(parent).unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_timeout_reaps_our_child_and_success_releases_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let log = tmp.path().join("log");
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        assert!(
+            wait_for_start(&socket, &log, Duration::from_millis(30), Some(child))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            -1,
+            "timed-out child was reaped"
+        );
+        let listener = UnixListener::bind(&socket).unwrap();
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let stream = wait_for_start(&socket, &log, Duration::from_secs(1), Some(child))
+            .await
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "successful daemon stays alive"
+        );
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+            libc::waitpid(pid as i32, std::ptr::null_mut(), 0);
+        }
+        drop(stream);
+        drop(listener);
     }
 
     #[tokio::test]

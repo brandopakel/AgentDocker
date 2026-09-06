@@ -92,6 +92,18 @@ fn service_socket(home: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
         .or_else(|| (paths::socket_dir(home) != home).then(|| paths::socket_path(home)))
 }
 
+fn validate_service_socket(socket: &Path) -> Result<()> {
+    if !paths::fits_socket(socket) {
+        bail!(
+            "socket path {} is {} bytes; this OS allows {}",
+            socket.display(),
+            socket.as_os_str().len(),
+            paths::SOCKET_PATH_MAX
+        );
+    }
+    Ok(())
+}
+
 /// Everything the service definition needs to know.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -113,18 +125,24 @@ impl Layout {
     }
 
     fn discover(socket: Option<&Path>) -> Result<Self> {
+        if let Some(socket) = socket {
+            validate_service_socket(socket)?;
+        }
         let agentd = std::env::current_exe()
             .ok()
             .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
             .filter(|sibling| sibling.is_file())
             .or_else(|| which("agentd"))
             .context("cannot find the agentd binary beside agentdocker or on PATH")?;
-        let home = paths::default_home();
+        let home = agentdocker_host::dirs::home();
         std::fs::create_dir_all(&home)?;
         let uid = std::fs::metadata(&home)?.uid();
         let user_home = std::env::home_dir().context("no home directory")?;
         let home = home.canonicalize().unwrap_or(home);
         let socket = service_socket(&home, socket);
+        if let Some(socket) = &socket {
+            validate_service_socket(socket)?;
+        }
         Ok(Self {
             agentd: agentd.canonicalize().unwrap_or(agentd),
             home,
@@ -455,7 +473,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     if !macos && !cfg!(target_os = "linux") {
         bail!("service management is supported on macOS (launchd) and Linux (systemd) only");
     }
-    // Nothing here may start a daemon by accident.
+    // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
     let client = layout.client().with_start_timeout(None);
     match args.command {
@@ -564,6 +582,17 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlong_service_socket_is_rejected_before_layout_side_effects() {
+        let long = PathBuf::from(format!("/tmp/{}", "x".repeat(paths::SOCKET_PATH_MAX)));
+        let error = Layout::discover(Some(&long)).unwrap_err().to_string();
+        assert!(
+            error.contains("bytes") && error.contains("allows"),
+            "{error}"
+        );
+        validate_service_socket(Path::new("/tmp/agentd.sock")).unwrap();
+    }
 
     #[tokio::test]
     async fn symlinked_long_home_clients_use_the_service_socket() {
