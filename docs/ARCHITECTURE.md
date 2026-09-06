@@ -501,7 +501,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
-| 10 | ✅ `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
+| 10 | 🔄 `run --isolate` ✅, `worktree-diff` ✅, `overlap` ✅; `commit` (an agent committing its worktree through the daemon, so the act is journaled and attributed) is not built | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
@@ -513,7 +513,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 
-Order from here: 18, 19, a first tagged release so a second machine installs with the curl installer, then 13–16, 20, and 17.
+Order from here: a first tagged release so a second machine installs with the curl installer, then 14 (the human as an agent, which is where the desktop app's notifications come from), 13, 15, 16, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
