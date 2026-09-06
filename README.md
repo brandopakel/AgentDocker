@@ -1,10 +1,12 @@
 # AgentDocker
 
-**Docker for AI agents.** One daemon that creates, supervises, organises, and — above all — connects every agent running on your machines, whatever model or vendor is behind it.
+**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
-> Status: **early**. The daemon, CLI, messaging, and lease system work end-to-end on a single host. Runtime adapters, persistence, and multi-host federation are on the [roadmap](#roadmap).
+The product direction is an installed desktop app for macOS, Linux and Windows that automatically shows active agents and inventories installed CLIs and desktop apps. Docker and Podman inspire the orchestration model; normal local use requires neither engine. Container execution is an optional adapter. See [product direction and next delivery steps](docs/PRODUCT-DIRECTION.md).
+
+> Status: **early**. The native daemon, CLI, persistence, coordination and verified handoffs work on macOS and Linux. The desktop GUI, installed-tool inventory, automatic background discovery and Windows support remain to be built. Multi-host federation is separate future work.
 
 ## The Docker analogy
 

@@ -2,6 +2,8 @@
 
 This document describes what exists today precisely, and the later phases at the level of design intent. When the two disagree, the code wins and this document has a bug.
 
+The [product direction](PRODUCT-DIRECTION.md) sets the next delivery priorities: native local orchestration, automatic discovery and setup, an installed desktop GUI, and macOS/Linux/Windows support. Container engines are optional execution adapters. The historical phase order below does not make container expansion or a browser dashboard prerequisites for that desktop product.
+
 ## Goals
 
 1. **Universal.** Any agent — any model, any vendor, any runtime — can participate with nothing more than the ability to write JSON to a socket. No SDK is required, though one may exist for convenience.
