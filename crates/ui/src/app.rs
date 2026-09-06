@@ -92,6 +92,9 @@ pub struct App {
     journal_project: Option<String>,
     events: VecDeque<Event>,
     connected: Result<(), String>,
+    /// The highest event sequence taken, so a reconnect's replay is not
+    /// shown or acted on twice. Live-only events carry `0` and always pass.
+    last_seq: u64,
     status: String,
     last_refresh: Instant,
     last_runtimes: Instant,
@@ -120,10 +123,34 @@ impl App {
             journal_project: None,
             events: VecDeque::new(),
             connected: Err("connecting…".to_owned()),
+            last_seq: 0,
             status: String::new(),
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
             socket: client.socket().display().to_string(),
+        }
+    }
+
+    /// The window's state without a window or a daemon, for tests.
+    #[cfg(test)]
+    fn bare(tx: Sender<Cmd>, rx: Receiver<Msg>) -> Self {
+        Self {
+            tx,
+            rx,
+            screen: Screen::Agents,
+            agents: Vec::new(),
+            leases: Vec::new(),
+            runtimes: Vec::new(),
+            discovered: Vec::new(),
+            journal: Vec::new(),
+            journal_project: None,
+            events: VecDeque::new(),
+            connected: Ok(()),
+            last_seq: 0,
+            status: String::new(),
+            last_refresh: Instant::now(),
+            last_runtimes: Instant::now(),
+            socket: String::new(),
         }
     }
 
@@ -157,26 +184,38 @@ impl App {
                 Msg::Status(text) => self.status = text,
             }
         }
-        if self.last_refresh.elapsed() >= REFRESH {
+        // Nothing is asked of a daemon that is not there: each request
+        // would wait out its start timeout, and the queue would outrun the
+        // worker. Coming back re-reads everything anyway.
+        if self.connected.is_ok() && self.last_refresh.elapsed() >= REFRESH {
             self.last_refresh = Instant::now();
             for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered] {
                 self.send(cmd);
             }
         }
-        if self.last_runtimes.elapsed() >= RUNTIMES_REFRESH {
+        if self.connected.is_ok() && self.last_runtimes.elapsed() >= RUNTIMES_REFRESH {
             self.last_runtimes = Instant::now();
             self.send(Cmd::Runtimes);
         }
-        if self.journal_project.is_none() {
-            if let Some(project) = self.projects().first() {
-                self.journal_project = Some(project.0.clone());
-                self.send(Cmd::Journal(project.0.clone()));
-            }
+        if self.journal_project.is_none()
+            && let Some((id, _)) = self.projects().into_iter().next()
+        {
+            self.journal_project = Some(id.clone());
+            self.send(Cmd::Journal(id));
         }
     }
 
-    /// Keep the screens current from the stream instead of polling.
+    /// Keep the screens current from the stream instead of polling. A
+    /// reconnect replays recent events so nothing produced while the
+    /// window was disconnected is missed; anything already taken is not
+    /// taken again.
     fn on_event(&mut self, event: Event) {
+        if event.seq != 0 {
+            if event.seq <= self.last_seq {
+                return;
+            }
+            self.last_seq = event.seq;
+        }
         match &event.kind {
             EventKind::AgentCreated { .. }
             | EventKind::AgentStarted { .. }
@@ -419,10 +458,10 @@ impl App {
                         }
                     }
                 });
-            if ui.button("Refresh").clicked() {
-                if let Some(id) = &self.journal_project {
-                    self.send(Cmd::Journal(id.clone()));
-                }
+            if ui.button("Refresh").clicked()
+                && let Some(id) = self.journal_project.clone()
+            {
+                self.send(Cmd::Journal(id));
             }
         });
         if let Some(id) = changed {
@@ -791,6 +830,44 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replayed_event_is_taken_once() {
+        use agentdocker_core::AgentId;
+        let stopping = |seq: u64| {
+            let mut event = Event::new(
+                EventKind::AgentRemoved {
+                    agent: AgentId::from("a1"),
+                },
+                Utc::now(),
+            );
+            event.seq = seq;
+            event
+        };
+        let (tx, _rx) = channel::<Cmd>();
+        let (_mtx, mrx) = channel::<Msg>();
+        let mut app = App::bare(tx, mrx);
+        app.on_event(stopping(1));
+        app.on_event(stopping(2));
+        assert_eq!(app.events.len(), 2);
+        // A reconnect replays what was already taken.
+        app.on_event(stopping(1));
+        app.on_event(stopping(2));
+        assert_eq!(app.events.len(), 2, "replayed events are not taken twice");
+        app.on_event(stopping(3));
+        assert_eq!(app.events.len(), 3, "and newer ones still are");
+        // Live-only events carry no sequence and always count.
+        let mut live = Event::new(
+            EventKind::WatcherGap {
+                reason: "overflow".into(),
+            },
+            Utc::now(),
+        );
+        live.seq = 0;
+        app.on_event(live.clone());
+        app.on_event(live);
+        assert_eq!(app.events.len(), 5);
+    }
 
     #[test]
     fn spans_and_summaries_read_well() {

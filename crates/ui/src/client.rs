@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Event, Request, Response, paths};
@@ -18,6 +19,23 @@ pub struct Client {
 
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// The window has two threads that reconnect on their own schedules; one
+/// daemon start attempt per this long is enough for both.
+const START_COOLDOWN: Duration = Duration::from_secs(15);
+
+/// When the last start attempt was made, whichever thread made it.
+static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether this caller may try to start the daemon now.
+fn may_spawn() -> bool {
+    let mut last = LAST_SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if last.is_some_and(|at| now.duration_since(at) < START_COOLDOWN) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
 
 impl Client {
     pub fn from_env() -> Self {
@@ -87,6 +105,12 @@ impl Client {
                 return Err(err)
                     .with_context(|| format!("cannot reach agentd at {}", self.socket.display()));
             }
+        }
+        if !may_spawn() {
+            bail!(
+                "agentd is not listening at {} (a start was attempted moments ago)",
+                self.socket.display()
+            );
         }
         spawn_agentd(&self.socket)?;
         let deadline = Instant::now() + START_TIMEOUT;

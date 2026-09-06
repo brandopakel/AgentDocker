@@ -1010,7 +1010,13 @@ async fn main() -> Result<()> {
                 .context(
                     "agentdocker-ui is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
                 )?;
-            std::process::Command::new(&app)
+            let mut child = std::process::Command::new(&app);
+            // The app reads AGENTDOCKER_SOCKET; pass on whatever this
+            // invocation was pointed at so both talk to one daemon.
+            if let Some(socket) = &socket {
+                child.env("AGENTDOCKER_SOCKET", socket);
+            }
+            child
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
