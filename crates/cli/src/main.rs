@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agentdocker_core::{
-    AgentRecord, AgentSpec, DiscoveredProcess, Lease, LeaseId, LeaseMode, MessageId, Request,
-    Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
+    AgentRecord, AgentSpec, DiscoveredProcess, HUMAN, Lease, LeaseId, LeaseMode, MessageId,
+    Request, Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use agentdocker_core::{Change, ProjectRef};
 use anyhow::{Context, Result, bail};
@@ -408,8 +408,49 @@ enum Command {
         /// Receive messages addressed to this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
+        /// Receive the messages addressed to you, the human.
+        #[arg(long, conflicts_with = "agent")]
+        me: bool,
         /// Topic patterns, e.g. `repo/#` or `reviews/+/done`.
         topics: Vec<String>,
+    },
+    /// Register yourself, the person at the keyboard, as an agent named
+    /// `user`, so agents can address you, queue messages for you and ask
+    /// you things. Idempotent.
+    Me,
+    /// Ask an agent — or the human — a question and wait for the answer.
+    Ask {
+        /// Who to ask: an agent id/name, or `user` for the person here.
+        #[arg(long)]
+        to: String,
+        /// Asker; defaults to this agent's id, or `user`.
+        #[arg(long, env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
+        from: String,
+        /// How long to wait before giving up.
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// The question.
+        question: String,
+    },
+    /// Answer a question somebody is waiting on, by its message id.
+    Answer {
+        /// Answerer; defaults to `user`.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// The question's message id, as `ask` and `questions` print it.
+        message: String,
+        /// The answer.
+        text: String,
+    },
+    /// Questions waiting for an answer.
+    Questions {
+        /// Only the questions put to this agent; `--me` is the shorthand
+        /// for the ones put to you.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Only the questions put to you.
+        #[arg(long, conflicts_with = "agent")]
+        me: bool,
     },
     /// Show messages queued for an agent while it was not watching.
     Inbox {
@@ -1349,9 +1390,58 @@ async fn main() -> Result<()> {
                 println!("{message} ({subscribers} live subscriber(s))");
             }
         }
-        Command::Watch { agent, topics } => {
+        Command::Me => {
+            let workdir = std::env::current_dir().ok();
+            // Just the id, so `export AGENTDOCKER_AGENT_ID=$(agentdocker me)`
+            // is the whole of joining as yourself.
+            if let Response::Agent { agent } = client.call(&Request::Me { workdir }).await? {
+                println!("{}", agent.id);
+            }
+        }
+        Command::Ask {
+            to,
+            from,
+            timeout,
+            question,
+        } => {
+            let request = Request::Ask {
+                from,
+                to,
+                question,
+                timeout_secs: timeout,
+            };
+            if let Response::Answer { from, text, .. } = client.call(&request).await? {
+                println!("{}: {text}", format::short(&from));
+            }
+        }
+        Command::Answer {
+            agent,
+            message,
+            text,
+        } => {
+            let request = Request::Answer {
+                from: agent,
+                message: MessageId::from(message),
+                text,
+            };
+            if let Response::Sent { message, .. } = client.call(&request).await? {
+                println!("{message}");
+            }
+        }
+        Command::Questions { agent, me } => {
+            let agent = if me { Some(HUMAN.to_owned()) } else { agent };
+            if let Response::Questions { questions } =
+                client.call(&Request::Questions { agent }).await?
+            {
+                for question in &questions {
+                    println!("{}", format::question_line(question));
+                }
+            }
+        }
+        Command::Watch { agent, me, topics } => {
+            let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if agent.is_none() && topics.is_empty() {
-                bail!("watch needs --as <agent> and/or topic patterns");
+                bail!("watch needs --as <agent>, --me, and/or topic patterns");
             }
             let request = Request::Subscribe { agent, topics };
             client

@@ -79,6 +79,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
+    daemon.notify_desktop();
+
     let containers = daemon.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));

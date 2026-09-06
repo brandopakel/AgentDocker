@@ -268,6 +268,38 @@ pub enum Request {
         messages: Vec<MessageId>,
     },
 
+    /// Register the person at the keyboard as a persistent agent named
+    /// `user`, or return the one already registered. Idempotent, and the
+    /// record is never expired by liveness: there is no process to watch.
+    Me {
+        #[serde(default)]
+        workdir: Option<std::path::PathBuf>,
+    },
+    /// Ask a question and wait for the answer on the same connection.
+    /// Answers with `answer {…}`, or `error(timeout)` when nobody replies
+    /// in time. The question is delivered as an ordinary `question`
+    /// message, so an agent that is only watching still sees it.
+    Ask {
+        from: String,
+        to: String,
+        question: String,
+        #[serde(default = "default_ask_timeout")]
+        timeout_secs: u64,
+    },
+    /// Answer a question by its message id. The daemon knows who asked.
+    Answer {
+        #[serde(default)]
+        from: Option<String>,
+        message: MessageId,
+        text: String,
+    },
+    /// Questions still waiting for an answer, newest first; `agent`
+    /// narrows them to the ones put to that agent.
+    Questions {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+
     Claim {
         agent: String,
         resource: String,
@@ -496,6 +528,13 @@ fn default_changes_limit() -> usize {
     50
 }
 
+/// Long enough for a person to notice a notification and type a reply,
+/// short enough that a forgotten question does not pin a connection open
+/// for the rest of the day.
+fn default_ask_timeout() -> u64 {
+    300
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -512,6 +551,9 @@ pub enum ErrorCode {
     /// A part of the daemon is off — the restricted container endpoint
     /// could not be served — so what needs it is refused, not broken.
     Unavailable,
+    /// The caller waited as long as it asked to and the thing it waited
+    /// for did not happen. Nothing failed; nobody answered yet.
+    Timeout,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -614,6 +656,15 @@ pub enum Response {
     },
     Messages {
         messages: Vec<Envelope>,
+    },
+    /// The reply to an `ask`: what was said, and who said it.
+    Answer {
+        message: MessageId,
+        from: String,
+        text: String,
+    },
+    Questions {
+        questions: Vec<crate::Question>,
     },
     Lease {
         lease: Lease,
