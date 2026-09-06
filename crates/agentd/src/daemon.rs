@@ -909,12 +909,10 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
         let mut record = AgentRecord::new(spec, true, Utc::now());
-        let mut worktree: Option<PathBuf> = None;
         if record.spec.isolate {
             match self.isolate(&record).await {
                 Ok(path) => {
                     record.spec.workdir = Some(path.clone());
-                    worktree = Some(path);
                 }
                 Err(response) => return *response,
             }
@@ -923,16 +921,14 @@ impl Daemon {
         let vcs = Self::vcs_for(record.spec.workdir.clone()).await;
         record.project = project;
         record.vcs = vcs;
-        let record = match lock(&self.state).insert_record(record) {
+        let inserted = lock(&self.state).insert_record(record.clone());
+        let record = match inserted {
             Response::Agent { agent } => agent,
-            other => return other,
+            other => {
+                self.cleanup_isolate(&record).await;
+                return other;
+            }
         };
-        if let Some(path) = worktree {
-            lock(&self.state).emit(EventKind::WorktreeCreated {
-                agent: record.id.clone(),
-                path,
-            });
-        }
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
             if let Err(reason) = self.ensure_watched(&record).await {
@@ -942,6 +938,7 @@ impl Daemon {
                         reason: reason.clone(),
                     },
                 );
+                self.cleanup_isolate(&record).await;
                 return Response::error(ErrorCode::Unavailable, reason);
             }
         }
@@ -985,6 +982,7 @@ impl Daemon {
                         reason: format!("{err:#}"),
                     },
                 );
+                self.cleanup_isolate(&record).await;
                 Response::error(ErrorCode::Internal, format!("{err:#}"))
             }
         }
@@ -1025,6 +1023,23 @@ impl Daemon {
             }
         }
         response
+    }
+
+    async fn cleanup_isolate(&self, record: &AgentRecord) {
+        if !record.spec.isolate {
+            return;
+        }
+        let Some(path) = &record.spec.workdir else {
+            return;
+        };
+        let (worktree_removed, branch_removed, reason) = worktrees::cleanup_unstarted(record).await;
+        self.emit(EventKind::WorktreeCleanup {
+            agent: record.id.clone(),
+            path: path.clone(),
+            worktree_removed,
+            branch_removed,
+            reason,
+        });
     }
 
     /// A linked worktree of the agent's repository, made for it under the
@@ -1078,6 +1093,10 @@ impl Daemon {
             match worktrees::add_worktree(root.clone(), &path, &branch).await {
                 Ok(()) => {
                     info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    self.emit(EventKind::WorktreeCreated {
+                        agent: record.id.clone(),
+                        path: path.clone(),
+                    });
                     return Ok(path);
                 }
                 Err(response) => last = Some(response),
@@ -1157,6 +1176,7 @@ impl Daemon {
             };
             before_seq = Some(oldest);
             changes.extend(page);
+            tokio::task::yield_now().await;
         }
         let mut overlaps = agentdocker_core::overlaps(&changes);
         if let Some((_, checkout)) = mine {
@@ -4858,6 +4878,78 @@ mod tests {
             assert_eq!(lock(&daemon.state).registry.live().count(), 0);
             if let Some(task) = responder {
                 task.await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_isolated_launches_clean_up_only_unchanged_worktrees() {
+        if !have_git() {
+            return;
+        }
+        for failure in ["duplicate", "watcher", "edited"] {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            assert!(git(dir.path(), &repo, &["init", "-q"]));
+            assert!(git(
+                dir.path(),
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", "root"]
+            ));
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let mut responder = None;
+            if failure == "duplicate" {
+                register_in(&daemon, "blocked", &repo).await;
+            } else if failure == "watcher" {
+                daemon.watcher_off("cannot start".into());
+            } else {
+                let (tx, mut rx) = mpsc::channel::<WatcherAttachment>(1);
+                daemon.set_watcher_attach(tx);
+                responder = Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    std::fs::write(request.checkout.join("keep-me"), "user edit").unwrap();
+                    request.ack.send(Err("attachment failed".into())).unwrap();
+                }));
+            }
+            let mut command = spec("blocked");
+            command.isolate = true;
+            command.workdir = Some(repo.clone());
+            command.command = vec!["sh".into(), "-c".into(), "touch should-not-run".into()];
+            assert!(matches!(
+                daemon.handle(Request::Run { spec: command }).await,
+                Response::Error { .. }
+            ));
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+            let events = daemon.recent_events(30);
+            let (path, removed) = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::WorktreeCleanup {
+                        path,
+                        worktree_removed,
+                        ..
+                    } => Some((path.clone(), *worktree_removed)),
+                    _ => None,
+                })
+                .expect("cleanup is observable");
+            assert!(!path.join("should-not-run").exists());
+            if failure == "edited" {
+                assert!(!removed);
+                assert_eq!(
+                    std::fs::read_to_string(path.join("keep-me")).unwrap(),
+                    "user edit"
+                );
+            } else {
+                assert!(removed, "{failure}");
+                assert!(!path.exists());
+                assert!(
+                    git(dir.path(), &repo, &["branch", "agent/blocked"]),
+                    "failed branch was removed and its name is reusable"
+                );
             }
         }
     }

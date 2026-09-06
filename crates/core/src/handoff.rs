@@ -21,6 +21,8 @@ use crate::{AgentId, Change, Envelope, JournalEntry, Lease, ProjectId, ReadMark,
 
 /// Bumped when a stored bundle's meaning changes.
 pub const HANDOFF_SCHEMA: u32 = 2;
+/// Maximum serialized size accepted by import, including escaping and nested payloads.
+pub const IMPORT_BYTES: usize = 8 * 1024 * 1024;
 /// An uncommitted diff is carried up to this many bytes; the rest stays in
 /// the worktree the bundle points at.
 pub const DIFF_CAP: usize = 64 * 1024;
@@ -95,6 +97,24 @@ pub struct HandoffBundle {
 }
 
 impl HandoffBundle {
+    /// Count serialized bytes without allocating another copy of a large bundle.
+    pub fn fits_import_limit(&self) -> bool {
+        struct Count(usize);
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(bytes.len());
+                if self.0 > IMPORT_BYTES {
+                    return Err(std::io::Error::other("handoff import is too large"));
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serde_json::to_writer(Count(0), self).is_ok()
+    }
+
     /// One line for the journal and the message: "handed off to gemini-2:
     /// finish the parser".
     pub fn headline(&self, to_name: Option<&str>) -> String {

@@ -290,6 +290,13 @@ impl Daemon {
         }
         // The bounds this daemon's own bundles and checkpoints keep, before
         // anything is written.
+        if bundle.from_name.len() > 256 || bundle.version.len() > 256 || !bundle.fits_import_limit()
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "bundle sender/version or total serialized size exceeds the import limit",
+            );
+        }
         let notes = bundle.task.len()
             + bundle.note.as_ref().map_or(0, String::len)
             + bundle
@@ -654,6 +661,7 @@ mod tests {
                 ..
             }
         ));
+        let later = claim(&daemon, "sender", "task:acquired-after-handoff").await;
         // The recipient can: leases move, reads seed, cursor follows.
         let Response::Recovery { recovery } = daemon.resume("recipient", &bundle.id, true).await
         else {
@@ -665,7 +673,14 @@ mod tests {
         assert_eq!(moved[0].holder, accepted_by);
         assert_eq!(moved[0].id, held.id);
         assert_eq!(moved[0].note.as_deref(), Some("mine"));
-        assert!(holders(&daemon, "sender").await.is_empty());
+        assert_eq!(
+            holders(&daemon, "sender")
+                .await
+                .iter()
+                .map(|l| &l.id)
+                .collect::<Vec<_>>(),
+            vec![&later.id]
+        );
         assert!(matches!(daemon.reads("recipient"), Response::Reads { reads } if reads.len() == 1));
         let events = daemon.recent_events(100);
         assert!(
@@ -716,6 +731,7 @@ mod tests {
         let after = holders(&daemon, "recipient").await;
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].id, held.id);
+        assert_eq!(holders(&daemon, "sender").await[0].id, later.id);
     }
 
     #[tokio::test]
@@ -820,6 +836,21 @@ mod tests {
                 ..
             }
         ));
+        for field in ["sender", "version", "total"] {
+            let mut oversized = bundle.clone();
+            match field {
+                "sender" => oversized.from_name = "x".repeat(257),
+                "version" => oversized.version = "x".repeat(257),
+                _ => oversized.note = Some("x".repeat(agentdocker_core::handoff::IMPORT_BYTES + 1)),
+            }
+            assert!(matches!(
+                elsewhere.import("recipient", oversized).await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
         let mut escaping = bundle.clone();
         escaping.read_set = vec![mark(bundle.checkout.join("../../etc/passwd"))];
         assert!(matches!(

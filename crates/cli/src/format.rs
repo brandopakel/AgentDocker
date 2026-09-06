@@ -132,6 +132,20 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
         }
+        EventKind::WorktreeCleanup {
+            agent,
+            path,
+            worktree_removed,
+            branch_removed,
+            reason,
+        } => format!(
+            "{agent} cleanup {}: worktree removed={worktree_removed}, branch removed={branch_removed}{}",
+            path.display(),
+            reason
+                .as_ref()
+                .map(|r| format!(", {r}"))
+                .unwrap_or_default()
+        ),
         EventKind::IntegrationPrepared {
             agent,
             source_head,

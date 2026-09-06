@@ -715,9 +715,11 @@ async fn main() -> Result<()> {
         }
         Command::Import { agent, file } => {
             let raw = match &file {
-                Some(path) => std::fs::read_to_string(path)
-                    .with_context(|| format!("cannot read {}", path.display()))?,
-                None => std::io::read_to_string(std::io::stdin())?,
+                Some(path) => read_import(
+                    std::fs::File::open(path)
+                        .with_context(|| format!("cannot read {}", path.display()))?,
+                )?,
+                None => read_import(std::io::stdin())?,
             };
             let bundle: agentdocker_core::HandoffBundle =
                 serde_json::from_str(&raw).context("not a handoff bundle")?;
@@ -1152,7 +1154,7 @@ async fn main() -> Result<()> {
                 print_leases(&leases);
             }
         }
-        Command::Daemon(args) => service::run(client, socket, args).await?,
+        Command::Daemon(args) => service::run(socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
@@ -1639,9 +1641,35 @@ fn print_json(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 
+fn read_import(reader: impl std::io::Read) -> Result<String> {
+    use std::io::Read;
+    let limit = agentdocker_core::handoff::IMPORT_BYTES;
+    let mut raw = String::new();
+    reader.take((limit + 1) as u64).read_to_string(&mut raw)?;
+    if raw.len() > limit {
+        bail!("handoff import exceeds the 8 MiB serialized limit");
+    }
+    Ok(raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_stops_reading_at_the_shared_size_limit() {
+        let input = std::io::repeat(b'x');
+        assert!(
+            read_import(input)
+                .unwrap_err()
+                .to_string()
+                .contains("8 MiB")
+        );
+        assert_eq!(
+            read_import(&b"{\"schema\":2}"[..]).unwrap(),
+            "{\"schema\":2}"
+        );
+    }
 
     #[test]
     fn resource_keys_are_absolute_paths_unless_typed() {
