@@ -6,6 +6,7 @@ mod format;
 mod hooks;
 mod mcp;
 mod service;
+mod setup;
 mod teams;
 
 use std::collections::BTreeMap;
@@ -286,13 +287,27 @@ enum Command {
     },
     /// Register a running process found by `discover`, by pid.
     Adopt {
-        pid: u32,
+        #[arg(required_unless_present = "all")]
+        pid: Option<u32>,
+        /// Register every process `discover` finds.
+        #[arg(long, conflicts_with = "pid")]
+        all: bool,
         /// Agent name (default: <runtime>-<pid>).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         name: Option<String>,
         /// Runtime (default: recognised from the command line, else custom).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         runtime: Option<String>,
+    },
+    /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
+    Runtimes,
+    /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
+    Setup {
+        /// Runtimes to set up (default: every installed one); see `runtimes`.
+        runtimes: Vec<String>,
+        /// Say what would change without changing it.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -934,12 +949,46 @@ async fn main() -> Result<()> {
                 print_processes(&processes);
             }
         }
-        Command::Adopt { pid, name, runtime } => {
-            let request = Request::Adopt { pid, name, runtime };
-            if let Response::Agent { agent } = client.call(&request).await? {
-                println!("{}", agent.id);
+        Command::Adopt {
+            pid,
+            all,
+            name,
+            runtime,
+        } => {
+            if all {
+                let Response::Processes { processes } = client.call(&Request::Discover).await?
+                else {
+                    bail!("unexpected reply to discover");
+                };
+                for process in processes {
+                    match client
+                        .call_raw(&Request::Adopt {
+                            pid: process.pid,
+                            name: None,
+                            runtime: None,
+                        })
+                        .await?
+                    {
+                        Response::Agent { agent } => println!("{}", agent.id),
+                        Response::Error { message, .. } => {
+                            eprintln!("pid {}: {message}", process.pid);
+                        }
+                        _ => {}
+                    }
+                }
+            } else if let Some(pid) = pid {
+                let request = Request::Adopt { pid, name, runtime };
+                if let Response::Agent { agent } = client.call(&request).await? {
+                    println!("{}", agent.id);
+                }
             }
         }
+        Command::Runtimes => {
+            if let Response::Runtimes { runtimes } = client.call(&Request::Runtimes).await? {
+                print_runtimes(&runtimes);
+            }
+        }
+        Command::Setup { runtimes, dry_run } => setup::run(&client, &runtimes, dry_run).await?,
         Command::Run(args) => {
             let workdir = match args.workdir {
                 Some(dir) => dir,
@@ -1486,6 +1535,58 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
         &rows,
         |i| i >= first_unadopted,
     );
+}
+
+/// One row per known runtime; installed ones first.
+fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
+    let mut sorted: Vec<&agentdocker_core::RuntimeInfo> = runtimes.iter().collect();
+    sorted.sort_by_key(|r| !r.installed());
+    let rows: Vec<Vec<String>> = sorted
+        .iter()
+        .map(|r| {
+            let apps = r
+                .apps
+                .iter()
+                .map(|a| match &a.version {
+                    Some(v) => format!("{} {v}", a.label),
+                    None => a.label.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            vec![
+                r.name.clone(),
+                r.vendor.clone(),
+                r.cli
+                    .as_ref()
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_else(|| "-".to_owned()),
+                r.version.clone().unwrap_or_else(|| "-".to_owned()),
+                if apps.is_empty() {
+                    "-".to_owned()
+                } else {
+                    apps
+                },
+                r.mcp.symbol().to_owned(),
+                r.hooks.symbol().to_owned(),
+                r.running.to_string(),
+            ]
+        })
+        .collect();
+    format::table(
+        &[
+            "RUNTIME", "VENDOR", "CLI", "VERSION", "APP", "MCP", "HOOKS", "RUNNING",
+        ],
+        &rows,
+    );
+    if runtimes.iter().any(|r| {
+        r.installed()
+            && (r.mcp == agentdocker_core::Wiring::Missing
+                || r.hooks == agentdocker_core::Wiring::Missing)
+    }) {
+        println!(
+            "\n`agentdocker setup` wires AgentDocker into what is installed; `--dry-run` shows what it would change."
+        );
+    }
 }
 
 fn print_processes(processes: &[DiscoveredProcess]) {

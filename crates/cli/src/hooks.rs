@@ -885,7 +885,7 @@ impl<I: Iterator> PartitionMapBy for I {}
 
 // ----- install --------------------------------------------------------------
 
-fn install_hooks(args: &InstallArgs) -> Result<()> {
+pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     match args.host {
         Host::ClaudeCode => {}
     }

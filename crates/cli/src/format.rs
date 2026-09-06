@@ -192,6 +192,29 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InboxAcknowledged { agent, messages } => {
             format!("{agent} acknowledged {} messages", messages.len())
         }
+        EventKind::AgentDiscovered {
+            pid,
+            runtime,
+            project,
+            ..
+        } => format!(
+            "agent found      {runtime} pid {pid}{}; `agentdocker adopt {pid}` brings it in",
+            project
+                .as_ref()
+                .map(|p| format!(" in {}", p.short()))
+                .unwrap_or_default()
+        ),
+        EventKind::AgentVanished {
+            pid,
+            runtime,
+            adopted,
+        } => {
+            if *adopted {
+                format!("agent adopted    {runtime} pid {pid}")
+            } else {
+                format!("agent gone       {runtime} pid {pid}")
+            }
+        }
         EventKind::AgentCreated {
             agent,
             name,

@@ -173,6 +173,10 @@ pub enum Request {
     },
     /// Running agent processes (known runtimes) that nobody registered.
     Discover,
+    /// The agent tools installed on this machine and whether AgentDocker
+    /// is wired into each, with how many unregistered processes of each
+    /// the last scan saw.
+    Runtimes,
     /// Register a running process found by `discover`, by pid.
     Adopt {
         pid: u32,
@@ -490,6 +494,9 @@ pub enum Response {
     },
     Processes {
         processes: Vec<DiscoveredProcess>,
+    },
+    Runtimes {
+        runtimes: Vec<crate::RuntimeInfo>,
     },
     Changes {
         changes: Vec<Change>,

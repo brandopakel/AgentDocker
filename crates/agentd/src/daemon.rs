@@ -99,9 +99,23 @@ pub struct Daemon {
     /// The restricted container endpoint: where it serves, or why it does
     /// not. Grants need it; the host socket does not.
     restricted: Mutex<RestrictedEndpoint>,
+    /// Known agent processes nobody registered, from the last scan, so
+    /// `discover` and `runtimes` answer at once and a scan on the tick can
+    /// announce what appeared and what went.
+    discovered: Mutex<Discovered>,
     container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
     container_slots: Arc<tokio::sync::Semaphore>,
 }
+
+/// The last process scan.
+#[derive(Default)]
+struct Discovered {
+    at: Option<Instant>,
+    processes: Vec<DiscoveredProcess>,
+}
+
+/// A `discover` younger than this answers from the last scan.
+const DISCOVERY_FRESH: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// The restricted endpoint's state, as `ping` and `grant-access` see it.
 #[derive(Clone, Debug)]
@@ -656,6 +670,7 @@ impl Daemon {
             watcher_flush: Mutex::new(None),
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
+            discovered: Mutex::new(Discovered::default()),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
         })
@@ -787,6 +802,7 @@ impl Daemon {
             Request::Register { spec, pid } => self.register(spec, pid).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
+            Request::Runtimes => self.runtimes().await,
             Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
             Request::Remove { agent } => lock(&self.state).remove(&agent),
@@ -1140,18 +1156,94 @@ impl Daemon {
         Response::Overlap { overlaps }
     }
 
-    /// Agent processes of known runtimes that no live agent claims by pid.
-    /// Projects come without fingerprints: this runs on every `ps`, and a
-    /// process nobody adopted should not warm the cache or announce a
-    /// repository.
+    /// Agent processes of known runtimes that no live agent claims by pid:
+    /// the last scan when it is fresh, else a new one.
     async fn discover(&self) -> Response {
+        let fresh = lock(&self.discovered)
+            .at
+            .is_some_and(|at| at.elapsed() < DISCOVERY_FRESH);
+        if fresh {
+            return Response::Processes {
+                processes: lock(&self.discovered).processes.clone(),
+            };
+        }
+        Response::Processes {
+            processes: self.scan_agents().await,
+        }
+    }
+
+    /// Scan the process table for known agent runtimes, remember the
+    /// result, and announce every process that appeared since the last
+    /// scan and every one that went — exited, or adopted meanwhile. Runs
+    /// on the daemon's tick, so nobody has to ask.
+    pub async fn scan_agents(&self) -> Vec<DiscoveredProcess> {
+        let found = self.scan().await;
+        let registered: HashSet<u32> = lock(&self.state)
+            .registry
+            .live()
+            .filter_map(|a| a.pid)
+            .collect();
+        let previous = std::mem::take(&mut lock(&self.discovered).processes);
+        let now_pids: HashSet<u32> = found.iter().map(|p| p.pid).collect();
+        let then_pids: HashSet<u32> = previous.iter().map(|p| p.pid).collect();
+        for process in found.iter().filter(|p| !then_pids.contains(&p.pid)) {
+            self.emit(EventKind::AgentDiscovered {
+                pid: process.pid,
+                runtime: process.runtime.clone(),
+                project: process.project.as_ref().map(ProjectRef::id),
+                cwd: process.cwd.clone(),
+            });
+        }
+        for process in previous.iter().filter(|p| !now_pids.contains(&p.pid)) {
+            self.emit(EventKind::AgentVanished {
+                pid: process.pid,
+                runtime: process.runtime.clone(),
+                adopted: registered.contains(&process.pid),
+            });
+        }
+        let mut cache = lock(&self.discovered);
+        cache.at = Some(Instant::now());
+        cache.processes = found.clone();
+        found
+    }
+
+    /// The agent tools on this machine, with how many unregistered
+    /// processes of each the last scan saw.
+    async fn runtimes(&self) -> Response {
+        let roots = agentdocker_host::runtimes::Roots::from_env();
+        let inventory = tokio::task::spawn_blocking(move || {
+            agentdocker_host::runtimes::inventory(&roots, "agentdocker")
+        })
+        .await;
+        let mut runtimes = match inventory {
+            Ok(runtimes) => runtimes,
+            Err(err) => return Response::error(ErrorCode::Internal, err.to_string()),
+        };
+        let processes = match self.discover().await {
+            Response::Processes { processes } => processes,
+            _ => Vec::new(),
+        };
+        for runtime in &mut runtimes {
+            runtime.running = processes
+                .iter()
+                .filter(|p| p.runtime == runtime.name)
+                .count();
+        }
+        Response::Runtimes { runtimes }
+    }
+
+    /// The process table, filtered to known agent runtimes that no live
+    /// agent claims by pid. Projects come without fingerprints: this runs
+    /// on every scan, and a process nobody adopted should not warm the
+    /// cache or announce a repository.
+    async fn scan(&self) -> Vec<DiscoveredProcess> {
         let registered: HashSet<u32> = lock(&self.state)
             .registry
             .live()
             .filter_map(|a| a.pid)
             .collect();
         let mine = std::process::id();
-        let processes = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let mut found: Vec<DiscoveredProcess> = procinfo::processes()
                 .into_iter()
                 .filter(|p| p.pid != mine && !registered.contains(&p.pid))
@@ -1182,8 +1274,7 @@ impl Daemon {
             found
         })
         .await
-        .unwrap_or_default();
-        Response::Processes { processes }
+        .unwrap_or_default()
     }
 
     /// Register a running process by pid: runtime from the known table
@@ -1216,12 +1307,30 @@ impl Daemon {
             .unwrap_or_else(|| "custom".to_owned());
         let spec = AgentSpec {
             name: name.unwrap_or_else(|| format!("{runtime}-{pid}")),
-            runtime,
+            runtime: runtime.clone(),
             workdir: cwd,
             labels: BTreeMap::from([("adopted".to_owned(), "true".to_owned())]),
             ..AgentSpec::default()
         };
-        self.register(spec, Some(pid)).await
+        let response = self.register(spec, Some(pid)).await;
+        if matches!(response, Response::Agent { .. }) {
+            // No longer a stranger: out of the discovered set now, not at
+            // the next scan.
+            let was_discovered = {
+                let mut cache = lock(&self.discovered);
+                let before = cache.processes.len();
+                cache.processes.retain(|p| p.pid != pid);
+                cache.processes.len() != before
+            };
+            if was_discovered {
+                self.emit(EventKind::AgentVanished {
+                    pid,
+                    runtime,
+                    adopted: true,
+                });
+            }
+        }
+        response
     }
 
     async fn vcs_for(workdir: Option<PathBuf>) -> Option<VcsState> {
@@ -3912,6 +4021,103 @@ mod tests {
             panic!("claim failed");
         };
         assert_eq!(lease.resource.as_str(), "task:ISSUE-1");
+    }
+
+    #[tokio::test]
+    async fn scans_announce_agents_appearing_going_and_adopted() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("Agentfile.toml"), "").unwrap();
+        let fake = dir.path().join("codex");
+        std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
+        let mut events = daemon.subscribe_events();
+        daemon.scan_agents().await;
+        let mut child = std::process::Command::new(&fake)
+            .arg("60")
+            .current_dir(&project)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        daemon.scan_agents().await;
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            seen.push(event.kind);
+        }
+        assert!(
+            seen.iter().any(|k| matches!(k, EventKind::AgentDiscovered { pid: p, runtime, project: Some(_), .. } if *p == pid && runtime == "codex")),
+            "{seen:?}"
+        );
+        // Fresh scans answer from the cache and announce nothing twice.
+        daemon.scan_agents().await;
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok())
+                .any(|e| matches!(e.kind, EventKind::AgentDiscovered { pid: p, .. } if p == pid))
+        );
+        let Response::Processes { processes } = daemon.handle(Request::Discover).await else {
+            panic!("discover failed");
+        };
+        assert!(processes.iter().any(|p| p.pid == pid));
+        let Response::Runtimes { runtimes } = daemon.handle(Request::Runtimes).await else {
+            panic!("runtimes failed");
+        };
+        let codex = runtimes.iter().find(|r| r.name == "codex").unwrap();
+        assert!(codex.running >= 1, "{codex:?}");
+
+        // Adopted: it leaves the discovered set at once, as adopted, not
+        // as gone — and a fresh discover no longer lists it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Adopt {
+                    pid,
+                    name: None,
+                    runtime: None,
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let kinds: Vec<EventKind> = std::iter::from_fn(|| events.try_recv().ok())
+            .map(|e| e.kind)
+            .collect();
+        assert!(
+            kinds.iter().any(
+                |k| matches!(k, EventKind::AgentVanished { pid: p, adopted: true, .. } if *p == pid)
+            ),
+            "{kinds:?}"
+        );
+        let Response::Processes { processes } = daemon.handle(Request::Discover).await else {
+            panic!("discover failed");
+        };
+        assert!(processes.iter().all(|p| p.pid != pid));
+        daemon.scan_agents().await;
+        assert!(
+            !std::iter::from_fn(|| events.try_recv().ok())
+                .any(|e| matches!(e.kind, EventKind::AgentVanished { pid: p, .. } if p == pid)),
+            "announced once"
+        );
+
+        // Gone: a second fake that exits is announced as vanished.
+        let mut short = std::process::Command::new(&fake)
+            .arg("30")
+            .current_dir(&project)
+            .spawn()
+            .unwrap();
+        let short_pid = short.id();
+        daemon.scan_agents().await;
+        assert!(std::iter::from_fn(|| events.try_recv().ok()).any(
+            |e| matches!(e.kind, EventKind::AgentDiscovered { pid: p, .. } if p == short_pid)
+        ));
+        short.kill().unwrap();
+        short.wait().unwrap();
+        daemon.scan_agents().await;
+        assert!(
+            std::iter::from_fn(|| events.try_recv().ok())
+                .any(|e| matches!(e.kind, EventKind::AgentVanished { pid: p, adopted: false, .. } if p == short_pid))
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     #[tokio::test]
