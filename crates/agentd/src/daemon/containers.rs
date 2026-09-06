@@ -2,7 +2,7 @@
 use super::*;
 use agentdocker_core::{
     ImageBuild,
-    container::{ContainerIntent, ManagedContainer},
+    container::{ContainerIntent, ContainerRunOptions, ManagedContainer},
 };
 use agentdocker_host::containers::{ContainerBackend, ContainerError, ContainerState, Inspection};
 
@@ -38,7 +38,7 @@ impl Daemon {
             .ok_or_else(|| ContainerError("container agent vanished".into()))
     }
 
-    async fn engine_call<T: Send + 'static>(
+    pub(super) async fn engine_call<T: Send + 'static>(
         &self,
         record: AgentRecord,
         call: impl FnOnce(&dyn ContainerBackend, &AgentRecord) -> Result<T, ContainerError>
@@ -80,6 +80,17 @@ impl Daemon {
         self: &Arc<Self>,
         spec: AgentSpec,
         build: String,
+        options: ContainerRunOptions,
+    ) -> Response {
+        self.run_container_on(spec, build, options, None).await
+    }
+
+    async fn run_container_on(
+        self: &Arc<Self>,
+        spec: AgentSpec,
+        build: String,
+        options: ContainerRunOptions,
+        connection: Option<String>,
     ) -> Response {
         if spec.command.first().is_none_or(String::is_empty)
             || spec.command.iter().any(|s| s.contains('\0'))
@@ -93,7 +104,10 @@ impl Daemon {
                 "a container needs a command and valid environment pairs",
             );
         }
-        let build = {
+        if options.podman_machine.is_some() && !options.mount_checkout {
+            return Response::error(ErrorCode::Invalid, "VM transport requires checkout mounts");
+        }
+        let mut build = {
             let state = lock(&self.state);
             match state.store.documents::<ImageBuild>("image_build", None) {
                 Ok(builds) => match builds.into_iter().find(|b| b.id == build) {
@@ -103,6 +117,9 @@ impl Daemon {
                 Err(e) => return Response::error(ErrorCode::StorageUnavailable, e.to_string()),
             }
         };
+        if let Some(connection) = connection {
+            build.spec.connection = Some(connection);
+        }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
         let mut record = AgentRecord::new(spec, true, Utc::now());
@@ -118,8 +135,33 @@ impl Daemon {
             id: None,
             intent: ContainerIntent::Run,
             start_attempted: false,
+            create_attempted: false,
             last_error: None,
+            options,
+            workspace: None,
+            deadline: None,
         });
+        if record.container.as_ref().unwrap().options.mount_checkout {
+            let home = self.home.clone();
+            let socket = self.socket.clone();
+            record = match tokio::task::spawn_blocking(move || {
+                agentdocker_host::transport::prepare(&mut record, &home, &socket)?;
+                Ok::<_, ContainerError>(record)
+            })
+            .await
+            {
+                Ok(Ok(record)) => record,
+                Ok(Err(e)) => return Response::error(ErrorCode::Invalid, e.to_string()),
+                Err(e) => return Response::error(ErrorCode::EngineUnavailable, e.to_string()),
+            };
+            if let Err(e) = self.workspace_grant(&mut record) {
+                return Response::error(ErrorCode::StorageUnavailable, e.to_string());
+            }
+        }
+        self.launch_container(record).await
+    }
+
+    pub(super) async fn launch_container(self: &Arc<Self>, record: AgentRecord) -> Response {
         let record = {
             let mut state = lock(&self.state);
             match state.insert_record(record) {
@@ -200,7 +242,8 @@ impl Daemon {
                 "container exit is not confirmed; retry restart after reconciliation",
             );
         }
-        self.run_container(record.spec, record.container.unwrap().build)
+        let c = record.container.unwrap();
+        self.run_container_on(record.spec, c.build, c.options, c.connection)
             .await
     }
 
@@ -225,7 +268,7 @@ impl Daemon {
         }
     }
 
-    async fn drive_container(
+    pub(super) async fn drive_container(
         self: &Arc<Self>,
         id: AgentId,
         create: bool,
@@ -265,13 +308,46 @@ impl Daemon {
     }
 
     async fn drive_container_inner(
-        &self,
+        self: &Arc<Self>,
         id: &AgentId,
         create: bool,
     ) -> Result<(), ContainerError> {
-        let record = self.current_container(id)?;
+        let mut record = self.current_container(id)?;
         if !record.status.is_live() {
+            self.retire_transport(id);
             return Ok(());
+        }
+        if record
+            .container
+            .as_ref()
+            .unwrap()
+            .deadline
+            .is_some_and(|d| d <= Utc::now())
+        {
+            self.request_container_stop(id, true)?;
+            record = self.current_container(id)?;
+        }
+        // A transport outage must never prevent stopping or inspecting a writer.
+        if create {
+            self.ensure_transport(&record).await?;
+            record = self.current_container(id)?;
+        }
+        let c = record.container.as_ref().unwrap();
+        if !c.create_attempted {
+            if c.intent != ContainerIntent::Run {
+                self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
+                self.retire_transport(id);
+                return Ok(());
+            }
+            if !create {
+                return Err(ContainerError(
+                    "launch preparation did not finish; stop before starting a replacement".into(),
+                ));
+            }
+            self.update_container(id, |r| {
+                r.container.as_mut().unwrap().create_attempted = true
+            })?;
+            record = self.current_container(id)?;
         }
         let inspected = if create {
             // Only the original run request creates. Recovery only discovers an existing
@@ -283,9 +359,13 @@ impl Daemon {
         self.observe_container(id, &inspected)?;
         let mut record = self.current_container(id)?;
         if !record.status.is_live() {
+            self.retire_transport(id);
             return Ok(());
         }
         let c = record.container.as_ref().unwrap();
+        if c.intent == ContainerIntent::Run {
+            self.ensure_transport(&record).await?;
+        }
         match (c.intent, inspected.state) {
             (ContainerIntent::Run, ContainerState::Created) => {
                 if c.start_attempted {
@@ -306,6 +386,7 @@ impl Daemon {
                 // a delayed start cannot resurrect it after protection is released.
                 self.engine_call(record, |b, r| b.remove_created(r)).await?;
                 self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
+                self.retire_transport(id);
                 return Ok(());
             }
             (ContainerIntent::Stop | ContainerIntent::Kill, ContainerState::Running) => {
@@ -317,7 +398,11 @@ impl Daemon {
         }
         let record = self.current_container(id)?;
         let inspected = self.engine_call(record, |b, r| b.inspect(r)).await?;
-        self.observe_container(id, &inspected)
+        self.observe_container(id, &inspected)?;
+        if !self.is_live(id) {
+            self.retire_transport(id);
+        }
+        Ok(())
     }
 
     fn observe_container(
@@ -456,6 +541,66 @@ impl State {
     }
 }
 
+impl Daemon {
+    /// A fresh runner uses the parent's immutable image and a read-only checkout.
+    /// Its persisted deadline survives client loss and daemon crashes.
+    pub(super) async fn validate_container(
+        self: &Arc<Self>,
+        parent: AgentRecord,
+        validation: &mut agentdocker_core::Validation,
+        timeout_secs: u64,
+    ) -> Result<(), String> {
+        let mut spec = parent.spec.clone();
+        spec.name = format!("validation-{}", validation.id);
+        spec.command = validation.command.clone();
+        let mut runner = AgentRecord::new(spec, true, Utc::now());
+        runner.project = parent.project.clone();
+        runner.vcs = parent.vcs.clone();
+        let mut container = parent.container.unwrap();
+        container.name = format!("agentdocker-{}", runner.id);
+        container.owner = AgentId::generate().to_string();
+        container.id = None;
+        container.intent = ContainerIntent::Run;
+        container.start_attempted = false;
+        container.create_attempted = false;
+        container.last_error = None;
+        container.deadline = Some(Utc::now() + Duration::seconds(timeout_secs as i64));
+        let workspace = container.workspace.as_mut().unwrap();
+        workspace.read_only = true;
+        workspace.access = None;
+        runner.container = Some(container);
+        let id = runner.id.clone();
+        let response = self.launch_container(runner).await;
+        if let Response::Error { message, .. } = response {
+            return Err(message);
+        }
+        loop {
+            let record = self.current_container(&id).map_err(|e| e.to_string())?;
+            if let AgentStatus::Exited { code } = record.status {
+                let c = record.container.as_ref().unwrap();
+                validation.exit_code = code;
+                validation.container =
+                    c.id.clone()
+                        .map(|id| agentdocker_core::recovery::ValidationContainer {
+                            agent: record.id.clone(),
+                            id,
+                        });
+                validation.timed_out = c.intent == ContainerIntent::Kill;
+                let logs = self
+                    .container_logs(record, 10000)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(&validation.log, logs).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            self.drive_container(id.clone(), false)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,6 +696,7 @@ mod tests {
     async fn launch(daemon: &Arc<Daemon>, dir: &Path) -> Response {
         daemon
             .handle(Request::RunContainer {
+                options: Default::default(),
                 spec: AgentSpec {
                     name: "worker".into(),
                     command: vec!["sh".into()],
@@ -579,6 +725,75 @@ mod tests {
             panic!("claim failed")
         };
         lease
+    }
+
+    #[tokio::test]
+    async fn preparation_failure_can_stop_without_inventing_engine_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        let Response::Agent { agent } = launch(&daemon, tmp.path()).await else {
+            panic!()
+        };
+        // Restore the durable boundary before any create attempt; no engine object exists.
+        *lock(&fake.observed) = None;
+        lock(&fake.actions).clear();
+        daemon
+            .update_container(&agent.id, |r| {
+                r.status = AgentStatus::Created;
+                let c = r.container.as_mut().unwrap();
+                c.create_attempted = false;
+                c.start_attempted = false;
+                c.id = None;
+            })
+            .unwrap();
+        daemon.request_container_stop(&agent.id, false).unwrap();
+        daemon
+            .drive_container(agent.id.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            daemon.container_record(&agent.id).unwrap().status,
+            AgentStatus::Exited { code: None }
+        );
+        assert!(
+            lock(&fake.actions).is_empty(),
+            "nothing may be inspected or signaled before a create attempt"
+        );
+        let mut legacy = serde_json::to_value(agent.container.unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("create_attempted");
+        assert!(
+            serde_json::from_value::<ManagedContainer>(legacy)
+                .unwrap()
+                .create_attempted
+        );
+    }
+
+    #[tokio::test]
+    async fn recovered_validation_deadline_kills_the_owned_runner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        let Response::Agent { agent } = launch(&daemon, tmp.path()).await else {
+            panic!()
+        };
+        daemon
+            .update_container(&agent.id, |r| {
+                r.container.as_mut().unwrap().deadline = Some(Utc::now() - Duration::seconds(1))
+            })
+            .unwrap();
+        drop(daemon);
+        let recovered = open(tmp.path(), fake.clone());
+        recovered
+            .drive_container(agent.id.clone(), false)
+            .await
+            .unwrap();
+        let record = recovered.container_record(&agent.id).unwrap();
+        assert_eq!(record.status, AgentStatus::Exited { code: Some(137) });
+        assert_eq!(record.container.unwrap().intent, ContainerIntent::Kill);
+        assert!(lock(&fake.actions).contains(&"kill"));
     }
 
     #[tokio::test]

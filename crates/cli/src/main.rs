@@ -360,9 +360,18 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
-    /// Run inside this recorded image build, without host mounts or network access.
+    /// Run inside this recorded image build (mounts and network are opt-in).
     #[arg(long)]
     image_build: Option<String>,
+    /// Mount the checkout and a private authenticated coordination endpoint.
+    #[arg(long, requires = "image_build")]
+    mount_checkout: bool,
+    /// Running rootless Podman machine for macOS checkout/socket transport.
+    #[arg(long, requires = "mount_checkout")]
+    podman_machine: Option<String>,
+    /// Container networking (none or bridge); host networking is unavailable.
+    #[arg(long, requires = "image_build", value_parser = ["none", "bridge"])]
+    network: Option<String>,
     /// Agent name (default: generated).
     #[arg(long)]
     name: Option<String>,
@@ -816,7 +825,18 @@ async fn main() -> Result<()> {
                 labels: parse_pairs(&args.labels)?,
             };
             let request = match args.image_build {
-                Some(build) => Request::RunContainer { spec, build },
+                Some(build) => Request::RunContainer {
+                    spec,
+                    build,
+                    options: agentdocker_core::container::ContainerRunOptions {
+                        mount_checkout: args.mount_checkout,
+                        podman_machine: args.podman_machine,
+                        network: match args.network.as_deref().unwrap_or("none") {
+                            "bridge" => agentdocker_core::container::ContainerNetwork::Bridge,
+                            _ => agentdocker_core::container::ContainerNetwork::None,
+                        },
+                    },
+                },
                 None => Request::Run { spec },
             };
             if let Response::Agent { agent } = client.call(&request).await? {
