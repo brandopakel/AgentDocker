@@ -163,10 +163,17 @@ impl Daemon {
             let socket = self.socket.clone();
             let rollback = record.clone();
             record = match tokio::task::spawn_blocking(move || {
-                agentdocker_host::transport::prepare(&mut record, &home, &socket)?;
+                let mut preparation = agentdocker_host::transport::Preparation::default();
+                agentdocker_host::transport::prepare(
+                    &mut record,
+                    &home,
+                    &socket,
+                    &mut preparation,
+                )?;
                 if record.container.as_ref().unwrap().options.engine_relay {
                     agentdocker_host::relay::prepare(&mut record)?;
                 }
+                preparation.commit();
                 Ok::<_, agentdocker_host::transport::TransportError>(record)
             })
             .await
@@ -183,7 +190,7 @@ impl Daemon {
             };
             if let Err(e) = self.workspace_grant(&mut record) {
                 self.cleanup_isolate(&record).await;
-                return Response::error(ErrorCode::StorageUnavailable, e.to_string());
+                return Response::error(e.code, e.to_string());
             }
         }
         self.launch_container(record).await
@@ -851,6 +858,79 @@ mod tests {
                 .any(|l| l.id == held.id)
         );
         assert!(!lock(&fake.actions).contains(&"kill"));
+    }
+
+    #[tokio::test]
+    async fn partial_host_preparation_rolls_back_before_registration() {
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let checkout = tmp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let home = tmp.path().join("state");
+        let fake = Arc::new(Fake::default());
+        let daemon = open(&home, fake.clone());
+        seed(&daemon);
+        std::fs::write(home.join("sock"), "fixture control path").unwrap();
+        daemon.restricted_listening(home.join("restricted.sock"));
+        let response = daemon
+            .run_container(
+                AgentSpec {
+                    name: "bad-preparation".into(),
+                    workdir: Some(checkout),
+                    command: vec!["sh".into()],
+                    ..Default::default()
+                },
+                "build".into(),
+                ContainerRunOptions {
+                    mount_checkout: true,
+                    podman_machine: Some("wrong-engine".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(lock(&fake.actions).is_empty());
+        assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+        assert!(!agentdocker_core::paths::workspace_dir(&home).exists());
+    }
+
+    #[tokio::test]
+    async fn workspace_grant_distinguishes_stopped_endpoint_from_storage_failure() {
+        use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(tmp.path(), Arc::new(Fake::default()));
+        seed(&daemon);
+        let Response::Agent { agent: mut record } = launch(&daemon, tmp.path()).await else {
+            panic!()
+        };
+        assert_eq!(
+            daemon.workspace_grant(&mut record).unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        daemon.restricted_listening(tmp.path().join("restricted.sock"));
+        record.container.as_mut().unwrap().workspace = Some(ContainerWorkspace {
+            checkout: tmp.path().into(),
+            git: None,
+            user: "1000:1000".into(),
+            keep_id: false,
+            read_only: false,
+            access: Some(WorkspaceAccess {
+                directory: tmp.path().join("missing"),
+                socket_directory: tmp.path().join("missing"),
+                grant: String::new(),
+                vm: None,
+                relay: None,
+            }),
+        });
+        assert_eq!(
+            daemon.workspace_grant(&mut record).unwrap_err().code,
+            ErrorCode::StorageUnavailable
+        );
     }
 
     #[tokio::test]

@@ -8,8 +8,8 @@ use agentdocker_core::{
 use serde_json::Value;
 use std::{
     fs,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
-    path::Path,
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -76,18 +76,81 @@ fn path_arg(path: &Path) -> Result<String, TransportError> {
 }
 /// Never widen an existing directory or follow a substituted symlink.
 pub fn private_directory(path: &Path) -> Result<(), TransportError> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => (),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+    let _ = create_private_directory(path)?;
+    Ok(())
+}
+fn create_private_directory(path: &Path) -> Result<Option<fs::Metadata>, TransportError> {
+    let created = match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => return Err(storage_error(e)),
-    }
+    };
+    let m = private_metadata(path)?;
+    Ok(created.then_some(m))
+}
+fn private_metadata(path: &Path) -> Result<fs::Metadata, TransportError> {
     let m = fs::symlink_metadata(path).map_err(storage_error)?;
     if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.permissions().mode() & 0o077 != 0 {
         return Err(storage_error(
             "transport directory must be private and owned by the daemon user",
         ));
     }
-    Ok(())
+    Ok(m)
+}
+
+/// Own only paths this attempt created, until both host preparation stages succeed.
+#[derive(Default)]
+pub struct Preparation {
+    created: Vec<(PathBuf, fs::Metadata)>,
+}
+impl Preparation {
+    fn directory(&mut self, path: &Path) -> Result<(), TransportError> {
+        if let Some(metadata) = create_private_directory(path)? {
+            self.created.push((path.into(), metadata));
+        }
+        Ok(())
+    }
+    fn known_hosts(&mut self, path: &Path) -> Result<(), TransportError> {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(file) => self
+                .created
+                .push((path.into(), file.metadata().map_err(storage_error)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(storage_error(e)),
+        }
+        Ok(())
+    }
+    pub fn commit(mut self) {
+        self.created.clear();
+    }
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        for (path, original) in self.created.iter().rev() {
+            let Ok(current) = fs::symlink_metadata(path) else {
+                continue;
+            };
+            if current.uid() != unsafe { libc::geteuid() }
+                || current.mode() & 0o077 != 0
+                || current.dev() != original.dev()
+                || current.ino() != original.ino()
+                || current.file_type() != original.file_type()
+            {
+                continue;
+            }
+            // Never recurse: preserve new contents and paths substituted since creation.
+            let _ = if current.is_dir() {
+                fs::remove_dir(path)
+            } else {
+                fs::remove_file(path)
+            };
+        }
+    }
 }
 
 /// Resolve the actual engine endpoint and host-visible UID before granting access.
@@ -95,6 +158,7 @@ pub fn prepare(
     record: &mut AgentRecord,
     home: &Path,
     control: &Path,
+    preparation: &mut Preparation,
 ) -> Result<(), TransportError> {
     let checkout = fs::canonicalize(
         record
@@ -145,16 +209,16 @@ pub fn prepare(
     };
 
     let parent = agentdocker_core::paths::workspace_dir(&home);
-    private_directory(&parent)?;
+    preparation.directory(&parent)?;
     let parent = fs::canonicalize(parent).map_err(storage_error)?;
     let directory = parent.join(record.id.as_str());
-    private_directory(&directory)?;
+    preparation.directory(&directory)?;
     path_arg(&directory)?;
     if directory.join("endpoint.sock").as_os_str().len() > 103 {
         return Err(error("daemon home is too long for workspace Unix sockets"));
     }
     let bridge_directory = parent.join(format!("bridge-{}", record.id));
-    private_directory(&bridge_directory)?;
+    preparation.directory(&bridge_directory)?;
     let c = record.container.as_mut().unwrap();
     let mut vm = None;
     let uid;
@@ -229,6 +293,7 @@ pub fn prepare(
             identity,
             user,
         };
+        preparation.known_hosts(&bridge_directory.join("known_hosts"))?;
         let ids = ssh_run(&config, &bridge_directory, "id -u; id -g")?;
         let ids: Vec<_> = ids
             .split_whitespace()
@@ -528,6 +593,39 @@ pub fn bridge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_rollback_removes_owned_paths_and_preserves_existing_or_changed_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let existing = tmp.path().join("existing");
+        private_directory(&existing).unwrap();
+        let fresh = tmp.path().join("fresh");
+        let changed = tmp.path().join("changed");
+        let swapped = tmp.path().join("swapped");
+        {
+            let mut preparation = Preparation::default();
+            preparation.directory(&existing).unwrap();
+            preparation.directory(&fresh).unwrap();
+            preparation.known_hosts(&fresh.join("known_hosts")).unwrap();
+            fs::write(fresh.join("known_hosts"), "fixture SSH key").unwrap();
+            preparation.directory(&changed).unwrap();
+            fs::write(changed.join("keep"), "untracked data").unwrap();
+            preparation.directory(&swapped).unwrap();
+            fs::rename(&swapped, tmp.path().join("original")).unwrap();
+            std::os::unix::fs::symlink(&existing, &swapped).unwrap();
+        }
+        assert!(!fresh.exists());
+        assert!(existing.is_dir());
+        assert_eq!(
+            fs::read_to_string(changed.join("keep")).unwrap(),
+            "untracked data"
+        );
+        assert!(swapped.is_symlink());
+        let committed = tmp.path().join("committed");
+        let mut preparation = Preparation::default();
+        preparation.directory(&committed).unwrap();
+        preparation.commit();
+        assert!(committed.is_dir());
+    }
     #[test]
     fn private_transport_refuses_symlinks_and_public_directories() {
         let tmp = tempfile::tempdir().unwrap();

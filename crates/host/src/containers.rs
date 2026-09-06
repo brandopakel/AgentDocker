@@ -11,6 +11,9 @@ pub struct ContainerError {
     pub message: String,
 }
 impl ContainerError {
+    pub fn with_code(code: agentdocker_core::ErrorCode, message: String) -> Self {
+        Self { code, message }
+    }
     pub fn unavailable(message: String) -> Self {
         Self {
             code: agentdocker_core::ErrorCode::EngineUnavailable,
