@@ -99,6 +99,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             ticks += 1;
             if ticks.is_multiple_of(5) {
                 reaper.refresh_vcs(None).await;
+                reaper.scan_agents().await;
             }
             if ticks.is_multiple_of(60) {
                 reaper.prune_events();

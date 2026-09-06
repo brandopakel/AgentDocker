@@ -176,7 +176,8 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
 | `deregister {agent}` | `agent` | marks an external agent exited |
-| `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid |
+| `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid, from the daemon's last scan (every five seconds; a scan older than four seconds is redone) |
+| `runtimes` | `runtimes {runtimes: RuntimeInfo[]}` | the agent tools on this machine — CLI and version, desktop apps, config directory, whether the MCP server and hooks are wired in — with the unregistered running processes of each |
 | `adopt {pid, name?, runtime?}` | `agent` | registers such a process; `invalid` if a live agent already has the pid |
 | `stop {agent, force?}` | `agent` | validated SIGTERM/SIGKILL; returns `stopping` until observed exit, retaining leases |
 | `remove {agent}` | `ok` | forget a finished agent |
@@ -250,7 +251,7 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 
 ## Events
 
-`agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_discovered` (a known agent process nobody registered appeared), `agent_vanished` (it exited, or was `adopted`), `agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
@@ -263,6 +264,8 @@ Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber tha
 The host control socket is mode `0600` and trusts the owning user. The separate `container.sock` also has mode `0600` but requires a scoped token: first `authenticate`, then exactly one operation, then close. Frames are bounded to 1 MiB and connections time out after 30 seconds. Tokens are stored hashed, scoped to one running agent and physical checkout, and checked for revocation/expiry on every operation. Only mapped path claims/reads, own inbox/lease operations, inspection and direct project-peer messaging are allowed. Host process control, validation execution and credential administration are unavailable. Missing tokens never fall back to host authority. Existing leases survive revocation until normal release/expiry/observed exit. Engine sockets and the host control socket are never container mounts.
 
 ## Roadmap
+
+The [product direction](PRODUCT-DIRECTION.md) defines current delivery priorities. The phases below retain the detailed engineering design; numbered delivery rows are not GitHub PR numbers.
 
 Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
@@ -424,6 +427,8 @@ Integration requires linked worktrees, clean source/target trees and passing val
 
 #### Sandboxes and container engines
 
+A sandbox is a property of an agent's runtime, and a container is one optional way to get one: nothing in the core, the CLI, the hooks or the MCP server depends on a container engine, and AgentDocker is complete without one. What follows is the design of that optional adapter.
+
 Docker and Podman are equal targets for the container workstream. AgentDocker remains a native host daemon. It delegates image builds and container execution to an installed engine; its own responsibility is physical checkout identity, observed working state, authentication, and verified recovery. The agent runtime (`codex`, `claude-code`, or another adapter) is separate from the container engine (`docker` or `podman`). Apple's `container` remains a future adapter, pending equivalent capability and lifecycle tests.
 
 The current implementation provides worktree operations and a separate authenticated container endpoint. Managed image build/launch, authenticated mounts, Podman VM transport and image-bound validation are implemented. The delivery and acceptance plan is [CONTAINER-ENGINES.md](CONTAINER-ENGINES.md).
@@ -440,7 +445,17 @@ Engine adapters must handle rootless ownership and VM mount reachability explici
 
 An agent handing work to another should not have to write its state down; the daemon already knows it. A handoff is a checkpoint addressed to someone. `handoff {agent, to?, task?, note?, transfer_leases?, key?}` makes the checkpoint through the checkpoint path — same release barrier, same idempotency by key, leases released with it unless they are to move — then assembles a `HandoffBundle { schema, id, from, from_name, to, project, task, note, assumptions, next_steps, checkout, version (the checkpoint's content identity), environment (image and execution provenance), vcs, leases (what the sender held when the bundle was made), transfer_leases, read_set, changes (the sender's ledger rows since it joined, at most 1,000), diff (for a sender in a linked worktree: the tracked patch, cut at 64 KB on a line boundary with the worktree named), unread_inbox, journal (the sender's own entries), journal_cursor, created_at, imported_at }`, stores it as a document under the checkpoint's id with `handoff_sent`, sends `to` a message `kind: handoff` whose payload names the id and the task, and appends a `handoff` journal entry ("codex-1 handed off to gemini-2: finish the parser"). Retrying with the same key returns the same bundle. Acceptance is `resume {…, acknowledge: true}` by the addressee — anyone else is refused — after the usual content verification, and it commits ownership in one transaction: with `transfer_leases` the still-live leases listed in the bundle that the sender still holds move to the recipient (`LeaseTable::transfer_selected`, one `lease_transferred {lease, from, to}` each), the read set is seeded from the bundle so staleness carries over, and the recipient's journal cursor is set to the sender's so it continues reading where the sender stopped. A bundle nobody was addressed to (`agentdocker export --as <agent> > bundle.json`) is the same structure; `agentdocker import --as <agent> < bundle.json` on another host re-homes it — the checkout becomes the importer's, read marks move with it, leases and the cursor stay behind — stores it with `handoff_imported`, and tells the importer; `resume` then accepts it only if the content identity matches exactly, as ever. The bundle carries schema 2; older importers must refuse it rather than drop image evidence. `agentdocker handoff <to> --as <from> --task "…" [--note …] [--transfer-leases]`, `agentdocker handoffs`, and the MCP `handoff` and `list_handoffs` tools.
 
-### Phase 5 — arbitration, humans & policy
+### Phase 5 — the machine and the human
+
+#### Runtime inventory, setup, and continuous discovery *(done)*
+
+`agentdocker runtimes` lists the agent tools on this machine: for each known runtime (`claude-code`, `codex`, `gemini-cli`, `cursor`, `aider`, `goose`, `copilot`, `amp`, `opencode`) whether its CLI is on `PATH` and which version, its desktop app where one exists (Claude, Cursor, VS Code, Windsurf — by bundle on macOS, by binary on Linux), its config directory, and whether AgentDocker is wired in: hooks installed for Claude Code, the MCP server registered in Claude Code's `~/.claude.json`, Codex's `~/.codex/config.toml`, Gemini's `~/.gemini/settings.json`, or Cursor's `~/.cursor/mcp.json`. `agentdocker setup [<runtime> | --all] [--dry-run]` writes the missing registrations idempotently, keeping a backup of every file it touches, and prints what it changed. The inventory is host I/O in `agentdocker-host::runtimes`; the daemon serves it as `runtimes {}` so the desktop app and the CLI share one answer.
+
+**Planned for roadmap row 18:** the daemon will run the process scan every five seconds, cache its last result for `discover`, and emit replayable `agent_discovered {pid, runtime, project?, cwd?}` and `agent_vanished {pid, runtime, adopted}` events when processes enter or leave discovery. The planned `adopt --all` command will register each discovered process. These are design intent until row 18 lands; automatic adoption remains a later policy decision.
+
+#### Native desktop app
+
+`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events. It raises desktop notifications for messages addressed to the human and for stale-context warnings, which is the channel the human-as-agent item below delivers through. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there.
 
 #### Wait queue and deadlock detection
 
@@ -463,7 +478,10 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 `--restart no | on-failure[:max] | always` on `run` and as `restart` in `Agentfile.toml`, `depends_on` (start after the dependency is running) and `after = "A exits 0"` (start after it succeeds), and `agentdocker top`, a TUI fed by the event stream showing agents by project, their branches, held leases, waiting claims, and the latest journal entries.
 
-### Phase 6 — federation
+### Phase 6 — Windows and federation
+
+Windows needs named pipes in place of the Unix socket, a Windows service in place of launchd/systemd, and process inspection without `ps`; the watcher (`notify`) already works there. It is scheduled after the desktop app so the app ships on macOS and Linux first.
+
 
 `agentd` instances discover and authenticate each other (mTLS, or a WireGuard-style keypair exchange). Agent ids become `host/agent`; messages, leases, events, and the journal route across peers; the registry becomes a replicated view. Project fingerprints are what make "the same repository on my laptop and in the cloud" one project, and handoff bundles are what move work between them. The core primitives do not change — which is the reason for keeping them pure and host-agnostic now.
 
@@ -485,12 +503,17 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
 | 10 | ✅ `run --isolate`, `diff`, `commit`, `overlap` | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
-| 12 | per-agent tokens; `docker` / `podman` / `container` runtimes with closed defaults | 4 | 3 |
+| 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
 | 14 | human agent, `ask` / `answer`, notifications | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
-| 17 | federation | 6 | 11, 12 |
+| 17 | federation | 6 | 11, 12, 20 |
+| 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
+| 19 | native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events, notifications | 5 | 18 |
+| 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
+
+Order from here: 18, 19, a first tagged release so a second machine installs with the curl installer, then 13–16, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -508,7 +531,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 
 Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
 
 ## Open questions
 
@@ -517,70 +540,4 @@ Planned events: `lease_transferred`, `lease_waiting`, `lease_wait_timeout`, `lea
 - Whether `from` should be verified for *unsandboxed* agents too. Per-agent tokens (Phase 4) settle it for sandboxed runtimes, where it matters; requiring them from local shells and hooks would cost ergonomics for little, so they stay optional until there is a reason.
 - Read-set capacity and eviction: 5,000 marks per agent is a guess; measure a long Claude Code session before tuning.
 
-
-Implementation order after hardening: complete read/content-version observations and staleness; add durable journal and acknowledged recovery with validation evidence tied to exact code; then worktree integration and authenticated container transport. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
-
-The integrated watcher attributes a change only to an unexpired exclusive lease on its physical checkout path; a reader's shared lease is not authorship evidence. Watcher-triggered VCS refreshes retain the five-second poll as a fallback. `file_changed` uses its ledger sequence (`change.seq`), and its event envelope has `seq: 0`; event replay filtering does not suppress these live ledger notifications.
-
-### Delivery and request boundaries
-
-Clients await each unary response before sending the next request. Additional input while a claim is pending cancels the claim and closes that connection. `ack_inbox {agent, messages: MessageId[]}` idempotently acknowledges specific delivered messages and returns `ok`. Hooks peek rather than drain and acknowledge after flushing their output; a timeout can cause redelivery, not discard unread input.
-
-`lagged {skipped: u64}` reports dropped live stream items. Event subscribers can request retained history with `events --replay`; message subscribers must reconnect to resume and ask senders to resend missing payloads. Live message payloads have no replay guarantee.
-
-### Implemented content observations
-
-`observe {agent, paths}` returns `reads` with absolute physical paths, SHA-256 content versions, observation times and HEAD context. Record an observation immediately **before** reading, never attach a fresh fingerprint to an older tool result. `reads {agent}` returns the durable read set. `stale {agent, paths?}` returns `stale` with observed/current versions and reasons; omitted paths verifies the entire set. Repeated checks do not acknowledge changes. A fresh observation followed by rereading clears the affected target. Read sets survive daemon restart, reject paths outside the agent's checkout and refuse capacity overflow instead of silently forgetting context.
-
-Claude hooks observe Read/Grep/Glob before execution, check staleness before edit tools, and refresh successfully edited paths after execution. Existing hook installations must rerun `hook install claude-code` to upgrade the matcher. MCP exposes `observe_paths`, `check_stale`, and `read_set`; other hosts must call these explicitly. The adapter remains fail-open on unavailable coordination. A check is an observation, not an atomic filesystem write barrier: arbitrary external writers can change files afterward.
-
-File fingerprints include bytes and executable bits. Directory fingerprints include sorted paths and content under normal Git ignore rules, including untracked files; ignored outputs and Git administrative files are excluded. Directory snapshots record symlink targets without following them or traversing linked directories. Snapshots reject special files, exceedance of 20,000 entries/256 MiB and files that change while being hashed. SHA-256 comparisons catch uncommitted changes without waiting for watcher debounce. Directory marks conservatively warn if any covered content changes; re-reading the particular file can refresh that target.
-
-The ledger now includes `checkout` (absent for legacy entries). A watcher change warns readers of that same physical checkout, with best-effort attribution. The watcher has bounded queues, drops access-only events before queueing, and emits `watcher_gap` if events overflow or the OS reports failure; its lifecycle is announced too — `watcher_starting` when the daemon spawns it, `watcher_started` once it covers checkouts, `watcher_unavailable {reason}` when it could not start. A gap makes the ledger incomplete; direct content checks remain available. Automatic observation coverage is limited to the supported hooks and explicit client calls.
-
-### Durable recovery and validation
-
-`checkpoint {agent,key,task,assumptions?,next_steps?,release_leases?}` returns `checkpoint`. The key is idempotent within the original session; reuse with a different `task`, `assumptions`, `next_steps` or `release_leases` value is a conflict. The immutable record contains retained read versions plus a fresh whole-checkout fingerprint. SQLite uses FULL synchronous durability. When requested, checkpoint persistence and its ordered event commit atomically before lease release under the state lock; the release barrier (the watcher flush) is passed before that lock is taken, so debounced changes are in the ledger by the time the release entry is built.
-
-`checkpoints {agent?}` lists durable handoffs, including finished sessions. `resume {agent,checkpoint,acknowledge?}` returns `recovery` containing notes, stale reads, checkout comparison and matching successful validation records. It verifies the same physical checkout. Acknowledgement refuses changed content or stale reads, is idempotent for one replacement, and conflicts for another. Acceptance, inherited read marks and HandoffAccepted commit together; plain checkpoints require the replacement to acquire any needed leases independently. Addressed handoffs with `transfer_leases` atomically move the still-live leases listed in the bundle that the sender still holds to their verified recipient during acceptance. Existing replacement observations are retained. Checkpoints persist until explicit future retention tooling removes them.
-
-`validate {agent,command,timeout_secs?}` executes an argv command in the agent's checkout and returns `validation` plus `passed`; `validations {agent}` returns stored evidence. Evidence includes SHA-256 before/after fingerprints, HEAD context, times, exit code, timeout, surviving descendants and a log path. Successful exit counts only when both content fingerprints match, the command did not time out, and no descendants remain in its process group. Validation subprocess groups are terminated on timeout/cancellation. The initial incomplete record and `validation_started` event commit atomically before spawning. The completed evidence and `validation_finished` event commit atomically; a failed commit leaves the initial incomplete record. Recovery writes honor the storage-failure latch and never publish from a failed projection. An interrupted run retains an incomplete, non-passing record. No automatic test result is inferred from an agent's claim that tests passed.
-
-Evidence covers the ignore-aware snapshot scope described above, not ignored dependencies, environment reproducibility or adversarial change-and-revert during execution. Commands run in the live checkout: callers should hold leases for code under test and avoid concurrent mutation. A check or accepted handoff is point-in-time evidence; external writers can invalidate it afterward. Recovery displays task assumptions for the replacement to assess, not as proven facts.
-Release jobs require a protected `v*` tag (`github.ref_protected`). Configure a tag protection/ruleset before publishing; an unprotected tag intentionally skips release. Only the dedicated publication job receives release write permission; build/formula jobs are read-only and checkout does not persist credentials. Critical physical-key paths use fallible normalization and reject unavailable cwd resolution; display/discovery callers retain the best-effort helper.
-
-### Continuous verification workstream
-
-The [testing and benchmarking plan](TESTING-AND-BENCHMARKS.md) runs alongside every delivery step: nextest, Proptest, coverage, Criterion/Bencher, native protocol load tests, bounded fuzzing and real Docker/Podman checks. Acceptance centers on stale-context detection and verified recovery; benchmark provenance must identify the exact code, environment and image tested.
-
-Managed commands run in a dedicated process group. While the supervisor owns the child handle, stop requests use a bounded control channel to that supervisor, with TERM followed by KILL after two seconds. Shutdown waits up to eight seconds for owned groups to finish and retains durable protection if they do not. After restart, stop signals that group only while the leader's recorded identity can be verified; after the leader exits, supervision terminates remaining group members (TERM, then KILL after two seconds) and retains leases until the group is gone. After restart, live orphan group members retain stopping state and protection even if the leader is gone; unverifiable groups are not blindly signalled. Legacy records without a group retain PID-only supervision. Processes deliberately escaping into another session/group are outside this cooperative process-group boundary. Schema 3 prevents older daemons from ignoring group lifetime.
-
-Watcher attribution resolves the observed path with the same physical canonicalization as claims, outside the state lock. Missing regular paths retain their normalized physical suffix; a removed symlink whose former target cannot be established is external/unknown rather than guessed.
-
-The canonical physical checkout path is the worktree identifier returned by `worktree-create`; it is also the identifier accepted by Git worktree commands. The command prints that identifier alone.
-
-
-### Journal integration and event subscription barrier
-
-Journal entries, digests, cursors, transcript summaries and CLI/MCP adapters are shipped together with verified recovery. A release commits lease deletions, its journal entry and all ordered replay events in one SQLite transaction before publication. Standalone entries and cursor acknowledgements likewise commit with their events. A failed transaction latches `storage_unavailable`; restart restores the last durable leases and journal state. A checkpoint's atomic document/event barrier and watcher flush remain ahead of release.
-
-New leases retain `change_seq`, the last assigned change sequence at acquisition. Releases select changes after that durable boundary, even across clock adjustments or restart; renewals retain the original boundary. Legacy leases use a numeric timestamp comparison. Canonical checkout and resource identities are reused under the state lock. Journal sequence high watermarks survive pruning and restart, so existing reader cursors never hide newly appended entries.
-
-`events {replay?,ready:true}` first returns `events_ready` after the live subscription is active, then sends replay and live events. The default `ready:false` retains the original response stream. `journal --follow` waits for readiness before its snapshot and deduplicates the tail against the greater of the requested `since_seq` and the last snapshot entry. A lagged stream exits with an error directing the reader to recover retained entries with `--since`.
-
-Scoped container clients may add notes as their bound agent and read the mapped checkout journal. A digest may advance only that agent's cursor. Other checkout roots, cursor impersonation and journal pruning remain forbidden on the restricted endpoint.
-
-Journal grep ignores empty/whitespace-only filters. Punctuation-only filters use literal substring matching with or without FTS5. The FTS completion marker forces a transactional rebuild after fallback writes or loss of the index. Journal display escapes stored control characters before adding structural digest newlines. `journal --new` defaults its reader to AGENTDOCKER_AGENT_ID when set, otherwise user.
-
-Managed container records add optional `container: {build, inputs, engine, connection, image_id, name, owner, id, intent, start_attempted, create_attempted, last_error, options, workspace, deadline}` to `AgentRecord`; legacy records omit it. Engine observations decide their lifetime, independent of any local CLI PID. See [managed container commands](CONTAINER-ENGINES.md#managed-container-commands) for intent persistence, recovery, shutdown and mount limitations.
-
-
-Managed `run_container` options are `mount_checkout` (default false), `podman_machine` (optional rootless VM name), `engine_relay` (default false; automatic for local Docker Desktop), and `network` (`none` default, or `bridge`). The CLI exposes `--mount-checkout`, `--podman-machine`, `--engine-relay` and `--network`. Mounted workspace records retain checked paths and UID mapping plus a grant ID; raw credentials and SSH controls are excluded. Grant creation commits with `access_granted`; record/mount transitions use `container_updated`. Per-run transport handles are reconstructed from durable records and retired after confirmed exit. Transport errors never block a requested stop or establish exit.
-
-Container `validate` runs in a fresh image container with a read-only checkout, no coordination credential, and a persisted kill deadline. Its record commits before engine I/O. Container evidence requires positive exit, matching content and the retained image environment. `checkpoint` retains that environment; `recovery` adds `environment_matches`, returns usable validation only for matching current content/environment, and rejects acknowledgement on either mismatch. Integration also compares the validation environment to its target. See [CONTAINER-ENGINES.md](CONTAINER-ENGINES.md) for transport capabilities and command examples.
-
-Workspace launches require a serving restricted endpoint before credential creation. Before starting a host process or creating a container, the watcher confirms the requested checkout's coverage within 500 ms; startup, attachment and timeout failures return `unavailable`. An externally started registration retains its identity/protection while reporting unavailable coverage. Watcher gaps remain explicit events and never substitute for an attachment acknowledgement.
-
-Image environments retain immutable image identity, context/recipe fingerprints, OS/architecture/variant, engine, UID, network and explicit environment. Matching portable input evidence allows local build UUIDs and connection names to differ; those names remain audit metadata. Legacy records lacking input evidence require exact stored environment equality. Export/import preserves this environment through the reconstructed checkpoint. Imported bundles do not manufacture validation results or transfer cross-host leases.
-
-Imported handoff bundles have an 8 MiB total serialized limit (including escaping and nested payloads), enforced by the CLI before decoding and by the daemon before persistence. The host socket also caps each raw request frame at 8 MiB + 64 KiB, including its newline, before JSON decoding; the extra space allows the request envelope around a maximum-size bundle. Oversized frames receive `Invalid` and close the connection, even without a newline. Streaming reads retain this bound across cancellation. The restricted container endpoint keeps its separate 1 MiB frame limit. Sender names and content-version strings are limited to 256 bytes. Acceptance transfers only offered lease IDs that are still live and held by the sender; later acquisitions remain with that sender.
+What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in [IMPLEMENTATION-NOTES.md](IMPLEMENTATION-NOTES.md).

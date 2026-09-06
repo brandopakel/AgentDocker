@@ -15,6 +15,7 @@ pub mod command;
 
 pub mod containers;
 pub mod engine;
+pub mod runtimes;
 
 pub mod dirs;
 pub mod transport;

@@ -32,6 +32,8 @@ pub use working_set::{ReadMark, StalePath};
 pub mod recovery;
 pub use recovery::{Checkpoint, Recovery, Validation};
 
+pub mod runtime;
+pub use runtime::{RuntimeInfo, Wiring};
 pub mod container;
 pub use container::{ContainerEngine, ImageBuild, ImageBuildSpec};
 pub mod handoff;
