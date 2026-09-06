@@ -524,7 +524,7 @@ We should not write one. `tmux` exists, herdr exists, and a multiplexer is not t
 
 Everything an agent reads from us costs it input tokens, and an agent reads `ps`, `journal`, `stale` and `channels` many times per session. [rtk](https://github.com/rtk-ai/rtk) compresses *shell* output before an agent sees it, which is real but orthogonal: our MCP results never pass through a shell, so nothing outside AgentDocker can shrink them. Measured on one developer machine, a single agent record is 709 bytes pretty-printed, 577 compact, and 418 carrying only the fields an agent uses.
 
-Row 26 therefore makes our own output lean: MCP tool results are compact JSON rather than pretty-printed, the chatty tools return a projection of what an agent actually needs with `verbose` to opt back into the whole record, and the CLI keeps its tables for humans. Where we run somebody else's command (`validate`, worktree diffs) and rtk is installed, we can offer a compressed *view* of a retained log — never a compressed log, because a validation log is evidence and evidence is kept whole.
+Row 26 therefore makes our own output lean, and the first half is done: MCP tool results are compact JSON rather than pretty-printed, and `whoami`, `inspect_agent`, `list_agents`, `list_leases` and `list_channels` answer with a projection — for an agent, its id, name, runtime, status, project and branch, not the pid, process group, host and four timestamps the daemon keeps for itself — with `verbose: true` to opt back into the whole record. Absent fields are omitted rather than sent as `null`. The CLI keeps its tables, which are for humans. Where we run somebody else's command (`validate`, worktree diffs) and rtk is installed, we can offer a compressed *view* of a retained log — never a compressed log, because a validation log is evidence and evidence is kept whole.
 
 #### Derived activity
 
@@ -569,9 +569,9 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 23 | PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, bounded scrollback, `attach` and detach, re-adoption of survivors after a daemon restart | 5 | — |
 | 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
-| 26 | token-lean output: compact MCP results with projections and a `verbose` opt-in; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
+| 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 26 (token-lean output, small and immediately cheaper for every agent), 23 (sessions, the one thing herdr has that we do not), 14 (the human as an agent, where the desktop app's notifications come from), 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
+Order from here: 23 (sessions, the one thing herdr has that we do not), 14 (the human as an agent, where the desktop app's notifications come from), 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
