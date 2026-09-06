@@ -263,9 +263,9 @@ pub fn prepare(
         }
         vm = Some(config);
     } else {
-        if !cfg!(target_os = "linux") {
+        if !cfg!(target_os = "linux") && c.engine != ContainerEngine::Docker {
             return Err(error(
-                "macOS checkout mounts require --podman-machine; Docker Desktop transport is unavailable",
+                "macOS Podman checkout mounts require --podman-machine",
             ));
         }
         uid = unsafe { libc::geteuid() };
@@ -323,6 +323,18 @@ pub fn prepare(
                     "info".into(),
                     "--format=json".into(),
                 ])?;
+                if cfg!(target_os = "macos") {
+                    if !info
+                        .get("OperatingSystem")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| s.starts_with("Docker Desktop"))
+                    {
+                        return Err(error(
+                            "macOS Docker mounts require a local Docker Desktop context",
+                        ));
+                    }
+                    c.options.engine_relay = true;
+                }
                 let security = info
                     .get("SecurityOptions")
                     .and_then(Value::as_array)
@@ -353,6 +365,7 @@ pub fn prepare(
                     keep_id: false,
                     read_only: false,
                     access: Some(WorkspaceAccess {
+                        relay: None,
                         grant: String::new(),
                         socket_directory: directory.clone(),
                         directory,
@@ -376,6 +389,7 @@ pub fn prepare(
         keep_id,
         read_only: false,
         access: Some(WorkspaceAccess {
+            relay: None,
             grant: String::new(),
             directory,
             socket_directory,

@@ -51,7 +51,7 @@ impl Daemon {
             .map_err(|e| ContainerError(e.to_string()))?
     }
 
-    fn update_container(
+    pub(super) fn update_container(
         &self,
         id: &AgentId,
         change: impl FnOnce(&mut AgentRecord),
@@ -104,7 +104,7 @@ impl Daemon {
                 "a container needs a command and valid environment pairs",
             );
         }
-        if options.podman_machine.is_some() && !options.mount_checkout {
+        if (options.podman_machine.is_some() || options.engine_relay) && !options.mount_checkout {
             return Response::error(ErrorCode::Invalid, "VM transport requires checkout mounts");
         }
         let mut build = {
@@ -163,6 +163,9 @@ impl Daemon {
             let socket = self.socket.clone();
             record = match tokio::task::spawn_blocking(move || {
                 agentdocker_host::transport::prepare(&mut record, &home, &socket)?;
+                if record.container.as_ref().unwrap().options.engine_relay {
+                    agentdocker_host::relay::prepare(&mut record)?;
+                }
                 Ok::<_, agentdocker_host::transport::TransportError>(record)
             })
             .await
@@ -294,8 +297,12 @@ impl Daemon {
             }
             state
                 .registry
-                .live()
-                .filter(|a| a.container.is_some() && !state.container_busy.contains(&a.id))
+                .all()
+                .filter(|a| {
+                    a.container.is_some()
+                        && (a.status.is_live() || super::relay::needs_cleanup(a))
+                        && !state.container_busy.contains(&a.id)
+                })
                 .map(|a| a.id.clone())
                 .collect()
         };
@@ -337,7 +344,7 @@ impl Daemon {
                 .container_record(&id)
                 .is_some_and(|r| r.container.unwrap().last_error.as_ref() != Some(&message))
             {
-                warn!(agent = %id, error = %message, "container state uncertain; protection retained");
+                warn!(agent = %id, error = %message, "container reconciliation incomplete");
             }
             let _ = self.update_container(&id, |r| {
                 r.container.as_mut().unwrap().last_error = Some(message)
@@ -353,7 +360,7 @@ impl Daemon {
     ) -> Result<(), ContainerError> {
         let mut record = self.current_container(id)?;
         if !record.status.is_live() {
-            self.retire_transport(id);
+            self.retire_transport(id).await?;
             return Ok(());
         }
         if record
@@ -375,7 +382,7 @@ impl Daemon {
         if !c.create_attempted {
             if c.intent != ContainerIntent::Run {
                 self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
-                self.retire_transport(id);
+                self.retire_transport(id).await?;
                 return Ok(());
             }
             if !create {
@@ -398,7 +405,7 @@ impl Daemon {
         self.observe_container(id, &inspected)?;
         let mut record = self.current_container(id)?;
         if !record.status.is_live() {
-            self.retire_transport(id);
+            self.retire_transport(id).await?;
             return Ok(());
         }
         let c = record.container.as_ref().unwrap();
@@ -425,7 +432,7 @@ impl Daemon {
                 // a delayed start cannot resurrect it after protection is released.
                 self.engine_call(record, |b, r| b.remove_created(r)).await?;
                 self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
-                self.retire_transport(id);
+                self.retire_transport(id).await?;
                 return Ok(());
             }
             (ContainerIntent::Stop | ContainerIntent::Kill, ContainerState::Running) => {
@@ -439,7 +446,7 @@ impl Daemon {
         let inspected = self.engine_call(record, |b, r| b.inspect(r)).await?;
         self.observe_container(id, &inspected)?;
         if !self.is_live(id) {
-            self.retire_transport(id);
+            self.retire_transport(id).await?;
         }
         Ok(())
     }

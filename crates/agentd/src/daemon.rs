@@ -43,6 +43,7 @@ mod containers;
 mod handoff;
 mod images;
 mod recovery;
+mod relay;
 mod transport;
 mod working;
 mod worktrees;

@@ -137,12 +137,22 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
             expected.push((&g.common, "/run/agentdocker-git", !w.read_only));
         }
         if let Some(a) = &w.access {
-            expected.extend([
-                (&a.directory, "/run/agentdocker-auth", false),
-                (&a.socket_directory, "/run/agentdocker", false),
-            ]);
+            expected.push((&a.directory, "/run/agentdocker-auth", false));
+            if a.relay.is_none() {
+                expected.push((&a.socket_directory, "/run/agentdocker", false));
+            }
         }
-        if mounts.len() != expected.len()
+        let relay = w.access.as_ref().and_then(|a| a.relay.as_ref());
+        let volume_matches = relay.is_none_or(|r| {
+            mounts.iter().any(|m| {
+                m.get("Type").and_then(Value::as_str) == Some("volume")
+                    && m.get("Name").and_then(Value::as_str) == Some(&r.volume)
+                    && m.get("Destination").and_then(Value::as_str) == Some("/run/agentdocker")
+                    && m.get("RW").and_then(Value::as_bool) == Some(false)
+            })
+        });
+        if !volume_matches
+            || mounts.len() != expected.len() + usize::from(relay.is_some())
             || expected.iter().any(|(source, dest, rw)| {
                 !mounts.iter().any(|m| {
                     m.get("Type").and_then(Value::as_str) == Some("bind")
@@ -259,10 +269,16 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
                     a.directory.display()
                 ),
                 "--mount".into(),
-                format!(
-                    "type=bind,src={},dst=/run/agentdocker,readonly",
-                    a.socket_directory.display()
-                ),
+                match &a.relay {
+                    Some(relay) => format!(
+                        "type=volume,src={},dst=/run/agentdocker,readonly",
+                        relay.volume
+                    ),
+                    None => format!(
+                        "type=bind,src={},dst=/run/agentdocker,readonly",
+                        a.socket_directory.display()
+                    ),
+                },
                 "--env=AGENTDOCKER_SOCKET=/run/agentdocker/endpoint.sock".into(),
                 "--env=AGENTDOCKER_TOKEN_FILE=/run/agentdocker-auth/token".into(),
             ]);
@@ -448,6 +464,7 @@ mod tests {
             keep_id: false,
             read_only: false,
             access: Some(WorkspaceAccess {
+                relay: None,
                 grant: "grant".into(),
                 directory: "/private-auth".into(),
                 socket_directory: "/scoped-socket".into(),
