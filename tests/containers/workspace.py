@@ -7,6 +7,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import platform
 import socket
 import shutil
 import subprocess
@@ -278,8 +279,25 @@ print('concurrent relay passed')
     results.append('isolated image checkout records its first write and supports Git plus read-only validation')
 
     rebuilt=expect(rpc({'op':'build_image','spec':git_spec}),'image_build')['build']
-    assert rebuilt['id']!=git_build['id'] and rebuilt['image_id']==git_build['image_id']
-    recipient=remember(expect(rpc({'op':'run_container','build':rebuilt['id'],'options':options,'spec':{
+    assert rebuilt['id']!=git_build['id']
+    assert rebuilt['context_version']==git_build['context_version'] and rebuilt['recipe_version']==git_build['recipe_version']
+    # Desktop's containerd store retains BuildKit attestations in the image
+    # index. A cached rebuild may therefore have a different immutable ID.
+    # Keep the identity requirement: such a rebuild cannot reuse this handoff.
+    same_image=rebuilt['image_id']==git_build['image_id']
+    if not same_image:
+        image_checkpoint=expect(rpc({'op':'checkpoint','agent':isolated['id'],'key':'rebuild-identity',
+            'task':'check rebuilt image','assumptions':[],'next_steps':[],'release_leases':False}),'checkpoint')['checkpoint']
+        changed_image=remember(expect(rpc({'op':'run_container','build':rebuilt['id'],'options':options,'spec':{
+            'name':'changed-index','workdir':str(isolated_root),'command':['python3','-u','-c',WORKER]}}),'agent')['agent'])
+        changed_preview=expect(rpc({'op':'resume','agent':changed_image['id'],'checkpoint':image_checkpoint['id'],
+            'acknowledge':False}),'recovery')['recovery']
+        assert not changed_preview['environment_matches']
+        assert expect(rpc({'op':'resume','agent':changed_image['id'],'checkpoint':image_checkpoint['id'],
+            'acknowledge':True}),'error')['code']=='conflict'
+        expect(rpc({'op':'stop','agent':changed_image['id'],'force':True}),'agent')
+    recipient_build=rebuilt if same_image else git_build
+    recipient=remember(expect(rpc({'op':'run_container','build':recipient_build['id'],'options':options,'spec':{
         'name':'image-recipient','workdir':str(isolated_root),'command':['python3','-u','-c',WORKER]}}),'agent')['agent'])
     held=expect(rpc({'op':'claim','agent':isolated['id'],'resource':'task:integrated-handoff','ttl_secs':300}),'lease')['lease']
     bundle=expect(rpc({'op':'handoff','agent':isolated['id'],'to':recipient['id'],'task':'finish isolated work','transfer_leases':True}),'handoff')['bundle']
@@ -300,8 +318,11 @@ print('concurrent relay passed')
     transferred=expect(rpc({'op':'leases','agent':recipient['id']}),'leases')['leases']
     assert held['id'] in [lease['id'] for lease in transferred]
     assert not expect(rpc({'op':'leases','agent':isolated['id']}),'leases')['leases']
-    results.append('image handoff survives restart, accepts identical rebuilt inputs and transfers leases only after source verification')
-    payload={'result':'passed','engine':a.engine,'machine':a.machine,'relay':worker['container']['options']['engine_relay'],'scenarios':results}
+    results.append('image handoff survives restart and transfers leases only after source verification; '+
+        ('identical rebuilt image accepted' if same_image else 'changed rebuild ID refused; original retained image accepted'))
+    payload={'result':'passed','engine':a.engine,'machine':a.machine,'relay':worker['container']['options']['engine_relay'],
+        'host_os':platform.system(),'host_architecture':platform.machine(),
+        'client_version':build['client_version'],'server_version':build['server_version'],'scenarios':results}
     Path(a.result).write_text(json.dumps(payload,indent=2)+'\n')
     print(json.dumps(payload),flush=True)
 except BaseException:

@@ -124,7 +124,11 @@ pub fn prepare(record: &mut AgentRecord) -> Result<(), TransportError> {
         ]);
         probes.push(probe);
     }
-    args.extend(["--entrypoint=python3".into(),build.image_id.clone(),"-c".into(),format!("from pathlib import Path; assert all(Path('/probe'+str(i)).read_text()=={:?} for i in range({})); print('shared')",record.id.as_str(),probes.len())]);
+    args.extend([
+        "--entrypoint=python3".into(), build.image_id.clone(), "-c".into(),
+        "from pathlib import Path; import sys; assert all(Path('/probe'+str(i)).read_text()==sys.argv[1] for i in range(int(sys.argv[2]))); print('shared')".into(),
+        record.id.to_string(), probes.len().to_string(),
+    ]);
     if run(record, args)?.trim() != "shared" {
         return Err(error(
             "engine cannot read the selected host paths with the workspace UID",
@@ -195,8 +199,7 @@ fn verify_volume(record: &AgentRecord) -> Result<(), TransportError> {
     }
     Ok(())
 }
-/// An owned relay can be replaced after a lost CLI stream; the writer and volume stay put.
-fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
+fn helper_id(record: &AgentRecord) -> Result<Option<String>, TransportError> {
     let r = relay(record);
     let found = run(
         record,
@@ -211,20 +214,42 @@ fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
         ],
     )?;
     if found.trim().is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    let id = hash(found.trim())
-        .ok_or_else(|| error("relay lookup did not return one full container identity"))?;
-    let data = json(
+    hash(found.trim())
+        .map(|id| Some(id.to_owned()))
+        .ok_or_else(|| error("relay lookup did not return one full container identity"))
+}
+/// An owned relay can be replaced after a lost CLI stream; the writer and volume stay put.
+fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
+    let r = relay(record);
+    let expected_image =
+        hash(&r.build.image_id).ok_or_else(|| error("invalid retained relay image ID"))?;
+    let Some(id) = helper_id(record)? else {
+        return Ok(());
+    };
+    let data = match json(
         record,
-        vec!["container".into(), "inspect".into(), id.into()],
-    )?;
+        vec!["container".into(), "inspect".into(), id.clone()],
+    ) {
+        Ok(data) => data,
+        // Closing the attached stream can auto-remove the helper between list
+        // and inspect. Require a successful new lookup proving absence; an
+        // unavailable engine or an occupied name still leaves cleanup pending.
+        Err(e) => {
+            return if helper_id(record)?.is_none() {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
+    };
     if data
         .pointer("/0/Name")
         .and_then(Value::as_str)
         .map(|s| s.trim_start_matches('/'))
         != Some(r.name.as_str())
-        || data.pointer("/0/Id").and_then(Value::as_str).and_then(hash) != Some(id)
+        || data.pointer("/0/Id").and_then(Value::as_str).and_then(hash) != Some(id.as_str())
         || data
             .pointer("/0/Config/Labels/org.agentdocker.owner")
             .and_then(Value::as_str)
@@ -241,21 +266,31 @@ fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
             .pointer("/0/Image")
             .and_then(Value::as_str)
             .and_then(hash)
-            != hash(&r.build.image_id)
+            != Some(expected_image)
     {
         return Err(error(
             "refusing to remove a relay with different ownership or image",
         ));
     }
-    run(
+    match run(
         record,
-        vec!["container".into(), "rm".into(), "--force".into(), id.into()],
-    )?;
-    Ok(())
+        vec!["container".into(), "rm".into(), "--force".into(), id],
+    ) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            if helper_id(record)?.is_none() {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 /// Confirm the helper's confinement before a writer receives its socket volume.
 pub fn verify_helper(record: &AgentRecord) -> Result<(), TransportError> {
     let r = relay(record);
+    let expected_image =
+        hash(&r.build.image_id).ok_or_else(|| error("invalid retained relay image ID"))?;
     let w = c(record).workspace.as_ref().unwrap();
     let info = json(
         record,
@@ -287,7 +322,7 @@ pub fn verify_helper(record: &AgentRecord) -> Result<(), TransportError> {
             .pointer("/Config/Labels/org.agentdocker.role")
             .and_then(Value::as_str)
             != Some("relay")
-        || data.get("Image").and_then(Value::as_str).and_then(hash) != hash(&r.build.image_id)
+        || data.get("Image").and_then(Value::as_str).and_then(hash) != Some(expected_image)
         || data.pointer("/Config/User").and_then(Value::as_str) != Some(&w.user)
         || data
             .pointer("/HostConfig/NetworkMode")
