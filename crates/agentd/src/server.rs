@@ -10,7 +10,7 @@ use agentdocker_core::{ErrorCode, Request, Response, paths};
 use agentdocker_host::dirs;
 use anyhow::Context;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
@@ -18,7 +18,63 @@ use tracing::{debug, info, warn};
 
 use crate::daemon::Daemon;
 
-type Reader = Lines<BufReader<OwnedReadHalf>>;
+// The bundle itself is capped at IMPORT_BYTES. Allow a bounded amount of
+// additional space for the request envelope, including its agent selector.
+const HOST_REQUEST_BYTES: usize = agentdocker_core::handoff::IMPORT_BYTES + 64 * 1024;
+
+struct Reader {
+    inner: BufReader<OwnedReadHalf>,
+    pending: Vec<u8>,
+}
+
+impl Reader {
+    fn new(inner: OwnedReadHalf) -> Self {
+        Self {
+            inner: BufReader::new(inner),
+            pending: Vec::new(),
+        }
+    }
+
+    // Partial input belongs to the reader, so cancellation by a streaming
+    // select does not discard it or reset the frame's byte budget.
+    async fn next_line(&mut self) -> io::Result<Option<String>> {
+        loop {
+            let bytes = self.inner.fill_buf().await?;
+            if bytes.is_empty() {
+                return self.finish_line();
+            }
+            let newline = bytes.iter().position(|byte| *byte == b'\n');
+            let count = newline.map_or(bytes.len(), |index| index + 1);
+            if count > HOST_REQUEST_BYTES - self.pending.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("request frame exceeds {HOST_REQUEST_BYTES} bytes"),
+                ));
+            }
+            self.pending.extend_from_slice(&bytes[..count]);
+            self.inner.consume(count);
+            if newline.is_some() {
+                return self.finish_line();
+            }
+        }
+    }
+
+    fn finish_line(&mut self) -> io::Result<Option<String>> {
+        if self.pending.is_empty() {
+            return Ok(None);
+        }
+        let mut bytes = std::mem::take(&mut self.pending);
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+}
 
 pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
     std::fs::create_dir_all(daemon.home.join("logs"))?;
@@ -51,9 +107,21 @@ pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
 
 async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
     let (read_half, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(read_half).lines();
+    let mut reader = Reader::new(read_half);
 
-    while let Some(line) = reader.next_line().await? {
+    loop {
+        let line = match reader.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                return write(
+                    &mut writer,
+                    &Response::error(ErrorCode::Invalid, error.to_string()),
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -93,7 +161,6 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 async fn write(writer: &mut OwnedWriteHalf, response: &Response) -> io::Result<()> {
@@ -106,7 +173,7 @@ async fn write(writer: &mut OwnedWriteHalf, response: &Response) -> io::Result<(
 /// clients must await its response before sending another request. This also
 /// bounds memory and cancels a peer that closes after sending partial input.
 async fn claim_eof(reader: &mut Reader) {
-    let _ = reader.get_mut().fill_buf().await;
+    let _ = reader.inner.fill_buf().await;
 }
 
 /// Resolves when the client closes its side (or sends garbage).
@@ -463,6 +530,101 @@ async fn restricted_connection(daemon: Arc<Daemon>, stream: UnixStream) -> io::R
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn host_frames_are_bounded_before_decoding_with_or_without_newline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+        for newline in [false, true] {
+            let (client, server) = UnixStream::pair().unwrap();
+            let task = tokio::spawn(handle(daemon.clone(), server));
+            let mut client = BufReader::new(client);
+            let mut frame = vec![b' '; HOST_REQUEST_BYTES + 1];
+            if newline {
+                frame.push(b'\n');
+            }
+            let _ = client.get_mut().write_all(&frame).await;
+            let mut reply = String::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_line(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Response>(&reply).unwrap(),
+                Response::Error { code: ErrorCode::Invalid, message, .. }
+                    if message.contains("request frame exceeds")
+            ));
+            task.await.unwrap().unwrap();
+        }
+
+        // A frame exactly at the limit remains valid, and the byte budget
+        // resets for the next request on the same connection.
+        let (client, server) = UnixStream::pair().unwrap();
+        let task = tokio::spawn(handle(daemon, server));
+        let mut client = BufReader::new(client);
+        let mut frame = b"{\"op\":\"ping\"}".to_vec();
+        frame.resize(HOST_REQUEST_BYTES - 1, b' ');
+        frame.push(b'\n');
+        client.get_mut().write_all(&frame).await.unwrap();
+        for second in [false, true] {
+            if second {
+                client
+                    .get_mut()
+                    .write_all(b"{\"op\":\"ping\"}\n")
+                    .await
+                    .unwrap();
+            }
+            let mut reply = String::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_line(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Response>(&reply).unwrap(),
+                Response::Pong { .. }
+            ));
+        }
+        drop(client);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_host_read_retains_partial_input_and_its_byte_budget() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let (read, _write) = server.into_split();
+        let mut reader = Reader::new(read);
+        client.write_all(b"{\"op\":").await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), reader.next_line())
+                .await
+                .is_err()
+        );
+        client.write_all(b"\"ping\"}\r\n").await.unwrap();
+        assert_eq!(
+            reader.next_line().await.unwrap().unwrap(),
+            "{\"op\":\"ping\"}"
+        );
+
+        let sending = tokio::spawn(async move {
+            let _ = client.write_all(&vec![b' '; HOST_REQUEST_BYTES]).await;
+            client
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), reader.next_line())
+                .await
+                .is_err()
+        );
+        let mut client = tokio::time::timeout(Duration::from_secs(2), sending)
+            .await
+            .expect("the frame writer must finish before checking cancellation")
+            .unwrap();
+        assert_eq!(reader.pending.len(), HOST_REQUEST_BYTES);
+        client.write_all(b"\n").await.unwrap();
+        assert_eq!(
+            reader.next_line().await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[tokio::test]
     async fn restricted_socket_requires_auth_and_rechecks_revocation() {
