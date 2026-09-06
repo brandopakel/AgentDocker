@@ -289,6 +289,16 @@ The [product direction](PRODUCT-DIRECTION.md) defines current delivery prioritie
 
 Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
+### Where AgentDocker sits
+
+[Herdr](https://github.com/herdrdev/herdr) (Rust, Apache-2.0) is the runtime coding agents run *on*: it owns their terminals. Sessions persist across a closed lid, a dropped network, or a restart; every pane is marked working, blocked, or idle; agents spawn panes, prompt each other, and wait until another is genuinely blocked, through a CLI and a socket API. Its own README is explicit about the boundary — it "doesn't wrap them or replace them, it just owns their terminals."
+
+AgentDocker owns the other half: not where an agent runs, but what it may touch, what it changed, and who else needs to know. Leases over canonical physical paths so two agents cannot edit one file; durable read sets so an agent is refused an edit against something it has not re-read; an attribution ledger; a per-project journal with a cursor per reader; a worktree per agent with validated integration; handoff bundles; channels with review as the tie-break. None of that appears in herdr, and nothing in it stops two agents writing the same file.
+
+So they compose rather than compete, and the sharpest way to say it is that herdr answers *where does this agent live and survive* while AgentDocker answers *what does it know and share*. An agent in a herdr pane can register with `agentd` and get the whole working set; row 25 makes that recognition automatic.
+
+**On reusing their work.** Apache-2.0 permits forking, modifying and redistributing herdr, including commercially, provided the licence travels with the copy, modified files record that they were changed, any `NOTICE` is preserved, and their marks are not used to describe this product. A fork is therefore allowed. It is not recommended: carrying a copy of a large, fast-moving codebase costs more than the design does, and re-implementing persistence in our own crates keeps the working set — the part nobody else has — at the centre rather than making us a derivative of somebody's terminal server. Where a component is cleanly separable and genuinely reusable, depend on it or vendor that component with its licence and attribution intact, rather than fork the repository. Row 23 is the design taken; no code has been copied.
+
 ### The thesis
 
 Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly what a container could see and change. AgentDocker's equivalent is the **working set**. For every agent the daemon observes the paths it read, the resources it holds, the paths it changed, the branch it is on, and the messages it exchanged. Nothing asks an agent to describe its own state: hooks and adapters report what happened, and the daemon derives the rest. From the working set the daemon can do what no single agent can — group agents by project, tell an agent that something it read has since moved, attribute every change to whoever made it, detect two agents waiting on each other, and package a handoff. That is the proprietary layer; each item in Phases 2–5 is one of those derivations. The rule for new features: prefer deriving from what the daemon already sees over asking agents to declare it.
@@ -498,6 +508,28 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 `--restart no | on-failure[:max] | always` on `run` and as `restart` in `Agentfile.toml`, `depends_on` (start after the dependency is running) and `after = "A exits 0"` (start after it succeeds), and `agentdocker top`, a TUI fed by the event stream showing agents by project, their branches, held leases, waiting claims, and the latest journal entries.
 
+#### Sessions and persistence
+
+`run` gives a managed agent pipes and captures them to a log. Two things follow, and both are wrong. An interactive agent cannot be run that way at all — `claude` and `codex` want a terminal, and a pipe is not one — so in practice agents are started by hand and only *adopted*. And nothing survives: if `agentd` restarts, the child lives on in its own process group but its output is gone, and there is no way back to it.
+
+Row 23 fixes both on our own terms. A managed agent gets a **PTY** rather than pipes, so interactive runtimes work under `run`. The daemon keeps a bounded scrollback per agent (the last N KB, in the store beside the log, pruned like the journal), so a client attaching late sees recent context rather than nothing. `agentdocker attach <agent>` connects a terminal to it: raw mode, window-size propagation, detach without killing. Because the child already runs in its own process group with a recorded `process_started_at`, a restarted daemon can re-adopt what is still alive and re-open its scrollback rather than orphan it.
+
+This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
+
+#### Terminal multiplexers
+
+We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter, row 25: recognise that a discovered agent is living in a `tmux` pane or a herdr session (from its process ancestry and environment), record that beside its record, show it in `ps` and the desktop app, and let `run --in-pane` place a managed agent in a pane so a human can attach with the tool they already use. That makes AgentDocker composable with whatever owns the terminal instead of competing for it.
+
+#### Token-lean output
+
+Everything an agent reads from us costs it input tokens, and an agent reads `ps`, `journal`, `stale` and `channels` many times per session. [rtk](https://github.com/rtk-ai/rtk) compresses *shell* output before an agent sees it, which is real but orthogonal: our MCP results never pass through a shell, so nothing outside AgentDocker can shrink them. Measured on one developer machine, a single agent record is 709 bytes pretty-printed, 577 compact, and 418 carrying only the fields an agent uses.
+
+Row 26 therefore makes our own output lean, and the first half is done: MCP tool results are compact JSON rather than pretty-printed, and `whoami`, `inspect_agent`, `list_agents`, `list_leases` and `list_channels` answer with a projection — for an agent, its id, name, runtime, status, project and branch, not the pid, process group, host and four timestamps the daemon keeps for itself — with `verbose: true` to opt back into the whole record. Absent fields are omitted rather than sent as `null`. The CLI keeps its tables, which are for humans. Where we run somebody else's command (`validate`, worktree diffs) and rtk is installed, we can offer a compressed *view* of a retained log — never a compressed log, because a validation log is evidence and evidence is kept whole.
+
+#### Derived activity
+
+Herdr marks every pane working, blocked, or idle. That is the right question and we can answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; an agent whose last ledger row is old is idle; an agent changing files is working. Row 24 derives that from the working set instead of guessing at terminal output, and it is what the desktop app should show beside each agent.
+
 ### Phase 6 — Windows and federation
 
 Windows needs named pipes in place of the Unix socket, a Windows service in place of launchd/systemd, and process inspection without `ps`; the watcher (`notify`) already works there. It is scheduled after the desktop app so the app ships on macOS and Linux first.
@@ -534,8 +566,12 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
+| 23 | PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, bounded scrollback, `attach` and detach, re-adoption of survivors after a daemon restart | 5 | — |
+| 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
+| 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
+| 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: a first tagged release so a second machine installs with the curl installer, then 14 (the human as an agent, which is where the desktop app's notifications come from), 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
+Order from here: 23 (sessions, the one thing herdr has that we do not), 14 (the human as an agent, where the desktop app's notifications come from), 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 

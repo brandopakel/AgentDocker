@@ -276,6 +276,12 @@ impl<B: Backend> McpServer<B> {
 
     async fn tool(&self, name: &str, arguments: Value) -> Result<Value, (i64, String)> {
         let me = self.identity.id.clone();
+        // Listings answer with what an agent reads unless it asks for the
+        // whole record.
+        let verbose = arguments
+            .get("verbose")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         match name {
             "observe_paths" | "check_stale" | "read_set" => {
                 let paths: Vec<String> = arguments
@@ -321,11 +327,14 @@ impl<B: Backend> McpServer<B> {
                 .await
             }
             "list_channels" => {
-                self.forward(Request::Channels {
-                    project: String::new(),
-                    all: false,
-                    agent: Some(me),
-                })
+                self.forward_as(
+                    Request::Channels {
+                        project: String::new(),
+                        all: false,
+                        agent: Some(me),
+                    },
+                    verbose,
+                )
                 .await
             }
             "open_channel" | "close_channel" | "request_review" | "review" => {
@@ -345,19 +354,26 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
-            "whoami" => self.forward(Request::Inspect { agent: me }).await,
+            "whoami" => {
+                self.forward_as(Request::Inspect { agent: me }, verbose)
+                    .await
+            }
             "list_agents" => {
                 let args: ListAgentsArgs = parse(arguments)?;
-                self.forward(Request::List {
-                    all: args.all,
-                    project: None,
-                    labels: Default::default(),
-                })
+                self.forward_as(
+                    Request::List {
+                        all: args.all,
+                        project: None,
+                        labels: Default::default(),
+                    },
+                    verbose,
+                )
                 .await
             }
             "inspect_agent" => {
                 let args: InspectAgentArgs = parse(arguments)?;
-                self.forward(Request::Inspect { agent: args.agent }).await
+                self.forward_as(Request::Inspect { agent: args.agent }, verbose)
+                    .await
             }
             "send_message" => {
                 let args: SendMessageArgs = parse(arguments)?;
@@ -424,7 +440,7 @@ impl<B: Backend> McpServer<B> {
                     Response::Lease { lease } => {
                         text_result(&json!({ "claimed": true, "lease": lease }), false)
                     }
-                    other => render(other),
+                    other => render(other, false),
                 })
             }
             "renew" => {
@@ -479,10 +495,13 @@ impl<B: Backend> McpServer<B> {
             }
             "list_leases" => {
                 let args: ListLeasesArgs = parse(arguments)?;
-                self.forward(Request::Leases {
-                    agent: args.agent,
-                    resource: args.resource.as_deref().map(crate::resource_key),
-                })
+                self.forward_as(
+                    Request::Leases {
+                        agent: args.agent,
+                        resource: args.resource.as_deref().map(crate::resource_key),
+                    },
+                    verbose,
+                )
                 .await
             }
             other => Err((INVALID_PARAMS, format!("unknown tool: {other}"))),
@@ -490,8 +509,14 @@ impl<B: Backend> McpServer<B> {
     }
 
     async fn forward(&self, request: Request) -> Result<Value, (i64, String)> {
+        self.forward_as(request, false).await
+    }
+
+    /// `verbose` returns whole records; the default is a projection of
+    /// what an agent actually reads.
+    async fn forward_as(&self, request: Request, verbose: bool) -> Result<Value, (i64, String)> {
         let response = self.backend.call(request).await.map_err(transport)?;
-        Ok(render(response))
+        Ok(render(response, verbose))
     }
 
     /// Poll the inbox until something arrives or the timeout passes. Polling
@@ -510,7 +535,7 @@ impl<B: Backend> McpServer<B> {
                 .map_err(transport)?;
             match response {
                 Response::Messages { messages } if messages.is_empty() => {}
-                other => return Ok(render(other)),
+                other => return Ok(render(other, false)),
             }
             if started.elapsed() >= timeout {
                 return Ok(text_result(
@@ -650,18 +675,101 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
-/// Wrap a value as the text content of a tool result.
+/// Wrap a value as the text content of a tool result. Compact, not
+/// pretty: every byte here is an input token the model pays for, and
+/// indentation carries nothing a model needs.
 fn text_result(value: &Value, is_error: bool) -> Value {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    let text = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
     json!({
         "content": [{ "type": "text", "text": text }],
         "isError": is_error,
     })
 }
 
+/// Drop null fields: an absent branch or note costs tokens to say.
+fn tight(value: Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, tight(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(tight).collect()),
+        other => other,
+    }
+}
+
+/// What one agent needs to know about another. The whole record is most
+/// of a kilobyte of daemon bookkeeping — pids, timestamps, process
+/// groups — that no model reads.
+fn brief_agent(agent: &agentdocker_core::AgentRecord) -> Value {
+    tight(json!({
+        "id": agent.id,
+        "name": agent.spec.name,
+        "runtime": agent.spec.runtime,
+        "status": agent.status.to_string(),
+        "project": agent.project.as_ref().map(|p| p.name()),
+        "branch": agent.vcs.as_ref().and_then(|v| v.branch.clone()),
+    }))
+}
+
+/// A lease as a claimant reads it: who holds what, in which mode, until
+/// when, and why.
+fn brief_lease(lease: &agentdocker_core::Lease) -> Value {
+    tight(json!({
+        "id": lease.id,
+        "resource": lease.resource,
+        "holder": lease.holder,
+        "mode": lease.mode,
+        "expires_at": lease.expires_at,
+        "note": lease.note,
+    }))
+}
+
+/// A channel in a listing: what it is about and who is in it. The reviews
+/// themselves come back whole from `review`, where they are the point.
+fn brief_channel(channel: &agentdocker_core::Channel) -> Value {
+    tight(json!({
+        "id": channel.id,
+        "about": channel.title(),
+        "open": channel.is_open(),
+        "members": channel.members,
+        "reviews": channel.reviews.len(),
+        "resolution": channel.resolution,
+    }))
+}
+
 /// Turn a daemon response into a tool result, unwrapping the payload so the
-/// model sees the data rather than the protocol envelope.
-fn render(response: Response) -> Value {
+/// model sees the data rather than the protocol envelope. Records come back
+/// as a projection unless `verbose`, because everything here is an input
+/// token the agent pays for.
+fn render(response: Response, verbose: bool) -> Value {
+    if verbose {
+        return render_whole(response);
+    }
+    match response {
+        Response::Agent { agent } => text_result(&brief_agent(&agent), false),
+        Response::Agents { agents } => text_result(
+            &json!({ "agents": agents.iter().map(brief_agent).collect::<Vec<_>>() }),
+            false,
+        ),
+        Response::Lease { lease } => text_result(&brief_lease(&lease), false),
+        Response::Leases { leases } => text_result(
+            &json!({ "leases": leases.iter().map(brief_lease).collect::<Vec<_>>() }),
+            false,
+        ),
+        Response::Channels { channels } => text_result(
+            &json!({ "channels": channels.iter().map(brief_channel).collect::<Vec<_>>() }),
+            false,
+        ),
+        other => render_whole(other),
+    }
+}
+
+/// Every field, for a caller that asked for it.
+fn render_whole(response: Response) -> Value {
     match response {
         Response::Error {
             code,
@@ -695,6 +803,13 @@ fn render(response: Response) -> Value {
 }
 
 fn tool_definitions() -> Vec<Value> {
+    // Listings answer with the fields an agent reads; this opts into
+    // the whole record when one is genuinely needed.
+    let verbose = json!({
+        "type": "boolean",
+        "default": false,
+        "description": "Return whole records instead of the fields an agent reads. Several times the tokens; ask only for a field the summary omits."
+    });
     let resource_doc = "Resource key `kind:value`, e.g. `path:/abs/file`, `path:/abs/dir` \
                         (covers everything beneath), `branch:name`, `task:ID`.";
     vec![
@@ -723,7 +838,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "list_channels",
             "description": "The channels this agent is in: the rooms opened when two checkouts change the same path, or opened deliberately for a task. Talk in one with send_message to `channel:<id>`.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            "inputSchema": { "type": "object", "properties": { "verbose": verbose.clone() }, "additionalProperties": false }
         }),
         json!({
             "name": "open_channel",
@@ -801,7 +916,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "whoami",
             "description": "This agent's own record in AgentDocker: id, name, runtime, status.",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            "inputSchema": { "type": "object", "properties": { "verbose": verbose.clone() }, "additionalProperties": false }
         }),
         json!({
             "name": "list_agents",
@@ -809,6 +924,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "verbose": verbose.clone(),
                     "all": { "type": "boolean", "description": "Include agents that have exited.", "default": false }
                 },
                 "additionalProperties": false
@@ -932,6 +1048,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "verbose": verbose.clone(),
                     "agent": { "type": "string", "description": "Only leases held by this agent." },
                     "resource": { "type": "string", "description": format!("Only leases overlapping this resource. {resource_doc}") }
                 },
@@ -1021,6 +1138,99 @@ mod tests {
         let reply = s.handle(rpc(3, "resources/list", json!({}))).await.unwrap();
         assert_eq!(reply["error"]["code"], METHOD_NOT_FOUND);
         assert_eq!(reply["id"], 3);
+    }
+
+    /// The text a tool result actually carries.
+    fn body(reply: &Value) -> String {
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn results_are_compact_and_carry_what_an_agent_reads() {
+        use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus, ProjectRef, VcsState};
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "writer".into(),
+                runtime: "claude-code".into(),
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Running;
+        record.pid = Some(4321);
+        record.project = Some(ProjectRef::directory("/work/alpha"));
+        record.vcs = Some(VcsState {
+            branch: Some("feat/x".into()),
+            head: Some("abc1234".into()),
+            dirty: Some(false),
+            updated_at: Utc::now(),
+        });
+
+        let s = server(vec![Response::Agents {
+            agents: vec![record.clone()],
+        }]);
+        let brief = body(
+            &s.handle(rpc(1, "tools/call", json!({ "name": "list_agents" })))
+                .await
+                .unwrap(),
+        );
+        // No indentation, and none of the daemon's bookkeeping.
+        assert!(!brief.contains('\n'), "compact: {brief}");
+        assert!(brief.contains("\"name\":\"writer\""), "{brief}");
+        assert!(brief.contains("\"branch\":\"feat/x\""), "{brief}");
+        assert!(brief.contains("\"project\":\"alpha\""), "{brief}");
+        assert!(
+            !brief.contains("last_seen"),
+            "bookkeeping is dropped: {brief}"
+        );
+        assert!(!brief.contains("created_at"), "{brief}");
+        assert!(
+            !brief.contains("4321"),
+            "a pid is not for the model: {brief}"
+        );
+
+        // Asking for everything gets everything, and costs more.
+        let s = server(vec![Response::Agents {
+            agents: vec![record],
+        }]);
+        let whole = body(
+            &s.handle(rpc(
+                2,
+                "tools/call",
+                json!({ "name": "list_agents", "arguments": { "verbose": true } }),
+            ))
+            .await
+            .unwrap(),
+        );
+        assert!(whole.contains("last_seen"), "{whole}");
+        assert!(
+            whole.len() > brief.len(),
+            "the projection is smaller: {} vs {}",
+            brief.len(),
+            whole.len()
+        );
+
+        // Absent fields are omitted rather than sent as null.
+        let bare = AgentRecord::new(
+            AgentSpec {
+                name: "bare".into(),
+                ..AgentSpec::default()
+            },
+            false,
+            Utc::now(),
+        );
+        let s = server(vec![Response::Agents { agents: vec![bare] }]);
+        let text = body(
+            &s.handle(rpc(3, "tools/call", json!({ "name": "list_agents" })))
+                .await
+                .unwrap(),
+        );
+        assert!(!text.contains("null"), "no null fields: {text}");
+        assert!(!text.contains("branch"), "{text}");
     }
 
     #[tokio::test]
