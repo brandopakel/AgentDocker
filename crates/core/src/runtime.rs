@@ -47,7 +47,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         vendor: "Anthropic",
         label: "Claude Code",
         clis: &["claude"],
-        apps: &[("Claude.app", "Claude Desktop")],
+        apps: &[],
         config_dir: Some(".claude"),
         mcp: McpWiring::JsonServers {
             file: ".claude.json",
@@ -55,11 +55,27 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         hooks: true,
     },
     RuntimeSpec {
+        name: "claude-desktop",
+        vendor: "Anthropic",
+        label: "Claude Desktop",
+        clis: &[],
+        apps: &[("Claude.app", "Claude Desktop")],
+        config_dir: Some("Library/Application Support/Claude"),
+        mcp: if cfg!(target_os = "macos") {
+            McpWiring::JsonServers {
+                file: "Library/Application Support/Claude/claude_desktop_config.json",
+            }
+        } else {
+            McpWiring::None
+        },
+        hooks: false,
+    },
+    RuntimeSpec {
         name: "codex",
         vendor: "OpenAI",
         label: "Codex",
         clis: &["codex"],
-        apps: &[],
+        apps: &[("Codex.app", "Codex"), ("ChatGPT.app", "ChatGPT")],
         config_dir: Some(".codex"),
         mcp: McpWiring::TomlServers {
             file: ".codex/config.toml",
@@ -107,8 +123,19 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         vendor: "GitHub",
         label: "Copilot CLI",
         clis: &["copilot"],
-        apps: &[("Visual Studio Code.app", "VS Code")],
+        apps: &[],
         config_dir: Some(".copilot"),
+        mcp: McpWiring::None,
+        hooks: false,
+    },
+    RuntimeSpec {
+        name: "vscode",
+        vendor: "Microsoft",
+        label: "VS Code (editor)",
+        clis: &[],
+        apps: &[("Visual Studio Code.app", "VS Code")],
+        config_dir: Some(".vscode"),
+        // An editor bundle does not prove an agent extension is installed.
         mcp: McpWiring::None,
         hooks: false,
     },

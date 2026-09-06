@@ -3,6 +3,8 @@
 //! one, hooks installed for Claude Code — idempotently, with a backup of
 //! every file it changes.
 
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use agentdocker_core::runtime::{McpWiring, RuntimeInfo, Wiring, spec};
@@ -43,12 +45,16 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         return Ok(());
     }
     let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
-    let home = std::env::home_dir().context("cannot find home directory")?;
+    let roots = agentdocker_host::runtimes::Roots::from_env();
+    let home = &roots.home;
     for runtime in targets {
         let Some(spec) = spec(&runtime.name) else {
             continue;
         };
-        match (spec.mcp, runtime.mcp) {
+        match (
+            spec.mcp,
+            agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
+        ) {
             (_, Wiring::Wired) => println!("{}: MCP server already registered", runtime.name),
             (McpWiring::None, _) => println!(
                 "{}: no MCP registration known for it; point it at `{} mcp --runtime {}` by hand",
@@ -56,8 +62,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 exe.display(),
                 runtime.name
             ),
-            (McpWiring::JsonServers { file }, _) => {
-                let path = home.join(file);
+            (McpWiring::JsonServers { .. }, _) => {
+                let path =
+                    agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("JSON path");
                 let outcome = if runtime.name == "claude-code" && runtime.cli.is_some() {
                     // Claude Code keeps its own state in that file; let it
                     // write the entry itself rather than rewrite the file.
@@ -67,8 +74,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 };
                 report(&runtime.name, "MCP server", &path, outcome);
             }
-            (McpWiring::TomlServers { file }, _) => {
-                let path = home.join(file);
+            (McpWiring::TomlServers { .. }, _) => {
+                let path =
+                    agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("TOML path");
                 let outcome = register_toml(&path, &exe, &runtime.name, dry_run)?;
                 report(&runtime.name, "MCP server", &path, outcome);
             }
@@ -113,46 +121,106 @@ fn entry(exe: &Path, runtime: &str) -> Value {
 /// Whether a JSON MCP server entry runs this binary: by the command it
 /// runs or an argument it passes, never by text that merely names us.
 fn runs_agentdocker(server: &Value) -> bool {
-    let command = server
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|c| c.contains("agentdocker"));
-    let args = server
+    let command = server.get("command").and_then(Value::as_str);
+    let args: Vec<_> = server
         .get("args")
         .and_then(Value::as_array)
-        .is_some_and(|args| {
-            args.iter()
-                .filter_map(Value::as_str)
-                .any(|a| a.contains("agentdocker"))
-        });
-    command || args
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
+        && server.get("disabled").and_then(Value::as_bool) != Some(true)
+        && server.get("enabled").and_then(Value::as_bool) != Some(false)
 }
 
 /// Keep the previous version of a file we are about to rewrite.
 fn back_up(path: &Path) -> Result<()> {
-    if path.exists() {
-        let backup = path.with_extension("agentdocker-backup");
-        std::fs::copy(path, &backup).with_context(|| {
-            format!("cannot back up {} to {}", path.display(), backup.display())
-        })?;
+    let contents = match std::fs::read(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot read {} for backup", path.display()));
+        }
+    };
+    for index in 0..1000 {
+        let extension = if index == 0 {
+            "agentdocker-backup".into()
+        } else {
+            format!("agentdocker-backup.{index}")
+        };
+        let backup = path.with_extension(extension);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+        {
+            Ok(mut file) => {
+                file.write_all(&contents)?;
+                file.sync_all()?;
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("cannot create backup {}", backup.display()));
+            }
+        }
     }
+    bail!("too many setup backups for {}", path.display())
+}
+
+/// Replace a complete configuration atomically, retaining symlink targets and
+/// refusing a file changed since it was read for this setup operation.
+fn write_config(path: &Path, expected: Option<&str>, contents: &str) -> Result<()> {
+    let unchanged = || -> Result<()> {
+        let current = match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        if current.as_deref() != expected {
+            bail!(
+                "{} changed during setup; retry after reviewing it",
+                path.display()
+            );
+        }
+        Ok(())
+    };
+    unchanged()?;
+    let target = agentdocker_host::project::try_canonical(path)?;
+    let parent = target.parent().context("configuration has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = std::fs::metadata(&target) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
+    }
+    temporary.write_all(contents.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    back_up(path)?;
+    unchanged()?;
+    if agentdocker_host::project::try_canonical(path)? != target {
+        bail!("configuration symlink changed during setup");
+    }
+    temporary.persist(&target).map_err(|e| e.error)?;
     Ok(())
 }
 
 /// `mcpServers.agentdocker` in a JSON configuration file, created when
 /// missing, left alone when present.
 pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> Result<Outcome> {
-    let mut document: Value = if path.exists() {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        if raw.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&raw)
-                .with_context(|| format!("{} is not valid JSON", path.display()))?
-        }
-    } else {
-        json!({})
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let mut document: Value = match existing.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => serde_json::from_str(raw)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?,
+        None => json!({}),
     };
     let Some(root) = document.as_object_mut() else {
         bail!("{} is not a JSON object", path.display());
@@ -163,20 +231,25 @@ pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
     };
     // Ours by key, or by what it runs: either way there is nothing to add,
     // and a second entry must never clobber a key that exists.
-    if servers.contains_key("agentdocker") || servers.values().any(runs_agentdocker) {
+    if let Some(existing) = servers.get("agentdocker") {
+        if !runs_agentdocker(existing) {
+            bail!(
+                "{}: reserved agentdocker entry is disabled or unverified; left unchanged",
+                path.display()
+            );
+        }
+    }
+    if servers.values().any(runs_agentdocker) {
         return Ok(Outcome::Present);
     }
     if dry_run {
         return Ok(Outcome::Planned);
     }
     servers.insert("agentdocker".to_owned(), entry(exe, runtime));
-    back_up(path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(
+    write_config(
         path,
-        format!("{}\n", serde_json::to_string_pretty(&document)?),
+        existing.as_deref(),
+        &format!("{}\n", serde_json::to_string_pretty(&document)?),
     )
     .with_context(|| format!("cannot write {}", path.display()))?;
     Ok(Outcome::Added)
@@ -185,36 +258,43 @@ pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
 /// `[mcp_servers.agentdocker]` appended to a TOML configuration file, so
 /// the rest of the file stays byte for byte as it was.
 pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> Result<Outcome> {
-    let existing = if path.exists() {
-        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?
-    } else {
-        String::new()
+    let original = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
+    let existing = original.as_deref().unwrap_or("");
     let table: toml::Table = existing
         .parse()
         .with_context(|| format!("{} is not valid TOML", path.display()))?;
-    // A table under our key must never be appended twice — that is not
-    // valid TOML — whatever it runs; and an entry under another key that
-    // runs us is enough too.
-    let present = table
-        .get("mcp_servers")
-        .and_then(|s| s.as_table())
-        .is_some_and(|servers| {
-            servers.contains_key("agentdocker")
-                || servers.values().any(|s| {
-                    s.as_table().is_some_and(|server| {
-                        server
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains("agentdocker"))
-                    })
-                })
-        });
-    if present {
-        return Ok(Outcome::Present);
+    if table.get("mcp_servers").is_some_and(|v| !v.is_table()) {
+        bail!("{}: mcp_servers is not a table", path.display());
     }
-    if dry_run {
-        return Ok(Outcome::Planned);
+    if let Some(servers) = table.get("mcp_servers").and_then(|v| v.as_table()) {
+        let runs = |server: &toml::Value| {
+            let command = server.get("command").and_then(|v| v.as_str());
+            let args: Vec<_> = server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .collect();
+            server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+                && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
+        };
+        if servers
+            .get("agentdocker")
+            .is_some_and(|server| !runs(server))
+        {
+            bail!(
+                "{}: reserved agentdocker entry is disabled or unverified; left unchanged",
+                path.display()
+            );
+        }
+        if servers.values().any(runs) {
+            return Ok(Outcome::Present);
+        }
     }
     let mut block = toml::Table::new();
     block.insert(
@@ -230,7 +310,7 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
                 .collect(),
         ),
     );
-    let mut appended = existing.clone();
+    let mut appended = existing.to_owned();
     if !appended.is_empty() && !appended.ends_with('\n') {
         appended.push('\n');
     }
@@ -239,11 +319,14 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
     }
     appended.push_str("[mcp_servers.agentdocker]\n");
     appended.push_str(&toml::to_string(&block)?);
-    back_up(path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    appended
+        .parse::<toml::Table>()
+        .context("MCP registration would produce invalid TOML; configuration unchanged")?;
+    if dry_run {
+        return Ok(Outcome::Planned);
     }
-    std::fs::write(path, appended).with_context(|| format!("cannot write {}", path.display()))?;
+    write_config(path, original.as_deref(), &appended)
+        .with_context(|| format!("cannot write {}", path.display()))?;
     Ok(Outcome::Added)
 }
 
@@ -271,6 +354,55 @@ fn register_with_claude_cli(cli: &Path, exe: &Path, dry_run: bool) -> Result<Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuration_edits_detect_changes_preserve_links_and_keep_private_backups() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.json");
+        let real = tmp.path().join("real.json");
+        std::fs::write(&real, "original").unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        write_config(&path, Some("original"), "updated").unwrap();
+        assert!(path.is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "updated");
+        let backup = path.with_extension("agentdocker-backup");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+        assert_eq!(
+            std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(write_config(&path, Some("original"), "stale update").is_err());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "updated");
+        write_config(&path, Some("updated"), "second").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "original",
+            "first backup is never overwritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("agentdocker-backup.1")).unwrap(),
+            "updated"
+        );
+    }
+
+    #[test]
+    fn disabled_or_malformed_mcp_entries_are_preserved_with_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        for original in [
+            "mcp_servers = 7\n",
+            "[mcp_servers.agentdocker]\ncommand = \"agentdocker\"\nargs = [\"mcp\"]\nenabled = false\n",
+        ] {
+            std::fs::write(&path, original).unwrap();
+            for dry_run in [true, false] {
+                assert!(
+                    register_toml(&path, Path::new("/opt/agentdocker"), "codex", dry_run).is_err()
+                );
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+            }
+        }
+    }
 
     #[test]
     fn json_registration_is_idempotent_backed_up_and_dry_runnable() {
@@ -319,9 +451,10 @@ mod tests {
             r#"{"mcpServers":{"agentdocker":{"command":"/my/wrapper"}}}"#,
         )
         .unwrap();
+        assert!(register_json(&keyed, exe, "cursor", false).is_err());
         assert_eq!(
-            register_json(&keyed, exe, "cursor", false).unwrap(),
-            Outcome::Present
+            std::fs::read_to_string(&keyed).unwrap(),
+            r#"{"mcpServers":{"agentdocker":{"command":"/my/wrapper"}}}"#
         );
         // A name in some other field is a mention, not a registration.
         let mention = tmp.path().join("mention.json");
@@ -382,9 +515,10 @@ mod tests {
             "[mcp_servers.agentdocker]\ncommand = \"/my/wrapper\"\n",
         )
         .unwrap();
+        assert!(register_toml(&keyed, exe, "codex", false).is_err());
         assert_eq!(
-            register_toml(&keyed, exe, "codex", false).unwrap(),
-            Outcome::Present
+            std::fs::read_to_string(&keyed).unwrap(),
+            "[mcp_servers.agentdocker]\ncommand = \"/my/wrapper\"\n"
         );
         let mention = tmp.path().join("mention.toml");
         std::fs::write(

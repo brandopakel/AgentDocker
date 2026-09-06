@@ -91,6 +91,12 @@ impl Daemon {
         record: &mut AgentRecord,
     ) -> Result<(), agentdocker_host::containers::ContainerError> {
         use agentdocker_host::containers::ContainerError;
+        if !matches!(self.restricted(), RestrictedEndpoint::On(_)) {
+            return Err(ContainerError::with_code(
+                ErrorCode::Unavailable,
+                "authenticated workspace endpoint stopped before grant creation".into(),
+            ));
+        }
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let w = record
@@ -117,13 +123,13 @@ impl Daemon {
             .create_new(true)
             .mode(0o600)
             .open(access.directory.join("token"))
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         file.write_all(token.as_bytes())
             .and_then(|()| file.sync_all())
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         std::fs::File::open(&access.directory)
             .and_then(|f| f.sync_all())
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::with_code(ErrorCode::StorageUnavailable, e.to_string()))?;
         let mut state = lock(&self.state);
         let mut event = Event::new(
             EventKind::AccessGranted {
@@ -137,7 +143,10 @@ impl Daemon {
             store.put_document_with_event("access", &id, &grant, &event)
         });
         if let Some(error) = &state.storage_error {
-            return Err(ContainerError(error.clone()));
+            return Err(ContainerError::with_code(
+                ErrorCode::StorageUnavailable,
+                error.clone(),
+            ));
         }
         state.next_seq += 1;
         let _ = state.events.send(event);

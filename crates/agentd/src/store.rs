@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -411,7 +411,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=4)) => {
+            Some(Ok(1..=6)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -1274,7 +1274,7 @@ mod tests {
 
     #[test]
     fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=4 {
+        for version in 1..=6 {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1291,7 +1291,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "5");
+            assert_eq!(version, "7");
         }
     }
 
@@ -1714,53 +1714,6 @@ mod tests {
         assert_eq!(summary, "recovered");
         assert_eq!(store.max_journal_seq(&ProjectId::from("p")).unwrap(), 7);
     }
-
-    #[test]
-    fn changes_page_downward_with_before_seq() {
-        use agentdocker_core::{Attribution, Change, ChangeKind, ProjectId};
-        let store = Store::in_memory().unwrap();
-        let project = ProjectId::from("p1");
-        for i in 0..5 {
-            store
-                .append_change(&Change {
-                    seq: 0,
-                    project: project.clone(),
-                    checkout: None,
-                    worktree: None,
-                    path: format!("f{i}").into(),
-                    kind: ChangeKind::Modified,
-                    at: Utc::now(),
-                    by: Attribution::External,
-                    head: None,
-                })
-                .unwrap();
-        }
-        let page = |before: Option<u64>, limit: usize| {
-            store
-                .changes(&ChangesQuery {
-                    project: project.clone(),
-                    since_seq: None,
-                    path: None,
-                    agent: None,
-                    limit,
-                    after: None,
-                    before_seq: before,
-                })
-                .unwrap()
-                .into_iter()
-                .map(|c| c.seq)
-                .collect::<Vec<_>>()
-        };
-        let newest = page(None, 2);
-        assert_eq!(newest.len(), 2);
-        let older = page(Some(newest[0]), 2);
-        assert_eq!(older.len(), 2);
-        assert!(older.iter().all(|s| *s < newest[0]));
-        let oldest = page(Some(older[0]), 2);
-        assert_eq!(oldest.len(), 1);
-        assert!(page(Some(oldest[0]), 2).is_empty());
-    }
-
     fn search_entry(seq: u64, summary: &str) -> JournalEntry {
         serde_json::from_value(serde_json::json!({
             "project":"search", "seq":seq, "at":Utc::now(), "agent_name":"writer",
@@ -1831,5 +1784,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             [2]
         );
+    }
+
+    #[test]
+    fn changes_page_downward_with_before_seq() {
+        use agentdocker_core::{Attribution, Change, ChangeKind, ProjectId};
+        let store = Store::in_memory().unwrap();
+        let project = ProjectId::from("p1");
+        for i in 0..5 {
+            store
+                .append_change(&Change {
+                    seq: 0,
+                    project: project.clone(),
+                    checkout: None,
+                    worktree: None,
+                    path: format!("f{i}").into(),
+                    kind: ChangeKind::Modified,
+                    at: Utc::now(),
+                    by: Attribution::External,
+                    head: None,
+                })
+                .unwrap();
+        }
+        let page = |before: Option<u64>, limit: usize| {
+            store
+                .changes(&ChangesQuery {
+                    project: project.clone(),
+                    since_seq: None,
+                    path: None,
+                    agent: None,
+                    limit,
+                    after: None,
+                    before_seq: before,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|c| c.seq)
+                .collect::<Vec<_>>()
+        };
+        let newest = page(None, 2);
+        assert_eq!(newest.len(), 2);
+        let older = page(Some(newest[0]), 2);
+        assert_eq!(older.len(), 2);
+        assert!(older.iter().all(|s| *s < newest[0]));
+        let oldest = page(Some(older[0]), 2);
+        assert_eq!(oldest.len(), 1);
+        assert!(page(Some(oldest[0]), 2).is_empty());
     }
 }

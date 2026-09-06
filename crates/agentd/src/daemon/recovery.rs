@@ -197,6 +197,12 @@ impl Daemon {
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint disappeared"),
             Err(e) => return internal(e),
         };
+        let environment = state
+            .registry
+            .get(&agent)
+            .and_then(ContainerEnvironment::of);
+        let environment_matches =
+            ContainerEnvironment::matches(&checkpoint.environment, &environment);
         // A checkpoint made by a handoff carries a bundle: it may name its
         // recipient, ask for its leases to move, and say where the sender
         // had read the journal to.
@@ -218,11 +224,6 @@ impl Daemon {
                 "handoff is addressed to another agent",
             );
         }
-        let environment = state
-            .registry
-            .get(&agent)
-            .and_then(ContainerEnvironment::of);
-        let environment_matches = checkpoint.environment == environment;
         if acknowledge {
             if !stale.is_empty() || !checkout_matches || !environment_matches {
                 return Response::error(
@@ -265,7 +266,12 @@ impl Daemon {
                 // Ownership moves with acceptance, in the same transaction:
                 // a bundle that asked for it hands its leases over here.
                 let transferred = match &bundle {
-                    Some(b) if b.transfer_leases => state.leases.transfer(&b.from, &agent, now),
+                    Some(b) if b.transfer_leases => state.leases.transfer_selected(
+                        &b.from,
+                        &agent,
+                        &b.leases.iter().map(|lease| lease.id.clone()).collect(),
+                        now,
+                    ),
                     _ => Vec::new(),
                 };
                 let mut events = vec![Event::new(
@@ -352,7 +358,11 @@ impl Daemon {
         {
             Ok(v) => v
                 .into_iter()
-                .filter(|v| checkout_matches && environment_matches && v.environment == environment)
+                .filter(|v| {
+                    checkout_matches
+                        && environment_matches
+                        && ContainerEnvironment::matches(&v.environment, &environment)
+                })
                 .collect(),
             Err(e) => return internal(e),
         };

@@ -92,6 +92,18 @@ fn service_socket(home: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
         .or_else(|| (paths::socket_dir(home) != home).then(|| paths::socket_path(home)))
 }
 
+fn validate_service_socket(socket: &Path) -> Result<()> {
+    if !paths::fits_socket(socket) {
+        bail!(
+            "socket path {} is {} bytes; this OS allows {}",
+            socket.display(),
+            socket.as_os_str().len(),
+            paths::SOCKET_PATH_MAX
+        );
+    }
+    Ok(())
+}
+
 /// Everything the service definition needs to know.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -104,7 +116,18 @@ pub struct Layout {
 }
 
 impl Layout {
+    fn client(&self) -> Client {
+        Client::new(Some(
+            self.socket
+                .clone()
+                .unwrap_or_else(|| paths::socket_path(&self.home)),
+        ))
+    }
+
     fn discover(socket: Option<&Path>) -> Result<Self> {
+        if let Some(socket) = socket {
+            validate_service_socket(socket)?;
+        }
         let agentd = std::env::current_exe()
             .ok()
             .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
@@ -117,6 +140,9 @@ impl Layout {
         let user_home = std::env::home_dir().context("no home directory")?;
         let home = home.canonicalize().unwrap_or(home);
         let socket = service_socket(&home, socket);
+        if let Some(socket) = &socket {
+            validate_service_socket(socket)?;
+        }
         Ok(Self {
             agentd: agentd.canonicalize().unwrap_or(agentd),
             home,
@@ -442,20 +468,14 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
     }
 }
 
-pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
+pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
         bail!("service management is supported on macOS (launchd) and Linux (systemd) only");
     }
-    // Nothing here may start a daemon by accident, and every command here
-    // talks to the socket the service definition names: the one resolved
-    // for the layout, unless one was given explicitly.
+    // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
-    let client = match (&socket, &layout.socket) {
-        (None, Some(resolved)) => Client::new(Some(resolved.clone())),
-        _ => client,
-    }
-    .with_start_timeout(None);
+    let client = layout.client().with_start_timeout(None);
     match args.command {
         DaemonCommand::Install { dry_run } => {
             if !dry_run {
@@ -474,7 +494,8 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
                 execute(&start_plan(&layout, macos), false)?;
             } else {
                 // No service: a client with autostart starts one on demand.
-                Client::new(socket.clone())
+                layout
+                    .client()
                     .with_start_timeout(Some(Duration::from_secs(5)))
                     .call(&Request::Ping)
                     .await?;
@@ -495,7 +516,8 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
             if installed(&layout, macos) {
                 execute(&start_plan(&layout, macos), false)?;
             } else {
-                Client::new(socket.clone())
+                layout
+                    .client()
                     .with_start_timeout(Some(Duration::from_secs(5)))
                     .call(&Request::Ping)
                     .await?;
@@ -560,6 +582,60 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlong_service_socket_is_rejected_before_layout_side_effects() {
+        let long = PathBuf::from(format!("/tmp/{}", "x".repeat(paths::SOCKET_PATH_MAX)));
+        let error = Layout::discover(Some(&long)).unwrap_err().to_string();
+        assert!(
+            error.contains("bytes") && error.contains("allows"),
+            "{error}"
+        );
+        validate_service_socket(Path::new("/tmp/agentd.sock")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn symlinked_long_home_clients_use_the_service_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let actual = tmp.path().join("a".repeat(100));
+        std::fs::create_dir(&actual).unwrap();
+        let alias = tmp.path().join("b".repeat(100));
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        let home = alias.canonicalize().unwrap();
+        let mut layout = layout();
+        layout.home = home.clone();
+        layout.socket = service_socket(&home, None);
+        let socket = layout.socket.clone().unwrap();
+        assert_ne!(socket, paths::socket_path(&alias));
+        let parent = socket.parent().unwrap();
+        agentdocker_host::dirs::ensure_private_dir(parent).unwrap();
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let (peer, _) = listener.accept().await.unwrap();
+            let mut peer = BufReader::new(peer);
+            let mut request = String::new();
+            peer.read_line(&mut request).await.unwrap();
+            peer.get_mut()
+                .write_all(b"{\"type\":\"ok\"}\n")
+                .await
+                .unwrap();
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            layout
+                .client()
+                .with_start_timeout(None)
+                .call(&Request::Ping),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(result, Response::Ok));
+        server.await.unwrap();
+        std::fs::remove_file(&socket).unwrap();
+        std::fs::remove_dir(parent).unwrap();
+    }
 
     fn layout() -> Layout {
         Layout {

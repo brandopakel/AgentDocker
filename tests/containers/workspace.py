@@ -7,6 +7,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import platform
 import socket
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ p = argparse.ArgumentParser()
 for name in ['engine', 'daemon', 'cli', 'context', 'root', 'result']:
     p.add_argument('--' + name, required=True)
 p.add_argument('--machine')
+p.add_argument('--relay',action='store_true')
 a = p.parse_args()
 root = Path(a.root).resolve()
 root.mkdir(parents=True, exist_ok=False)
@@ -27,10 +29,12 @@ subprocess.run(['git','init','-q',str(checkout)],check=True)
 (checkout / '.gitignore').write_text('response.json\nrequest.json\nheartbeat\n')
 subprocess.run(['git','-C',str(checkout),'add','.'],check=True)
 subprocess.run(['git','-C',str(checkout),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture'],check=True)
+home = root/('state-'+80*'x')
 host = root/'host.sock'
 log = (root/'daemon.log').open('ab')
 daemon = None
 owned = {}
+relay_resources = {}
 active_container = None
 
 def rpc(request):
@@ -41,7 +45,7 @@ def rpc(request):
         return json.loads(s.makefile('rb').readline())
 
 def expect(response, kind):
-    assert response.get('type') == kind, response
+    assert response.get('type') == kind, repr(response)[:2000]
     return response
 
 def wait(action, predicate, seconds=40):
@@ -51,26 +55,28 @@ def wait(action, predicate, seconds=40):
         try:
             last=action()
             if predicate(last): return last
-        except (OSError,ValueError): pass
+        except (OSError,ValueError,subprocess.SubprocessError): pass
         time.sleep(.1)
     raise AssertionError(('timed out',last))
 
 def start():
     global daemon
-    daemon=subprocess.Popen([str(Path(a.daemon).resolve()),'--home',str(root/'state'),'--socket',str(host)],stdout=log,stderr=subprocess.STDOUT)
+    daemon=subprocess.Popen([str(Path(a.daemon).resolve()),'--home',str(home),'--socket',str(host)],stdout=log,stderr=subprocess.STDOUT)
     wait(lambda:rpc({'op':'ping'}),lambda r:r['type']=='pong')
 
 def inspect(agent): return expect(rpc({'op':'inspect','agent':agent}),'agent')['agent']
-def engine(*args): return subprocess.check_output([a.engine,*args],timeout=30)
+def engine(*args,quiet=False): return subprocess.check_output([a.engine,*args],timeout=30,stderr=subprocess.DEVNULL if quiet else None)
 def remember(record):
     c=record['container']; owned[c['id'] or c['name']]=c['owner']
+    access=(c.get('workspace') or {}).get('access') or {}
+    if access.get('relay'): relay_resources[access['relay']['name']]=(access['relay']['volume'],c['owner'])
     return record
 
 def launch(name,build,network='none'):
     global active_container
     # Requests go through the mounted endpoint from the actual long-running worker.
     command=['python3','-u','-c',WORKER]
-    response=rpc({'op':'run_container','build':build['id'],'options':{'mount_checkout':True,'podman_machine':a.machine,'network':network},'spec':{'name':name,'workdir':str(checkout),'command':command}})
+    response=rpc({'op':'run_container','build':build['id'],'options':{'mount_checkout':True,'engine_relay':a.relay,'podman_machine':a.machine,'network':network},'spec':{'name':name,'workdir':str(checkout),'command':command}})
     if response['type']=='error':
         remember(inspect(name))
         raise AssertionError(response)
@@ -122,7 +128,7 @@ try:
     worker=launch('workspace-worker',build)
     wid=worker['id']
     wait(lambda:(checkout/'heartbeat').read_text(),bool)
-    token=root/'state'/'mounts'/wid/'token'
+    token=Path(worker['container']['workspace']['access']['directory'])/'token'
     assert token.stat().st_mode & 0o777 == 0o600
     assert token.read_text() not in json.dumps(worker)
     assert expect(scoped({'op':'ping'}),'pong')
@@ -137,6 +143,33 @@ try:
     ]:
         assert expect(scoped(request),'error')['code']=='forbidden'
     results.append('private mounts and authentication/admin/identity/traversal rejection')
+    if worker['container']['options']['engine_relay']:
+        relay=worker['container']['workspace']['access']['relay']
+        info=json.loads(engine('container','inspect',relay['name']))[0]
+        assert info['Config']['Labels']['org.agentdocker.owner']==worker['container']['owner']
+        assert info['HostConfig']['LogConfig']['Type']=='none'
+        assert info['HostConfig']['NetworkMode']=='none'
+        assert len(info['Mounts'])==1 and info['Mounts'][0]['Type']=='volume'
+        assert info['Mounts'][0]['Name']==relay['volume']
+        concurrent_client = r'''
+import concurrent.futures,json,os,socket
+from pathlib import Path
+token=Path(os.environ['AGENTDOCKER_TOKEN_FILE']).read_text()
+def request(i):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(20);s.connect(os.environ['AGENTDOCKER_SOCKET'])
+        f=s.makefile('rb')
+        def call(r):
+            s.sendall(json.dumps(r).encode()+b'\n');return json.loads(f.readline())
+        assert call({'op':'authenticate','token':token})['type']=='ok'
+        result=call({'op':'claim','agent':os.environ['AGENTDOCKER_AGENT_ID'],'resource':'path:/workspace/thread-'+str(i),'note':'x'*12000,'ttl_secs':30})
+        assert result['type']=='lease' and result['lease']['resource'].endswith('/thread-'+str(i))
+with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:list(pool.map(request,range(32)))
+print('concurrent relay passed')
+'''
+        assert engine('container','exec',active_container,'python3','-c',concurrent_client).strip()==b'concurrent relay passed'
+        expect(scoped({'op':'release_all','agent':wid}),'leases')
+
     observe={'op':'observe','agent':wid,'paths':['/workspace/source']}
     expect(scoped(observe),'reads')
     (checkout/'source').write_text('changed by peer')
@@ -147,6 +180,15 @@ try:
     lease=expect(scoped({'op':'claim','agent':wid,'resource':'path:/workspace/alias','ttl_secs':300}),'lease')['lease']
     assert expect(rpc({'op':'claim','agent':peer['id'],'resource':'path:'+str(checkout/'source')}),'error')['code']=='conflict'
     results.append('physical alias conflicts and stale reread')
+    if worker['container']['options']['engine_relay']:
+        helper=json.loads(engine('container','inspect',worker['container']['workspace']['access']['relay']['name']))[0]
+        assert helper['Config']['Labels']['org.agentdocker.owner']==worker['container']['owner']
+        engine('container','kill',helper['Id'])
+        assert expect(rpc({'op':'claim','agent':peer['id'],'resource':'path:'+str(checkout/'source')}),'error')['code']=='conflict'
+        wait(lambda:scoped({'op':'ping'}),lambda r:r.get('type')=='pong')
+        assert inspect(wid)['container']['id']==worker['container']['id']
+        results.append('relay has no host mounts, network or logs; concurrent replies remain scoped and helper-only recovery retains the writer lease')
+
     daemon.kill();daemon.wait(timeout=20);daemon=None
     start()
     wait(lambda:inspect(wid),lambda r:r['status']['state']=='running')
@@ -173,7 +215,7 @@ try:
     runner=remember(runners[0])
     daemon.kill();daemon.wait(timeout=20);daemon=None
     try: pending.result(timeout=10)
-    except (OSError,ValueError): pass
+    except (OSError,ValueError,concurrent.futures.TimeoutError): pass
     pool.shutdown(wait=True)
     start()
     retired=wait(lambda:inspect(runner['id']),lambda r:r['status']['state']=='exited')
@@ -198,6 +240,7 @@ try:
     expect(rpc({'op':'stop','agent':wid,'force':True}),'agent')
     cli=[str(Path(a.cli).resolve()),'--socket',str(host),'run','--image-build',build2['id'],'--mount-checkout','--network','bridge','--name','different-build','-w',str(checkout)]
     if a.machine: cli += ['--podman-machine',a.machine]
+    if a.relay: cli += ['--engine-relay']
     cli += ['--','python3','-u','-c',WORKER]
     other_id=subprocess.check_output(cli,timeout=60,text=True).strip()
     other=remember(inspect(other_id))
@@ -208,7 +251,78 @@ try:
     expect(rpc({'op':'revoke_access','grant':other['container']['workspace']['access']['grant']}),'ok')
     assert expect(scoped({'op':'ping'}),'error')['code']=='forbidden'
     results.append('image/build environment gates recovery and revocation is enforced')
-    payload={'result':'passed','engine':a.engine,'machine':a.machine,'scenarios':results}
+    # Combine the managed engine with linked worktrees, first-write watching and handoff.
+    git_context=root/'git-image'
+    shutil.copytree(Path(a.context).resolve(),git_context)
+    with (git_context/'Containerfile').open('a') as recipe:
+        recipe.write('\nRUN apk add --no-cache git\n')
+    git_spec={'engine':a.engine,'context':str(git_context),'recipe':'Containerfile','timeout_secs':600}
+    git_build=expect(rpc({'op':'build_image','spec':git_spec}),'image_build')['build']
+    options={'mount_checkout':True,'engine_relay':a.relay,'podman_machine':a.machine,'network':'none'}
+    original=(checkout/'source').read_text()
+    isolated=remember(expect(rpc({'op':'run_container','build':git_build['id'],'options':options,'spec':{
+        'name':'isolated-writer','workdir':str(checkout),'isolate':True,
+        'command':['python3','-u','-c',"from pathlib import Path; import time; Path('source').write_text('isolated first write'); time.sleep(600)"]}}),'agent')['agent'])
+    isolated_root=Path(isolated['spec']['workdir'])
+    assert not isolated_root.is_relative_to(home)
+    wait(lambda:(isolated_root/'source').read_text(),lambda text:text=='isolated first write')
+    assert (checkout/'source').read_text()==original
+    active_container=isolated['container']['id']
+    assert expect(scoped({'op':'ping'}),'pong')
+    status=engine('container','exec',active_container,'git','--no-optional-locks','status','--porcelain').decode()
+    assert ' M source' in status,status
+    rows=wait(lambda:rpc({'op':'changes','project':str(isolated_root),'path':'source'}).get('changes',[]),
+        lambda rows:any(r.get('checkout')==str(isolated_root) and r['kind']=='modified' for r in rows))
+    checked=expect(rpc({'op':'validate','agent':isolated['id'],'command':['git','--no-optional-locks','status','--porcelain'],'timeout_secs':20}),'validation')
+    assert checked['passed'],checked
+    assert ' M source' in Path(checked['validation']['log']).read_text()
+    results.append('isolated image checkout records its first write and supports Git plus read-only validation')
+
+    rebuilt=expect(rpc({'op':'build_image','spec':git_spec}),'image_build')['build']
+    assert rebuilt['id']!=git_build['id']
+    assert rebuilt['context_version']==git_build['context_version'] and rebuilt['recipe_version']==git_build['recipe_version']
+    # Desktop's containerd store retains BuildKit attestations in the image
+    # index. A cached rebuild may therefore have a different immutable ID.
+    # Keep the identity requirement: such a rebuild cannot reuse this handoff.
+    same_image=rebuilt['image_id']==git_build['image_id']
+    if not same_image:
+        image_checkpoint=expect(rpc({'op':'checkpoint','agent':isolated['id'],'key':'rebuild-identity',
+            'task':'check rebuilt image','assumptions':[],'next_steps':[],'release_leases':False}),'checkpoint')['checkpoint']
+        changed_image=remember(expect(rpc({'op':'run_container','build':rebuilt['id'],'options':options,'spec':{
+            'name':'changed-index','workdir':str(isolated_root),'command':['python3','-u','-c',WORKER]}}),'agent')['agent'])
+        changed_preview=expect(rpc({'op':'resume','agent':changed_image['id'],'checkpoint':image_checkpoint['id'],
+            'acknowledge':False}),'recovery')['recovery']
+        assert not changed_preview['environment_matches']
+        assert expect(rpc({'op':'resume','agent':changed_image['id'],'checkpoint':image_checkpoint['id'],
+            'acknowledge':True}),'error')['code']=='conflict'
+        expect(rpc({'op':'stop','agent':changed_image['id'],'force':True}),'agent')
+    recipient_build=rebuilt if same_image else git_build
+    recipient=remember(expect(rpc({'op':'run_container','build':recipient_build['id'],'options':options,'spec':{
+        'name':'image-recipient','workdir':str(isolated_root),'command':['python3','-u','-c',WORKER]}}),'agent')['agent'])
+    held=expect(rpc({'op':'claim','agent':isolated['id'],'resource':'task:integrated-handoff','ttl_secs':300}),'lease')['lease']
+    bundle=expect(rpc({'op':'handoff','agent':isolated['id'],'to':recipient['id'],'task':'finish isolated work','transfer_leases':True}),'handoff')['bundle']
+    assert bundle['schema']==2 and bundle['environment']['inputs']['context_version']==git_build['context_version']
+    assert bundle['environment']['image_id']==git_build['image_id']
+    daemon.kill();daemon.wait(timeout=20);daemon=None
+    start()
+    preview=expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':False}),'recovery')['recovery']
+    assert preview['environment_matches'] and preview['checkout_matches'],preview
+    assert preview['checkpoint']['environment']==bundle['environment']
+    (isolated_root/'source').write_text('changed after handoff')
+    assert expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':True}),'error')['code']=='conflict'
+    retained=expect(rpc({'op':'leases','agent':isolated['id']}),'leases')['leases']
+    assert held['id'] in [lease['id'] for lease in retained]
+    (isolated_root/'source').write_text('isolated first write')
+    accepted=expect(rpc({'op':'resume','agent':recipient['id'],'checkpoint':bundle['id'],'acknowledge':True}),'recovery')['recovery']
+    assert accepted['checkpoint']['accepted_by']==recipient['id']
+    transferred=expect(rpc({'op':'leases','agent':recipient['id']}),'leases')['leases']
+    assert held['id'] in [lease['id'] for lease in transferred]
+    assert not expect(rpc({'op':'leases','agent':isolated['id']}),'leases')['leases']
+    results.append('image handoff survives restart and transfers leases only after source verification; '+
+        ('identical rebuilt image accepted' if same_image else 'changed rebuild ID refused; original retained image accepted'))
+    payload={'result':'passed','engine':a.engine,'machine':a.machine,'relay':worker['container']['options']['engine_relay'],
+        'host_os':platform.system(),'host_architecture':platform.machine(),
+        'client_version':build['client_version'],'server_version':build['server_version'],'scenarios':results}
     Path(a.result).write_text(json.dumps(payload,indent=2)+'\n')
     print(json.dumps(payload),flush=True)
 except BaseException:
@@ -221,7 +335,7 @@ finally:
         try:
             for r in rpc({'op':'list','all':True}).get('agents',[]):
                 if r.get('container'): remember(r)
-        except (OSError,ValueError): pass
+        except (OSError,ValueError,subprocess.SubprocessError): pass
         daemon.terminate()
         try: daemon.wait(timeout=30)
         except subprocess.TimeoutExpired: daemon.kill();daemon.wait(timeout=10)
@@ -230,5 +344,16 @@ finally:
             actual=json.loads(engine('container','inspect',target))[0]
             if actual['Config']['Labels']['org.agentdocker.owner']==owner:
                 subprocess.run([a.engine,'container','rm','--force',actual['Id']],stdout=subprocess.DEVNULL,check=True,timeout=30)
+        except (subprocess.SubprocessError,KeyError,ValueError): pass
+    for name,(volume,owner) in relay_resources.items():
+        try:
+            info=json.loads(engine('container','inspect',name,quiet=True))[0]
+            if info['Config']['Labels']['org.agentdocker.owner']==owner and info['Config']['Labels'].get('org.agentdocker.role')=='relay':
+                subprocess.run([a.engine,'container','rm','--force',info['Id']],check=True,stdout=subprocess.DEVNULL,timeout=30)
+        except (subprocess.SubprocessError,KeyError,ValueError): pass
+        try:
+            info=json.loads(engine('volume','inspect',volume,quiet=True))[0]
+            if (info.get('Labels') or {}).get('org.agentdocker.owner')==owner:
+                subprocess.run([a.engine,'volume','rm',volume],check=True,stdout=subprocess.DEVNULL,timeout=30)
         except (subprocess.SubprocessError,KeyError,ValueError): pass
     log.close()

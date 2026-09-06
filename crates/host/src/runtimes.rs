@@ -16,6 +16,8 @@ use crate::command;
 #[derive(Clone, Debug)]
 pub struct Roots {
     pub home: PathBuf,
+    /// Explicit Codex host configuration root, when set by the caller.
+    pub codex_home: Option<PathBuf>,
     /// `PATH`, split.
     pub path: Vec<PathBuf>,
     /// Where desktop apps live: `/Applications` and `~/Applications` on
@@ -37,6 +39,9 @@ impl Roots {
             Vec::new()
         };
         Self {
+            codex_home: std::env::var_os("CODEX_HOME")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from),
             home,
             path,
             app_dirs,
@@ -50,7 +55,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Every known runtime, installed or not, with what was found of it.
 /// `marker` is what identifies AgentDocker in a registration — the
-/// binary's name — so a wiring check is a substring match on commands.
+/// binary's name — paired with the explicit MCP subcommand.
 pub fn inventory(roots: &Roots, marker: &str) -> Vec<RuntimeInfo> {
     // Versions spawn processes; do them side by side.
     std::thread::scope(|scope| {
@@ -92,10 +97,13 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
             })
         })
         .collect();
-    let config_dir = spec
-        .config_dir
-        .map(|rel| roots.home.join(rel))
-        .filter(|dir| dir.is_dir());
+    let config_dir = if spec.name == "codex" {
+        roots.codex_home.clone()
+    } else {
+        None
+    }
+    .or_else(|| spec.config_dir.map(|rel| roots.home.join(rel)))
+    .filter(|dir| dir.is_dir());
     RuntimeInfo {
         name: spec.name.to_owned(),
         vendor: spec.vendor.to_owned(),
@@ -104,7 +112,7 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
         version,
         apps,
         config_dir,
-        mcp: mcp_wiring(spec, &roots.home, marker),
+        mcp: mcp_wiring(spec, roots, marker),
         hooks: hooks_wiring(spec, &roots.home, marker),
         running: 0,
     }
@@ -154,12 +162,38 @@ fn app_version(bundle: &Path) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Resolve a configuration file from injectable roots, including CODEX_HOME.
+pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
+    match spec.mcp {
+        McpWiring::None => None,
+        McpWiring::JsonServers { file } | McpWiring::TomlServers { file } => {
+            if spec.name == "codex" {
+                if let Some(home) = &roots.codex_home {
+                    return Some(home.join("config.toml"));
+                }
+            }
+            Some(roots.home.join(file))
+        }
+    }
+}
+
+/// Recognize an explicit AgentDocker MCP launch, not mentions in unrelated args.
+/// Wrappers whose behavior cannot be established remain unverified.
+pub fn mcp_command_matches(command: Option<&str>, args: &[&str], marker: &str) -> bool {
+    command
+        .and_then(|c| Path::new(c).file_name())
+        .and_then(|n| n.to_str())
+        == Some(marker)
+        && args.first() == Some(&"mcp")
+}
+
 /// Whether the runtime's MCP configuration registers AgentDocker.
-pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
+pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
     match spec.mcp {
         McpWiring::None => Wiring::Unsupported,
-        McpWiring::JsonServers { file } => {
-            let Ok(raw) = std::fs::read_to_string(home.join(file)) else {
+        McpWiring::JsonServers { .. } => {
+            let Ok(raw) = std::fs::read_to_string(mcp_config_path(spec, roots).expect("JSON path"))
+            else {
                 return Wiring::Missing;
             };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -170,20 +204,17 @@ pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                 .and_then(|s| s.as_object())
                 .is_some_and(|servers| {
                     servers.values().any(|server| {
-                        let command = server
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains(marker));
-                        let args =
-                            server
-                                .get("args")
-                                .and_then(|a| a.as_array())
-                                .is_some_and(|args| {
-                                    args.iter()
-                                        .filter_map(|a| a.as_str())
-                                        .any(|a| a.contains(marker))
-                                });
-                        command || args
+                        let command = server.get("command").and_then(|c| c.as_str());
+                        let args: Vec<_> = server
+                            .get("args")
+                            .and_then(|a| a.as_array())
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|a| a.as_str())
+                            .collect();
+                        server.get("disabled").and_then(|v| v.as_bool()) != Some(true)
+                            && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+                            && mcp_command_matches(command, &args, marker)
                     })
                 });
             if wired {
@@ -192,8 +223,9 @@ pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                 Wiring::Missing
             }
         }
-        McpWiring::TomlServers { file } => {
-            let Ok(raw) = std::fs::read_to_string(home.join(file)) else {
+        McpWiring::TomlServers { .. } => {
+            let Ok(raw) = std::fs::read_to_string(mcp_config_path(spec, roots).expect("TOML path"))
+            else {
                 return Wiring::Missing;
             };
             let Ok(value) = raw.parse::<toml::Table>() else {
@@ -205,20 +237,16 @@ pub fn mcp_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                 .is_some_and(|servers| {
                     servers.values().any(|server| {
                         server.as_table().is_some_and(|server| {
-                            let command = server
-                                .get("command")
-                                .and_then(|c| c.as_str())
-                                .is_some_and(|c| c.contains(marker));
-                            let args =
-                                server
-                                    .get("args")
-                                    .and_then(|a| a.as_array())
-                                    .is_some_and(|args| {
-                                        args.iter()
-                                            .filter_map(|a| a.as_str())
-                                            .any(|a| a.contains(marker))
-                                    });
-                            command || args
+                            let command = server.get("command").and_then(|c| c.as_str());
+                            let args: Vec<_> = server
+                                .get("args")
+                                .and_then(|a| a.as_array())
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|a| a.as_str())
+                                .collect();
+                            server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
+                                && mcp_command_matches(command, &args, marker)
                         })
                     })
                 });
@@ -296,6 +324,7 @@ mod tests {
         }
         std::fs::create_dir_all(apps.join("Claude.app/Contents")).unwrap();
         let roots = Roots {
+            codex_home: None,
             home,
             path: vec![bin],
             app_dirs: vec![apps],
@@ -340,8 +369,9 @@ mod tests {
         let claude = by("claude-code");
         assert!(claude.installed());
         assert!(claude.cli.as_ref().unwrap().ends_with("bin/claude"));
-        assert_eq!(claude.apps.len(), 1);
-        assert_eq!(claude.apps[0].label, "Claude Desktop");
+        assert!(claude.apps.is_empty(), "the CLI is separate from Desktop");
+        assert_eq!(by("claude-desktop").apps[0].label, "Claude Desktop");
+        assert_eq!(by("claude-desktop").hooks, Wiring::Unsupported);
         assert!(claude.config_dir.is_some());
         assert_eq!(claude.mcp, Wiring::Missing, "another server is not ours");
         assert_eq!(claude.hooks, Wiring::Wired);
@@ -357,6 +387,29 @@ mod tests {
             "a name outside command and args is not wiring"
         );
         assert_eq!(by("aider").mcp, Wiring::Unsupported);
+    }
+
+    #[test]
+    fn codex_override_and_explicit_mcp_commands_determine_wiring() {
+        let (_tmp, mut roots) = machine();
+        let spec = agentdocker_core::runtime::spec("codex").unwrap();
+        let alternate = roots.home.join("alternate-codex");
+        std::fs::create_dir(&alternate).unwrap();
+        roots.codex_home = Some(alternate.clone());
+        let path = mcp_config_path(spec, &roots).unwrap();
+        assert_eq!(path, alternate.join("config.toml"));
+        for (command, args, enabled, expected) in [
+            ("/opt/agentdocker", "[\"mcp\"]", true, Wiring::Wired),
+            ("cat", "[\"agentdocker-notes\"]", true, Wiring::Missing),
+            ("/opt/agentdocker", "[\"mcp\"]", false, Wiring::Missing),
+            ("/opt/agentdocker", "[\"ps\"]", true, Wiring::Missing),
+        ] {
+            let config = format!(
+                "[mcp_servers.agentdocker]\ncommand = {command:?}\nargs = {args}\nenabled = {enabled}\n"
+            );
+            std::fs::write(&path, config).unwrap();
+            assert_eq!(mcp_wiring(spec, &roots, "agentdocker"), expected);
+        }
     }
 
     #[test]

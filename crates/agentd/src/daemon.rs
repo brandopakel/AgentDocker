@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
+use agentdocker_core::paths;
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
     Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
@@ -42,6 +43,7 @@ mod containers;
 mod handoff;
 mod images;
 mod recovery;
+mod relay;
 mod transport;
 mod working;
 mod worktrees;
@@ -91,6 +93,8 @@ pub struct Daemon {
     /// Asks the watcher to flush pending observations now; set once the
     /// watcher runs. Never held across an await.
     watcher_flush: Mutex<Option<mpsc::Sender<oneshot::Sender<()>>>>,
+    container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
+    container_slots: Arc<tokio::sync::Semaphore>,
     /// Asks the watcher to reconcile its watches now, so a checkout is
     /// covered from the moment its first agent is registered rather than
     /// from the next tick. Starts `Off`; the daemon's main says when a
@@ -102,13 +106,10 @@ pub struct Daemon {
     /// Known agent processes nobody registered, from the last scan, so
     /// `discover` and `runtimes` answer at once and a scan on the tick can
     /// announce what appeared and what went.
-    discovered: Mutex<Discovered>,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave their reads and writes of the set above, or a process
     /// could be announced twice or never.
     scanning: tokio::sync::Mutex<()>,
-    container_backend: Arc<dyn agentdocker_host::containers::ContainerBackend>,
-    container_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// The last process scan.
@@ -116,6 +117,7 @@ pub struct Daemon {
 struct Discovered {
     at: Option<Instant>,
     processes: Vec<DiscoveredProcess>,
+    error: Option<String>,
 }
 
 /// A `discover` younger than this answers from the last scan.
@@ -132,16 +134,23 @@ pub enum RestrictedEndpoint {
 /// Whether registrations can ask the watcher to cover their checkout.
 #[derive(Clone)]
 enum WatcherLink {
-    /// No watcher runs: tests, or it failed to start.
+    /// Explicitly embedded without a watcher (unit tests).
     Off,
+    Unavailable(String),
     /// One is being spawned; wait for it rather than skip it.
     Starting,
-    On(mpsc::Sender<oneshot::Sender<()>>),
+    On(mpsc::Sender<WatcherAttachment>),
+}
+
+pub(crate) struct WatcherAttachment {
+    pub checkout: PathBuf,
+    pub ack: oneshot::Sender<Result<(), String>>,
 }
 
 /// One synchronous transition owns memory, persistence and publication.
 /// Host I/O and waits are performed before or after this guard, never across await.
 struct State {
+    discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
     registry: Registry,
@@ -652,6 +661,7 @@ impl Daemon {
             socket,
             started: Instant::now(),
             state: Mutex::new(State {
+                discovered: Discovered::default(),
                 store,
                 storage_error: None,
                 registry,
@@ -672,12 +682,11 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
-            watcher_attach: watch::channel(WatcherLink::Off).0,
-            restricted: Mutex::new(RestrictedEndpoint::Starting),
-            discovered: Mutex::new(Discovered::default()),
             scanning: tokio::sync::Mutex::new(()),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
+            watcher_attach: watch::channel(WatcherLink::Off).0,
+            restricted: Mutex::new(RestrictedEndpoint::Starting),
         })
     }
 
@@ -923,12 +932,10 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
         let mut record = AgentRecord::new(spec, true, Utc::now());
-        let mut worktree: Option<PathBuf> = None;
         if record.spec.isolate {
             match self.isolate(&record).await {
                 Ok(path) => {
                     record.spec.workdir = Some(path.clone());
-                    worktree = Some(path);
                 }
                 Err(response) => return *response,
             }
@@ -937,19 +944,26 @@ impl Daemon {
         let vcs = Self::vcs_for(record.spec.workdir.clone()).await;
         record.project = project;
         record.vcs = vcs;
-        let record = match lock(&self.state).insert_record(record) {
+        let inserted = lock(&self.state).insert_record(record.clone());
+        let record = match inserted {
             Response::Agent { agent } => agent,
-            other => return other,
+            other => {
+                self.cleanup_isolate(&record).await;
+                return other;
+            }
         };
-        if let Some(path) = worktree {
-            lock(&self.state).emit(EventKind::WorktreeCreated {
-                agent: record.id.clone(),
-                path,
-            });
-        }
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
-            self.ensure_watched().await;
+            if let Err(reason) = self.ensure_watched(&record).await {
+                self.mark_exited(
+                    &record.id,
+                    AgentStatus::Failed {
+                        reason: reason.clone(),
+                    },
+                );
+                self.cleanup_isolate(&record).await;
+                return Response::error(ErrorCode::Unavailable, reason);
+            }
         }
         match supervisor::spawn(self, &record).await {
             Ok(spawned) => {
@@ -991,6 +1005,7 @@ impl Daemon {
                         reason: format!("{err:#}"),
                     },
                 );
+                self.cleanup_isolate(&record).await;
                 Response::error(ErrorCode::Internal, format!("{err:#}"))
             }
         }
@@ -1017,14 +1032,41 @@ impl Daemon {
         // the checkout is watched by the time it goes out.
         if let Response::Agent { agent } = &response {
             if watchable(agent) {
-                self.ensure_watched().await;
+                if let Err(reason) = self.ensure_watched(agent).await {
+                    // An externally started process may already be writing. Keep its
+                    // identity and protection, but do not report coverage as successful.
+                    return Response::error(
+                        ErrorCode::Unavailable,
+                        format!(
+                            "agent {} registered but checkout coverage is unavailable: {reason}",
+                            agent.id
+                        ),
+                    );
+                }
             }
         }
         response
     }
 
+    async fn cleanup_isolate(&self, record: &AgentRecord) {
+        if !record.spec.isolate {
+            return;
+        }
+        let Some(path) = &record.spec.workdir else {
+            return;
+        };
+        let (worktree_removed, branch_removed, reason) = worktrees::cleanup_unstarted(record).await;
+        self.emit(EventKind::WorktreeCleanup {
+            agent: record.id.clone(),
+            path: path.clone(),
+            worktree_removed,
+            branch_removed,
+            reason,
+        });
+    }
+
     /// A linked worktree of the agent's repository, made for it under the
-    /// daemon's home, on a branch named after it: `agent/<name>`, or with
+    /// daemon's sibling worktree directory, on a branch named after it: `agent/<name>`, or with
     /// its id appended when that is taken by an earlier run.
     async fn isolate(&self, record: &AgentRecord) -> Result<PathBuf, Box<Response>> {
         let invalid = |text: &str| Box::new(Response::error(ErrorCode::Invalid, text));
@@ -1050,7 +1092,7 @@ impl Daemon {
                 "agent name `{name}` cannot name a worktree and branch: use letters, digits, '-', '_' and '.', not starting with '-' or '.', without '..' or a '.lock' ending"
             )));
         }
-        let dir = self.home.join("worktrees").join(base.id().short());
+        let dir = paths::worktree_dir(&self.home).join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
                 ErrorCode::Internal,
@@ -1074,6 +1116,10 @@ impl Daemon {
             match worktrees::add_worktree(root.clone(), &path, &branch).await {
                 Ok(()) => {
                     info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    self.emit(EventKind::WorktreeCreated {
+                        agent: record.id.clone(),
+                        path: path.clone(),
+                    });
                     return Ok(path);
                 }
                 Err(response) => last = Some(response),
@@ -1153,6 +1199,7 @@ impl Daemon {
             };
             before_seq = Some(oldest);
             changes.extend(page);
+            tokio::task::yield_now().await;
         }
         let mut overlaps = agentdocker_core::overlaps(&changes);
         if let Some((_, checkout)) = mine {
@@ -1161,56 +1208,87 @@ impl Daemon {
         Response::Overlap { overlaps }
     }
 
-    /// Agent processes of known runtimes that no live agent claims by pid:
-    /// the last scan when it is fresh, else a new one.
+    /// Return the last successful scan only while it is fresh and healthy.
     async fn discover(&self) -> Response {
-        let fresh = lock(&self.discovered)
-            .at
-            .is_some_and(|at| at.elapsed() < DISCOVERY_FRESH);
-        if fresh {
-            return Response::Processes {
-                processes: lock(&self.discovered).processes.clone(),
-            };
+        {
+            let state = lock(&self.state);
+            let cache = &state.discovered;
+            if cache.error.is_none() && cache.at.is_some_and(|at| at.elapsed() < DISCOVERY_FRESH) {
+                return Response::Processes {
+                    processes: cache.processes.clone(),
+                };
+            }
         }
-        Response::Processes {
-            processes: self.scan_agents().await,
+        match self.scan_agents().await {
+            Ok(processes) => Response::Processes { processes },
+            Err(error) => Response::error(ErrorCode::Unavailable, error),
         }
     }
 
-    /// Scan the process table for known agent runtimes, remember the
-    /// result, and announce every process that appeared since the last
-    /// scan and every one that went — exited, or adopted meanwhile. Runs
-    /// on the daemon's tick, so nobody has to ask.
-    pub async fn scan_agents(&self) -> Vec<DiscoveredProcess> {
+    /// Serialize scans, then reconcile their results with the current registry
+    /// in one synchronous transition. Registration may advance while ps runs.
+    pub async fn scan_agents(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let _one_at_a_time = self.scanning.lock().await;
-        let found = self.scan().await;
-        let registered: HashSet<u32> = lock(&self.state)
+        self.apply_scan(self.scan().await)
+    }
+
+    fn apply_scan(
+        &self,
+        result: Result<Vec<DiscoveredProcess>, String>,
+    ) -> Result<Vec<DiscoveredProcess>, String> {
+        let mut state = lock(&self.state);
+        let mut found = match result {
+            Ok(found) => found,
+            Err(reason) => {
+                if state.discovered.error.as_ref() != Some(&reason) {
+                    state.emit(EventKind::DiscoveryUnavailable {
+                        reason: reason.clone(),
+                    });
+                }
+                state.discovered.error = Some(reason.clone());
+                return Err(reason);
+            }
+        };
+        let registered: HashMap<_, _> = state
             .registry
             .live()
-            .filter_map(|a| a.pid)
+            .filter_map(|a| a.pid.map(|pid| (pid, a.process_started_at)))
             .collect();
-        let previous = std::mem::take(&mut lock(&self.discovered).processes);
-        let now_pids: HashSet<u32> = found.iter().map(|p| p.pid).collect();
-        let then_pids: HashSet<u32> = previous.iter().map(|p| p.pid).collect();
-        for process in found.iter().filter(|p| !then_pids.contains(&p.pid)) {
-            self.emit(EventKind::AgentDiscovered {
+        let is_registered = |p: &DiscoveredProcess| {
+            registered.get(&p.pid).is_some_and(|started| {
+                started.is_none() || p.started_at.is_none() || *started == p.started_at
+            })
+        };
+        found.retain(|p| !is_registered(p));
+        let previous = std::mem::replace(&mut state.discovered.processes, found.clone());
+        let identity = |p: &DiscoveredProcess| (p.pid, p.started_at);
+        let now_ids: HashSet<_> = found.iter().map(identity).collect();
+        // Remove the old PID generation before announcing its replacement.
+        for process in previous.iter().filter(|p| !now_ids.contains(&identity(p))) {
+            state.emit(EventKind::AgentVanished {
                 pid: process.pid,
+                started_at: process.started_at,
+                runtime: process.runtime.clone(),
+                adopted: is_registered(process),
+            });
+        }
+        for process in found
+            .iter()
+            .filter(|p| !previous.iter().any(|old| old == *p))
+        {
+            state.emit(EventKind::AgentDiscovered {
+                pid: process.pid,
+                started_at: process.started_at,
                 runtime: process.runtime.clone(),
                 project: process.project.as_ref().map(ProjectRef::id),
                 cwd: process.cwd.clone(),
             });
         }
-        for process in previous.iter().filter(|p| !now_pids.contains(&p.pid)) {
-            self.emit(EventKind::AgentVanished {
-                pid: process.pid,
-                runtime: process.runtime.clone(),
-                adopted: registered.contains(&process.pid),
-            });
+        state.discovered.at = Some(Instant::now());
+        if state.discovered.error.take().is_some() {
+            state.emit(EventKind::DiscoveryAvailable);
         }
-        let mut cache = lock(&self.discovered);
-        cache.at = Some(Instant::now());
-        cache.processes = found.clone();
-        found
+        Ok(found)
     }
 
     /// The agent tools on this machine, with how many unregistered
@@ -1227,7 +1305,7 @@ impl Daemon {
         };
         let processes = match self.discover().await {
             Response::Processes { processes } => processes,
-            _ => Vec::new(),
+            error => return error,
         };
         for runtime in &mut runtimes {
             runtime.running = processes
@@ -1242,17 +1320,13 @@ impl Daemon {
     /// agent claims by pid. Projects come without fingerprints: this runs
     /// on every scan, and a process nobody adopted should not warm the
     /// cache or announce a repository.
-    async fn scan(&self) -> Vec<DiscoveredProcess> {
-        let registered: HashSet<u32> = lock(&self.state)
-            .registry
-            .live()
-            .filter_map(|a| a.pid)
-            .collect();
+    async fn scan(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let mine = std::process::id();
         tokio::task::spawn_blocking(move || {
             let mut found: Vec<DiscoveredProcess> = procinfo::processes()
+                .map_err(|e| e.to_string())?
                 .into_iter()
-                .filter(|p| p.pid != mine && !registered.contains(&p.pid))
+                .filter(|p| p.pid != mine)
                 .filter_map(|p| {
                     let runtime = procinfo::runtime_of(&p.argv)?;
                     let cwd = procinfo::cwd(p.pid);
@@ -1277,10 +1351,10 @@ impl Daemon {
                 };
                 key(a).cmp(&key(b))
             });
-            found
+            Ok(found)
         })
         .await
-        .unwrap_or_default()
+        .map_err(|e| format!("process scan worker failed: {e}"))?
     }
 
     /// Register a running process by pid: runtime from the known table
@@ -1320,17 +1394,12 @@ impl Daemon {
         };
         let response = self.register(spec, Some(pid)).await;
         if matches!(response, Response::Agent { .. }) {
-            // No longer a stranger: out of the discovered set now, not at
-            // the next scan.
-            let was_discovered = {
-                let mut cache = lock(&self.discovered);
-                let before = cache.processes.len();
-                cache.processes.retain(|p| p.pid != pid);
-                cache.processes.len() != before
-            };
-            if was_discovered {
-                self.emit(EventKind::AgentVanished {
+            let mut state = lock(&self.state);
+            if let Some(index) = state.discovered.processes.iter().position(|p| p.pid == pid) {
+                let process = state.discovered.processes.remove(index);
+                state.emit(EventKind::AgentVanished {
                     pid,
+                    started_at: process.started_at,
                     runtime,
                     adopted: true,
                 });
@@ -1429,14 +1498,15 @@ impl Daemon {
     }
 
     /// Let the watcher hand us its reconcile channel.
-    pub fn set_watcher_attach(&self, sender: mpsc::Sender<oneshot::Sender<()>>) {
+    pub(crate) fn set_watcher_attach(&self, sender: mpsc::Sender<WatcherAttachment>) {
         self.watcher_attach.send_replace(WatcherLink::On(sender));
         self.emit(EventKind::WatcherStarted);
     }
 
     /// The watcher could not start after all; stop waiting for it.
     pub fn watcher_off(&self, reason: String) {
-        self.watcher_attach.send_replace(WatcherLink::Off);
+        self.watcher_attach
+            .send_replace(WatcherLink::Unavailable(reason.clone()));
         self.emit(EventKind::WatcherUnavailable { reason });
     }
 
@@ -1461,8 +1531,14 @@ impl Daemon {
     /// registration awaits this so the agent's first edit is never made in
     /// the gap before the next reconcile tick. Bounded, and a no-op when no
     /// watcher runs.
-    async fn ensure_watched(&self) {
-        let _ = tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
+    async fn ensure_watched(&self, record: &AgentRecord) -> Result<(), String> {
+        let checkout = record
+            .project
+            .as_ref()
+            .ok_or("agent has no watchable checkout")?
+            .dir()
+            .to_path_buf();
+        tokio::time::timeout(WATCHER_ATTACH_TIMEOUT, async {
             let mut link = self.watcher_attach.subscribe();
             let sender = match link
                 .wait_for(|link| !matches!(link, WatcherLink::Starting))
@@ -1470,16 +1546,22 @@ impl Daemon {
             {
                 Ok(link) => match &*link {
                     WatcherLink::On(sender) => sender.clone(),
-                    _ => return,
+                    WatcherLink::Off => return Ok(()),
+                    WatcherLink::Unavailable(reason) => return Err(reason.clone()),
+                    WatcherLink::Starting => unreachable!(),
                 },
-                Err(_) => return,
+                Err(_) => return Err("watcher stopped during startup".into()),
             };
             let (ack, done) = oneshot::channel();
-            if sender.send(ack).await.is_ok() {
-                let _ = done.await;
-            }
+            sender
+                .send(WatcherAttachment { checkout, ack })
+                .await
+                .map_err(|_| "watcher stopped before attachment".to_string())?;
+            done.await
+                .map_err(|_| "watcher stopped before confirming coverage".to_string())?
         })
-        .await;
+        .await
+        .map_err(|_| "watcher did not confirm checkout coverage within 500 ms".to_string())?
     }
 
     /// Only path leases need pending filesystem observations for their summary.
@@ -4029,6 +4111,103 @@ mod tests {
         assert_eq!(lease.resource.as_str(), "task:ISSUE-1");
     }
 
+    fn discovery_row(pid: u32, started_at: chrono::DateTime<Utc>) -> DiscoveredProcess {
+        DiscoveredProcess {
+            pid,
+            ppid: 1,
+            runtime: "codex".into(),
+            command: "codex".into(),
+            cwd: None,
+            project: None,
+            started_at: Some(started_at),
+        }
+    }
+
+    #[test]
+    fn scan_failure_retains_snapshot_and_recovery_distinguishes_pid_generations() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let first = discovery_row(123456, Utc::now());
+        let mut events = daemon.subscribe_events();
+        daemon.apply_scan(Ok(vec![first.clone()])).unwrap();
+        while events.try_recv().is_ok() {}
+        let at = lock(&daemon.state).discovered.at;
+        assert!(daemon.apply_scan(Err("ps unavailable".into())).is_err());
+        assert_eq!(
+            lock(&daemon.state).discovered.processes,
+            vec![first.clone()]
+        );
+        assert_eq!(lock(&daemon.state).discovered.at, at);
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::DiscoveryUnavailable { .. }
+        ));
+        assert!(
+            events.try_recv().is_err(),
+            "failure never invents vanished agents"
+        );
+        assert!(daemon.apply_scan(Err("ps unavailable".into())).is_err());
+        assert!(
+            events.try_recv().is_err(),
+            "same failure is not repeated every tick"
+        );
+        let replacement =
+            discovery_row(first.pid, first.started_at.unwrap() + Duration::seconds(1));
+        daemon.apply_scan(Ok(vec![replacement.clone()])).unwrap();
+        assert!(
+            matches!(events.try_recv().unwrap().kind, EventKind::AgentVanished { started_at, adopted: false, .. } if started_at == first.started_at)
+        );
+        assert!(
+            matches!(events.try_recv().unwrap().kind, EventKind::AgentDiscovered { started_at, .. } if started_at == replacement.started_at)
+        );
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::DiscoveryAvailable
+        ));
+        daemon.apply_scan(Ok(vec![replacement.clone()])).unwrap();
+        assert!(events.try_recv().is_err());
+        let mut moved = replacement;
+        moved.cwd = Some(PathBuf::from("/tmp/new-project"));
+        daemon.apply_scan(Ok(vec![moved])).unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::AgentDiscovered { cwd: Some(_), .. }
+        ));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_scan_started_before_registration_cannot_restore_an_adopted_process() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let row = discovery_row(child.id(), procinfo::start_time(child.id()).unwrap());
+        daemon.apply_scan(Ok(vec![row.clone()])).unwrap();
+        let response = daemon
+            .register(
+                AgentSpec {
+                    name: "joined-during-scan".into(),
+                    ..AgentSpec::default()
+                },
+                Some(child.id()),
+            )
+            .await;
+        assert!(matches!(response, Response::Agent { .. }), "{response:?}");
+        let mut events = daemon.subscribe_events();
+        assert!(daemon.apply_scan(Ok(vec![row.clone()])).unwrap().is_empty());
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::AgentVanished { adopted: true, .. }
+        ));
+        assert!(daemon.apply_scan(Ok(vec![row])).unwrap().is_empty());
+        assert!(events.try_recv().is_err());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
     #[tokio::test]
     async fn scans_announce_agents_appearing_going_and_adopted() {
         let dir = TempDir::new().unwrap();
@@ -4039,7 +4218,7 @@ mod tests {
         let fake = dir.path().join("codex");
         std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
         let mut events = daemon.subscribe_events();
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         let mut child = std::process::Command::new(&fake)
             .arg("60")
             .current_dir(&project)
@@ -4047,7 +4226,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
 
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         let mut seen = Vec::new();
         while let Ok(event) = events.try_recv() {
             seen.push(event.kind);
@@ -4057,7 +4236,7 @@ mod tests {
             "{seen:?}"
         );
         // Fresh scans answer from the cache and announce nothing twice.
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
                 .any(|e| matches!(e.kind, EventKind::AgentDiscovered { pid: p, .. } if p == pid))
@@ -4097,7 +4276,7 @@ mod tests {
             panic!("discover failed");
         };
         assert!(processes.iter().all(|p| p.pid != pid));
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         assert!(
             !std::iter::from_fn(|| events.try_recv().ok())
                 .any(|e| matches!(e.kind, EventKind::AgentVanished { pid: p, .. } if p == pid)),
@@ -4111,13 +4290,13 @@ mod tests {
             .spawn()
             .unwrap();
         let short_pid = short.id();
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         assert!(std::iter::from_fn(|| events.try_recv().ok()).any(
             |e| matches!(e.kind, EventKind::AgentDiscovered { pid: p, .. } if p == short_pid)
         ));
         short.kill().unwrap();
         short.wait().unwrap();
-        daemon.scan_agents().await;
+        daemon.scan_agents().await.unwrap();
         assert!(
             std::iter::from_fn(|| events.try_recv().ok())
                 .any(|e| matches!(e.kind, EventKind::AgentVanished { pid: p, adopted: false, .. } if p == short_pid))
@@ -4870,7 +5049,8 @@ mod tests {
             &repo,
             &["commit", "-q", "--allow-empty", "-m", "root"]
         ));
-        let daemon = open(&dir);
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
         let home = register_in(&daemon, "home", &repo).await;
 
         let mut command = spec("writer");
@@ -4890,7 +5070,7 @@ mod tests {
             .workdir
             .clone()
             .expect("workdir moved to the worktree");
-        let worktrees = project::canonical(&dir.path().join("worktrees"));
+        let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
         assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
         assert!(worktree.ends_with("writer"), "{}", worktree.display());
         assert!(worktree.join(".git").exists(), "a linked worktree");
@@ -4978,6 +5158,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn launch_refuses_failed_or_unconfirmed_checkout_coverage() {
+        if !have_git() {
+            return;
+        }
+        for failure in ["startup", "attachment", "timeout"] {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            assert!(git(dir.path(), &repo, &["init", "-q"]));
+            assert!(git(
+                dir.path(),
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", "root"]
+            ));
+            let daemon = open(&dir);
+            daemon.expect_watcher();
+            let (tx, mut rx) = mpsc::channel::<WatcherAttachment>(1);
+            let responder = if failure == "startup" {
+                daemon.watcher_off("startup failed".into());
+                None
+            } else if failure == "attachment" {
+                daemon.set_watcher_attach(tx);
+                let expected = project::canonical(&repo);
+                Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    assert_eq!(request.checkout, expected);
+                    request
+                        .ack
+                        .send(Err("watch installation failed".into()))
+                        .unwrap();
+                }))
+            } else {
+                None
+            };
+            let mut command = spec("blocked-writer");
+            command.workdir = Some(repo.clone());
+            command.command = vec!["sh".into(), "-c".into(), "touch should-not-exist".into()];
+            let response = daemon.handle(Request::Run { spec: command }).await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::Unavailable,
+                        ..
+                    }
+                ),
+                "{failure}: {response:?}"
+            );
+            assert!(!repo.join("should-not-exist").exists());
+            assert!(lock(&daemon.state).supervised.is_empty());
+            assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_isolated_launches_clean_up_only_unchanged_worktrees() {
+        if !have_git() {
+            return;
+        }
+        for failure in ["duplicate", "watcher", "edited"] {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            assert!(git(dir.path(), &repo, &["init", "-q"]));
+            assert!(git(
+                dir.path(),
+                &repo,
+                &["commit", "-q", "--allow-empty", "-m", "root"]
+            ));
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let mut responder = None;
+            if failure == "duplicate" {
+                register_in(&daemon, "blocked", &repo).await;
+            } else if failure == "watcher" {
+                daemon.watcher_off("cannot start".into());
+            } else {
+                let (tx, mut rx) = mpsc::channel::<WatcherAttachment>(1);
+                daemon.set_watcher_attach(tx);
+                responder = Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    std::fs::write(request.checkout.join("keep-me"), "user edit").unwrap();
+                    request.ack.send(Err("attachment failed".into())).unwrap();
+                }));
+            }
+            let mut command = spec("blocked");
+            command.isolate = true;
+            command.workdir = Some(repo.clone());
+            command.command = vec!["sh".into(), "-c".into(), "touch should-not-run".into()];
+            assert!(matches!(
+                daemon.handle(Request::Run { spec: command }).await,
+                Response::Error { .. }
+            ));
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+            let events = daemon.recent_events(30);
+            let (path, removed) = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::WorktreeCleanup {
+                        path,
+                        worktree_removed,
+                        ..
+                    } => Some((path.clone(), *worktree_removed)),
+                    _ => None,
+                })
+                .expect("cleanup is observable");
+            assert!(!path.join("should-not-run").exists());
+            if failure == "edited" {
+                assert!(!removed);
+                assert_eq!(
+                    std::fs::read_to_string(path.join("keep-me")).unwrap(),
+                    "user edit"
+                );
+            } else {
+                assert!(removed, "{failure}");
+                assert!(!path.exists());
+                assert!(
+                    git(dir.path(), &repo, &["branch", "agent/blocked"]),
+                    "failed branch was removed and its name is reusable"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn overlap_names_paths_changed_in_two_checkouts() {
         if !have_git() {
             return;
@@ -4990,7 +5300,8 @@ mod tests {
         assert!(git(dir.path(), &repo, &["init", "-q"]));
         assert!(git(dir.path(), &repo, &["add", "."]));
         assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
-        let daemon = open(&dir);
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
         daemon.expect_watcher();
         tokio::spawn(crate::watcher::run(
             daemon.clone(),

@@ -34,15 +34,18 @@ pub struct Process {
     pub argv: Vec<String>,
 }
 
-/// Every process `ps` will show us, or nothing if `ps` is unavailable.
-pub fn processes() -> Vec<Process> {
-    let output = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,args="])
-        .output();
-    match output {
-        Ok(output) if output.status.success() => parse_ps(&String::from_utf8_lossy(&output.stdout)),
-        _ => Vec::new(),
+/// Every process `ps` will show us. Failure is distinct from an empty
+/// successful scan, so background discovery never invents exits on an outage.
+pub fn processes() -> std::io::Result<Vec<Process>> {
+    let output = crate::command::run(
+        Path::new("/"),
+        &["ps".into(), "-axo".into(), "pid=,ppid=,args=".into()],
+        std::time::Duration::from_secs(3),
+    )?;
+    if !output.success {
+        return Err(std::io::Error::other("ps process scan failed"));
     }
+    Ok(parse_ps(&output.stdout))
 }
 
 /// One process, if it exists.
@@ -273,6 +276,7 @@ mod tests {
         let pid = child.id();
 
         let row = processes()
+            .unwrap()
             .into_iter()
             .find(|p| p.pid == pid)
             .expect("child is in the table");

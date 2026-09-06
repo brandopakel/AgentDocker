@@ -335,6 +335,34 @@ impl LeaseTable {
         moved
     }
 
+    /// Transfer only still-live leases explicitly offered in a handoff. Expiry
+    /// remains the daemon's own event/persistence transition.
+    pub fn transfer_selected(
+        &mut self,
+        from: &AgentId,
+        to: &AgentId,
+        ids: &std::collections::HashSet<LeaseId>,
+        now: DateTime<Utc>,
+    ) -> Vec<Lease> {
+        let mut moved: Vec<_> = self
+            .leases
+            .values_mut()
+            .filter(|lease| {
+                lease.holder == *from && ids.contains(&lease.id) && !lease.is_expired(now)
+            })
+            .map(|lease| {
+                lease.holder = to.clone();
+                lease.clone()
+            })
+            .collect();
+        moved.sort_by(|a, b| {
+            a.acquired_at
+                .cmp(&b.acquired_at)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        moved
+    }
+
     /// Remove and return every lease whose TTL has passed.
     pub fn expire(&mut self, now: DateTime<Utc>) -> Vec<Lease> {
         let ids: Vec<LeaseId> = self
@@ -407,6 +435,48 @@ mod tests {
 
     fn key(s: &str) -> ResourceKey {
         ResourceKey::new(s)
+    }
+
+    #[test]
+    fn selected_transfer_keeps_unoffered_and_expired_leases_for_their_own_transitions() {
+        let now = Utc::now();
+        let mut table = LeaseTable::default();
+        let mut ids = Vec::new();
+        for (resource, holder, seconds) in [
+            ("task:offered", "a", 60),
+            ("task:later", "a", 60),
+            ("task:expired", "a", 1),
+            ("task:peer", "c", 60),
+        ] {
+            ids.push(
+                table
+                    .claim(
+                        key(resource),
+                        agent(holder),
+                        LeaseMode::Exclusive,
+                        Duration::seconds(seconds),
+                        None,
+                        now,
+                    )
+                    .unwrap()
+                    .into_lease()
+                    .id,
+            );
+        }
+        let selected = [ids[0].clone(), ids[2].clone(), ids[3].clone()]
+            .into_iter()
+            .collect();
+        let moved = table.transfer_selected(
+            &agent("a"),
+            &agent("b"),
+            &selected,
+            now + Duration::seconds(5),
+        );
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].id, ids[0]);
+        assert_eq!(table.get(&ids[1]).unwrap().holder, agent("a"));
+        assert_eq!(table.get(&ids[2]).unwrap().holder, agent("a"));
+        assert_eq!(table.get(&ids[3]).unwrap().holder, agent("c"));
     }
 
     fn ttl() -> Duration {

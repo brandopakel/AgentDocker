@@ -23,6 +23,13 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    WorktreeCleanup {
+        agent: crate::AgentId,
+        path: std::path::PathBuf,
+        worktree_removed: bool,
+        branch_removed: bool,
+        reason: Option<String>,
+    },
     IntegrationPrepared {
         agent: crate::AgentId,
         source_head: String,
@@ -108,6 +115,8 @@ pub enum EventKind {
     /// agent claims; `adopt` makes it one.
     AgentDiscovered {
         pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<DateTime<Utc>>,
         runtime: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<ProjectId>,
@@ -118,9 +127,17 @@ pub enum EventKind {
     /// was adopted.
     AgentVanished {
         pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at: Option<DateTime<Utc>>,
         runtime: String,
         adopted: bool,
     },
+    /// A process scan failed; the previous snapshot is retained, not exited.
+    DiscoveryUnavailable {
+        reason: String,
+    },
+    /// Scanning recovered and a fresh snapshot is available.
+    DiscoveryAvailable,
     AgentCreated {
         agent: AgentId,
         name: String,

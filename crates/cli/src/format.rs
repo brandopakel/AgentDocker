@@ -132,6 +132,20 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
         }
+        EventKind::WorktreeCleanup {
+            agent,
+            path,
+            worktree_removed,
+            branch_removed,
+            reason,
+        } => format!(
+            "{agent} cleanup {}: worktree removed={worktree_removed}, branch removed={branch_removed}{}",
+            path.display(),
+            reason
+                .as_ref()
+                .map(|r| format!(", {r}"))
+                .unwrap_or_default()
+        ),
         EventKind::IntegrationPrepared {
             agent,
             source_head,
@@ -208,6 +222,7 @@ pub fn event_line(event: &Event) -> String {
             pid,
             runtime,
             adopted,
+            ..
         } => {
             if *adopted {
                 format!("agent adopted    {runtime} pid {pid}")
@@ -215,6 +230,10 @@ pub fn event_line(event: &Event) -> String {
                 format!("agent gone       {runtime} pid {pid}")
             }
         }
+        EventKind::DiscoveryUnavailable { reason } => {
+            format!("agent discovery unavailable: {reason}; previous snapshot retained")
+        }
+        EventKind::DiscoveryAvailable => "agent discovery available".into(),
         EventKind::AgentCreated {
             agent,
             name,
