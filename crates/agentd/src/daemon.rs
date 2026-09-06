@@ -22,6 +22,7 @@ use agentdocker_core::{
     JournalKind, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, MessageId, ProjectId,
     ProjectRef, ProjectSource, Registry, RegistryError, Request, ResourceKey, Response,
     SummarySource, VcsState,
+    channel::{Channel, ChannelId},
     journal::{cap_paths, synthesise_summary},
     topic_matches,
 };
@@ -39,6 +40,7 @@ use agentdocker_host::{procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod channels;
 mod containers;
 mod handoff;
 mod images;
@@ -186,6 +188,12 @@ struct State {
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
+    /// The rooms agents share, open and closed-but-unpruned, loaded whole
+    /// at startup: message routing needs them under the state lock.
+    channels: HashMap<ChannelId, Channel>,
+    /// Which checkouts have changed each path, so the second one is a
+    /// collision the daemon can act on without scanning the ledger.
+    contested: HashMap<(ProjectId, PathBuf), HashSet<PathBuf>>,
 }
 
 struct JournalRing {
@@ -607,6 +615,12 @@ impl Daemon {
                 Err(err) => warn!(%err, "skipping stored agent"),
             }
         }
+        let channels: HashMap<ChannelId, Channel> = store
+            .documents::<Channel>("channel", None)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|channel| (channel.id.clone(), channel))
+            .collect();
         let mut leases = LeaseTable::new();
         let mut next_seq = store.max_event_seq()? + 1;
         for mut lease in store.load_leases()? {
@@ -691,6 +705,8 @@ impl Daemon {
                 journal_rings: HashMap::new(),
                 last_head: HashMap::new(),
                 journal_cursors: HashMap::new(),
+                channels,
+                contested: HashMap::new(),
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
@@ -926,6 +942,37 @@ impl Daemon {
                 )
                 .await
             }
+            Request::Channels {
+                project,
+                all,
+                agent,
+            } => self.channels(&project, all, agent).await,
+            Request::ChannelOpen {
+                agent,
+                task,
+                members,
+            } => self.channel_open(&agent, task, members),
+            Request::ChannelClose {
+                agent,
+                channel,
+                resolution,
+            } => self.channel_close(&agent, &channel, resolution),
+            Request::ChannelPrune {
+                project,
+                before_secs,
+            } => self.channel_prune(&project, before_secs).await,
+            Request::ReviewRequest {
+                agent,
+                channel,
+                note,
+            } => self.review_request(&agent, &channel, note),
+            Request::Review {
+                agent,
+                channel,
+                of,
+                verdict,
+                note,
+            } => self.review(&agent, &channel, of, &verdict, note),
             Request::JournalPrune {
                 project,
                 before_seq,
@@ -1838,6 +1885,9 @@ impl Daemon {
             };
             change.seq = seq;
             state.warn_readers(&change, physical.as_deref());
+            // A second checkout on this path means two agents are in the
+            // same work: give them a room.
+            state.note_contested(&change);
             debug!(project = %change.project.short(), path = %change.path.display(), %kind, "file changed");
             let _ = state
                 .events
@@ -2425,6 +2475,7 @@ impl State {
         self.persist("agent", |store| store.upsert_agent(&record));
         let released = self.leases.release_all(id);
         self.finish_release(id, released, None, SummarySource::Explicit);
+        self.leave_channels(id);
         self.journal_event(&record, JournalKind::Leave, format!("left ({status})"));
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         self.emit(EventKind::AgentExited {
@@ -3169,6 +3220,11 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
+            Destination::Channel(channel) => self
+                .channel_members(channel)
+                .into_iter()
+                .filter(|id| id.as_str() != envelope.from)
+                .collect(),
             Destination::Topic(_) => Vec::new(),
         };
         let offline: Vec<AgentId> = {
@@ -3319,6 +3375,15 @@ impl Subscription {
                         .as_ref()
                         .is_some_and(|me| me.as_str() != envelope.from)
             }
+            // Membership decides, not a subscription pattern: an agent put
+            // in a channel hears it without having asked. Read outside any
+            // state lock, from the stream loop.
+            Destination::Channel(channel) => self.agent.as_ref().is_some_and(|me| {
+                me.as_str() != envelope.from
+                    && lock(&self.daemon.state)
+                        .channel_members(channel)
+                        .contains(me)
+            }),
             Destination::Topic(topic) => self
                 .topics
                 .iter()
@@ -5109,6 +5174,137 @@ mod tests {
             Response::Agent { agent } => agent.status,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_second_checkout_touching_a_path_opens_a_channel_by_itself() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis(50),
+        ));
+        register_in(&daemon, "home", &repo).await;
+        let mut command = spec("isolated");
+        command.workdir = Some(repo.clone());
+        command.isolate = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 10".into()];
+        let Response::Agent { agent: isolated } =
+            daemon.handle(Request::Run { spec: command }).await
+        else {
+            panic!("isolated run failed");
+        };
+        let worktree = isolated.spec.workdir.clone().unwrap();
+
+        // One checkout changing a path is nobody's business.
+        std::fs::write(repo.join("src/a.rs"), "a from main\n").unwrap();
+        let channels = |daemon: Arc<Daemon>| async move {
+            match daemon
+                .handle(Request::Channels {
+                    project: String::new(),
+                    all: true,
+                    agent: Some("home".into()),
+                })
+                .await
+            {
+                Response::Channels { channels } => channels,
+                other => panic!("{other:?}"),
+            }
+        };
+
+        // The second checkout on the same path is: a channel opens itself
+        // with both agents in it.
+        std::fs::write(worktree.join("src/a.rs"), "a from the worktree\n").unwrap();
+        let opened = eventually(async || {
+            let found = channels(daemon.clone()).await;
+            (!found.is_empty()).then_some(found)
+        })
+        .await;
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        let channel = &opened[0];
+        assert_eq!(channel.members.len(), 2, "both agents are in it");
+        assert!(channel.opened_by.is_none(), "the daemon opened it");
+        assert_eq!(channel.paths(), [PathBuf::from("src/a.rs")]);
+        assert!(daemon.recent_events(200).iter().any(
+            |e| matches!(&e.kind, EventKind::ChannelOpened { members, .. } if members.len() == 2)
+        ));
+
+        // A second contested path joins the same room rather than opening
+        // another.
+        std::fs::write(repo.join("src/b.rs"), "b from main\n").unwrap();
+        std::fs::write(worktree.join("src/b.rs"), "b from the worktree\n").unwrap();
+        let widened = eventually(async || {
+            let found = channels(daemon.clone()).await;
+            found.first().filter(|c| c.paths().len() == 2).cloned()
+        })
+        .await;
+        assert_eq!(channels(daemon.clone()).await.len(), 1, "one room, not two");
+        assert_eq!(
+            widened.paths(),
+            [PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]
+        );
+
+        // Both were told, and the journal says the room exists.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: "home".into(),
+                    drain: true,
+                })
+                .await,
+            Response::Messages { messages } if !messages.is_empty()
+        ));
+        let Response::Journal { entries, .. } = daemon
+            .handle(Request::Journal {
+                project: repo.to_string_lossy().into_owned(),
+                since_seq: None,
+                until_seq: None,
+                agent: None,
+                branch: None,
+                kind: Some("review".into()),
+                path: None,
+                grep: None,
+                limit: 50,
+                digest: None,
+            })
+            .await
+        else {
+            panic!("journal failed");
+        };
+        assert!(!entries.is_empty(), "the channel is in the journal");
+
+        // When the last member leaves, the room closes itself.
+        daemon
+            .handle(Request::Deregister {
+                agent: "home".into(),
+            })
+            .await;
+        daemon
+            .handle(Request::Stop {
+                agent: isolated.id.to_string(),
+                force: true,
+            })
+            .await;
+        let closed = eventually(async || {
+            channels(daemon.clone())
+                .await
+                .into_iter()
+                .find(|c| !c.is_open())
+        })
+        .await;
+        assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
     }
 
     #[tokio::test]

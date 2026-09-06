@@ -22,6 +22,7 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 | layer | **worktree** | An agent's own writable checkout (`run --isolate`), integrated when validated |
 | `docker events` / `logs` | **events** / **journal** | A live stream of everything the daemon does, and a per-project narrative of what changed and why |
 | `docker export` | **handoff bundle** | Everything the daemon knows about an agent's work, handed to another agent or another machine |
+| pull request | **channel** | The room two agents share when they turn out to be changing the same files, where they talk and review each other's work |
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
@@ -193,6 +194,24 @@ Where the ledger records every file change, the journal records what happened an
 
 `agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
 
+### Channels: when two agents are on the same thing
+
+A lease keeps two agents out of one file. A channel is what happens when they are in it anyway.
+
+The daemon already knows which checkout changed which path, so the second checkout to touch a path is a collision and it opens a room for the agents involved — no one has to notice or ask:
+
+```sh
+agentdocker channels                                  # the rooms in this project, who is in them, how the reviews stand
+agentdocker channel open --as writer "settle the parser" --with reviewer   # or open one deliberately
+agentdocker send --from writer --to channel:<id> "I'm taking src/parser.rs"  # a group message: members only
+agentdocker review-request --as writer <id> --note "the lexer is untouched"
+agentdocker review --as reviewer <id> --changes "handle the empty input"   # blocks until you say otherwise
+agentdocker review --as reviewer <id> --approve "good now"
+agentdocker channel close --as writer <id> --resolution "writer's version landed"
+```
+
+A channel is a message destination with a membership rather than a subscription: an agent put in one hears it without asking, and offline members get it in their inbox. **Review is the tie-break.** When two agents have both done the work, what settles it is what the others say about it, not who finished first: a request for changes blocks until that same reviewer clears it, approvals count toward landing, and only a reviewer's latest word counts. Verdicts record the HEAD they were given, so you can read a verdict against the code it saw. A channel closes when the work is final or when its last member leaves, and closed channels are pruned.
+
 ### Resume with verified context
 
 ```sh
@@ -228,7 +247,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 **Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. The journal hands a newcomer what happened while it was away. Generic adopted processes are not automatically observed.
 
-**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 

@@ -183,6 +183,35 @@ pub fn event_line(event: &Event) -> String {
             validation,
             passed,
         } => format!("{agent} validation {validation} passed={passed}"),
+        EventKind::ChannelOpened {
+            channel,
+            title,
+            members,
+            ..
+        } => format!(
+            "channel opened   {channel} on {title} ({} members)",
+            members.len()
+        ),
+        EventKind::ChannelJoined { channel, agent } => {
+            format!("channel joined   {channel} by {}", agent.short())
+        }
+        EventKind::ChannelClosed {
+            channel,
+            resolution,
+        } => match resolution {
+            Some(reason) => format!("channel closed   {channel}: {reason}"),
+            None => format!("channel closed   {channel}"),
+        },
+        EventKind::ReviewSubmitted {
+            channel,
+            by,
+            of,
+            verdict,
+        } => format!(
+            "review           {} {verdict} on {} in {channel}",
+            by.short(),
+            of.short()
+        ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),

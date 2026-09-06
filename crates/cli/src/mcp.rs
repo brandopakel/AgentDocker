@@ -320,6 +320,23 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
+            "list_channels" => {
+                self.forward(Request::Channels {
+                    project: String::new(),
+                    all: false,
+                    agent: Some(me),
+                })
+                .await
+            }
+            "open_channel" | "close_channel" | "request_review" | "review" => {
+                let op = match name {
+                    "open_channel" => "channel_open",
+                    "close_channel" => "channel_close",
+                    "request_review" => "review_request",
+                    _ => "review",
+                };
+                self.forward(tagged_request(arguments, op, &me)?).await
+            }
             "handoff" | "list_handoffs" => {
                 let op = if name == "handoff" {
                     "handoff"
@@ -667,6 +684,8 @@ fn render(response: Response) -> Value {
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
+        Response::Channel { channel } => text_result(&json!(channel), false),
+        Response::Channels { channels } => text_result(&json!({ "channels": channels }), false),
         Response::Handoff { bundle } => text_result(&json!(bundle), false),
         Response::Overlap { overlaps } => text_result(&json!({ "overlaps": overlaps }), false),
         Response::Handoffs { bundles } => text_result(&json!({ "handoffs": bundles }), false),
@@ -698,6 +717,65 @@ fn tool_definitions() -> Vec<Value> {
                     "key": { "type": "string", "description": "Retries with the same key return the same bundle." }
                 },
                 "required": ["to"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "list_channels",
+            "description": "The channels this agent is in: the rooms opened when two checkouts change the same path, or opened deliberately for a task. Talk in one with send_message to `channel:<id>`.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "open_channel",
+            "description": "Open a channel for a task so several agents can work on it together, talk, and review each other. Members default to every other agent in this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "What the channel is about." },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "Agent ids or names; empty means everyone else here." }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "request_review",
+            "description": "Ask the other members of a channel to review your work before it lands. Do this when you and another agent have both changed the same files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": { "type": "string" },
+                    "note": { "type": "string", "description": "Anything the reviewers should know first." }
+                },
+                "required": ["channel"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "review",
+            "description": "Give a verdict on another member's work in a channel. This is the tie-break when two agents did the same work: `changes` blocks it until you say otherwise, `approve` counts toward landing it, `comment` does neither. Say what you actually checked in the note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": { "type": "string" },
+                    "of": { "type": "string", "description": "Whose work; omit when the channel has one other member." },
+                    "verdict": { "type": "string", "enum": ["approve", "changes", "comment"] },
+                    "note": { "type": "string" }
+                },
+                "required": ["channel", "verdict"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "close_channel",
+            "description": "The work is final: close the channel and tell its members what it settled on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": { "type": "string" },
+                    "resolution": { "type": "string" }
+                },
+                "required": ["channel"],
                 "additionalProperties": false
             }
         }),
@@ -961,6 +1039,11 @@ mod tests {
                 "resume_checkpoint",
                 "list_checkpoints",
                 "handoff",
+                "list_channels",
+                "open_channel",
+                "request_review",
+                "review",
+                "close_channel",
                 "overlap",
                 "list_handoffs",
                 "validate",
