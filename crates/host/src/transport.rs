@@ -1,0 +1,472 @@
+//! Checked local bind mounts and a scoped Unix-socket forward into a Podman VM.
+use crate::{command, containers::ContainerError};
+use agentdocker_core::{
+    AgentRecord, ContainerEngine,
+    container::{ContainerWorkspace, PodmanVm, WorkspaceAccess},
+};
+use serde_json::Value;
+use std::{
+    fs,
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    path::Path,
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
+
+fn error(e: impl std::fmt::Display) -> ContainerError {
+    ContainerError(e.to_string())
+}
+fn run(args: Vec<String>) -> Result<String, ContainerError> {
+    let out = command::run(Path::new("/"), &args, Duration::from_secs(15)).map_err(error)?;
+    if !out.success {
+        return Err(error(out.text.chars().take(2048).collect::<String>()));
+    }
+    Ok(out.stdout)
+}
+fn json(args: Vec<String>) -> Result<Value, ContainerError> {
+    serde_json::from_str(&run(args)?).map_err(error)
+}
+fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, ContainerError> {
+    v.pointer(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| error(format!("engine omitted {key}")))
+}
+fn path_arg(path: &Path) -> Result<String, ContainerError> {
+    let p = path
+        .to_str()
+        .ok_or_else(|| error("mount paths must be UTF-8"))?;
+    if !path.is_absolute() || p.contains([',', ':', '\n', '\r', '\0']) {
+        return Err(error(
+            "mount path must be absolute without comma, colon or control characters",
+        ));
+    }
+    Ok(p.into())
+}
+/// Never widen an existing directory or follow a substituted symlink.
+pub fn private_directory(path: &Path) -> Result<(), ContainerError> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(error(e)),
+    }
+    let m = fs::symlink_metadata(path).map_err(error)?;
+    if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.permissions().mode() & 0o077 != 0 {
+        return Err(error(
+            "transport directory must be private and owned by the daemon user",
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the actual engine endpoint and host-visible UID before granting access.
+pub fn prepare(
+    record: &mut AgentRecord,
+    home: &Path,
+    control: &Path,
+) -> Result<(), ContainerError> {
+    let checkout = fs::canonicalize(
+        record
+            .spec
+            .workdir
+            .as_ref()
+            .ok_or_else(|| error("checkout mount requires --workdir"))?,
+    )
+    .map_err(error)?;
+    let home = fs::canonicalize(home).map_err(error)?;
+    let control = fs::canonicalize(control).map_err(error)?;
+    if !checkout.is_dir()
+        || home.starts_with(&checkout)
+        || checkout.starts_with(&home)
+        || control.starts_with(&checkout)
+    {
+        return Err(error(
+            "checkout cannot contain daemon state or the control socket",
+        ));
+    }
+    path_arg(&checkout)?;
+    let parent = home.join("mounts");
+    private_directory(&parent)?;
+    let directory = parent.join(record.id.as_str());
+    private_directory(&directory)?;
+    path_arg(&directory)?;
+    if directory.join("endpoint.sock").as_os_str().len() > 103 {
+        return Err(error("daemon home is too long for workspace Unix sockets"));
+    }
+    let bridge_directory = parent.join(format!("bridge-{}", record.id));
+    private_directory(&bridge_directory)?;
+    let c = record.container.as_mut().unwrap();
+    let mut vm = None;
+    let uid;
+    let gid;
+    let keep_id;
+    if let Some(machine) = &c.options.podman_machine {
+        if c.engine != ContainerEngine::Podman {
+            return Err(error("VM transport requires Podman"));
+        }
+        if machine.is_empty() || machine.starts_with('-') {
+            return Err(error("invalid Podman machine name"));
+        }
+        let machines = json(vec![
+            "podman".into(),
+            "machine".into(),
+            "inspect".into(),
+            machine.clone(),
+        ])?;
+        let m = machines
+            .as_array()
+            .filter(|a| a.len() == 1)
+            .and_then(|a| a.first())
+            .ok_or_else(|| error("expected one Podman machine"))?;
+        if text(m, "/State")? != "running" || m.get("Rootful") != Some(&Value::Bool(false)) {
+            return Err(error("start the selected rootless Podman machine first"));
+        }
+        let port = m
+            .pointer("/SSHConfig/Port")
+            .and_then(Value::as_u64)
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|p| *p != 0)
+            .ok_or_else(|| error("invalid VM SSH port"))?;
+        let user = text(m, "/SSHConfig/RemoteUsername")?.to_owned();
+        if user.is_empty()
+            || !user
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            return Err(error("invalid VM SSH username"));
+        }
+        let identity = Path::new(text(m, "/SSHConfig/IdentityPath")?).to_path_buf();
+        let connections = json(vec![
+            "podman".into(),
+            "system".into(),
+            "connection".into(),
+            "list".into(),
+            "--format=json".into(),
+        ])?;
+        let chosen = connections
+            .as_array()
+            .and_then(|a| {
+                a.iter().find(|v| match &c.connection {
+                    Some(name) => v.get("Name").and_then(Value::as_str) == Some(name),
+                    None => v.get("Default") == Some(&Value::Bool(true)),
+                })
+            })
+            .ok_or_else(|| error("selected Podman connection is unavailable"))?;
+        let uri = text(chosen, "/URI")?;
+        let expected = format!("ssh://{user}@127.0.0.1:{port}/run/user/");
+        let remote_uid = uri
+            .strip_prefix(&expected)
+            .and_then(|s| s.strip_suffix("/podman/podman.sock"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or_else(|| error("build connection must point to the selected rootless VM"))?;
+        if text(chosen, "/Identity")? != identity.to_string_lossy() {
+            return Err(error("VM identity differs from the engine connection"));
+        }
+        c.connection = Some(text(chosen, "/Name")?.into());
+        let config = PodmanVm {
+            machine: machine.clone(),
+            port,
+            identity,
+            user,
+        };
+        let ids = ssh_run(&config, &bridge_directory, "id -u; id -g")?;
+        let ids: Vec<_> = ids
+            .split_whitespace()
+            .map(str::parse::<u32>)
+            .collect::<Result<_, _>>()
+            .map_err(error)?;
+        if ids.len() != 2 || ids[0] != remote_uid || ids[0] == 0 {
+            return Err(error("VM user mapping does not match the engine"));
+        }
+        uid = ids[0];
+        gid = ids[1];
+        keep_id = true;
+        // Prove that the engine VM sees these exact host directories before mounting.
+        for root in [&directory, &checkout] {
+            let probe = tempfile::Builder::new()
+                .prefix(".agentdocker-mount-")
+                .tempfile_in(root)
+                .map_err(error)?;
+            let marker = record.id.to_string();
+            fs::write(probe.path(), marker.as_bytes()).map_err(error)?;
+            let remote = ssh_run(
+                &config,
+                &bridge_directory,
+                &format!("cat -- {}", quote(&path_arg(probe.path())?)),
+            )?;
+            if remote != marker {
+                return Err(error(
+                    "checkout or credential directory is not shared with the VM",
+                ));
+            }
+        }
+        vm = Some(config);
+    } else {
+        if !cfg!(target_os = "linux") {
+            return Err(error(
+                "macOS checkout mounts require --podman-machine; Docker Desktop transport is unavailable",
+            ));
+        }
+        uid = unsafe { libc::geteuid() };
+        gid = unsafe { libc::getegid() };
+        match c.engine {
+            ContainerEngine::Podman => {
+                if c.connection.is_some()
+                    || std::env::var_os("CONTAINER_HOST").is_some()
+                    || std::env::var_os("CONTAINER_CONNECTION").is_some()
+                {
+                    return Err(error("Linux checkout transport requires local Podman"));
+                }
+                let info = json(vec!["podman".into(), "info".into(), "--format=json".into()])?;
+                if info.pointer("/host/security/rootless") != Some(&Value::Bool(true)) {
+                    return Err(error("checkout mounts require rootless Podman"));
+                }
+                keep_id = true;
+            }
+            ContainerEngine::Docker => {
+                let context = match &c.connection {
+                    Some(v) => v.clone(),
+                    None => run(vec!["docker".into(), "context".into(), "show".into()])?
+                        .trim()
+                        .into(),
+                };
+                let contexts = json(vec![
+                    "docker".into(),
+                    "context".into(),
+                    "inspect".into(),
+                    context.clone(),
+                ])?;
+                if !text(&contexts, "/0/Endpoints/docker/Host")?.starts_with("unix://")
+                    || std::env::var_os("DOCKER_HOST").is_some()
+                {
+                    return Err(error(
+                        "checkout mounts require a local Docker Unix endpoint",
+                    ));
+                }
+                let endpoint = text(&contexts, "/0/Endpoints/docker/Host")?
+                    .strip_prefix("unix://")
+                    .unwrap();
+                let endpoint = fs::canonicalize(endpoint).map_err(error)?;
+                if endpoint.starts_with(&checkout) {
+                    return Err(error("checkout cannot contain the engine socket"));
+                }
+                c.connection = Some(context.clone());
+                let info = json(vec![
+                    "docker".into(),
+                    "--context".into(),
+                    context,
+                    "info".into(),
+                    "--format=json".into(),
+                ])?;
+                let security = info
+                    .get("SecurityOptions")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| error("Docker omitted namespace capabilities"))?;
+                if security
+                    .iter()
+                    .any(|s| s.as_str().is_some_and(|s| s.contains("userns")))
+                {
+                    return Err(error(
+                        "Docker userns-remap is unsupported for checkout mounts",
+                    ));
+                }
+                let rootless = security
+                    .iter()
+                    .any(|s| s.as_str().is_some_and(|s| s.contains("rootless")));
+                if rootless && fs::metadata(&endpoint).map_err(error)?.uid() != uid {
+                    return Err(error("rootless Docker must run as the daemon user"));
+                }
+                record.spec.workdir = Some(checkout.clone());
+                c.workspace = Some(ContainerWorkspace {
+                    checkout,
+                    user: if rootless {
+                        "0:0".into()
+                    } else {
+                        format!("{uid}:{gid}")
+                    },
+                    keep_id: false,
+                    read_only: false,
+                    access: Some(WorkspaceAccess {
+                        grant: String::new(),
+                        socket_directory: directory.clone(),
+                        directory,
+                        vm: None,
+                    }),
+                });
+                return Ok(());
+            }
+        }
+    }
+    let socket_directory = if vm.is_some() {
+        Path::new("/tmp").join(format!("ad-{}", record.id))
+    } else {
+        directory.clone()
+    };
+    record.spec.workdir = Some(checkout.clone());
+    c.workspace = Some(ContainerWorkspace {
+        checkout,
+        user: format!("{uid}:{gid}"),
+        keep_id,
+        read_only: false,
+        access: Some(WorkspaceAccess {
+            grant: String::new(),
+            directory,
+            socket_directory,
+            vm,
+        }),
+    });
+    Ok(())
+}
+
+fn quote(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "'\\''"))
+}
+fn ssh_prefix(vm: &PodmanVm, directory: &Path) -> Vec<String> {
+    vec![
+        "ssh".into(),
+        "-F".into(),
+        "/dev/null".into(),
+        "-T".into(),
+        "-oBatchMode=yes".into(),
+        "-oIdentitiesOnly=yes".into(),
+        "-oConnectTimeout=5".into(),
+        "-oStrictHostKeyChecking=accept-new".into(),
+        format!(
+            "-oUserKnownHostsFile={}",
+            directory.join("known_hosts").display()
+        ),
+        "-i".into(),
+        vm.identity.to_string_lossy().into(),
+        "-p".into(),
+        vm.port.to_string(),
+        format!("{}@127.0.0.1", vm.user),
+    ]
+}
+fn ssh_run(vm: &PodmanVm, directory: &Path, script: &str) -> Result<String, ContainerError> {
+    let mut args = ssh_prefix(vm, directory);
+    args.push(script.into());
+    run(args)
+}
+
+/// Child ownership and a private control socket let recovery replace only this forward.
+pub struct Bridge(Child);
+impl Bridge {
+    pub fn alive(&mut self) -> bool {
+        matches!(self.0.try_wait(), Ok(None))
+    }
+}
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+pub fn bridge(
+    access: &WorkspaceAccess,
+    restricted: &Path,
+) -> Result<Option<Bridge>, ContainerError> {
+    let Some(vm) = &access.vm else {
+        return Ok(None);
+    };
+    let directory = access.directory.parent().unwrap().join(format!(
+        "bridge-{}",
+        access.directory.file_name().unwrap().to_string_lossy()
+    ));
+    private_directory(&directory)?;
+    let control = directory.join("ctl");
+    // OpenSSH adds a random suffix before atomically publishing its control socket.
+    if control.as_os_str().len() > 85 {
+        return Err(error("daemon home is too long for an SSH control socket"));
+    }
+    let mut old = ssh_prefix(vm, &directory);
+    let destination = old.pop().unwrap();
+    old.extend([
+        "-S".into(),
+        path_arg(&control)?,
+        "-O".into(),
+        "exit".into(),
+        destination.clone(),
+    ]);
+    let _ = run(old); // Missing master is normal. Never signal a cached PID.
+    let dir = quote(&path_arg(&access.socket_directory)?);
+    let socket = access.socket_directory.join("endpoint.sock");
+    ssh_run(
+        vm,
+        &directory,
+        &format!(
+            "umask 077; if test -e {dir}; then test -d {dir} && test ! -L {dir} && test \"$(stat -c '%u:%a' {dir})\" = \"$(id -u):700\" || exit 1; else mkdir -- {dir} || exit 1; fi; rm -f -- {}",
+            quote(&path_arg(&socket)?)
+        ),
+    )?;
+    let mut args = ssh_prefix(vm, &directory);
+    args.pop();
+    args.extend([
+        "-M".into(),
+        "-S".into(),
+        path_arg(&control)?,
+        "-oExitOnForwardFailure=yes".into(),
+        "-oServerAliveInterval=5".into(),
+        "-oServerAliveCountMax=2".into(),
+        "-N".into(),
+        "-R".into(),
+        format!("{}:{}", path_arg(&socket)?, path_arg(restricted)?),
+        destination,
+    ]);
+    let child = Command::new(&args[0])
+        .args(&args[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(error)?;
+    let mut bridge = Bridge(child);
+    for _ in 0..50 {
+        if !bridge.alive() {
+            return Err(error("scoped VM socket forward exited"));
+        }
+        let mut check = ssh_prefix(vm, &directory);
+        let destination = check.pop().unwrap();
+        check.extend([
+            "-S".into(),
+            path_arg(&control)?,
+            "-O".into(),
+            "check".into(),
+            destination,
+        ]);
+        if run(check).is_ok() && bridge.alive() {
+            return Ok(Some(bridge));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err(error("VM socket forward did not become ready"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn private_transport_refuses_symlinks_and_public_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("private");
+        private_directory(&private).unwrap();
+        private_directory(&private).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&private, &alias).unwrap();
+        assert!(private_directory(&alias).is_err());
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_directory(&private).is_err());
+        for raw in ["relative", "/a,b", "/a:b", "/a\nb"] {
+            assert!(path_arg(Path::new(raw)).is_err());
+        }
+    }
+    #[test]
+    fn remote_paths_are_literal_shell_arguments() {
+        let value = "quote' $(echo unsafe) `echo unsafe`";
+        let output = run(vec![
+            "sh".into(),
+            "-c".into(),
+            format!("printf %s {}", quote(value)),
+        ])
+        .unwrap();
+        assert_eq!(output, value);
+    }
+}

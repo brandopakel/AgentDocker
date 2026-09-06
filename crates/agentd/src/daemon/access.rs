@@ -72,6 +72,66 @@ impl Daemon {
         }
     }
 
+    /// Mint a private file before publishing a launch; a crash leaves an inactive grant.
+    pub(super) fn workspace_grant(
+        &self,
+        record: &mut AgentRecord,
+    ) -> Result<(), agentdocker_host::containers::ContainerError> {
+        use agentdocker_host::containers::ContainerError;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let w = record
+            .container
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap();
+        let access = w.access.as_mut().unwrap();
+        let id = MessageId::generate().to_string();
+        let token = format!("{}.{}{}", id, MessageId::generate(), MessageId::generate());
+        let grant = Grant {
+            id: id.clone(),
+            token_hash: hash(&token),
+            agent: record.id.clone(),
+            host_root: w.checkout.clone(),
+            container_root: PathBuf::from("/workspace"),
+            expires_at: Utc::now() + Duration::hours(24),
+            revoked: false,
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(access.directory.join("token"))
+            .map_err(|e| ContainerError(e.to_string()))?;
+        file.write_all(token.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| ContainerError(e.to_string()))?;
+        std::fs::File::open(&access.directory)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| ContainerError(e.to_string()))?;
+        let mut state = lock(&self.state);
+        let mut event = Event::new(
+            EventKind::AccessGranted {
+                agent: record.id.clone(),
+                grant: id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        state.persist("workspace grant", |store| {
+            store.put_document_with_event("access", &id, &grant, &event)
+        });
+        if let Some(error) = &state.storage_error {
+            return Err(ContainerError(error.clone()));
+        }
+        state.next_seq += 1;
+        let _ = state.events.send(event);
+        access.grant = id;
+        Ok(())
+    }
+
     pub(super) fn revoke_access(&self, id: &str) -> Response {
         let mut state = lock(&self.state);
         let mut grant = match state.store.document::<Grant>("access", id) {
@@ -430,6 +490,17 @@ mod tests {
             daemon.handle(mapped).await,
             Response::Lease { .. }
         ));
+        let mut expired = original.clone();
+        expired.expires_at = Utc::now() - Duration::seconds(1);
+        lock(&daemon.state)
+            .store
+            .put_document("access", &grant, &expired)
+            .unwrap();
+        assert!(daemon.restricted_request(&token, Request::Ping).is_err());
+        lock(&daemon.state)
+            .store
+            .put_document("access", &grant, &original)
+            .unwrap();
         daemon.revoke_access(&grant);
         assert!(daemon.restricted_request(&token, Request::Ping).is_err());
         assert!(

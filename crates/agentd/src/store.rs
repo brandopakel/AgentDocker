@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -362,7 +362,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=3)) => {
+            Some(Ok(1..=4)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -1221,7 +1221,7 @@ mod tests {
 
     #[test]
     fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=3 {
+        for version in 1..=4 {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1238,7 +1238,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "4");
+            assert_eq!(version, "5");
         }
     }
 
