@@ -36,7 +36,7 @@ use crate::daemon::Daemon;
 )]
 pub struct Args {
     /// Directory for the socket, logs and state.
-    #[arg(long, env = "AGENTDOCKER_HOME", default_value_os_t = paths::default_home())]
+    #[arg(long, env = "AGENTDOCKER_HOME", default_value_os_t = agentdocker_host::dirs::home())]
     home: PathBuf,
 
     /// Unix socket to listen on (default: <home>/agentd.sock).
@@ -60,9 +60,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         )
         .init();
 
-    let socket = args
-        .socket
-        .unwrap_or_else(|| paths::socket_path(&args.home));
+    // One spelling of the home, whatever it was given as, so the socket
+    // directory it derives is the one clients derive.
+    let home = agentdocker_host::dirs::canonical_home(args.home);
+    let socket = args.socket.unwrap_or_else(|| paths::socket_path(&home));
     let lock_path = paths::lock_path(&socket);
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -71,7 +72,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
         return Ok(());
     };
-    let daemon = Arc::new(Daemon::open(args.home, socket)?);
+    let daemon = Arc::new(Daemon::open(home, socket)?);
 
     let containers = daemon.clone();
     tokio::spawn(async move {

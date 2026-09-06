@@ -30,7 +30,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(socket: Option<PathBuf>) -> Self {
-        let socket = socket.unwrap_or_else(|| paths::socket_path(&paths::default_home()));
+        let socket = socket.unwrap_or_else(|| paths::socket_path(&dirs::home()));
         let disabled = std::env::var_os("AGENTDOCKER_TOKEN_FILE").is_some()
             || std::env::var_os("AGENTDOCKER_NO_AUTOSTART")
                 .is_some_and(|value| !value.is_empty() && value != "0");
@@ -105,7 +105,7 @@ impl Client {
     /// starting, so only the wait is needed. Two clients racing here may
     /// both spawn a daemon; the loser exits when it finds the lock taken.
     async fn start_daemon(&self, timeout: Duration) -> Result<UnixStream> {
-        let home = paths::default_home();
+        let home = dirs::home();
         let lock_path = paths::lock_path(&self.socket);
         if let Some(parent) = lock_path.parent() {
             if parent == paths::socket_dir(&home) && parent != home {
