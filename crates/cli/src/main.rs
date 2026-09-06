@@ -1,6 +1,7 @@
 //! `agentdocker`: command-line client for `agentd`.
 
 mod agentfile;
+mod attach;
 mod client;
 mod format;
 mod hooks;
@@ -350,6 +351,11 @@ enum Command {
     Runtimes,
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
     Ui,
+    /// Connect this terminal to a managed agent's. Ctrl-] detaches and leaves it running.
+    Attach {
+        /// Agent id, name or unique prefix.
+        agent: String,
+    },
     /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
@@ -519,6 +525,9 @@ struct RunArgs {
     /// Give the agent its own linked worktree and branch (agent/<name>) under the daemon home, so its edits are a layer of their own.
     #[arg(long)]
     isolate: bool,
+    /// Give the agent a terminal rather than pipes, so an interactive agent works and `attach` can reach it.
+    #[arg(long, short = 't')]
+    tty: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -1182,6 +1191,7 @@ async fn main() -> Result<()> {
                 print_runtimes(&runtimes);
             }
         }
+        Command::Attach { agent } => attach::run(&client, &agent).await?,
         Command::Ui => {
             let app = std::env::current_exe()
                 .ok()
@@ -1226,6 +1236,7 @@ async fn main() -> Result<()> {
                 env: parse_pairs(&args.env)?,
                 labels: parse_pairs(&args.labels)?,
                 isolate: args.isolate,
+                tty: args.tty,
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1262,6 +1273,7 @@ async fn main() -> Result<()> {
                 env: BTreeMap::new(),
                 labels: parse_pairs(&args.labels)?,
                 isolate: false,
+                tty: false,
             };
             let request = Request::Register {
                 spec,

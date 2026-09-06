@@ -80,6 +80,11 @@ pub struct AgentSpec {
     /// the checkout it was pointed at, so its edits are a layer of their own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub isolate: bool,
+    /// `run` gives the agent a terminal rather than pipes, so an
+    /// interactive runtime works under supervision and `attach` can reach
+    /// it. Output still lands in the log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tty: bool,
 }
 
 /// Which branch and commit an agent's checkout is on, as last observed —

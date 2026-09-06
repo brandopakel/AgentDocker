@@ -409,6 +409,27 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
+    /// Attach a terminal to a managed agent that was given one. The reply
+    /// is a stream of `output`; the client may then send `attach_input`
+    /// and `attach_resize` on the same connection, and closing it detaches
+    /// without disturbing the agent.
+    Attach {
+        agent: String,
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
+    },
+    /// Keystrokes for an attached agent's terminal, base64 because they
+    /// are bytes and not text.
+    AttachInput {
+        data: String,
+    },
+    /// The attached window changed size.
+    AttachResize {
+        cols: u16,
+        rows: u16,
+    },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
         project: String,
@@ -447,6 +468,22 @@ fn default_ttl() -> u64 {
 
 fn default_tail() -> usize {
     100
+}
+
+/// Terminal bytes as a protocol frame carries them. Base64 rather than a
+/// string because a terminal emits escape sequences and partial UTF-8,
+/// and rather than an array of numbers because that is four times the
+/// size for the same bytes.
+pub fn encode_bytes(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The other direction; malformed input decodes to nothing rather than
+/// killing the stream.
+pub fn decode_bytes(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
 }
 
 /// Closed channels older than this are pruned by default: a fortnight,
@@ -598,6 +635,10 @@ pub enum Response {
     Channel {
         channel: crate::Channel,
     },
+    /// Bytes an attached agent's terminal produced, base64 encoded.
+    Output {
+        data: String,
+    },
     Channels {
         channels: Vec<crate::Channel>,
     },
@@ -648,6 +689,16 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_bytes_survive_a_round_trip() {
+        let raw: Vec<u8> = vec![0x1b, b'[', b'2', b'J', 0xff, 0xfe, 0x00, b'h', b'i'];
+        let encoded = encode_bytes(&raw);
+        assert!(!encoded.contains('\n'), "one frame, one line");
+        assert_eq!(decode_bytes(&encoded).as_deref(), Some(raw.as_slice()));
+        assert_eq!(decode_bytes("not base64!!"), None);
+        assert_eq!(decode_bytes(""), Some(Vec::new()));
+    }
 
     #[test]
     fn requests_round_trip() {
