@@ -264,6 +264,8 @@ The host control socket is mode `0600` and trusts the owning user. The separate 
 
 ## Roadmap
 
+This section preserves the historical phased engineering design. The [native desktop product direction](PRODUCT-DIRECTION.md#delivery-order) defines current priorities, including installed inventory, background discovery and an installed GUI. Historical phase numbers and proposed interfaces below are not GitHub PR numbers or a release checklist; the wire-protocol table above describes current operations.
+
 Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
 ### The thesis
@@ -469,9 +471,11 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 ### Delivery order
 
+Historical dependency sequence; follow [product direction](PRODUCT-DIRECTION.md#delivery-order) for upcoming work.
+
 Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests together, per `CLAUDE.md`. Adding a table is not a `SCHEMA_VERSION` bump (`CREATE TABLE IF NOT EXISTS`); changing what a stored row means is.
 
-| # | PR | phase | depends on |
+| Sequence | Deliverable | Historical phase | Depends on sequence |
 |---|---|---|---|
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
@@ -494,7 +498,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 
 ### Planned protocol and event additions
 
-Listed here so the wire-protocol table above stays a description of what exists.
+These historical proposals can differ from the shipped interfaces. The wire-protocol table above is the reference for what exists; consult it before implementing or calling an operation.
 
 | Request | Response | Phase |
 |---|---|---|

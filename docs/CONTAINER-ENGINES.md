@@ -1,4 +1,6 @@
-# Docker and Podman delivery plan
+# Optional Docker and Podman execution
+
+Native agents run directly on the host without an engine. Start with [native installation and setup](GETTING-STARTED.md); this guide covers optional image execution and authenticated transport. The [product direction](PRODUCT-DIRECTION.md) defines the installed desktop goal.
 
 Added September 5, 2026 at the user's request. This extends the current worktree and authenticated-container workstream. Correct stale-context detection and verified session handoff remain the acceptance criteria across engines.
 
@@ -95,3 +97,13 @@ The helper image is built from an embedded relay and a digest-pinned Python base
 Confirmed writer exit retires the helper, including after daemon recovery. Exited agent containers and their small socket volumes are retained for inspection until explicit engine cleanup; volume removal must never be forced while a container still references it. The real fixture removes only its label-verified helpers and volumes. Image-declared volumes remain unsupported: only the recorded socket volume is allowed in addition to the authorized bind mounts.
 
 Desktop setup requires the user's first-run agreement and a running local Desktop context. See [Docker's macOS installation instructions](https://docs.docker.com/desktop/setup/install/mac-install/). The relay's Linux Docker, Linux Podman and macOS Podman results are separate from actual Docker Desktop validation.
+
+## Access from a manually launched container
+
+Managed workspace runs create their scoped access automatically. For a container you configure yourself, first register its participating agent, then run:
+
+```sh
+agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token
+```
+
+The command writes a private token and prints its grant ID. Mount only the mapped checkout, the separate restricted `container.sock` endpoint and the token file. Set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE` and `AGENTDOCKER_AGENT_ID` inside the container. Use `agentdocker daemon status` to find the socket directory; long daemon home paths use a short private directory. `agentdocker revoke-access <grant>` disables subsequent requests while preserving existing leases. Never mount the host control socket or the engine socket. Managed workspace transport handles VM forwarding and socket replacement for you.
