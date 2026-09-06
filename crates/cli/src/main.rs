@@ -301,6 +301,8 @@ enum Command {
     },
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
     Runtimes,
+    /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
+    Ui,
     /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
@@ -987,6 +989,28 @@ async fn main() -> Result<()> {
             if let Response::Runtimes { runtimes } = client.call(&Request::Runtimes).await? {
                 print_runtimes(&runtimes);
             }
+        }
+        Command::Ui => {
+            let app = std::env::current_exe()
+                .ok()
+                .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
+                .filter(|sibling| sibling.is_file())
+                .or_else(|| {
+                    std::env::var_os("PATH").and_then(|path| {
+                        std::env::split_paths(&path)
+                            .map(|dir| dir.join("agentdocker-ui"))
+                            .find(|candidate| candidate.is_file())
+                    })
+                })
+                .context(
+                    "agentdocker-ui is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
+                )?;
+            std::process::Command::new(&app)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .with_context(|| format!("cannot start {}", app.display()))?;
         }
         Command::Setup { runtimes, dry_run } => setup::run(&client, &runtimes, dry_run).await?,
         Command::Run(args) => {

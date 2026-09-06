@@ -1,0 +1,20 @@
+[package]
+name = "agentdocker-ui"
+description = "The AgentDocker desktop app: a native window over the agentd socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agentdocker-ui"
+path = "src/main.rs"
+
+[dependencies]
+agentdocker-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+eframe.workspace = true
+egui.workspace = true
+serde_json.workspace = true

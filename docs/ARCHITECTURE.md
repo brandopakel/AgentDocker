@@ -449,7 +449,7 @@ An agent handing work to another should not have to write its state down; the da
 
 Discovery becomes continuous: the daemon runs the same process scan `discover` runs every five seconds, keeps the result, and announces `agent_discovered {pid, runtime, project}` when a known agent process appears and `agent_vanished {pid}` when one goes; `discover` answers from the last scan, and `adopt --all` registers every discovered process at once. Adopting automatically is a policy decision and waits for the policy file below.
 
-#### Native desktop app
+#### Native desktop app *(done)*
 
 `agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events. It raises desktop notifications for messages addressed to the human and for stale-context warnings, which is the channel the human-as-agent item below delivers through. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there.
 
@@ -506,7 +506,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
 | 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
-| 19 | native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events, notifications | 5 | 18 |
+| 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 
 Order from here: 18, 19, a first tagged release so a second machine installs with the curl installer, then 13–16, 20, and 17.
