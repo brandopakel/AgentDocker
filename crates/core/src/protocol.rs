@@ -353,6 +353,62 @@ pub enum Request {
         #[serde(default)]
         agent: Option<String>,
     },
+    /// Channels of a project: the rooms agents share when they turn out to
+    /// be on the same work. An empty `project` means the agent's own.
+    Channels {
+        #[serde(default)]
+        project: String,
+        /// Include closed channels that have not been pruned.
+        #[serde(default)]
+        all: bool,
+        /// Only channels this agent is in.
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// Open a channel deliberately, rather than wait for the ledger to
+    /// show two checkouts on one path. Members default to every other live
+    /// agent in the project.
+    ChannelOpen {
+        agent: String,
+        task: String,
+        #[serde(default)]
+        members: Vec<String>,
+    },
+    /// The work is final: close the channel and tell its members. Closed
+    /// channels are pruned by `channel_prune`.
+    ChannelClose {
+        agent: String,
+        channel: String,
+        #[serde(default)]
+        resolution: Option<String>,
+    },
+    /// Drop closed channels that have been closed longer than this. An
+    /// empty `project` prunes every project.
+    ChannelPrune {
+        #[serde(default)]
+        project: String,
+        #[serde(default = "default_channel_retention")]
+        before_secs: u64,
+    },
+    /// Ask a channel's other members to review this agent's work.
+    ReviewRequest {
+        agent: String,
+        channel: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Give a verdict on another member's work. `of` defaults to whoever
+    /// asked the channel for review last.
+    Review {
+        agent: String,
+        channel: String,
+        #[serde(default)]
+        of: Option<String>,
+        /// `approve`, `changes`, or `comment`.
+        verdict: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
         project: String,
@@ -391,6 +447,12 @@ fn default_ttl() -> u64 {
 
 fn default_tail() -> usize {
     100
+}
+
+/// Closed channels older than this are pruned by default: a fortnight,
+/// long enough to read back why something landed.
+fn default_channel_retention() -> u64 {
+    14 * 24 * 60 * 60
 }
 
 fn default_changes_limit() -> usize {
@@ -532,6 +594,12 @@ pub enum Response {
     Digest {
         project: crate::ProjectId,
         digest: Digest,
+    },
+    Channel {
+        channel: crate::Channel,
+    },
+    Channels {
+        channels: Vec<crate::Channel>,
     },
     Pruned {
         removed: usize,

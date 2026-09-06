@@ -314,6 +314,15 @@ impl Store {
             params![kind,id,serde_json::to_string(value)?])?;
         Ok(())
     }
+    /// Forget one document.
+    pub fn delete_document(&self, kind: &str, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM documents WHERE kind = ?1 AND id = ?2",
+            params![kind, id],
+        )?;
+        Ok(())
+    }
+
     /// Load a durable observation or recovery document.
     pub fn document<T: serde::de::DeserializeOwned>(
         &self,

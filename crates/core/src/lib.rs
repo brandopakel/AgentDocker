@@ -37,5 +37,8 @@ pub use handoff::{HandoffBundle, HandoffDiff};
 
 pub mod runtime;
 pub use runtime::{RuntimeInfo, Wiring};
+
+pub mod channel;
+pub use channel::{Channel, ChannelId, ChannelSubject, Decision, Review, Verdict};
 pub mod container;
 pub use container::{ContainerEngine, ImageBuild, ImageBuildSpec};

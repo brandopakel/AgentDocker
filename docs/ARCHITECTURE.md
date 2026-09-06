@@ -196,6 +196,12 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `import {agent, bundle}` | `handoff {bundle}` | a bundle exported on another host, re-homed to the agent's checkout and addressed to it, to accept with `resume` |
 | `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
 | `validations {agent}` | `validations` | evidence for one session |
+| `channels {project?, all?, agent?}` | `channels {channels: Channel[]}` | the rooms agents share in a project; open ones by default, `all` includes closed-but-unpruned, `agent` narrows to its own and lets `project` be empty |
+| `channel_open {agent, task, members?}` | `channel {channel}` | a room for a task; members default to every other live agent in the project |
+| `channel_close {agent, channel, resolution?}` | `channel {channel}` | the work is final; members are told and the journal says what it settled on |
+| `channel_prune {project?, before_secs?}` | `pruned {removed}` | forget channels closed longer ago than that (a fortnight by default); an empty `project` prunes every project |
+| `review_request {agent, channel, note?}` | `channel {channel}` | ask the other members to look at this agent's work |
+| `review {agent, channel, of?, verdict, note?}` | `channel {channel}` | `approve`, `changes` or `comment` on another member's work; `of` defaults to the only other member; the reply carries the reviews so far |
 | `overlap {project, since_seq?, agent?}` | `overlap {overlaps: Overlap[]}` | paths changed in more than one physical checkout of the project, from the newest 50,000 ledger rows: per path, each checkout with the agents attributed there, the count, the last change and its HEAD; with `agent`, only overlaps involving its checkout, and an empty `project` means its own |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
@@ -249,9 +255,23 @@ Four destinations:
 
 Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
 
+## Channels
+
+A lease keeps two agents out of one file. A channel is what happens when they are in it anyway.
+
+The ledger already records which checkout changed which path. The second checkout to change a path is a collision, so the daemon opens a room for the agents behind those checkouts rather than wait for one of them to notice: `channel_opened`, a message to each member, and a `review` journal entry. One open contested channel per project, not one per file — agents colliding on `src/parser.rs` and then on `src/lexer.rs` are having one conversation, so paths accumulate on the same channel and any newly involved agent is admitted (`channel_joined`). A channel can also be opened deliberately for a task (`channel_open`), which is the case where agents are told to work on the same thing rather than discovered doing it.
+
+A channel is a message destination, `channel:<id>`. Unlike a topic it has a membership rather than a subscription: an agent put in a channel hears it without asking, and offline members get the message in their inbox like any other. Nothing outside the membership sees it.
+
+**Review is the tie-break.** Inside a channel an agent asks for review (`review_request`) and the others answer (`review`) with `approve`, `changes`, or `comment`. Only a reviewer's latest word on a given author counts, nobody reviews their own work, and a request for changes blocks until that same reviewer says otherwise — so `decision(author, required)` is `Blocked`, `Approved`, or `Pending`. That is deliberately the tie-break rather than a race: when two agents have both done the work, what settles it is what the other agents say about it, not who finished first. Verdicts record the reviewed checkout's HEAD, so a verdict can be read against the code it was actually given.
+
+A channel closes when the work is final (`channel_close`, with a resolution that goes in the journal) or when its last live member leaves, which closes it as "everyone left". Closed channels stay readable until `channel_prune` forgets them, a fortnight by default.
+
+Contests (roadmap row 22) build on this: several agents attempt one task in their own worktrees, correctness gates on `validate` evidence bound to content fingerprints, a metric declared before anyone starts ranks what passes, and anything inside the noise floor is a tie that channel review settles.
+
 ## Events
 
-`agent_discovered` (an unregistered process appeared or its metadata changed; includes PID and optional start time), `agent_vanished` (that PID/start-time session exited, or `adopted`), `discovery_unavailable` (scan failed; prior snapshot retained), `discovery_available` (scanning recovered), `agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+`agent_discovered` (an unregistered process appeared or its metadata changed; includes PID and optional start time), `agent_vanished` (that PID/start-time session exited, or `adopted`), `discovery_unavailable` (scan failed; prior snapshot retained), `discovery_available` (scanning recovered), `agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `channel_opened`, `channel_joined`, `channel_closed`, `review_submitted`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
 
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
@@ -512,8 +532,10 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
 | 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
+| 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
+| 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
 
-Order from here: a first tagged release so a second machine installs with the curl installer, then 14 (the human as an agent, which is where the desktop app's notifications come from), 13, 15, 16, the `commit` half of 10, 20, and 17.
+Order from here: a first tagged release so a second machine installs with the curl installer, then 14 (the human as an agent, which is where the desktop app's notifications come from), 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 

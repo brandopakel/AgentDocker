@@ -193,6 +193,33 @@ pub enum EventKind {
     FileChanged {
         change: Change,
     },
+    /// Agents turned out to be working on the same thing, or somebody
+    /// opened a room for a task: they can talk and review there now.
+    ChannelOpened {
+        channel: crate::ChannelId,
+        project: ProjectId,
+        title: String,
+        members: Vec<AgentId>,
+    },
+    /// Somebody was added to an open channel.
+    ChannelJoined {
+        channel: crate::ChannelId,
+        agent: AgentId,
+    },
+    /// The work is final, or everybody left: the channel is done and can
+    /// be pruned.
+    ChannelClosed {
+        channel: crate::ChannelId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
+    },
+    /// A reviewer gave a verdict on another agent's work in a channel.
+    ReviewSubmitted {
+        channel: crate::ChannelId,
+        by: AgentId,
+        of: AgentId,
+        verdict: crate::Verdict,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,
