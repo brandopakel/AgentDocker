@@ -64,9 +64,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // directory it derives is the one clients derive.
     let home = agentdocker_host::dirs::canonical_home(args.home);
     let socket = args.socket.unwrap_or_else(|| paths::socket_path(&home));
+    agentdocker_host::dirs::check_socket_parent(&socket)?;
     let lock_path = paths::lock_path(&socket);
     if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        if parent == paths::socket_dir(&home) && parent != home {
+            agentdocker_host::dirs::ensure_private_dir(parent)?;
+        } else {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let Some(_lock) = lock::try_exclusive(&lock_path)? else {
         info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");

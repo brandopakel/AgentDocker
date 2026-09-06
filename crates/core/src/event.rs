@@ -23,6 +23,13 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    WorktreeCleanup {
+        agent: crate::AgentId,
+        path: std::path::PathBuf,
+        worktree_removed: bool,
+        branch_removed: bool,
+        reason: Option<String>,
+    },
     IntegrationPrepared {
         agent: crate::AgentId,
         source_head: String,

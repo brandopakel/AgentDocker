@@ -49,6 +49,34 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Validate managed fallback directories before trusting an existing socket.
+/// Missing directories are left for autostart to create; explicit sockets outside
+/// the managed /tmp namespace retain their existing caller-selected semantics.
+pub fn check_socket_parent(socket: &Path) -> io::Result<()> {
+    let Some(parent) = socket.parent() else {
+        return Ok(());
+    };
+    let managed_name = parent
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| {
+            n.strip_prefix("agentdocker-")
+                .is_some_and(|hash| hash.len() == 12 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        });
+    let tmp = Path::new("/tmp");
+    let canonical_tmp = tmp.canonicalize().unwrap_or_else(|_| tmp.into());
+    if managed_name
+        && (parent.parent() == Some(tmp) || parent.parent() == Some(canonical_tmp.as_path()))
+    {
+        match std::fs::symlink_metadata(parent) {
+            Ok(_) => ensure_private_dir(parent)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// The daemon's home as every process should spell it: the configured
 /// path, canonical when it exists, so a symlinked `AGENTDOCKER_HOME` names
 /// the same socket directory from the daemon, every client, and an
@@ -58,7 +86,7 @@ pub fn home() -> PathBuf {
 }
 
 pub fn canonical_home(home: PathBuf) -> PathBuf {
-    std::fs::canonicalize(&home).unwrap_or(home)
+    crate::project::canonical(&home)
 }
 
 /// The directory a home's sockets live in, existing and safe: the home
@@ -111,8 +139,25 @@ mod tests {
         let missing = tmp.path().join("not-yet");
         assert_eq!(
             canonical_home(missing.clone()),
-            missing,
-            "a home that does not exist yet is left as given"
+            tmp.path().canonicalize().unwrap().join("not-yet"),
+            "a new home uses its canonical parent"
+        );
+    }
+
+    #[test]
+    fn a_new_home_under_a_symlink_keeps_its_socket_after_creation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let home = alias.join("h".repeat(120));
+        let before = canonical_home(home.clone());
+        std::fs::create_dir(&home).unwrap();
+        assert_eq!(before, canonical_home(home));
+        assert_eq!(
+            paths::socket_dir(&before),
+            paths::socket_dir(&real.join("h".repeat(120)).canonicalize().unwrap())
         );
     }
 

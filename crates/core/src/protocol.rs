@@ -404,11 +404,11 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    EngineUnavailable,
+    BuildFailed,
     /// A part of the daemon is off — the restricted container endpoint
     /// could not be served — so what needs it is refused, not broken.
     Unavailable,
-    EngineUnavailable,
-    BuildFailed,
 }
 
 // A response is built once and serialised at once, so the size gap between

@@ -47,6 +47,10 @@ pub fn fits_socket(path: &Path) -> bool {
 /// that differ only outside UTF-8 still get two directories. Deterministic,
 /// so the daemon and its clients compute the same place independently.
 pub fn socket_dir(home: &Path) -> PathBuf {
+    socket_dir_in(home, &runtime_dir())
+}
+
+fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     if fits_socket(&home.join(CONTAINER_SOCKET)) && fits_socket(&home.join(HOST_SOCKET)) {
         return home.to_path_buf();
     }
@@ -56,7 +60,54 @@ pub fn socket_dir(home: &Path) -> PathBuf {
     )
     .simple()
     .to_string();
-    runtime_dir().join(format!("agentdocker-{}", &hash[..12]))
+    let name = format!("agentdocker-{}", &hash[..12]);
+    let candidate = runtime.join(&name);
+    if fits_socket(&candidate.join(CONTAINER_SOCKET)) && fits_socket(&candidate.join(HOST_SOCKET)) {
+        return candidate;
+    }
+    Path::new("/tmp").join(name)
+}
+
+/// Workspace state needs more socket room than the public endpoints (including
+/// OpenSSH's temporary control-socket suffix). Keep credentials private per home.
+pub fn workspace_dir(home: &Path) -> PathBuf {
+    workspace_dir_in(home, &runtime_dir())
+}
+const WORKSPACE_SOCKET_MAX: usize = 103;
+const CANONICAL_PREFIX_ALLOWANCE: usize = 8;
+fn workspace_fits(root: &Path) -> bool {
+    let longest = root
+        .join(format!("bridge-{}", "0".repeat(32)))
+        .join(format!("ctl.{}", "0".repeat(16)));
+    longest.as_os_str().len() + CANONICAL_PREFIX_ALLOWANCE <= WORKSPACE_SOCKET_MAX
+}
+fn workspace_dir_in(home: &Path, runtime: &Path) -> PathBuf {
+    let candidate = home.join("mounts");
+    if workspace_fits(&candidate) {
+        return candidate;
+    }
+    let hash = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        home.as_os_str().as_encoded_bytes(),
+    )
+    .simple()
+    .to_string();
+    let name = format!("adw-{}", &hash[..12]);
+    let candidate = runtime.join(&name);
+    if workspace_fits(&candidate) {
+        return candidate;
+    }
+    Path::new("/tmp").join(name)
+}
+
+/// Persistent linked checkouts are siblings of daemon state, never inside it.
+pub fn worktree_dir(home: &Path) -> PathBuf {
+    let mut name = home
+        .file_name()
+        .unwrap_or(std::ffi::OsStr::new("agentdocker"))
+        .to_os_string();
+    name.push(".worktrees");
+    home.with_file_name(name)
 }
 
 /// Where the short socket directories live. `/tmp` is world-writable, so
@@ -147,6 +198,43 @@ mod tests {
         let edge = PathBuf::from(format!("/{}", "a".repeat(SOCKET_PATH_MAX - 1)));
         assert!(fits_socket(&edge));
         assert!(!fits_socket(&edge.join("b")));
+    }
+
+    #[test]
+    fn workspace_paths_reserve_the_ssh_temporary_suffix_and_stay_outside_worktrees() {
+        for home in [
+            PathBuf::from("/tmp/ad"),
+            PathBuf::from(format!("/tmp/{}", "long".repeat(40))),
+        ] {
+            let mounts = workspace_dir(&home);
+            let control = mounts
+                .join(format!("bridge-{}", "a".repeat(32)))
+                .join(format!("ctl.{}", "b".repeat(16)));
+            assert!(
+                control.as_os_str().len() + CANONICAL_PREFIX_ALLOWANCE <= WORKSPACE_SOCKET_MAX,
+                "{}",
+                control.display()
+            );
+            assert_eq!(workspace_dir(&home), mounts);
+            assert!(!worktree_dir(&home).starts_with(&home));
+            assert_ne!(worktree_dir(&home), mounts);
+        }
+    }
+
+    #[test]
+    fn an_overlong_runtime_directory_also_falls_back_and_worktrees_ignore_trailing_slashes() {
+        let home = PathBuf::from(format!("/tmp/{}", "h".repeat(120)));
+        let runtime = PathBuf::from(format!("/tmp/{}", "r".repeat(120)));
+        let sockets = socket_dir_in(&home, &runtime);
+        assert_eq!(sockets.parent(), Some(Path::new("/tmp")));
+        assert!(fits_socket(&sockets.join(CONTAINER_SOCKET)));
+        let workspace = workspace_dir_in(&home, &runtime);
+        assert!(workspace_fits(&workspace));
+        assert_eq!(workspace.parent(), Some(Path::new("/tmp")));
+        assert_eq!(
+            worktree_dir(Path::new("/tmp/state/")),
+            Path::new("/tmp/state.worktrees")
+        );
     }
 
     #[test]
