@@ -38,7 +38,7 @@ impl Daemon {
         let socket = match self.restricted() {
             RestrictedEndpoint::On(socket) => socket,
             _ => {
-                return Err(ContainerError(
+                return Err(ContainerError::unavailable(
                     "authenticated workspace endpoint is not serving".into(),
                 ));
             }
@@ -65,16 +65,17 @@ impl Daemon {
             let path = access.socket_directory.join("endpoint.sock");
             if path.exists() {
                 if tokio::net::UnixStream::connect(&path).await.is_ok() {
-                    return Err(ContainerError(
+                    return Err(ContainerError::unavailable(
                         "workspace endpoint is already in use".into(),
                     ));
                 }
-                std::fs::remove_file(&path).map_err(|e| ContainerError(e.to_string()))?;
+                std::fs::remove_file(&path)
+                    .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             }
-            let listener =
-                tokio::net::UnixListener::bind(&path).map_err(|e| ContainerError(e.to_string()))?;
+            let listener = tokio::net::UnixListener::bind(&path)
+                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| ContainerError(e.to_string()))?;
+                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
             transport.listener = Some(tokio::spawn(async move {
                 crate::server::serve_workspace(listener, socket).await;
             }));
@@ -84,7 +85,7 @@ impl Daemon {
                 agentdocker_host::transport::bridge(&access, &socket)
             })
             .await
-            .map_err(|e| ContainerError(e.to_string()))??;
+            .map_err(|e| ContainerError::unavailable(e.to_string()))??;
         }
         lock(&self.state)
             .transports
@@ -100,7 +101,7 @@ impl Daemon {
         {
             tokio::task::spawn_blocking(move || agentdocker_host::relay::cleanup(&record))
                 .await
-                .map_err(|e| ContainerError(e.to_string()))??;
+                .map_err(|e| ContainerError::unavailable(e.to_string()))??;
             self.update_container(id, |record| {
                 record
                     .container

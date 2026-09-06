@@ -1,4 +1,5 @@
 """Private Unix endpoint in an owned engine volume; only framed CLI stdio leaves it."""
+import errno
 import json
 import os
 from pathlib import Path
@@ -52,49 +53,72 @@ def client(stream):
 
 
 def accept(listener):
+    delay = 0.01
+    recoverable = {errno.EINTR, errno.EAGAIN, errno.EWOULDBLOCK, errno.ECONNABORTED,
+                   errno.ENFILE, errno.EMFILE, errno.ENOBUFS, errno.ENOMEM}
     while not STOP.is_set():
         try:
             stream, _ = listener.accept()
         except socket.timeout:
             continue
+        except OSError as error:
+            if STOP.is_set():
+                return
+            if error.errno not in recoverable:
+                # A dead accept thread must not leave a healthy-looking relay.
+                os._exit(1)
+            STOP.wait(delay)
+            delay = min(delay * 2, 1)
+            continue
+        delay = 0.01
         if not SLOTS.acquire(blocking=False):
             stream.close()
             continue
-        threading.Thread(target=client, args=(stream,), daemon=True).start()
+        try:
+            threading.Thread(target=client, args=(stream,), daemon=True).start()
+        except (RuntimeError, OSError):
+            stream.close()
+            SLOTS.release()
+            STOP.wait(0.1)
 
 
-endpoint = Path('/run/agentdocker/endpoint.sock')
-if endpoint.exists():
-    if not stat.S_ISSOCK(endpoint.lstat().st_mode):
-        raise RuntimeError('endpoint was replaced by a non-socket')
-    endpoint.unlink()
-listener = socket.socket(socket.AF_UNIX)
-listener.bind(str(endpoint))
-os.chmod(endpoint, 0o600)
-listener.listen(32)
-listener.settimeout(1)
-threading.Thread(target=accept, args=(listener,), daemon=True).start()
-emit({'ready': True})
-try:
-    while True:
-        raw = sys.stdin.buffer.readline(8 * LIMIT + 1)
-        if not raw:
-            break
-        if len(raw) > 8 * LIMIT or not raw.endswith(b'\n'):
-            break
-        message = json.loads(raw)
-        frame = message.get('frame')
-        if frame is not None and (not isinstance(frame, str) or len(frame.encode()) > LIMIT or not frame.endswith('\n')):
-            break
-        with LOCK:
-            replies = PENDING.get(message.get('id'))
-        if replies is not None:
-            try:
-                replies.put_nowait(frame)
-            except queue.Full:
-                # A terminal close may race the reply already queued for this peer.
-                if frame is not None:
-                    raise RuntimeError('duplicate relay response')
-finally:
-    STOP.set()
-    listener.close()
+def main():
+    endpoint = Path('/run/agentdocker/endpoint.sock')
+    if endpoint.exists():
+        if not stat.S_ISSOCK(endpoint.lstat().st_mode):
+            raise RuntimeError('endpoint was replaced by a non-socket')
+        endpoint.unlink()
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(endpoint))
+    os.chmod(endpoint, 0o600)
+    listener.listen(32)
+    listener.settimeout(1)
+    threading.Thread(target=accept, args=(listener,), daemon=True).start()
+    emit({'ready': True})
+    try:
+        while True:
+            raw = sys.stdin.buffer.readline(8 * LIMIT + 1)
+            if not raw:
+                break
+            if len(raw) > 8 * LIMIT or not raw.endswith(b'\n'):
+                break
+            message = json.loads(raw)
+            frame = message.get('frame')
+            if frame is not None and (not isinstance(frame, str) or len(frame.encode()) > LIMIT or not frame.endswith('\n')):
+                break
+            with LOCK:
+                replies = PENDING.get(message.get('id'))
+            if replies is not None:
+                try:
+                    replies.put_nowait(frame)
+                except queue.Full:
+                    # A terminal close may race the reply already queued for this peer.
+                    if frame is not None:
+                        raise RuntimeError('duplicate relay response')
+    finally:
+        STOP.set()
+        listener.close()
+
+
+if __name__ == '__main__':
+    main()

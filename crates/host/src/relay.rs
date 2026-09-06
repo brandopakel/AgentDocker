@@ -15,6 +15,13 @@ fn error(message: impl std::fmt::Display) -> TransportError {
         message: message.to_string(),
     }
 }
+fn invalid(message: impl std::fmt::Display) -> TransportError {
+    TransportError {
+        code: ErrorCode::Invalid,
+        message: message.to_string(),
+    }
+}
+
 fn c(record: &AgentRecord) -> &agentdocker_core::container::ManagedContainer {
     record.container.as_ref().unwrap()
 }
@@ -58,7 +65,7 @@ fn run(record: &AgentRecord, args: Vec<String>) -> Result<String, TransportError
     Ok(out.stdout)
 }
 fn json(record: &AgentRecord, args: Vec<String>) -> Result<Value, TransportError> {
-    serde_json::from_str(&run(record, args)?).map_err(error)
+    serde_json::from_str(&run(record, args)?).map_err(invalid)
 }
 fn hash(raw: &str) -> Option<&str> {
     let value = raw.strip_prefix("sha256:").unwrap_or(raw);
@@ -126,11 +133,11 @@ pub fn prepare(record: &mut AgentRecord) -> Result<(), TransportError> {
     }
     args.extend([
         "--entrypoint=python3".into(), build.image_id.clone(), "-c".into(),
-        "from pathlib import Path; import sys; assert all(Path('/probe'+str(i)).read_text()==sys.argv[1] for i in range(int(sys.argv[2]))); print('shared')".into(),
+        "from pathlib import Path; import sys\ntry:\n shared = all(Path('/probe'+str(i)).read_text()==sys.argv[1] for i in range(int(sys.argv[2])))\nexcept OSError:\n shared = False\nprint('shared' if shared else 'unshared')".into(),
         record.id.to_string(), probes.len().to_string(),
     ]);
     if run(record, args)?.trim() != "shared" {
-        return Err(error(
+        return Err(invalid(
             "engine cannot read the selected host paths with the workspace UID",
         ));
     }
@@ -195,7 +202,7 @@ fn verify_volume(record: &AgentRecord) -> Result<(), TransportError> {
             .pointer("/0/Options")
             .is_some_and(|v| !v.is_null() && v.as_object().is_none_or(|o| !o.is_empty()))
     {
-        return Err(error("engine socket volume ownership or driver differs"));
+        return Err(invalid("engine socket volume ownership or driver differs"));
     }
     Ok(())
 }
@@ -210,21 +217,43 @@ fn helper_id(record: &AgentRecord) -> Result<Option<String>, TransportError> {
             "--no-trunc".into(),
             "--filter".into(),
             format!("name={}", r.name),
-            "--format={{.ID}}".into(),
+            "--format={{.ID}} {{.Names}}".into(),
         ],
     )?;
-    if found.trim().is_empty() {
-        return Ok(None);
-    }
-    hash(found.trim())
-        .map(|id| Some(id.to_owned()))
-        .ok_or_else(|| error("relay lookup did not return one full container identity"))
+    exact_helper_id(&found, &r.name)
 }
+fn exact_helper_id(found: &str, name: &str) -> Result<Option<String>, TransportError> {
+    let mut selected = None;
+    for row in found.lines() {
+        let mut fields = row.split_whitespace();
+        let id = fields.next();
+        if fields.next() != Some(name) {
+            continue;
+        }
+        if selected.is_some() || fields.next().is_some() {
+            return Err(invalid("ambiguous relay container identity"));
+        }
+        selected = Some(
+            hash(id.unwrap())
+                .ok_or_else(|| invalid("relay lookup omitted full identity"))?
+                .to_owned(),
+        );
+    }
+    Ok(selected)
+}
+fn exact_volume_exists(found: &str, name: &str) -> Result<bool, TransportError> {
+    match found.lines().filter(|line| line.trim() == name).count() {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(invalid("ambiguous socket volume identity")),
+    }
+}
+
 /// An owned relay can be replaced after a lost CLI stream; the writer and volume stay put.
 fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
     let r = relay(record);
     let expected_image =
-        hash(&r.build.image_id).ok_or_else(|| error("invalid retained relay image ID"))?;
+        hash(&r.build.image_id).ok_or_else(|| invalid("invalid retained relay image ID"))?;
     let Some(id) = helper_id(record)? else {
         return Ok(());
     };
@@ -268,7 +297,7 @@ fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
             .and_then(hash)
             != Some(expected_image)
     {
-        return Err(error(
+        return Err(invalid(
             "refusing to remove a relay with different ownership or image",
         ));
     }
@@ -290,7 +319,7 @@ fn remove_helper(record: &AgentRecord) -> Result<(), TransportError> {
 pub fn verify_helper(record: &AgentRecord) -> Result<(), TransportError> {
     let r = relay(record);
     let expected_image =
-        hash(&r.build.image_id).ok_or_else(|| error("invalid retained relay image ID"))?;
+        hash(&r.build.image_id).ok_or_else(|| invalid("invalid retained relay image ID"))?;
     let w = c(record).workspace.as_ref().unwrap();
     let info = json(
         record,
@@ -300,11 +329,11 @@ pub fn verify_helper(record: &AgentRecord) -> Result<(), TransportError> {
         .as_array()
         .filter(|a| a.len() == 1)
         .and_then(|a| a.first())
-        .ok_or_else(|| error("expected one relay container"))?;
+        .ok_or_else(|| invalid("expected one relay container"))?;
     let mounts = data
         .get("Mounts")
         .and_then(Value::as_array)
-        .ok_or_else(|| error("relay omitted mount evidence"))?;
+        .ok_or_else(|| invalid("relay omitted mount evidence"))?;
     if data
         .get("Id")
         .and_then(Value::as_str)
@@ -345,7 +374,7 @@ pub fn verify_helper(record: &AgentRecord) -> Result<(), TransportError> {
         || mounts[0].get("Destination").and_then(Value::as_str) != Some("/run/agentdocker")
         || mounts[0].get("RW") != Some(&Value::Bool(true))
     {
-        return Err(error(
+        return Err(invalid(
             "relay identity, mount, logging, user or network policy differs",
         ));
     }
@@ -414,14 +443,51 @@ pub fn cleanup(record: &AgentRecord) -> Result<(), TransportError> {
             "--format={{.Name}}".into(),
         ],
     )?;
-    if volumes.trim().is_empty() {
+    if !exact_volume_exists(&volumes, &r.volume)? {
         return Ok(());
-    }
-    if volumes.trim() != r.volume {
-        return Err(error("ambiguous socket volume identity"));
     }
     verify_volume(record)?;
     // Never force removal: the engine must confirm that no container still mounts it.
     run(record, vec!["volume".into(), "rm".into(), r.volume.clone()])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cleanup_lookup_ignores_substring_matches_and_rejects_ambiguity() {
+        let id = "a".repeat(64);
+        let name = "agentdocker-relay-target";
+        let found = format!(
+            "{} old-{name}\n{id} {name}\n{} {name}-old\n",
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        assert_eq!(exact_helper_id(&found, name).unwrap(), Some(id.clone()));
+        assert_eq!(
+            exact_helper_id(&format!("{id} old-{name}\n"), name).unwrap(),
+            None
+        );
+        assert_eq!(
+            exact_helper_id(&format!("{id} {name}\n{id} {name}\n"), name)
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            exact_helper_id(&format!("short {name}\n"), name)
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
+        assert!(exact_volume_exists("target-old\ntarget\nold-target\n", "target").unwrap());
+        assert!(!exact_volume_exists("target-old\nold-target\n", "target").unwrap());
+        assert_eq!(
+            exact_volume_exists("target\ntarget\n", "target")
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
+    }
 }

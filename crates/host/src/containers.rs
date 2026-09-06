@@ -5,8 +5,25 @@ use serde_json::Value;
 use std::{path::Path, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ContainerError(pub String);
+#[error("{message}")]
+pub struct ContainerError {
+    pub code: agentdocker_core::ErrorCode,
+    pub message: String,
+}
+impl ContainerError {
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            code: agentdocker_core::ErrorCode::EngineUnavailable,
+            message,
+        }
+    }
+    pub fn invalid(message: String) -> Self {
+        Self {
+            code: agentdocker_core::ErrorCode::Invalid,
+            message,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContainerState {
@@ -60,9 +77,11 @@ fn execute(record: &AgentRecord, args: Vec<String>) -> Result<command::Output, C
     let mut argv = prefix(record);
     argv.extend(args);
     let result = command::run(Path::new("/"), &argv, Duration::from_secs(15))
-        .map_err(|e| ContainerError(e.to_string()))?;
+        .map_err(|e| ContainerError::unavailable(e.to_string()))?;
     if !result.success {
-        return Err(ContainerError(result.text.chars().take(2048).collect()));
+        return Err(ContainerError::unavailable(
+            result.text.chars().take(2048).collect(),
+        ));
     }
     Ok(result)
 }
@@ -74,18 +93,21 @@ fn hash(raw: &str) -> Option<&str> {
 
 /// Ownership, immutable image, ID, and exit state must all be explicit.
 pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, ContainerError> {
-    let data: Value = serde_json::from_str(raw).map_err(|e| ContainerError(e.to_string()))?;
+    let data: Value =
+        serde_json::from_str(raw).map_err(|e| ContainerError::unavailable(e.to_string()))?;
     let data = data
         .as_array()
         .filter(|a| a.len() == 1)
         .and_then(|a| a.first())
-        .ok_or_else(|| ContainerError("expected exactly one inspected container".into()))?;
+        .ok_or_else(|| {
+            ContainerError::unavailable("expected exactly one inspected container".into())
+        })?;
     let c = instance(record);
     let id = data
         .get("Id")
         .and_then(Value::as_str)
         .and_then(hash)
-        .ok_or_else(|| ContainerError("invalid container ID".into()))?;
+        .ok_or_else(|| ContainerError::unavailable("invalid container ID".into()))?;
     let label = |key: &str| data.get("Config")?.get("Labels")?.get(key)?.as_str();
     if c.id.as_deref().is_some_and(|expected| expected != id)
         || label("org.agentdocker.owner") != Some(c.owner.as_str())
@@ -94,7 +116,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
         || data.get("Image").and_then(Value::as_str).and_then(hash) != hash(&c.image_id)
         || hash(&c.image_id).is_none()
     {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container ownership or immutable image identity differs; protection retained".into(),
         ));
     }
@@ -108,7 +130,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
             .and_then(Value::as_bool)
             != Some(false)
     {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container restart/removal policy is not managed by AgentDocker".into(),
         ));
     }
@@ -124,14 +146,16 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                 != Some(c.options.network.as_str())
             || data.pointer("/HostConfig/Privileged") != Some(&Value::Bool(false))
         {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "container user, workdir, networking or privilege policy differs".into(),
             ));
         }
         let mounts = data
             .get("Mounts")
             .and_then(Value::as_array)
-            .ok_or_else(|| ContainerError("container omitted mount evidence".into()))?;
+            .ok_or_else(|| {
+                ContainerError::unavailable("container omitted mount evidence".into())
+            })?;
         let mut expected = vec![(&w.checkout, "/workspace", !w.read_only)];
         if let Some(g) = &w.git {
             expected.push((&g.common, "/run/agentdocker-git", !w.read_only));
@@ -162,7 +186,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                 })
             })
         {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "container mounts differ from the authorized checkout and endpoint".into(),
             ));
         }
@@ -180,17 +204,19 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                     .pointer("/State/ExitCode")
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
-                    .ok_or_else(|| ContainerError("container exit code is missing".into()))?;
+                    .ok_or_else(|| {
+                        ContainerError::unavailable("container exit code is missing".into())
+                    })?;
                 ContainerState::Exited(code)
             }
             _ => {
-                return Err(ContainerError(
+                return Err(ContainerError::unavailable(
                     "container exit is not confirmed; protection retained".into(),
                 ));
             }
         }
     } else {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container liveness is uncertain; protection retained".into(),
         ));
     };
@@ -300,8 +326,9 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
 impl ContainerBackend for CliContainers {
     fn create(&self, record: &AgentRecord) -> Result<Inspection, ContainerError> {
         let result = execute(record, create_args(record))?;
-        let id = hash(result.stdout.trim())
-            .ok_or_else(|| ContainerError("create returned an invalid container ID".into()))?;
+        let id = hash(result.stdout.trim()).ok_or_else(|| {
+            ContainerError::unavailable("create returned an invalid container ID".into())
+        })?;
         let mut confirmed = record.clone();
         confirmed.container.as_mut().unwrap().id = Some(id.into());
         self.inspect(&confirmed)
@@ -318,7 +345,7 @@ impl ContainerBackend for CliContainers {
     fn start(&self, record: &AgentRecord) -> Result<(), ContainerError> {
         let inspected = self.inspect(record)?;
         if inspected.state != ContainerState::Created {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "only a confirmed unstarted container can start".into(),
             ));
         }
@@ -354,7 +381,7 @@ impl ContainerBackend for CliContainers {
     fn remove_created(&self, record: &AgentRecord) -> Result<(), ContainerError> {
         let inspected = self.inspect(record)?;
         if inspected.state != ContainerState::Created {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "refusing to remove a container which may have run".into(),
             ));
         }

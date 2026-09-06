@@ -55,7 +55,7 @@ def wait(action, predicate, seconds=40):
         try:
             last=action()
             if predicate(last): return last
-        except (OSError,ValueError): pass
+        except (OSError,ValueError,subprocess.SubprocessError): pass
         time.sleep(.1)
     raise AssertionError(('timed out',last))
 
@@ -335,7 +335,7 @@ finally:
         try:
             for r in rpc({'op':'list','all':True}).get('agents',[]):
                 if r.get('container'): remember(r)
-        except (OSError,ValueError): pass
+        except (OSError,ValueError,subprocess.SubprocessError): pass
         daemon.terminate()
         try: daemon.wait(timeout=30)
         except subprocess.TimeoutExpired: daemon.kill();daemon.wait(timeout=10)
@@ -353,7 +353,7 @@ finally:
         except (subprocess.SubprocessError,KeyError,ValueError): pass
         try:
             info=json.loads(engine('volume','inspect',volume,quiet=True))[0]
-            if info['Labels']['org.agentdocker.owner']==owner:
+            if (info.get('Labels') or {}).get('org.agentdocker.owner')==owner:
                 subprocess.run([a.engine,'volume','rm',volume],check=True,stdout=subprocess.DEVNULL,timeout=30)
         except (subprocess.SubprocessError,KeyError,ValueError): pass
     log.close()

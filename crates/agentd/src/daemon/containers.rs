@@ -28,14 +28,14 @@ impl Daemon {
     fn current_container(&self, id: &AgentId) -> Result<AgentRecord, ContainerError> {
         let state = lock(&self.state);
         if let Some(error) = &state.storage_error {
-            return Err(ContainerError(error.clone()));
+            return Err(ContainerError::unavailable(error.clone()));
         }
         state
             .registry
             .get(id)
             .filter(|a| a.container.is_some())
             .cloned()
-            .ok_or_else(|| ContainerError("container agent vanished".into()))
+            .ok_or_else(|| ContainerError::unavailable("container agent vanished".into()))
     }
 
     pub(super) async fn engine_call<T: Send + 'static>(
@@ -48,7 +48,7 @@ impl Daemon {
         let backend = self.container_backend.clone();
         tokio::task::spawn_blocking(move || call(backend.as_ref(), &record))
             .await
-            .map_err(|e| ContainerError(e.to_string()))?
+            .map_err(|e| ContainerError::unavailable(e.to_string()))?
     }
 
     pub(super) fn update_container(
@@ -58,20 +58,20 @@ impl Daemon {
     ) -> Result<(), ContainerError> {
         let mut state = lock(&self.state);
         if let Some(error) = &state.storage_error {
-            return Err(ContainerError(error.clone()));
+            return Err(ContainerError::unavailable(error.clone()));
         }
         let mut record = state
             .registry
             .get(id)
             .cloned()
-            .ok_or_else(|| ContainerError("container agent vanished".into()))?;
+            .ok_or_else(|| ContainerError::unavailable("container agent vanished".into()))?;
         let before = record.clone();
         change(&mut record);
         if record != before {
             state.save_container_transition(record);
         }
         if let Some(error) = &state.storage_error {
-            return Err(ContainerError(error.clone()));
+            return Err(ContainerError::unavailable(error.clone()));
         }
         Ok(())
     }
@@ -222,7 +222,7 @@ impl Daemon {
         }
         if let Err(e) = self.drive_container(record.id.clone(), true).await {
             return Response::error(
-                ErrorCode::EngineUnavailable,
+                e.code,
                 format!("agent {} retained for reconciliation: {e}", record.id),
             );
         }
@@ -259,10 +259,7 @@ impl Daemon {
             return Response::error(ErrorCode::StorageUnavailable, e.to_string());
         }
         if let Err(e) = self.drive_container(id.clone(), false).await {
-            return Response::error(
-                ErrorCode::EngineUnavailable,
-                format!("stop remains requested for {id}: {e}"),
-            );
+            return Response::error(e.code, format!("stop remains requested for {id}: {e}"));
         }
         lock(&self.state).inspect(id.as_str())
     }
@@ -344,7 +341,7 @@ impl Daemon {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|e| ContainerError(e.to_string()))?;
+            .map_err(|e| ContainerError::unavailable(e.to_string()))?;
         let result = self.drive_container_inner(&id, create).await;
         if let Err(e) = &result {
             let message: String = e.to_string().chars().take(2048).collect();
@@ -394,7 +391,7 @@ impl Daemon {
                 return Ok(());
             }
             if !create {
-                return Err(ContainerError(
+                return Err(ContainerError::unavailable(
                     "launch preparation did not finish; stop before starting a replacement".into(),
                 ));
             }
@@ -423,7 +420,7 @@ impl Daemon {
         match (c.intent, inspected.state) {
             (ContainerIntent::Run, ContainerState::Created) => {
                 if c.start_attempted {
-                    return Err(ContainerError(c.last_error.clone().unwrap_or_else(|| "previous start outcome is unknown; stop this container before retrying as a new agent".into())));
+                    return Err(ContainerError::unavailable(c.last_error.clone().unwrap_or_else(|| "previous start outcome is unknown; stop this container before retrying as a new agent".into())));
                 }
                 self.update_container(id, |r| {
                     r.container.as_mut().unwrap().start_attempted = true
@@ -683,9 +680,17 @@ mod tests {
         lost_create: AtomicBool,
         lost_start: AtomicBool,
         stop_stays_live: AtomicBool,
+        invalid_transport: AtomicBool,
     }
     impl ContainerBackend for Fake {
         fn create(&self, _: &AgentRecord) -> Result<Inspection, ContainerError> {
+            if self.invalid_transport.load(Ordering::SeqCst) {
+                return Err(agentdocker_host::transport::TransportError {
+                    code: ErrorCode::Invalid,
+                    message: "relay ownership differs".into(),
+                }
+                .into());
+            }
             lock(&self.actions).push("create");
             let inspection = Inspection {
                 id: "b".repeat(64),
@@ -693,22 +698,29 @@ mod tests {
             };
             *lock(&self.observed) = Some(inspection.clone());
             if self.lost_create.load(Ordering::SeqCst) {
-                return Err(ContainerError("lost create response".into()));
+                return Err(ContainerError::unavailable("lost create response".into()));
             }
             Ok(inspection)
         }
         fn inspect(&self, _: &AgentRecord) -> Result<Inspection, ContainerError> {
-            if self.unavailable.load(Ordering::SeqCst) {
-                return Err(ContainerError("engine unreachable".into()));
+            if self.invalid_transport.load(Ordering::SeqCst) {
+                return Err(agentdocker_host::transport::TransportError {
+                    code: ErrorCode::Invalid,
+                    message: "relay ownership differs".into(),
+                }
+                .into());
             }
-            lock(&self.observed)
-                .clone()
-                .ok_or_else(|| ContainerError("not found is not confirmed exit".into()))
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(ContainerError::unavailable("engine unreachable".into()));
+            }
+            lock(&self.observed).clone().ok_or_else(|| {
+                ContainerError::unavailable("not found is not confirmed exit".into())
+            })
         }
         fn start(&self, _: &AgentRecord) -> Result<(), ContainerError> {
             lock(&self.actions).push("start");
             if self.lost_start.load(Ordering::SeqCst) {
-                return Err(ContainerError("lost start response".into()));
+                return Err(ContainerError::unavailable("lost start response".into()));
             }
             lock(&self.observed).as_mut().unwrap().state = ContainerState::Running;
             Ok(())
@@ -793,6 +805,52 @@ mod tests {
             panic!("claim failed")
         };
         lease
+    }
+
+    #[tokio::test]
+    async fn transport_validation_errors_keep_their_code_and_writer_protection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        fake.invalid_transport.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let failed = retained(&daemon);
+        assert!(failed.container.unwrap().create_attempted);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Agent { .. }
+        ));
+        let record = retained(&daemon);
+        let held = claim(&daemon, &record).await;
+        fake.invalid_transport.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            daemon.stop_agent(record.id.as_str(), true).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(retained(&daemon).status.is_live());
+        assert!(
+            lock(&daemon.state)
+                .leases
+                .all()
+                .iter()
+                .any(|l| l.id == held.id)
+        );
+        assert!(!lock(&fake.actions).contains(&"kill"));
     }
 
     #[tokio::test]

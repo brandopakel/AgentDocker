@@ -22,7 +22,10 @@ pub struct TransportError {
 }
 impl From<TransportError> for ContainerError {
     fn from(error: TransportError) -> Self {
-        Self(error.message)
+        Self {
+            code: error.code,
+            message: error.message,
+        }
     }
 }
 fn error(e: impl std::fmt::Display) -> TransportError {

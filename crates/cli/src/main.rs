@@ -167,7 +167,7 @@ enum Command {
         /// Retries with the same key return the same bundle.
         key: Option<String>,
     },
-    /// List handoff bundles sent by or addressed to an agent; all of them without --as.
+    /// List handoffs for --as or AGENTDOCKER_AGENT_ID; all when neither is set.
     Handoffs {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         /// Agent id, name or unique prefix.
