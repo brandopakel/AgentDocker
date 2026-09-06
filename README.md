@@ -28,13 +28,13 @@ Agents don't need an SDK. Anything that can write a line of JSON to a Unix socke
 ## Install
 
 ```sh
-cargo install --git https://github.com/brandopakel/AgentDocker agentdocker --locked   # from source, on any machine with Rust
-cargo install --path crates/cli --locked                                              # from a checkout: both binaries
-curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh   # release binaries into ~/.local/bin, once a release is published
+cargo install --git https://github.com/brandopakel/AgentDocker --rev <commit> agentdocker --locked   # from source on any machine with Rust, pinned to a commit you have looked at (--tag vX.Y.Z once one exists)
+cargo install --path crates/cli --locked                                                             # from a checkout: both binaries
+curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh          # release binaries into ~/.local/bin, once a release is published
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
 
-Release binaries require a published GitHub release; the installer requires a matching SHA-256 checksum. `cargo install agentdocker` becomes available after the crates are published. Homebrew formulae are generated from release checksums, not placeholder hashes.
+Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Release binaries require a published GitHub release; the installer checks the archive against the SHA-256 published with that release (it does not verify a signature). `cargo install agentdocker` becomes available after the crates are published. Homebrew formulae are generated from release checksums, not placeholder hashes.
 
 The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running and where.
 

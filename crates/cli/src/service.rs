@@ -111,7 +111,7 @@ impl Layout {
             .filter(|sibling| sibling.is_file())
             .or_else(|| which("agentd"))
             .context("cannot find the agentd binary beside agentdocker or on PATH")?;
-        let home = paths::default_home();
+        let home = agentdocker_host::dirs::home();
         std::fs::create_dir_all(&home)?;
         let uid = std::fs::metadata(&home)?.uid();
         let user_home = std::env::home_dir().context("no home directory")?;
@@ -447,9 +447,15 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: DaemonArgs) -> R
     if !macos && !cfg!(target_os = "linux") {
         bail!("service management is supported on macOS (launchd) and Linux (systemd) only");
     }
-    // Nothing here may start a daemon by accident.
-    let client = client.with_start_timeout(None);
+    // Nothing here may start a daemon by accident, and every command here
+    // talks to the socket the service definition names: the one resolved
+    // for the layout, unless one was given explicitly.
     let layout = Layout::discover(socket.as_deref())?;
+    let client = match (&socket, &layout.socket) {
+        (None, Some(resolved)) => Client::new(Some(resolved.clone())),
+        _ => client,
+    }
+    .with_start_timeout(None);
     match args.command {
         DaemonCommand::Install { dry_run } => {
             if !dry_run {
