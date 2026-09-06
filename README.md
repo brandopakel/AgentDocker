@@ -47,7 +47,7 @@ agentdocker discover          # agent processes running right now that nobody re
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
 
-The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Install it with `cargo install --path crates/ui --locked`.
+The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Released macOS archives carry all three binaries; elsewhere, build the app with `cargo install --path crates/ui --locked`.
 
 The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
 
