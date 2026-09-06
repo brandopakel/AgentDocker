@@ -222,6 +222,7 @@ pub fn event_line(event: &Event) -> String {
             pid,
             runtime,
             adopted,
+            ..
         } => {
             if *adopted {
                 format!("agent adopted    {runtime} pid {pid}")
@@ -229,6 +230,10 @@ pub fn event_line(event: &Event) -> String {
                 format!("agent gone       {runtime} pid {pid}")
             }
         }
+        EventKind::DiscoveryUnavailable { reason } => {
+            format!("agent discovery unavailable: {reason}; previous snapshot retained")
+        }
+        EventKind::DiscoveryAvailable => "agent discovery available".into(),
         EventKind::AgentCreated {
             agent,
             name,

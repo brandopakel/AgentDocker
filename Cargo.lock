@@ -202,6 +202,7 @@ dependencies = [
  "libc",
  "serde_json",
  "sha2",
+ "shlex",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
@@ -212,11 +213,14 @@ name = "agentdocker-ui"
 version = "0.1.0"
 dependencies = [
  "agentdocker-core",
+ "agentdocker-host",
  "anyhow",
  "chrono",
  "eframe",
  "egui",
+ "libc",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
