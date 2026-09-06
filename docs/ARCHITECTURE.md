@@ -196,6 +196,9 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `import {agent, bundle}` | `handoff {bundle}` | a bundle exported on another host, re-homed to the agent's checkout and addressed to it, to accept with `resume` |
 | `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
 | `validations {agent}` | `validations` | evidence for one session |
+| `attach {agent, cols?, rows?}` | `events_ready`, then a stream of `output {data}` | connects to a managed agent's terminal; the client then sends `attach_input` and `attach_resize` on the same connection, and closing it detaches without disturbing the agent |
+| `attach_input {data}` | — | keystrokes for an attached terminal, base64 because they are bytes |
+| `attach_resize {cols, rows}` | — | the attached window changed size, so the agent gets `SIGWINCH` |
 | `channels {project?, all?, agent?}` | `channels {channels: Channel[]}` | the rooms agents share in a project; open ones by default, `all` includes closed-but-unpruned, `agent` narrows to its own and lets `project` be empty |
 | `channel_open {agent, task, members?}` | `channel {channel}` | a room for a task; members default to every other live agent in the project |
 | `channel_close {agent, channel, resolution?}` | `channel {channel}` | the work is final; members are told and the journal says what it settled on |
@@ -512,7 +515,11 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 `run` gives a managed agent pipes and captures them to a log. Two things follow, and both are wrong. An interactive agent cannot be run that way at all — `claude` and `codex` want a terminal, and a pipe is not one — so in practice agents are started by hand and only *adopted*. And nothing survives: if `agentd` restarts, the child lives on in its own process group but its output is gone, and there is no way back to it.
 
-Row 23 fixes both on our own terms. A managed agent gets a **PTY** rather than pipes, so interactive runtimes work under `run`. The daemon keeps a bounded scrollback per agent (the last N KB, in the store beside the log, pruned like the journal), so a client attaching late sees recent context rather than nothing. `agentdocker attach <agent>` connects a terminal to it: raw mode, window-size propagation, detach without killing. Because the child already runs in its own process group with a recorded `process_started_at`, a restarted daemon can re-adopt what is still alive and re-open its scrollback rather than orphan it.
+Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = true` in an `Agentfile.toml` entry) gives the agent a **pty** instead of pipes: `posix_openpt` in the daemon, and in the child, between `fork` and `exec`, `setsid` and `TIOCSCTTY` so the terminal is genuinely its controlling one. That replaces `process_group(0)` rather than joining it — `setsid` makes the child a process-group leader by itself, so signalling `-pid` still reaches its descendants, and doing both would fail. Everything the agent prints goes two ways: whole lines to the log, so `logs` reads exactly as before, and raw bytes to a broadcast for whoever is attached.
+
+`agentdocker attach <agent>` connects your terminal to it. The local terminal goes into raw mode under a guard that restores it however the command ends, `SIGWINCH` is forwarded as `attach_resize` so full-screen agents lay out correctly, and Ctrl-] detaches. Attaching and detaching are only a client coming and going: the terminal belongs to the daemon, so the agent neither notices nor stops. A slow reader is told it missed bytes rather than being allowed to stall the agent.
+
+What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with the daemon, so `attach` afterwards has nothing to reconnect to and an agent that reads its terminal may see it close. Fixing that needs the terminal to be owned by something that outlives `agentd`: a small per-agent holder, or passing the descriptor back over the socket with `SCM_RIGHTS`. That is the remainder of row 23.
 
 This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
 
@@ -566,7 +573,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
-| 23 | PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, bounded scrollback, `attach` and detach, re-adoption of survivors after a daemon restart | 5 | — |
+| 23 | 🔄 PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run` ✅, `attach` and detach ✅, window size ✅; a terminal that outlives a daemon restart is outstanding | 5 | — |
 | 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |

@@ -155,6 +155,7 @@ workdir = "."                         # relative to this file
 isolate = true                        # its own worktree and branch
 
 [agents.reviewer]
+tty = true                            # a terminal, for an interactive agent
 runtime = "codex"
 command = ["codex", "exec", "Review whatever writer changes and message it"]
 env = { RUST_LOG = "info" }
@@ -195,6 +196,21 @@ Where the ledger records every file change, the journal records what happened an
 ### Worktrees and overlap
 
 `agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
+
+### Sessions: run an interactive agent, and attach to it
+
+`run` gives an agent pipes by default, which is fine for a batch command and useless for an agent that wants a terminal. `--tty` gives it a real one:
+
+```sh
+agentdocker run --tty --name writer -- claude          # an interactive agent, supervised
+agentdocker attach writer                              # your terminal, connected to its
+                                                       # Ctrl-] detaches; the agent keeps running
+agentdocker logs -f writer                             # or just watch, without typing
+```
+
+The terminal belongs to the daemon, so attaching and detaching are only a client coming and going: the agent does not notice, and its output still lands in the log either way. The window size follows yours, so full-screen agents lay themselves out correctly.
+
+One limit worth knowing: the agent's *process* survives a daemon restart, but its terminal does not, so `attach` cannot reconnect afterwards. Making the terminal outlive the daemon is the rest of [roadmap row 23](docs/ARCHITECTURE.md#sessions-and-persistence).
 
 ### Channels: when two agents are on the same thing
 

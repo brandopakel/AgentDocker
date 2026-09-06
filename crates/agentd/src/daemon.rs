@@ -105,6 +105,10 @@ pub struct Daemon {
     /// The restricted container endpoint: where it serves, or why it does
     /// not. Grants need it; the host socket does not.
     restricted: Mutex<RestrictedEndpoint>,
+    /// Terminals of managed agents that were given one, so `attach` can
+    /// find them. Held here rather than under the state lock: attaching
+    /// is I/O and must not block a coordination request.
+    sessions: Mutex<HashMap<AgentId, supervisor::Session>>,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -716,6 +720,7 @@ impl Daemon {
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
+            sessions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -981,7 +986,12 @@ impl Daemon {
                 Err(response) => *response,
             },
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
-            Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
+            Request::Subscribe { .. }
+            | Request::Events { .. }
+            | Request::Logs { .. }
+            | Request::Attach { .. }
+            | Request::AttachInput { .. }
+            | Request::AttachResize { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
             }
         }
@@ -1029,6 +1039,9 @@ impl Daemon {
             Ok(spawned) => {
                 let pid = spawned.pid;
                 let process_started_at = procinfo::start_time(pid);
+                if let Some(session) = spawned.session.clone() {
+                    lock(&self.sessions).insert(record.id.clone(), session);
+                }
                 let updated = {
                     let mut state = lock(&self.state);
                     state
@@ -1600,6 +1613,16 @@ impl Daemon {
         self.watcher_attach
             .send_replace(WatcherLink::Unavailable(reason.clone()));
         self.emit(EventKind::WatcherUnavailable { reason });
+    }
+
+    /// The terminal of a managed agent, when it was given one.
+    pub fn session(&self, agent: &AgentId) -> Option<supervisor::Session> {
+        lock(&self.sessions).get(agent).cloned()
+    }
+
+    /// The agent is gone; so is its terminal.
+    pub fn end_session(&self, agent: &AgentId) {
+        lock(&self.sessions).remove(agent);
     }
 
     /// The restricted endpoint is serving on `socket`.
@@ -5305,6 +5328,96 @@ mod tests {
         })
         .await;
         assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
+    }
+
+    #[tokio::test]
+    async fn a_managed_agent_with_a_tty_gets_a_terminal_and_a_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("interactive");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.tty = true;
+        // Proves it is a terminal, then waits so the session is still there
+        // to inspect.
+        command.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "test -t 0 && echo I_HAVE_A_TTY; sleep 5".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        assert!(agent.spec.tty);
+
+        // The daemon holds its terminal, and what it prints reaches both a
+        // watcher and the log.
+        let session = eventually(async || daemon.session(&agent.id)).await;
+        let mut watching = session.output.subscribe();
+        let printed = eventually(async || {
+            let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap_or_default();
+            log.contains("I_HAVE_A_TTY").then_some(log)
+        })
+        .await;
+        assert!(printed.contains("I_HAVE_A_TTY"), "{printed}");
+
+        // Typing at it arrives: `cat` echoes on a terminal, so what we
+        // send comes straight back to anyone attached.
+        session.input.send(b"hello\n".to_vec()).await.unwrap();
+        let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = String::new();
+            while let Ok(bytes) = watching.recv().await {
+                seen.push_str(&String::from_utf8_lossy(&bytes));
+                if seen.contains("hello") {
+                    return seen;
+                }
+            }
+            seen
+        })
+        .await
+        .unwrap_or_default();
+        assert!(
+            echoed.contains("hello"),
+            "input reached the terminal: {echoed:?}"
+        );
+
+        // Resizing is accepted while it lives.
+        session.resize(100, 30).unwrap();
+
+        // When it ends, so does the terminal: an attach afterwards has
+        // nothing to connect to.
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        eventually(async || daemon.session(&agent.id).is_none().then_some(())).await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_without_a_tty_has_no_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("piped");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec!["sh".into(), "-c".into(), "echo piped; sleep 5".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        assert!(!agent.spec.tty);
+        let printed = eventually(async || {
+            let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap_or_default();
+            log.contains("piped").then_some(log)
+        })
+        .await;
+        assert!(printed.contains("piped"));
+        assert!(daemon.session(&agent.id).is_none(), "pipes, not a terminal");
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
     }
 
     #[tokio::test]

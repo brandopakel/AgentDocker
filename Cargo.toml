@@ -15,6 +15,7 @@ agentd = { path = "crates/agentd", version = "0.1.0" }
 agentdocker-core = { path = "crates/core", version = "0.1.0" }
 agentdocker-host = { path = "crates/host", version = "0.1.0" }
 anyhow = "1"
+base64 = "0.22"
 criterion = "0.5.1"
 eframe = "0.36"
 egui = "0.36"
