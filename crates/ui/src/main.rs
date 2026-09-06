@@ -6,6 +6,7 @@
 
 mod app;
 mod client;
+mod terminal;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
