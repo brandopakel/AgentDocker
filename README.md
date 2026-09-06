@@ -6,7 +6,7 @@ Coding agents are cheap to start and easy to lose track of. Run three of them ag
 
 It is bare metal: a native per-user daemon and a native CLI talking over a Unix socket. Nothing is served over HTTP, nothing needs a browser, and nothing needs Docker — a container is one optional way to sandbox an agent, not the product.
 
-> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees and handoff are available on macOS and Linux. Still to come: a native desktop app, discovery of the agent tools installed on a machine and one-command setup for each, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
+> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees, handoff, runtime discovery/setup and a native desktop window are available on macOS and Linux. Still to come: desktop notifications, human-agent interaction, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
 
 ## The Docker analogy
 
@@ -22,6 +22,7 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 | layer | **worktree** | An agent's own writable checkout (`run --isolate`), integrated when validated |
 | `docker events` / `logs` | **events** / **journal** | A live stream of everything the daemon does, and a per-project narrative of what changed and why |
 | `docker export` | **handoff bundle** | Everything the daemon knows about an agent's work, handed to another agent or another machine |
+| pull request | **channel** | The room two agents share when they turn out to be changing the same files, where they talk and review each other's work |
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
@@ -44,7 +45,10 @@ Then wire in the agents you already have:
 agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
 agentdocker setup             # register the MCP server with each, install the Claude Code hooks (--dry-run shows what would change)
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
+agentdocker ui                # the desktop app: the same, live, in a window
 ```
+
+The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Released macOS archives carry all three binaries; elsewhere, build the app with `cargo install --path crates/ui --locked`.
 
 The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
 
@@ -190,6 +194,24 @@ Where the ledger records every file change, the journal records what happened an
 
 `agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
 
+### Channels: when two agents are on the same thing
+
+A lease keeps two agents out of one file. A channel is what happens when they are in it anyway.
+
+The daemon already knows which checkout changed which path, so the second checkout to touch a path is a collision and it opens a room for the agents involved — no one has to notice or ask:
+
+```sh
+agentdocker channels                                  # the rooms in this project, who is in them, how the reviews stand
+agentdocker channel open --as writer "settle the parser" --with reviewer   # or open one deliberately
+agentdocker send --from writer --to channel:<id> "I'm taking src/parser.rs"  # a group message: members only
+agentdocker review-request --as writer <id> --note "the lexer is untouched"
+agentdocker review --as reviewer <id> --changes "handle the empty input"   # blocks until you say otherwise
+agentdocker review --as reviewer <id> --approve "good now"
+agentdocker channel close --as writer <id> --resolution "writer's version landed"
+```
+
+A channel is a message destination with a membership rather than a subscription: an agent put in one hears it without asking, and offline members get it in their inbox. **Review is the tie-break.** When two agents have both done the work, what settles it is what the others say about it, not who finished first: a request for changes blocks until that same reviewer clears it, approvals count toward landing, and only a reviewer's latest word counts. Verdicts record the HEAD they were given, so you can read a verdict against the code it saw. A channel closes when the work is final or when its last member leaves, and closed channels are pruned.
+
 ### Resume with verified context
 
 ```sh
@@ -225,7 +247,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 **Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. The journal hands a newcomer what happened while it was away. Generic adopted processes are not automatically observed.
 
-**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 
@@ -245,12 +267,13 @@ An agent can optionally run in an image with no networking or host mounts by def
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Four crates:
+Five crates:
 
-- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
-- `crates/host` — host filesystem, process, Git, and container-engine inspection shared by both binaries.
-- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, event stream, SQLite write-through store so state survives restarts.
+- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
+- `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
+- `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
+- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents by project, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
@@ -263,7 +286,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(next)*: an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; the daemon watching for running agents on its own; a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, leases, the journal and events, with notifications; the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
+- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events; next, desktop notifications and the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 
 ## Development

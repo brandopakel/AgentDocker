@@ -46,6 +46,8 @@ pub enum JournalKind {
     Leave,
     /// One agent handed work to another (Phase 4).
     Handoff,
+    /// A channel opened, closed, or carried a review.
+    Review,
 }
 
 impl JournalKind {
@@ -57,6 +59,7 @@ impl JournalKind {
             "join" => Self::Join,
             "leave" => Self::Leave,
             "handoff" => Self::Handoff,
+            "review" => Self::Review,
             _ => return None,
         })
     }
@@ -71,6 +74,7 @@ impl fmt::Display for JournalKind {
             Self::Join => "join",
             Self::Leave => "leave",
             Self::Handoff => "handoff",
+            Self::Review => "review",
         })
     }
 }
@@ -157,9 +161,11 @@ impl JournalEntry {
                 }
             }
             JournalKind::Note => format!("{who} noted: \"{}\"", self.summary),
-            JournalKind::Commit | JournalKind::Join | JournalKind::Leave | JournalKind::Handoff => {
-                format!("{who} {}", self.summary)
-            }
+            JournalKind::Commit
+            | JournalKind::Join
+            | JournalKind::Leave
+            | JournalKind::Handoff
+            | JournalKind::Review => format!("{who} {}", self.summary),
         };
         let mut escaped = String::new();
         for ch in line.chars() {

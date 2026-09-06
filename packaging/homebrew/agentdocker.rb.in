@@ -31,6 +31,8 @@ class Agentdocker < Formula
 
   def install
     bin.install "agentdocker", "agentd"
+    # The desktop app is in the macOS archives only.
+    bin.install "agentdocker-ui" if File.exist?("agentdocker-ui")
   end
 
   service do

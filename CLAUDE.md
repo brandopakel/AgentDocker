@@ -8,6 +8,7 @@ Native local orchestration for AI agents: a per-host daemon (`agentd`) plus a CL
 - `crates/host` — `agentdocker-host`: host-side I/O both binaries need (project discovery from a working directory, process inspection). Stateless helpers; no daemon state.
 - `crates/agentd` — the daemon, as a library (`agentd::main`); the `agentd` binary itself is built by `crates/cli` so one install ships both. `daemon.rs` one synchronous state mutex covering memory, SQLite writes and ordered event publication + handlers, `watcher.rs` per-checkout observations, `server.rs` socket loop + streaming, `supervisor.rs` process spawning + log capture, `store.rs` SQLite write-through persistence (JSON blobs; bump `SCHEMA_VERSION` only when a stored meaning changes).
 - `crates/cli` — the `agentdocker` package: the `agentdocker` CLI and the `agentd` binary (`src/bin/agentd.rs`, one line). `client.rs` talks the protocol and starts the daemon on demand, `service.rs` installs it as a launchd/systemd user service, `format.rs` renders output, `mcp.rs` is the stdio MCP server (hand-rolled JSON-RPC), `hooks.rs` the Claude Code hooks adapter. Both talk to the daemon through the `Backend` trait in `client.rs`, whose test mock lets them be tested without a daemon.
+- `crates/ui` — `agentdocker-ui`, the desktop app: egui/eframe, its own blocking socket client (`client.rs`), a worker thread for requests and one for the event stream (`app.rs`). No HTTP anywhere; `agentdocker ui` launches it.
 
 ## Commands
 

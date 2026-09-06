@@ -5,7 +5,7 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, ProjectId};
+use crate::{AgentId, ChannelId, ProjectId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -48,6 +48,10 @@ pub enum Destination {
     /// may give an id prefix or an absolute path inside the project; the
     /// daemon resolves to the id before publishing.
     Project(ProjectId),
+    /// Every member of a channel except the sender. Unlike a topic, the
+    /// membership is the channel's, not a subscription: an agent put in a
+    /// channel hears it without asking.
+    Channel(ChannelId),
     /// Every live agent.
     Broadcast,
 }
@@ -66,6 +70,9 @@ impl Destination {
         if let Some(project) = s.strip_prefix("project:") {
             return Self::Project(ProjectId::from(project));
         }
+        if let Some(channel) = s.strip_prefix("channel:") {
+            return Self::Channel(ChannelId::from(channel));
+        }
         Self::Agent(AgentId::from(s))
     }
 }
@@ -76,6 +83,7 @@ impl fmt::Display for Destination {
             Self::Agent(id) => f.write_str(id.short()),
             Self::Topic(topic) => write!(f, "topic:{topic}"),
             Self::Project(id) => write!(f, "project:{}", id.short()),
+            Self::Channel(id) => write!(f, "channel:{id}"),
             Self::Broadcast => f.write_str("all"),
         }
     }

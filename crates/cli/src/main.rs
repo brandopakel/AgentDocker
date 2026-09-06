@@ -299,8 +299,57 @@ enum Command {
         #[arg(long, conflicts_with = "all")]
         runtime: Option<String>,
     },
+    /// The rooms agents share when they turn out to be on the same work: who is in them, and how the reviews stand.
+    Channels {
+        /// Project: an id prefix or a path inside it (default: the agent's own).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Include closed channels that have not been pruned.
+        #[arg(long)]
+        all: bool,
+        /// Only channels this agent is in.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
+    },
+    /// Open, close, or prune a channel.
+    Channel(ChannelArgs),
+    /// Ask the other members of a channel to review this agent's work.
+    ReviewRequest {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Channel id or unique prefix.
+        channel: String,
+        #[arg(long)]
+        /// Anything the reviewers should know before they look.
+        note: Option<String>,
+    },
+    /// Give a verdict on another member's work. Requested changes block it; approvals settle it.
+    Review {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Channel id or unique prefix.
+        channel: String,
+        #[arg(long)]
+        /// Whose work (default: the only other member).
+        of: Option<String>,
+        #[arg(long, group = "verdict")]
+        /// Good to land.
+        approve: bool,
+        #[arg(long, group = "verdict")]
+        /// Not yet; say what to change in the note.
+        changes: bool,
+        #[arg(long, group = "verdict")]
+        /// Neither approves nor blocks.
+        comment: bool,
+        /// What you want to say.
+        note: Option<String>,
+    },
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
     Runtimes,
+    /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
+    Ui,
     /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
@@ -493,6 +542,47 @@ struct RegisterArgs {
     workdir: Option<PathBuf>,
     #[arg(short = 'l', long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+}
+
+#[derive(Args)]
+struct ChannelArgs {
+    #[command(subcommand)]
+    action: ChannelAction,
+}
+
+#[derive(Subcommand)]
+enum ChannelAction {
+    /// Open a channel for a task, rather than wait for a collision.
+    Open {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// What the channel is about.
+        task: String,
+        #[arg(long = "with", value_name = "AGENT")]
+        /// Who to put in it (default: everyone else in the project).
+        members: Vec<String>,
+    },
+    /// The work is final: close it and tell the members.
+    Close {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent id, name or unique prefix (defaults to this session).
+        agent: String,
+        /// Channel id or unique prefix.
+        channel: String,
+        #[arg(long)]
+        /// What the work settled on.
+        resolution: Option<String>,
+    },
+    /// Forget channels closed longer ago than this.
+    Prune {
+        /// Project: an id prefix or a path inside it (default: every project).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long, default_value_t = 14 * 24 * 60 * 60, value_name = "SECONDS")]
+        /// How long a closed channel is kept.
+        before: u64,
+    },
 }
 
 #[derive(Args)]
@@ -993,10 +1083,132 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Channels {
+            project,
+            all,
+            agent,
+        } => {
+            let request = Request::Channels {
+                project: project.as_deref().map(project_selector).unwrap_or_default(),
+                all,
+                agent,
+            };
+            if let Response::Channels { channels } = client.call(&request).await? {
+                print_channels(&client, &channels).await?;
+            }
+        }
+        Command::Channel(args) => match args.action {
+            ChannelAction::Open {
+                agent,
+                task,
+                members,
+            } => {
+                let request = Request::ChannelOpen {
+                    agent,
+                    task,
+                    members,
+                };
+                if let Response::Channel { channel } = client.call(&request).await? {
+                    println!("{}", channel.id);
+                }
+            }
+            ChannelAction::Close {
+                agent,
+                channel,
+                resolution,
+            } => {
+                let request = Request::ChannelClose {
+                    agent,
+                    channel,
+                    resolution,
+                };
+                if let Response::Channel { channel } = client.call(&request).await? {
+                    eprintln!("closed {}", channel.id);
+                }
+            }
+            ChannelAction::Prune { project, before } => {
+                let request = Request::ChannelPrune {
+                    project: project.as_deref().map(project_selector).unwrap_or_default(),
+                    before_secs: before,
+                };
+                if let Response::Pruned { removed } = client.call(&request).await? {
+                    eprintln!("forgot {removed} closed channel(s)");
+                }
+            }
+        },
+        Command::ReviewRequest {
+            agent,
+            channel,
+            note,
+        } => {
+            let request = Request::ReviewRequest {
+                agent,
+                channel,
+                note,
+            };
+            if let Response::Channel { channel } = client.call(&request).await? {
+                eprintln!("asked {} member(s) to review", channel.members.len() - 1);
+            }
+        }
+        Command::Review {
+            agent,
+            channel,
+            of,
+            approve,
+            changes,
+            comment: _,
+            note,
+        } => {
+            let verdict = if approve {
+                "approve"
+            } else if changes {
+                "changes"
+            } else {
+                "comment"
+            };
+            let request = Request::Review {
+                agent: agent.clone(),
+                channel,
+                of,
+                verdict: verdict.to_owned(),
+                note,
+            };
+            if let Response::Channel { channel } = client.call(&request).await? {
+                print_reviews(&client, &channel).await?;
+            }
+        }
         Command::Runtimes => {
             if let Response::Runtimes { runtimes } = client.call(&Request::Runtimes).await? {
                 print_runtimes(&runtimes);
             }
+        }
+        Command::Ui => {
+            let app = std::env::current_exe()
+                .ok()
+                .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
+                .filter(|sibling| sibling.is_file())
+                .or_else(|| {
+                    std::env::var_os("PATH").and_then(|path| {
+                        std::env::split_paths(&path)
+                            .map(|dir| dir.join("agentdocker-ui"))
+                            .find(|candidate| candidate.is_file())
+                    })
+                })
+                .context(
+                    "agentdocker-ui is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
+                )?;
+            let mut child = std::process::Command::new(&app);
+            // The app reads AGENTDOCKER_SOCKET; pass on whatever this
+            // invocation was pointed at so both talk to one daemon.
+            if let Some(socket) = &socket {
+                child.env("AGENTDOCKER_SOCKET", socket);
+            }
+            child
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .with_context(|| format!("cannot start {}", app.display()))?;
         }
         Command::Setup { runtimes, dry_run } => setup::run(&client, &runtimes, dry_run).await?,
         Command::Run(args) => {
@@ -1546,6 +1758,94 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
         &rows,
         |i| i >= first_unadopted,
     );
+}
+
+/// One row per channel, with how many reviews it carries.
+async fn print_channels(client: &Client, channels: &[agentdocker_core::Channel]) -> Result<()> {
+    if channels.is_empty() {
+        println!("no channels; the daemon opens one when two checkouts change the same path");
+        return Ok(());
+    }
+    let names = agent_names(client).await;
+    let rows: Vec<Vec<String>> = channels
+        .iter()
+        .map(|c| {
+            vec![
+                c.id.to_string(),
+                if c.is_open() { "open" } else { "closed" }.to_owned(),
+                c.title(),
+                c.members
+                    .iter()
+                    .map(|m| named(&names, m))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                c.reviews.len().to_string(),
+                format::ago(c.opened_at),
+            ]
+        })
+        .collect();
+    format::table(
+        &["CHANNEL", "STATE", "ABOUT", "MEMBERS", "REVIEWS", "OPENED"],
+        &rows,
+    );
+    Ok(())
+}
+
+/// Where every member's work stands after a review.
+async fn print_reviews(client: &Client, channel: &agentdocker_core::Channel) -> Result<()> {
+    let names = agent_names(client).await;
+    for review in &channel.reviews {
+        println!("{}  {}", format::clock(review.at), review.line());
+    }
+    for member in &channel.members {
+        match channel.decision(member, 1) {
+            agentdocker_core::Decision::Approved { approvals } => {
+                println!("{}: approved ({approvals})", named(&names, member));
+            }
+            agentdocker_core::Decision::Blocked { by } => println!(
+                "{}: blocked by {}",
+                named(&names, member),
+                by.iter()
+                    .map(|b| named(&names, b))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            agentdocker_core::Decision::Pending { approvals, needed } => {
+                if approvals > 0 || channel.reviews.iter().any(|r| &r.of == member) {
+                    println!(
+                        "{}: {approvals} of {needed} approvals",
+                        named(&names, member)
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Agent names by id, for rendering; ids stand in when the daemon cannot say.
+async fn agent_names(client: &Client) -> BTreeMap<String, String> {
+    match client
+        .call(&Request::List {
+            all: true,
+            project: None,
+            labels: BTreeMap::new(),
+        })
+        .await
+    {
+        Ok(Response::Agents { agents }) => agents
+            .into_iter()
+            .map(|a| (a.id.to_string(), a.spec.name))
+            .collect(),
+        _ => BTreeMap::new(),
+    }
+}
+
+fn named(names: &BTreeMap<String, String>, id: &agentdocker_core::AgentId) -> String {
+    names
+        .get(id.as_str())
+        .cloned()
+        .unwrap_or_else(|| id.short().to_owned())
 }
 
 /// One row per known runtime; installed ones first.
