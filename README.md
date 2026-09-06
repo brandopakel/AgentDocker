@@ -1,12 +1,12 @@
 # AgentDocker
 
-**Docker for AI agents.** One daemon that creates, supervises, organises, and — above all — connects every agent running on your machines, whatever model or vendor is behind it.
+**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
 It is bare metal: a native per-user daemon and a native CLI talking over a Unix socket. Nothing is served over HTTP, nothing needs a browser, and nothing needs Docker — a container is one optional way to sandbox an agent, not the product.
 
-> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees and handoff all work end to end on macOS and Linux. Still to come: a native desktop app, discovery of the agent tools installed on a machine and one-command setup for each, Windows, and federation across machines. See the [roadmap](#roadmap).
+> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees and handoff all work end to end on macOS and Linux. Still to come: a native desktop app, discovery of the agent tools installed on a machine and one-command setup for each, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
 
 ## The Docker analogy
 
@@ -220,7 +220,7 @@ A handoff is a checkpoint addressed to someone, with everything the daemon alrea
 
 ## Sandboxes (optional)
 
-An agent can run inside a container as a sandbox, with closed defaults: no network, no inherited environment, only its checkout and a scoped, authenticated coordination socket mounted. `agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` issues the credential; containers receive only the separate `container.sock`, the token file, and their mapped checkout, and set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside. The host control socket is never mounted. Docker and Podman are supported as engines for this, including image builds with recorded provenance and container supervision across daemon restarts; none of it is required to use AgentDocker. See [`docs/CONTAINER-ENGINES.md`](docs/CONTAINER-ENGINES.md).
+An agent can optionally run in an image with no networking or host mounts by default. `--mount-checkout` adds its checkout and a scoped, authenticated coordination endpoint. Docker Desktop uses a private engine-volume relay; Podman VMs use the selected machine transport. `agentdocker grant-access --as writer --container-root /workspace --token-file /private/path/token` issues the credential; containers receive only the separate `container.sock`, the token file, and their mapped checkout, and set `AGENTDOCKER_SOCKET`, `AGENTDOCKER_TOKEN_FILE`, and `AGENTDOCKER_AGENT_ID` inside. The host control socket is never mounted. Docker and Podman are supported as engines for this, including image builds with recorded provenance and container supervision across daemon restarts; none of it is required to use AgentDocker. See [`docs/CONTAINER-ENGINES.md`](docs/CONTAINER-ENGINES.md).
 
 ## What it solves
 
@@ -266,7 +266,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 1 — adapters & persistence** *(done)*: SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts; `agentdocker mcp`; `agentdocker hook` for Claude Code; `Agentfile.toml` with `up`/`down`; `claim --wait`.
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
-- **Phase 4 — layers, sandboxes & handoff** *(done, engines in progress)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
+- **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
 - **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events; next, desktop notifications and the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 

@@ -5,8 +5,28 @@ use serde_json::Value;
 use std::{path::Path, time::Duration};
 
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ContainerError(pub String);
+#[error("{message}")]
+pub struct ContainerError {
+    pub code: agentdocker_core::ErrorCode,
+    pub message: String,
+}
+impl ContainerError {
+    pub fn with_code(code: agentdocker_core::ErrorCode, message: String) -> Self {
+        Self { code, message }
+    }
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            code: agentdocker_core::ErrorCode::EngineUnavailable,
+            message,
+        }
+    }
+    pub fn invalid(message: String) -> Self {
+        Self {
+            code: agentdocker_core::ErrorCode::Invalid,
+            message,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContainerState {
@@ -60,9 +80,11 @@ fn execute(record: &AgentRecord, args: Vec<String>) -> Result<command::Output, C
     let mut argv = prefix(record);
     argv.extend(args);
     let result = command::run(Path::new("/"), &argv, Duration::from_secs(15))
-        .map_err(|e| ContainerError(e.to_string()))?;
+        .map_err(|e| ContainerError::unavailable(e.to_string()))?;
     if !result.success {
-        return Err(ContainerError(result.text.chars().take(2048).collect()));
+        return Err(ContainerError::unavailable(
+            result.text.chars().take(2048).collect(),
+        ));
     }
     Ok(result)
 }
@@ -74,18 +96,21 @@ fn hash(raw: &str) -> Option<&str> {
 
 /// Ownership, immutable image, ID, and exit state must all be explicit.
 pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, ContainerError> {
-    let data: Value = serde_json::from_str(raw).map_err(|e| ContainerError(e.to_string()))?;
+    let data: Value =
+        serde_json::from_str(raw).map_err(|e| ContainerError::unavailable(e.to_string()))?;
     let data = data
         .as_array()
         .filter(|a| a.len() == 1)
         .and_then(|a| a.first())
-        .ok_or_else(|| ContainerError("expected exactly one inspected container".into()))?;
+        .ok_or_else(|| {
+            ContainerError::unavailable("expected exactly one inspected container".into())
+        })?;
     let c = instance(record);
     let id = data
         .get("Id")
         .and_then(Value::as_str)
         .and_then(hash)
-        .ok_or_else(|| ContainerError("invalid container ID".into()))?;
+        .ok_or_else(|| ContainerError::unavailable("invalid container ID".into()))?;
     let label = |key: &str| data.get("Config")?.get("Labels")?.get(key)?.as_str();
     if c.id.as_deref().is_some_and(|expected| expected != id)
         || label("org.agentdocker.owner") != Some(c.owner.as_str())
@@ -94,7 +119,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
         || data.get("Image").and_then(Value::as_str).and_then(hash) != hash(&c.image_id)
         || hash(&c.image_id).is_none()
     {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container ownership or immutable image identity differs; protection retained".into(),
         ));
     }
@@ -108,7 +133,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
             .and_then(Value::as_bool)
             != Some(false)
     {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container restart/removal policy is not managed by AgentDocker".into(),
         ));
     }
@@ -124,22 +149,37 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                 != Some(c.options.network.as_str())
             || data.pointer("/HostConfig/Privileged") != Some(&Value::Bool(false))
         {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "container user, workdir, networking or privilege policy differs".into(),
             ));
         }
         let mounts = data
             .get("Mounts")
             .and_then(Value::as_array)
-            .ok_or_else(|| ContainerError("container omitted mount evidence".into()))?;
+            .ok_or_else(|| {
+                ContainerError::unavailable("container omitted mount evidence".into())
+            })?;
         let mut expected = vec![(&w.checkout, "/workspace", !w.read_only)];
-        if let Some(a) = &w.access {
-            expected.extend([
-                (&a.directory, "/run/agentdocker-auth", false),
-                (&a.socket_directory, "/run/agentdocker", false),
-            ]);
+        if let Some(g) = &w.git {
+            expected.push((&g.common, "/run/agentdocker-git", !w.read_only));
         }
-        if mounts.len() != expected.len()
+        if let Some(a) = &w.access {
+            expected.push((&a.directory, "/run/agentdocker-auth", false));
+            if a.relay.is_none() {
+                expected.push((&a.socket_directory, "/run/agentdocker", false));
+            }
+        }
+        let relay = w.access.as_ref().and_then(|a| a.relay.as_ref());
+        let volume_matches = relay.is_none_or(|r| {
+            mounts.iter().any(|m| {
+                m.get("Type").and_then(Value::as_str) == Some("volume")
+                    && m.get("Name").and_then(Value::as_str) == Some(&r.volume)
+                    && m.get("Destination").and_then(Value::as_str) == Some("/run/agentdocker")
+                    && m.get("RW").and_then(Value::as_bool) == Some(false)
+            })
+        });
+        if !volume_matches
+            || mounts.len() != expected.len() + usize::from(relay.is_some())
             || expected.iter().any(|(source, dest, rw)| {
                 !mounts.iter().any(|m| {
                     m.get("Type").and_then(Value::as_str) == Some("bind")
@@ -149,7 +189,7 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                 })
             })
         {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "container mounts differ from the authorized checkout and endpoint".into(),
             ));
         }
@@ -167,17 +207,19 @@ pub fn parse_inspection(record: &AgentRecord, raw: &str) -> Result<Inspection, C
                     .pointer("/State/ExitCode")
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
-                    .ok_or_else(|| ContainerError("container exit code is missing".into()))?;
+                    .ok_or_else(|| {
+                        ContainerError::unavailable("container exit code is missing".into())
+                    })?;
                 ContainerState::Exited(code)
             }
             _ => {
-                return Err(ContainerError(
+                return Err(ContainerError::unavailable(
                     "container exit is not confirmed; protection retained".into(),
                 ));
             }
         }
     } else {
-        return Err(ContainerError(
+        return Err(ContainerError::unavailable(
             "container liveness is uncertain; protection retained".into(),
         ));
     };
@@ -232,6 +274,22 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
                 if w.read_only { ",readonly" } else { "" }
             ),
         ]);
+        if let Some(g) = &w.git {
+            args.extend([
+                "--mount".into(),
+                format!(
+                    "type=bind,src={},dst=/run/agentdocker-git{}",
+                    g.common.display(),
+                    if w.read_only { ",readonly" } else { "" }
+                ),
+            ]);
+            let directory = Path::new("/run/agentdocker-git").join(&g.directory);
+            args.extend([
+                format!("--env=GIT_DIR={}", directory.display()),
+                "--env=GIT_COMMON_DIR=/run/agentdocker-git".into(),
+                "--env=GIT_WORK_TREE=/workspace".into(),
+            ]);
+        }
         if let Some(a) = &w.access {
             args.extend([
                 "--mount".into(),
@@ -240,10 +298,16 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
                     a.directory.display()
                 ),
                 "--mount".into(),
-                format!(
-                    "type=bind,src={},dst=/run/agentdocker,readonly",
-                    a.socket_directory.display()
-                ),
+                match &a.relay {
+                    Some(relay) => format!(
+                        "type=volume,src={},dst=/run/agentdocker,readonly",
+                        relay.volume
+                    ),
+                    None => format!(
+                        "type=bind,src={},dst=/run/agentdocker,readonly",
+                        a.socket_directory.display()
+                    ),
+                },
                 "--env=AGENTDOCKER_SOCKET=/run/agentdocker/endpoint.sock".into(),
                 "--env=AGENTDOCKER_TOKEN_FILE=/run/agentdocker-auth/token".into(),
             ]);
@@ -265,8 +329,9 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
 impl ContainerBackend for CliContainers {
     fn create(&self, record: &AgentRecord) -> Result<Inspection, ContainerError> {
         let result = execute(record, create_args(record))?;
-        let id = hash(result.stdout.trim())
-            .ok_or_else(|| ContainerError("create returned an invalid container ID".into()))?;
+        let id = hash(result.stdout.trim()).ok_or_else(|| {
+            ContainerError::unavailable("create returned an invalid container ID".into())
+        })?;
         let mut confirmed = record.clone();
         confirmed.container.as_mut().unwrap().id = Some(id.into());
         self.inspect(&confirmed)
@@ -283,7 +348,7 @@ impl ContainerBackend for CliContainers {
     fn start(&self, record: &AgentRecord) -> Result<(), ContainerError> {
         let inspected = self.inspect(record)?;
         if inspected.state != ContainerState::Created {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "only a confirmed unstarted container can start".into(),
             ));
         }
@@ -319,7 +384,7 @@ impl ContainerBackend for CliContainers {
     fn remove_created(&self, record: &AgentRecord) -> Result<(), ContainerError> {
         let inspected = self.inspect(record)?;
         if inspected.state != ContainerState::Created {
-            return Err(ContainerError(
+            return Err(ContainerError::unavailable(
                 "refusing to remove a container which may have run".into(),
             ));
         }
@@ -360,6 +425,7 @@ mod tests {
             chrono::Utc::now(),
         );
         r.container = Some(ManagedContainer {
+            inputs: None,
             engine,
             connection: Some("chosen".into()),
             build: "build".into(),
@@ -422,11 +488,13 @@ mod tests {
         use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
         let mut record = record(ContainerEngine::Docker);
         record.container.as_mut().unwrap().workspace = Some(ContainerWorkspace {
+            git: None,
             checkout: "/checkout".into(),
             user: "1000:1000".into(),
             keep_id: false,
             read_only: false,
             access: Some(WorkspaceAccess {
+                relay: None,
                 grant: "grant".into(),
                 directory: "/private-auth".into(),
                 socket_directory: "/scoped-socket".into(),
@@ -458,6 +526,55 @@ mod tests {
                 "{path}"
             );
         }
+        let mut extra_volume = raw.clone();
+        extra_volume[0]["Mounts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Type":"volume","Name":"unapproved","Destination":"/data","RW":true}));
+        assert!(parse_inspection(&record, &extra_volume.to_string()).is_err());
+        record
+            .container
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .git = Some(agentdocker_core::container::GitMounts {
+            directory: "worktrees/worker".into(),
+            common: "/repo/.git".into(),
+        });
+        assert!(
+            parse_inspection(&record, &raw.to_string()).is_err(),
+            "Git metadata mount is required"
+        );
+        raw[0]["Mounts"].as_array_mut().unwrap().push(json!({"Type":"bind","Source":"/repo/.git","Destination":"/run/agentdocker-git","RW":true}));
+        assert!(parse_inspection(&record, &raw.to_string()).is_ok());
+        record
+            .container
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .read_only = true;
+        assert!(
+            parse_inspection(&record, &raw.to_string()).is_err(),
+            "validation cannot use writable Git or source"
+        );
+        raw[0]["Mounts"][0]["RW"] = json!(false);
+        raw[0]["Mounts"][3]["RW"] = json!(false);
+        assert!(parse_inspection(&record, &raw.to_string()).is_ok());
+        let git_args = create_args(&record);
+        assert!(
+            git_args
+                .iter()
+                .any(|a| a == "--env=GIT_DIR=/run/agentdocker-git/worktrees/worker")
+        );
+        assert!(
+            git_args
+                .iter()
+                .any(|a| a == "type=bind,src=/repo/.git,dst=/run/agentdocker-git,readonly")
+        );
         raw[0]["Mounts"].as_array_mut().unwrap().push(
             json!({"Type":"bind","Source":"/engine.sock","Destination":"/engine.sock","RW":true}),
         );
