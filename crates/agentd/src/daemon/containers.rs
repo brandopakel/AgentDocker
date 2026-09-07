@@ -260,8 +260,10 @@ impl Daemon {
             Err(e) => return *e,
         };
         // Asked for by a person, so it is not the daemon going down: an
-        // agent stopped on purpose is not brought back by the next start.
+        // agent stopped on purpose is neither brought back by the next
+        // start nor restarted by its own policy.
         self.clear_restore(&id);
+        self.clear_restart(&id);
         if self.container_record(&id).is_none() {
             return self.stop(reference, force);
         }
@@ -806,6 +808,7 @@ mod tests {
                 agent: record.id.to_string(),
                 resource: "task:protected".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 600,
                 note: None,
                 wait_secs: 0,

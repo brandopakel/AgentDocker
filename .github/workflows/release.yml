@@ -42,6 +42,15 @@ jobs:
           if [ "$WITH_UI" = "true" ]; then
             cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker-ui
             binaries="$binaries agentdocker-ui"
+            # The same program again, wrapped so macOS calls it
+            # AgentDocker and draws its icon rather than naming it after
+            # the file. The bare binary stays for `agentdocker ui` on a
+            # machine that installs neither into Applications.
+            sh scripts/bundle-macos.sh \
+              "target/${BUILD_TARGET}/release/agentdocker-ui" \
+              "target/${BUILD_TARGET}/release" \
+              "${GITHUB_REF_NAME#v}"
+            binaries="$binaries AgentDocker.app"
           fi
           mkdir dist
           # shellcheck disable=SC2086  # the binary list is deliberately split

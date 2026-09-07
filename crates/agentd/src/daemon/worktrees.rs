@@ -22,6 +22,31 @@ fn failure(e: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Invalid, e.to_string())
 }
 
+/// Holds a checkout marked as "the daemon is committing here" for as
+/// long as it lives, and lets go however the commit ends.
+struct Committing<'a> {
+    daemon: &'a Daemon,
+    root: PathBuf,
+}
+
+impl<'a> Committing<'a> {
+    fn mark(daemon: &'a Daemon, root: PathBuf) -> Self {
+        lock(&daemon.state).committing.insert(root.clone());
+        Self { daemon, root }
+    }
+}
+
+impl Drop for Committing<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.state).committing.remove(&self.root);
+    }
+}
+
+/// The subject of a commit message: what a journal line can carry.
+fn first_line(message: &str) -> &str {
+    message.lines().next().unwrap_or("").trim()
+}
+
 /// `git worktree add -b <branch> <path> HEAD` in `root`, for a new path
 /// outside the checkout and a branch name git accepts. Shared by
 /// `worktree-create` and `run --isolate`.
@@ -214,6 +239,193 @@ impl Daemon {
         }
     }
 
+    /// Commit an agent's checkout, and say in the journal that this
+    /// agent did it.
+    ///
+    /// The watcher already notices a HEAD that moved and writes a
+    /// `commit` entry for it, but it has to *guess* whose it was — the
+    /// only agent in the checkout, else whoever holds the `branch:`
+    /// lease, else nobody. Going through the daemon removes the guess:
+    /// the agent asked, so the agent is who it is attributed to, and
+    /// the message is the one it wrote rather than a summary of a sha.
+    ///
+    /// Nothing is written into the commit itself. The author stays
+    /// whoever git is configured as, and no trailer is added: this is
+    /// somebody's repository, and which agent typed it is our record to
+    /// keep, not a change to their history.
+    pub(super) async fn commit(
+        &self,
+        reference: &str,
+        message: String,
+        all: bool,
+        push: bool,
+    ) -> Response {
+        let (agent, root, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        if message.trim().is_empty() {
+            return failure("a commit needs a message");
+        }
+        {
+            let mut state = lock(&self.state);
+            let action = format!("commit:{}", root.display());
+            let ruling = state.permits(&agent, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&agent, &action, ruling);
+            }
+            if push {
+                let action = format!("push:{}", root.display());
+                let ruling = state.permits(&agent, &action);
+                if !ruling.is_allowed() {
+                    return state.refuse(&agent, &action, ruling);
+                }
+            }
+        }
+
+        // What would go in, before it goes in: `--porcelain` after the
+        // commit says nothing, and the count is what the journal reports.
+        let staged = match git(root.clone(), {
+            let mut args = vec!["diff".into(), "--name-only".into(), "--cached".into()];
+            if all {
+                // With `-a` the commit will also take tracked files
+                // that were only modified in the worktree.
+                args = vec!["diff".into(), "--name-only".into(), "HEAD".into()];
+            }
+            args
+        })
+        .await
+        {
+            Ok(output) if output.success => output,
+            Ok(output) => return failure(output.text),
+            Err(e) => return failure(e),
+        };
+        let files = staged.text.lines().filter(|l| !l.is_empty()).count();
+        if files == 0 {
+            return Response::error(
+                ErrorCode::Conflict,
+                if all {
+                    "nothing to commit"
+                } else {
+                    "nothing staged; stage the changes or ask for --all"
+                },
+            );
+        }
+
+        // The parent, for the journal, and read before anything moves.
+        let parent = match git(root.clone(), vec!["rev-parse".into(), "HEAD".into()]).await {
+            Ok(output) if output.success => Some(output.text.trim().to_owned()),
+            _ => None,
+        };
+        // From here the watcher must keep its hands off this checkout:
+        // it polls on its own schedule and would otherwise see HEAD move
+        // and write its own guessed-at entry for this very commit.
+        //
+        // A guard, not a pair of matching calls. Every way out of this
+        // function from here — a failed commit, a failed rev-parse, a
+        // future early return somebody adds, an unwind — has to clear
+        // the mark, and a mark left behind does not fail loudly: it
+        // silently stops that checkout being journaled for as long as
+        // the daemon lives.
+        let _committing = Committing::mark(self, root.clone());
+
+        let mut args = vec!["commit".into()];
+        if all {
+            args.push("--all".into());
+        }
+        // `--message` and then the message as its own argument: a
+        // message beginning with a dash is a message, not a flag.
+        args.push("--message".into());
+        args.push(message.clone());
+        let made = git(root.clone(), args).await;
+        let head = match made {
+            Ok(output) if output.success => {
+                match git(root.clone(), vec!["rev-parse".into(), "HEAD".into()]).await {
+                    Ok(output) if output.success => Ok(output.text.trim().to_owned()),
+                    Ok(output) => Err(output.text),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            Ok(output) => Err(output.text),
+            Err(e) => Err(e.to_string()),
+        };
+        let head = match head {
+            Ok(head) => head,
+            Err(reason) => return failure(reason),
+        };
+        let branch = match git(
+            root.clone(),
+            vec![
+                "symbolic-ref".into(),
+                "--short".into(),
+                "--quiet".into(),
+                "HEAD".into(),
+            ],
+        )
+        .await
+        {
+            // A detached HEAD is not an error here; it is just no branch.
+            Ok(output) if output.success => Some(output.text.trim().to_owned()),
+            _ => None,
+        };
+
+        // Pushed after the commit exists, so a push that fails leaves a
+        // commit rather than losing the work.
+        let mut pushed = false;
+        let mut trouble = None;
+        if push {
+            match git(root.clone(), vec!["push".into()]).await {
+                Ok(output) if output.success => pushed = true,
+                Ok(output) => trouble = Some(output.text),
+                Err(e) => trouble = Some(e.to_string()),
+            }
+        }
+
+        {
+            let mut state = lock(&self.state);
+            let short: String = head.chars().take(7).collect();
+            let summary = format!("committed {short}: {}", first_line(&message));
+            if let Some(record) = state.registry.get(&agent).cloned()
+                && let Some(mut entry) = state.plain_entry(
+                    &record,
+                    JournalKind::Commit,
+                    summary,
+                    SummarySource::Explicit,
+                )
+            {
+                entry.branch = branch.clone();
+                entry.head_before = parent.clone();
+                entry.head_after = Some(head.clone());
+                entry.paths_total = files;
+                state.append_journal(entry);
+            }
+            state.last_head.insert(root.clone(), head.clone());
+            state.emit(EventKind::Committed {
+                agent: agent.clone(),
+                head: head.clone(),
+                branch: branch.clone(),
+                files,
+                pushed,
+            });
+        }
+        if let Some(reason) = trouble {
+            // Not Internal: the commit was made and the state is
+            // sound. What failed is a remote we do not control, which
+            // is exactly what Unavailable is for — and the difference
+            // matters to a caller deciding whether to retry.
+            return Response::error(
+                ErrorCode::Unavailable,
+                format!("committed {head}, but the push failed: {reason}"),
+            );
+        }
+        Response::Committed {
+            head,
+            branch,
+            files,
+            pushed,
+        }
+    }
+
     pub(super) async fn integrate(
         &self,
         reference: &str,
@@ -348,6 +560,7 @@ impl Daemon {
                 reference,
                 format!("path:{}", target.display()),
                 LeaseMode::Exclusive,
+                None,
                 600,
                 Some(format!("integrating verified source {head}")),
                 0,
