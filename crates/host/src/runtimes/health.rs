@@ -547,7 +547,7 @@ mod tests {
         );
         assert_eq!(
             super::super::hooks_wiring(spec("claude-code"), &roots.home, "agentdocker"),
-            agentdocker_core::runtime::Wiring::Unverified
+            agentdocker_core::runtime::Wiring::Missing
         );
     }
 
