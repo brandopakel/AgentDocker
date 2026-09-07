@@ -163,6 +163,11 @@ fn desktop_entry(path: &Path, roots: &Roots) -> io::Result<bool> {
             "launcher has no execution or activation declaration",
         ));
     }
+    if let Some(value) = fields.get("Exec")
+        && !valid_exec(value)
+    {
+        return Err(error(path, "invalid desktop-entry Exec syntax"));
+    }
     if let Some(value) = fields.get("TryExec") {
         let executable = unescape(value).ok_or_else(|| error(path, "invalid TryExec string"))?;
         // TryExec is a path or program name, not a command line. which also
@@ -174,6 +179,121 @@ fn desktop_entry(path: &Path, roots: &Roots) -> io::Result<bool> {
     // NoDisplay hides a menu item, not an installed registration. Version is
     // the desktop-entry specification version, never an application version.
     Ok(true)
+}
+
+/// Validate both escaping layers and field codes; never expand or execute.
+fn valid_exec(raw: &str) -> bool {
+    let Some(decoded) = unescape(raw) else {
+        return false;
+    };
+    let mut chars = decoded.chars().peekable();
+    let mut arguments = 0;
+    let mut file_codes = 0;
+    while chars.peek().is_some() {
+        while chars.peek() == Some(&' ') {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+        let quoted = chars.peek() == Some(&'"');
+        if quoted {
+            chars.next();
+        }
+        let mut text = String::new();
+        let mut closed = !quoted;
+        while let Some(ch) = chars.next() {
+            if quoted && ch == '"' {
+                closed = true;
+                if chars.peek().is_some_and(|ch| *ch != ' ') {
+                    return false;
+                }
+                break;
+            }
+            if !quoted && ch == ' ' {
+                break;
+            }
+            if ch == '\0' {
+                return false;
+            }
+            if quoted && ch == '\\' {
+                match chars.next() {
+                    Some(ch @ ('"' | '\u{60}' | '$' | '\\')) => text.push(ch),
+                    _ => return false,
+                }
+                continue;
+            }
+            if (quoted && matches!(ch, '\u{60}' | '$'))
+                || (!quoted
+                    && (ch.is_control()
+                        || matches!(
+                            ch,
+                            '"' | '\''
+                                | '\\'
+                                | '>'
+                                | '<'
+                                | '~'
+                                | '|'
+                                | '&'
+                                | ';'
+                                | '$'
+                                | '*'
+                                | '?'
+                                | '#'
+                                | '('
+                                | ')'
+                                | '\u{60}'
+                        )))
+            {
+                return false;
+            }
+            if ch == '%' {
+                let Some(code) = chars.next() else {
+                    return false;
+                };
+                if code == '%' {
+                    text.push('%');
+                    continue;
+                }
+                if quoted
+                    || arguments == 0
+                    || !matches!(
+                        code,
+                        'f' | 'F' | 'u' | 'U' | 'i' | 'c' | 'k' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm'
+                    )
+                {
+                    return false;
+                }
+                if matches!(code, 'f' | 'F' | 'u' | 'U') {
+                    file_codes += 1;
+                    if file_codes > 1 {
+                        return false;
+                    }
+                }
+                if matches!(code, 'F' | 'U' | 'i')
+                    && (!text.is_empty() || chars.peek().is_some_and(|ch| *ch != ' '))
+                {
+                    return false;
+                }
+                text.push('%');
+                text.push(code);
+            } else {
+                text.push(ch);
+            }
+        }
+        if !closed {
+            return false;
+        }
+        if arguments == 0
+            && (text.is_empty()
+                || text.contains('=')
+                || (text.contains('/') && !text.starts_with('/')))
+        {
+            return false;
+        }
+        arguments += 1;
+    }
+    arguments > 0
 }
 
 fn fields(raw: &str) -> Result<BTreeMap<&str, &str>, ()> {
@@ -344,6 +464,35 @@ mod tests {
         assert!(!marker.exists(), "neither Exec nor TryExec is executed");
         std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(!desktop_entry(&user, &roots).unwrap());
+    }
+
+    #[test]
+    fn exec_syntax_is_validated_without_expanding_or_executing_commands() {
+        let (_temp, roots) = fixture();
+        let user = roots.desktop_dirs[0].join("code.desktop");
+        for (exec, valid) in [
+            ("code --new-window %F", true),
+            (
+                r#""/opt/Fixture Editor/code" --name "two words" %% %U"#,
+                true,
+            ),
+            (r#"code "literal\\$value" %i %c %k"#, true),
+            ("code %d %D %n %N %v %m", true),
+            (r#""unterminated"#, false),
+            (r#"code "closed"suffix"#, false),
+            ("code --files=%F", false),
+            ("code %f %U", false),
+            ("code %z", false),
+            (r#"code "%F""#, false),
+            ("NAME=value code", false),
+            ("code 'shell quoting'", false),
+            ("code $HOME/file", false),
+            ("code dangling%", false),
+        ] {
+            let raw = format!("[Desktop Entry]\nType=Application\nName=Fixture\nExec={exec}\n");
+            std::fs::write(&user, raw).unwrap();
+            assert_eq!(desktop_entry(&user, &roots).is_ok(), valid, "{exec}");
+        }
     }
 
     #[test]
