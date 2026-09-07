@@ -40,22 +40,33 @@ case "${1:-check}" in
   fuzz)
     seconds="${FUZZ_SECONDS:-60}"
     [[ "$seconds" =~ ^[0-9]+$ ]] && (( seconds > 0 && seconds <= 3600 )) || { echo 'FUZZ_SECONDS must be 1–3600' >&2; exit 2; }
-    mkdir -p artifacts fuzz/corpus/protocol
+    mkdir -p artifacts
     # cargo-fuzz does not expose --locked. Refuse a stale lock before the
     # campaign and verify every tracked source byte again even on failure.
     cargo +nightly metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
     python3 scripts/benchmark_manifest.py fuzz "$seconds" > artifacts/fuzz-manifest.json
+    # A single disposable root belongs to this campaign, including the
+    # token-filter database. Abort/crash inputs remain in fuzz/artifacts/.
+    fuzz_fixture_root="$(mktemp -d /tmp/ad-fuzz.XXXXXX)"
+    export AGENTDOCKER_FUZZ_ROOT="$fuzz_fixture_root"
     finish_fuzz() {
       fuzz_status=$?
       trap - EXIT
       python3 scripts/benchmark_manifest.py fuzz "$seconds" > artifacts/fuzz-manifest-after.json || fuzz_status=1
       python3 -c 'import json; a=json.load(open("artifacts/fuzz-manifest.json")); b=json.load(open("artifacts/fuzz-manifest-after.json")); assert a == b, "source, lockfile or toolchain changed during fuzzing"' || fuzz_status=1
+      rm -rf -- "$fuzz_fixture_root" || fuzz_status=1
       exit "$fuzz_status"
     }
     trap finish_fuzz EXIT
-    cp fuzz/seeds/protocol/*.json fuzz/corpus/protocol/
-    cargo +nightly fuzz run protocol -- -max_total_time="$seconds" -max_len=65536 -verbosity=0
-    cargo +nightly fuzz run resource-keys -- -max_total_time="$seconds" -max_len=4096 -verbosity=0
+    for target in protocol resource-keys engine-metadata token-filter; do
+      mkdir -p "fuzz/corpus/$target"
+      if [[ -d "fuzz/seeds/$target" ]]; then
+        cp "fuzz/seeds/$target/"* "fuzz/corpus/$target/"
+      fi
+      max_len=65536
+      [[ "$target" != resource-keys ]] || max_len=4096
+      cargo +nightly fuzz run "$target" -- -max_total_time="$seconds" -max_len="$max_len" -timeout=10 -rss_limit_mb=1024 -print_final_stats=1 -verbosity=0 2>&1 | tee "artifacts/fuzz-$target.log"
+    done
     ;;
   *) echo 'usage: bash scripts/verify.sh [check|test|coverage|bench|fuzz]' >&2; exit 2 ;;
 esac
