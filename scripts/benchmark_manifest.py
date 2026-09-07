@@ -48,5 +48,7 @@ print(json.dumps({
                   "seconds_per_target": int(sys.argv[2])} if fuzz else {"lease_counts": [1, 100, 1000], "fingerprint_files": 100,
                   "fingerprint_bytes_per_file": 4096, "socket_clients": [1, 10, 100],
         "socket_checkout_kind": "plain-unwatched",
+                  "socket_format": 2, "socket_workloads": ["shared", "disjoint"],
+                  "socket_outcomes": ["claim_release", "claim_conflict"],
                   "socket_iterations_per_client": 100},
 }, indent=2))

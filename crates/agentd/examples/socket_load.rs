@@ -1,7 +1,7 @@
 //! Real Unix-socket workload. Emits Bencher Metric Format on stdout.
 use agentdocker_core::{AgentSpec, LeaseMode, Request, Response};
 use anyhow::{Context, Result, bail};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -39,11 +39,16 @@ fn request(socket: &Path, request: &Request) -> Result<Response> {
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    let binary = args
-        .get(1)
-        .context("usage: socket_load /path/to/agentd [clients=10] [iterations=100]")?;
+    let binary = args.get(1).context(
+        "usage: socket_load /path/to/agentd [clients=10] [iterations=100] [shared|disjoint]",
+    )?;
     let clients: usize = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(10);
     let iterations: usize = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(100);
+    let workload = args.get(4).map(String::as_str).unwrap_or("shared");
+    anyhow::ensure!(
+        matches!(workload, "shared" | "disjoint") && args.len() <= 5,
+        "expected shared or disjoint workload"
+    );
     anyhow::ensure!(
         (1..=1000).contains(&clients) && (1..=100_000).contains(&iterations),
         "workload out of bounds"
@@ -106,33 +111,36 @@ fn main() -> Result<()> {
             Response::Agent { agent } => agent.id.to_string(),
             other => bail!("registration: {other:?}"),
         };
-        registered.push(agent);
+        let input = if workload == "shared" {
+            checkout.join("input.rs")
+        } else {
+            checkout.join(format!("input-{n}.rs"))
+        };
+        if workload == "disjoint" {
+            std::fs::write(&input, "original\n")?;
+        }
+        registered.push((agent, format!("path:{}", input.display())));
     }
-    let (mut samples, conflicts, elapsed) = std::thread::scope(|scope| -> Result<_> {
+    let (mut samples, elapsed) = std::thread::scope(|scope| -> Result<_> {
         let mut workers = Vec::new();
         // Dropping these senders cancels workers if creating a later thread fails.
         let mut starts = Vec::new();
-        for agent in registered {
+        for (agent, resource) in registered {
             let socket = socket.clone();
-            let checkout = checkout.clone();
             let (start, ready) = std::sync::mpsc::channel();
             starts.push(start);
             workers.push(
                 std::thread::Builder::new()
-                    .spawn_scoped(scope, move || -> Result<(Vec<f64>, usize)> {
+                    .spawn_scoped(scope, move || -> Result<Samples> {
                         ready.recv().context("workload start cancelled")?;
-                        let mut samples = Vec::new();
-                        let mut conflicts = 0;
+                        let mut samples = Samples::default();
                         for _ in 0..iterations {
                             let started = Instant::now();
                             let reply = request(
                                 &socket,
                                 &Request::Claim {
                                     agent: agent.clone(),
-                                    resource: format!(
-                                        "path:{}",
-                                        checkout.join("input.rs").display()
-                                    ),
+                                    resource: resource.clone(),
                                     mode: LeaseMode::Exclusive,
                                     amount: None,
                                     ttl_secs: 60,
@@ -156,16 +164,22 @@ fn main() -> Result<()> {
                                         matches!(reply, Response::Lease { .. }),
                                         "release: {reply:?}"
                                     );
+                                    samples.success.push(started.elapsed().as_secs_f64() * 1e9);
                                 }
                                 Response::Error {
                                     code: agentdocker_core::ErrorCode::Conflict,
                                     ..
-                                } => conflicts += 1,
+                                } => {
+                                    anyhow::ensure!(
+                                        workload == "shared",
+                                        "unexpected conflict between disjoint fixture paths"
+                                    );
+                                    samples.conflict.push(started.elapsed().as_secs_f64() * 1e9);
+                                }
                                 other => bail!("claim: {other:?}"),
                             }
-                            samples.push(started.elapsed().as_secs_f64() * 1e9);
                         }
-                        Ok((samples, conflicts))
+                        Ok(samples)
                     })
                     .context("create load worker")?,
             );
@@ -174,14 +188,13 @@ fn main() -> Result<()> {
         for ready in starts {
             ready.send(()).context("start load worker")?;
         }
-        let mut samples = Vec::new();
-        let mut conflicts = 0;
+        let mut samples = Samples::default();
         let mut error = None;
         for worker in workers {
             match worker.join() {
-                Ok(Ok((mut values, count))) => {
-                    samples.append(&mut values);
-                    conflicts += count;
+                Ok(Ok(mut values)) => {
+                    samples.success.append(&mut values.success);
+                    samples.conflict.append(&mut values.conflict);
                 }
                 Ok(Err(e)) => {
                     error.get_or_insert(e);
@@ -194,7 +207,7 @@ fn main() -> Result<()> {
         if let Some(error) = error {
             return Err(error);
         }
-        Ok((samples, conflicts, start.elapsed().as_secs_f64()))
+        Ok((samples, start.elapsed().as_secs_f64()))
     })
     .with_context(|| {
         format!(
@@ -202,23 +215,66 @@ fn main() -> Result<()> {
             log_tail(&tmp.path().join("daemon.log"))
         )
     })?;
-    samples.sort_by(f64::total_cmp);
-    let percentile = |p: f64| samples[((samples.len() - 1) as f64 * p).ceil() as usize];
-    let name = format!("socket_claim_release/{clients}_clients/{iterations}_iterations");
-    println!(
-        "{}",
-        json!({
-            format!("{name}/p50"): {"latency": {"value": percentile(0.50)}},
-            format!("{name}/p95"): {"latency": {"value": percentile(0.95)}},
-            format!("{name}/p99"): {"latency": {"value": percentile(0.99)}},
-            format!("{name}/throughput"): {"throughput": {"value": samples.len() as f64 / elapsed}},
-        })
+    let name = format!("socket_v2/{workload}/{clients}_clients/{iterations}_iterations");
+    let attempts = samples.success.len() + samples.conflict.len();
+    anyhow::ensure!(attempts == clients * iterations, "incomplete workload");
+    let mut metrics = Map::new();
+    series(
+        &mut metrics,
+        &format!("{name}/claim_release"),
+        &mut samples.success,
+        elapsed,
     );
+    series(
+        &mut metrics,
+        &format!("{name}/claim_conflict"),
+        &mut samples.conflict,
+        elapsed,
+    );
+    metrics.insert(
+        format!("{name}/attempts"),
+        json!({
+            "sample-count": {"value": attempts},
+            "throughput": {"value": attempts as f64 / elapsed},
+            "elapsed-seconds": {"value": elapsed},
+            "conflict-ratio": {"value": samples.conflict.len() as f64 / attempts as f64},
+        }),
+    );
+    println!("{}", Value::Object(metrics));
     eprintln!(
-        "{clients} clients, {} operations, {conflicts} expected conflicts, {elapsed:.3}s total; latency unit ns; includes connection setup and successful release",
-        samples.len()
+        "{clients} clients, {workload} paths, {attempts} attempts, {} successful claim/releases, {} expected conflicts, {elapsed:.3}s total; latency unit ns; includes connection setup; outcomes measured separately",
+        samples.success.len(),
+        samples.conflict.len()
     );
     Ok(())
+}
+
+#[derive(Default)]
+struct Samples {
+    success: Vec<f64>,
+    conflict: Vec<f64>,
+}
+
+fn series(metrics: &mut Map<String, Value>, name: &str, samples: &mut [f64], elapsed: f64) {
+    metrics.insert(
+        name.into(),
+        json!({
+            "sample-count": {"value": samples.len()},
+            "throughput": {"value": samples.len() as f64 / elapsed},
+        }),
+    );
+    // No observations do not mean zero latency. Omit those percentiles.
+    if samples.is_empty() {
+        return;
+    }
+    samples.sort_by(f64::total_cmp);
+    for (label, percentile) in [("p50", 0.50), ("p95", 0.95), ("p99", 0.99)] {
+        let index = ((samples.len() - 1) as f64 * percentile).ceil() as usize;
+        metrics.insert(
+            format!("{name}/{label}"),
+            json!({"latency": {"value": samples[index]}}),
+        );
+    }
 }
 
 fn log_tail(path: &Path) -> String {
