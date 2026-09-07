@@ -12,6 +12,8 @@ use agentdocker_core::runtime::{
 
 use crate::command;
 
+pub mod health;
+
 /// Where to look: injectable so tests can build a machine in a temp dir.
 #[derive(Clone, Debug)]
 pub struct Roots {
@@ -178,13 +180,17 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
 }
 
 /// Recognize an explicit AgentDocker MCP launch, not mentions in unrelated args.
-/// Wrappers whose behavior cannot be established remain unverified.
+/// Recognize the bare launch and the runtime argument written by setup. Other
+/// argument forms and wrappers remain unverified without executing the command.
 pub fn mcp_command_matches(command: Option<&str>, args: &[&str], marker: &str) -> bool {
     command
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str())
         == Some(marker)
-        && args.first() == Some(&"mcp")
+        && matches!(args, ["mcp"] | ["mcp", "--runtime", _])
+        && args
+            .get(2)
+            .is_none_or(|runtime| !runtime.is_empty() && !runtime.starts_with('-'))
 }
 
 /// Whether the runtime's MCP configuration registers AgentDocker.
@@ -192,7 +198,8 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
     match spec.mcp {
         McpWiring::None => Wiring::Unsupported,
         McpWiring::JsonServers { .. } => {
-            let Ok(raw) = std::fs::read_to_string(mcp_config_path(spec, roots).expect("JSON path"))
+            let Ok(raw) =
+                health::read_configuration(&mcp_config_path(spec, roots).expect("JSON path"))
             else {
                 return Wiring::Missing;
             };
@@ -228,7 +235,8 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
             }
         }
         McpWiring::TomlServers { .. } => {
-            let Ok(raw) = std::fs::read_to_string(mcp_config_path(spec, roots).expect("TOML path"))
+            let Ok(raw) =
+                health::read_configuration(&mcp_config_path(spec, roots).expect("TOML path"))
             else {
                 return Wiring::Missing;
             };
@@ -294,14 +302,25 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
         return Wiring::Unsupported;
     }
     let file = home.join(".claude/settings.json");
-    let Ok(raw) = std::fs::read_to_string(&file) else {
+    let Ok(raw) = health::read_configuration(&file) else {
         return Wiring::Missing;
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Wiring::Missing;
     };
-    // Every required event must include our command with the full matcher.
-    let wired = value
+    if hooks_configuration_matches(&value, marker) {
+        Wiring::Wired
+    } else {
+        Wiring::Missing
+    }
+}
+
+/// Every required event must include our command with the full matcher.
+fn hooks_configuration_matches(value: &serde_json::Value, marker: &str) -> bool {
+    if value["disableAllHooks"] == true {
+        return false;
+    }
+    value
         .get("hooks")
         .and_then(|h| h.as_object())
         .is_some_and(|events| {
@@ -337,12 +356,7 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
                             })
                         })
                 })
-        });
-    if wired {
-        Wiring::Wired
-    } else {
-        Wiring::Missing
-    }
+        })
 }
 
 #[cfg(test)]
