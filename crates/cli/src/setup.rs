@@ -46,7 +46,7 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         eprintln!("no agent tools found on this machine; see `agentdocker runtimes`");
         return Ok(());
     }
-    let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
+    let exe = crate::desktop::setup_executable().context("cannot locate the agentdocker binary")?;
     let roots = agentdocker_host::runtimes::Roots::from_env();
     let home = &roots.home;
     for runtime in targets {

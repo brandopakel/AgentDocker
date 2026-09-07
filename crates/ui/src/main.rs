@@ -7,6 +7,7 @@
 
 mod app;
 mod client;
+mod desktop;
 mod projects;
 mod smoke;
 mod terminal;

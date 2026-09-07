@@ -35,6 +35,10 @@ use crate::daemon::Daemon;
     about = "AgentDocker daemon: supervises agents, routes messages, arbitrates leases"
 )]
 pub struct Args {
+    /// Print this binary's version, platform and state schema as JSON, then exit without opening state.
+    #[arg(long)]
+    build_info: bool,
+
     /// Directory for the socket, logs and state.
     #[arg(long, env = "AGENTDOCKER_HOME", default_value_os_t = agentdocker_host::dirs::home())]
     home: PathBuf,
@@ -54,6 +58,19 @@ pub fn main() -> anyhow::Result<()> {
 /// daemon when they cannot connect, and two may race to do so.
 #[tokio::main]
 pub async fn run(args: Args) -> anyhow::Result<()> {
+    if args.build_info {
+        println!(
+            "{}",
+            serde_json::json!({
+                "format": 1,
+                "version": env!("CARGO_PKG_VERSION"),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "state_schema": store::SCHEMA_VERSION,
+            })
+        );
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

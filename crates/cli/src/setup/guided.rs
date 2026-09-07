@@ -437,7 +437,7 @@ pub async fn run(
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
         } else {
-            prepare(&roots, names, &std::env::current_exe()?)?
+            prepare(&roots, names, &crate::desktop::setup_executable()?)?
         };
         if apply_id.is_some() || undo_id.is_some() {
             if let Err(error) = apply(&directory, &mut plan, undo_id.is_some()) {

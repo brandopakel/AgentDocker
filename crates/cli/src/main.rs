@@ -3,6 +3,7 @@
 mod agentfile;
 mod attach;
 mod client;
+mod desktop;
 mod format;
 mod hooks;
 mod mcp;
@@ -371,6 +372,8 @@ enum Command {
     Runtimes,
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
     Ui,
+    /// Install, inspect or roll back the native desktop for this user.
+    Desktop(desktop::DesktopArgs),
     /// Connect this terminal to a managed agent's. Ctrl-] detaches and leaves it running.
     Attach {
         /// Agent id, name or unique prefix.
@@ -1485,6 +1488,7 @@ async fn main() -> Result<()> {
                 .spawn()
                 .with_context(|| format!("cannot start {}", app.display()))?;
         }
+        Command::Desktop(args) => desktop::run(args)?,
         Command::Setup {
             runtimes,
             dry_run,
