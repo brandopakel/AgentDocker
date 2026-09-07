@@ -78,6 +78,8 @@ impl Daemon {
                     record.status,
                     AgentStatus::Created | AgentStatus::Exited { .. } | AgentStatus::Failed { .. }
                 ) && record.spec.restore == expected.spec.restore
+                    && record.spec.restart == expected.spec.restart
+                    && record.restarts == expected.restarts
             }),
             "launch was cancelled or its starting identity changed"
         );
