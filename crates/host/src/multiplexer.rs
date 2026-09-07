@@ -313,3 +313,147 @@ mod tests {
         }
     }
 }
+
+/// Placing an agent in a `tmux` pane, so the human can reach it with the
+/// tool that already owns terminals.
+///
+/// This is the other half of recognising one. The daemon does not
+/// supervise what it puts here — tmux owns the process, and that is the
+/// point: we own the coordination, they own the terminal. So the agent
+/// is *registered*, not run, and everything that follows from that is
+/// true of it: no captured log (tmux has the output), and it ends when
+/// its command ends.
+pub mod tmux {
+    use std::collections::BTreeMap;
+    use std::io;
+    use std::path::Path;
+    use std::process::Command;
+
+    /// A pane that now exists, and the process in it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Pane {
+        /// `%3`, which is what every other tmux command takes as a target.
+        pub id: String,
+        /// The session it landed in, by name.
+        pub session: String,
+        /// The process tmux started, which is the agent.
+        pub pid: u32,
+    }
+
+    /// Whether tmux is on the PATH at all. Asked before anything else,
+    /// so "tmux is not installed" is not reported as a failed command.
+    pub fn available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Start `command` in a new detached session named `session`, in
+    /// `workdir`, with `env` set for the process.
+    ///
+    /// Detached because the daemon is not a terminal: the human attaches
+    /// afterwards with `tmux attach -t <session>`, which is the whole
+    /// reason for doing this rather than running the agent ourselves.
+    pub fn new_session(
+        session: &str,
+        workdir: &Path,
+        env: &BTreeMap<String, String>,
+        command: &[String],
+    ) -> io::Result<Pane> {
+        if command.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a pane needs a command to run",
+            ));
+        }
+        let mut tmux = Command::new("tmux");
+        tmux.args(["new-session", "-d", "-P", "-F", "#{pane_id}"])
+            .args(["-s", session])
+            .arg("-c")
+            .arg(workdir);
+        for (key, value) in env {
+            tmux.arg("-e").arg(format!("{key}={value}"));
+        }
+        // `--` so an agent's own flags are never read as tmux's.
+        tmux.arg("--").args(command);
+        let output = tmux.output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "tmux refused to create the session: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if id.is_empty() {
+            return Err(io::Error::other("tmux created a pane but did not name it"));
+        }
+        let pid = pane_pid(&id)?;
+        Ok(Pane {
+            session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
+            id,
+            pid,
+        })
+    }
+
+    /// The process tmux started in a pane. This is the agent's pid: what
+    /// `ps` will show, what liveness checks, and what `stop` signals.
+    pub fn pane_pid(pane: &str) -> io::Result<u32> {
+        describe_pane(pane, "#{pane_pid}")?
+            .parse()
+            .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
+    }
+
+    /// Ask tmux one thing about one pane.
+    fn describe_pane(pane: &str, format: &str) -> io::Result<String> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", pane, format])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "tmux could not describe pane {pane}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// A session name tmux will accept: it uses `.` and `:` in target
+    /// syntax, so neither can appear in a name we then use as a target.
+    pub fn session_name(agent: &str) -> String {
+        let cleaned: String = agent
+            .chars()
+            .map(|c| if c == '.' || c == ':' { '-' } else { c })
+            .collect();
+        let cleaned = cleaned.trim_matches('-');
+        if cleaned.is_empty() {
+            "agent".to_owned()
+        } else {
+            cleaned.to_owned()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_session_name_avoids_tmuxs_own_target_syntax() {
+            assert_eq!(session_name("claude-main"), "claude-main");
+            // `.` and `:` separate session, window and pane in a target,
+            // so a name containing them cannot be used as one.
+            assert_eq!(session_name("claude.main:1"), "claude-main-1");
+            assert_eq!(session_name("..."), "agent");
+            assert_eq!(session_name(""), "agent");
+        }
+
+        #[test]
+        fn a_pane_needs_a_command() {
+            let err = new_session("x", Path::new("/tmp"), &BTreeMap::new(), &[]).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+}

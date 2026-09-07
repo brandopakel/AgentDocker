@@ -105,6 +105,11 @@ agentdocker stop writer
 # under its own id — with its read set, journal cursor, checkpoints and
 # leases, and a note saying what changed while it was down.
 agentdocker run --name keeper --restore -- claude
+
+# Or hand it to tmux, and keep only the coordination. tmux owns the
+# terminal, so you reach it with `tmux attach -t reviewer`; AgentDocker
+# still knows its project, leases, read set and journal cursor.
+agentdocker run --name reviewer --in-pane -- claude
 ```
 
 Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:

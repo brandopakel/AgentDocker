@@ -46,6 +46,7 @@ mod contests;
 mod handoff;
 pub mod humans;
 mod images;
+mod panes;
 mod recovery;
 mod relay;
 mod restore;
@@ -1103,6 +1104,11 @@ impl Daemon {
     }
 
     async fn run(self: &Arc<Self>, spec: AgentSpec) -> Response {
+        // A pane is somebody else's to own, so that path registers what
+        // tmux starts rather than supervising a child of ours.
+        if spec.in_pane {
+            return self.run_in_pane(spec).await;
+        }
         if spec.command.first().is_none_or(String::is_empty) {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
@@ -5270,6 +5276,187 @@ mod tests {
         // No pid: nothing to look up, and nothing reported.
         let agent = register(&daemon, "bodiless", None).await;
         assert_eq!(agent.session, None);
+    }
+
+    // ----- run --in-pane --------------------------------------------------
+
+    /// Kill a tmux session however a test ends, so a failure does not
+    /// leave a stray server behind for the next one.
+    struct TmuxSession(String);
+
+    impl Drop for TmuxSession {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &self.0])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    fn tmux_says(pane: &str, format: &str) -> String {
+        let out = std::process::Command::new("tmux")
+            .args(["display-message", "-p", "-t", pane, format])
+            .output()
+            .expect("tmux answers");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[tokio::test]
+    async fn an_agent_in_a_pane_is_registered_rather_than_supervised() {
+        if !agentdocker_host::multiplexer::tmux::available() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let daemon = open(&dir);
+        // A distinct name per run, so concurrent tests cannot collide on
+        // one tmux session.
+        let name = format!("paned-{}", std::process::id());
+        let _cleanup = TmuxSession(name.clone());
+
+        let mut spec = spec(&name);
+        spec.workdir = Some(work.clone());
+        spec.in_pane = true;
+        spec.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run --in-pane failed")
+        };
+
+        // tmux owns the process, so the daemon registered it rather than
+        // supervising a child of its own.
+        assert!(!agent.managed, "tmux started it, not us");
+        assert_eq!(agent.status, AgentStatus::Running);
+        let session = agent.session.as_ref().expect("the pane is on the record");
+        assert_eq!(session.kind, "tmux");
+        assert_eq!(session.session.as_deref(), Some(name.as_str()));
+        let pane = session.pane.as_deref().expect("a pane id");
+
+        // And tmux agrees about which process that is, which is what
+        // makes `stop`, liveness and attribution work at all.
+        assert_eq!(
+            tmux_says(pane, "#{pane_pid}"),
+            agent.pid.expect("a pid").to_string(),
+            "the record's pid is the pane's pid"
+        );
+        assert_eq!(tmux_says(pane, "#{session_name}"), name);
+
+        // It can coordinate like any other agent: the pane got its id.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:in-a-pane").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_pane_agent_cannot_also_ask_for_a_terminal_or_a_restore() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().to_path_buf();
+
+        // The CLI refuses these combinations too, but the daemon has to:
+        // MCP, an Agentfile and the protocol itself all bypass clap.
+        let mut both = spec("two-terminals");
+        both.workdir = Some(work.clone());
+        both.in_pane = true;
+        both.tty = true;
+        both.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec: both }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("two terminals")),
+            "unexpected {response:?}"
+        );
+
+        let mut restoring = spec("not-ours-to-restore");
+        restoring.workdir = Some(work);
+        restoring.in_pane = true;
+        restoring.restore = true;
+        restoring.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec: restoring }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("nothing to bring back")),
+            "unexpected {response:?}"
+        );
+    }
+
+    /// Two agents each holding what the other wants, asking at once:
+    /// exactly one is refused and the other simply waits.
+    ///
+    /// This is the user-visible invariant — a ring is always broken, and
+    /// broken once — and it holds whichever order the two arrive in,
+    /// because the state lock serialises their first attempts.
+    ///
+    /// It is **not** a test of the atomicity fix, and it is worth saying
+    /// so where somebody will read it. I checked: reintroducing the old
+    /// shape — releasing the lock between the deadlock check and the
+    /// join — leaves this test passing, because the window is nanoseconds
+    /// wide in the same task and nothing makes the other task land in it.
+    /// A test that did catch it would need a hook inside that window,
+    /// and the fix's whole point is that the window no longer exists, so
+    /// the hook would have to be restored by the same regression it was
+    /// meant to catch. That fix rests on reading the code: there is no
+    /// unlock between `state.deadlock(..)` and `waiting.join_locked(..)`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_agents_closing_one_ring_leave_exactly_one_refused() {
+        for round in 0..6 {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+            let beta = register(&daemon, "beta", Some(std::process::id())).await;
+            assert!(matches!(
+                claim(&daemon, "alpha", "task:x").await,
+                Response::Lease { .. }
+            ));
+            assert!(matches!(
+                claim(&daemon, "beta", "task:y").await,
+                Response::Lease { .. }
+            ));
+
+            let a = {
+                let daemon = daemon.clone();
+                let id = alpha.id.to_string();
+                tokio::spawn(async move { claim_waiting(&daemon, &id, "task:y", 1).await })
+            };
+            let b = {
+                let daemon = daemon.clone();
+                let id = beta.id.to_string();
+                tokio::spawn(async move { claim_waiting(&daemon, &id, "task:x", 1).await })
+            };
+            let outcomes = [a.await.unwrap(), b.await.unwrap()];
+
+            let deadlocked = outcomes
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r,
+                        Response::Error {
+                            code: ErrorCode::Deadlock,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(
+                deadlocked, 1,
+                "round {round}: the ring is broken exactly once, got {outcomes:?}"
+            );
+            // The other waited its second and reported an ordinary
+            // conflict, which is the honest answer: it is queued behind a
+            // lease nobody released.
+            assert!(
+                outcomes.iter().any(|r| matches!(
+                    r,
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        ..
+                    }
+                )),
+                "round {round}: the other one simply waited: {outcomes:?}"
+            );
+        }
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

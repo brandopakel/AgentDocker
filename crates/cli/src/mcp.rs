@@ -165,6 +165,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         isolate: false,
         tty: false,
         restore: false,
+        in_pane: false,
     };
     match client
         .call(&Request::Register {

@@ -91,6 +91,12 @@ pub struct AgentSpec {
     /// processes nobody asked it to.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restore: bool,
+    /// `run` puts the agent in a `tmux` pane instead of running it
+    /// itself, so a person can reach it with `tmux attach`. tmux owns
+    /// the process, so the agent is registered rather than supervised:
+    /// no captured log, and it ends when its command does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_pane: bool,
 }
 
 /// Which branch and commit an agent's checkout is on, as last observed —

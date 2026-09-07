@@ -607,6 +607,11 @@ struct RunArgs {
     /// still describe it.
     #[arg(long)]
     restore: bool,
+    /// Put the agent in a new `tmux` session instead of running it here,
+    /// so you can reach it with `tmux attach`. tmux owns the process, so
+    /// there is no captured log and the agent ends when its command does.
+    #[arg(long, conflicts_with_all = ["tty", "restore"])]
+    in_pane: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -1406,6 +1411,7 @@ async fn main() -> Result<()> {
                 isolate: args.isolate,
                 tty: args.tty,
                 restore: args.restore,
+                in_pane: args.in_pane,
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1444,6 +1450,7 @@ async fn main() -> Result<()> {
                 isolate: false,
                 tty: false,
                 restore: false,
+                in_pane: false,
             };
             let request = Request::Register {
                 spec,

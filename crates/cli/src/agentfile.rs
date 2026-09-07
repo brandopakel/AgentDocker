@@ -63,6 +63,10 @@ pub struct AgentEntry {
     /// identity and in the same directory.
     #[serde(default)]
     pub restore: bool,
+    /// Put the agent in a `tmux` pane instead of running it here, so a
+    /// person can reach it with `tmux attach`.
+    #[serde(default)]
+    pub in_pane: bool,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -149,6 +153,7 @@ impl Agentfile {
                     isolate: entry.isolate,
                     tty: entry.tty,
                     restore: entry.restore,
+                    in_pane: entry.in_pane,
                 }
             })
             .collect();
