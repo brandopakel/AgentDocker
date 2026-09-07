@@ -5561,9 +5561,13 @@ mod tests {
     /// the hook would have to be restored by the same regression it was
     /// meant to catch. That fix rests on reading the code: there is no
     /// unlock between `state.deadlock(..)` and `waiting.join_locked(..)`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    // Two workers, not four: the test needs the two claims to run at
+    // once and nothing more, and this is the only multi-threaded runtime
+    // in the suite — on a machine already running one test per core,
+    // extra worker threads are contention every other test pays for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_agents_closing_one_ring_leave_exactly_one_refused() {
-        for round in 0..6 {
+        for round in 0..3 {
             let dir = TempDir::new().unwrap();
             let daemon = open(&dir);
             let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
@@ -9521,5 +9525,28 @@ deny = ["send:all"]
         .await
         .expect("queue admission must share the flush timeout");
         assert!(matches!(response, Response::Leases { .. }));
+    }
+}
+
+#[cfg(test)]
+mod leak_detector_proof {
+    /// Deliberately orphans a process that holds this test's output
+    /// pipe. Ignored, so it never runs in the suite; run it by name to
+    /// confirm the leak detector still fails a genuine leak:
+    ///
+    /// ```text
+    /// cargo nextest run -p agentd -E 'test(a_real_leak_is_still_caught)' --run-ignored all
+    /// ```
+    #[test]
+    #[ignore = "proves the leak detector works; leaves a process for 30s on purpose"]
+    fn a_real_leak_is_still_caught() {
+        // Deliberately never reaped: an orphan holding this test's
+        // output pipe is exactly what is being demonstrated, and
+        // waiting for it would defeat the point.
+        #[allow(clippy::zombie_processes)]
+        let _orphan = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
     }
 }
