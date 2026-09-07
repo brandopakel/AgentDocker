@@ -6,6 +6,7 @@
 
 mod app;
 mod client;
+mod projects;
 mod terminal;
 
 fn main() -> eframe::Result {

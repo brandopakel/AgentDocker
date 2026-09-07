@@ -139,6 +139,9 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// Show only this project, by id. `None` is everything, which is the
+    /// right default: the window exists to show a fleet.
+    focus: Option<String>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
@@ -189,6 +192,7 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            focus: None,
         }
     }
 
@@ -220,6 +224,7 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            focus: None,
         }
     }
 
@@ -381,6 +386,38 @@ impl App {
         list
     }
 
+    /// The project an agent works in: its id and its name.
+    fn project_of(&self, agent: &str) -> Option<(String, String)> {
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == agent)
+            .and_then(|a| a.project.as_ref())
+            .map(|p| (p.id().as_str().to_owned(), p.name()))
+    }
+
+    /// A project as a dot and its name, in its own colour. Used wherever
+    /// rows from several projects are mixed together, because there the
+    /// colour alone asks the reader to remember which is which.
+    fn project_label(&self, ui: &mut egui::Ui, agent: &str) {
+        ui.horizontal(|ui| match self.project_of(agent) {
+            Some((id, name)) => {
+                crate::projects::dot(ui, &id);
+                ui.label(RichText::new(name).color(crate::projects::colour(&id)));
+            }
+            None => {
+                ui.label(RichText::new("—").weak());
+            }
+        });
+    }
+
+    /// Whether a row belonging to this agent survives the project filter.
+    fn in_focus(&self, agent: &str) -> bool {
+        match &self.focus {
+            None => true,
+            Some(only) => self.project_of(agent).is_some_and(|(id, _)| id == *only),
+        }
+    }
+
     fn name_of(&self, id: &str) -> String {
         self.agents
             .iter()
@@ -393,13 +430,15 @@ impl App {
 
     fn agents_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
-        let mut groups: BTreeMap<String, Vec<&AgentRecord>> = BTreeMap::new();
+        // Grouped by project id, not by name: two checkouts of one
+        // repository share a name, and the id is what actually says they
+        // are the same work.
+        let mut groups: BTreeMap<(String, String), Vec<&AgentRecord>> = BTreeMap::new();
         for agent in self.agents.iter().filter(|a| a.status.is_live()) {
-            let key = agent
-                .project
-                .as_ref()
-                .map(ProjectRef::name)
-                .unwrap_or_else(|| "no project".to_owned());
+            let key = match &agent.project {
+                Some(project) => (project.name(), project.id().as_str().to_owned()),
+                None => ("no project".to_owned(), String::new()),
+            };
             groups.entry(key).or_default().push(agent);
         }
         let mut stop: Option<String> = None;
@@ -407,20 +446,94 @@ impl App {
         if groups.is_empty() {
             ui.label("No live agents. Start one with `agentdocker run`, or adopt one below.");
         }
-        for (project, agents) in &groups {
-            ui.heading(project);
-            egui::Grid::new(format!("agents-{project}"))
-                .striped(true)
-                .num_columns(8)
-                .show(ui, |ui| {
-                    for header in [
-                        "NAME", "RUNTIME", "DOING", "BRANCH", "LEASES", "SEEN", "", "",
-                    ] {
-                        ui.label(RichText::new(header).strong());
+        // One grid for every project rather than one each, so the columns
+        // line up down the whole screen. Separate grids size themselves
+        // independently, and the result reads as several tables that
+        // happen to be stacked.
+        egui::Grid::new("agents")
+            .striped(true)
+            .num_columns(8)
+            .show(ui, |ui| {
+                // Headers once, at the top. Repeating them per project
+                // was noise: the columns are shared now, so the reader
+                // only needs telling what they are once.
+                for header in [
+                    "NAME", "RUNTIME", "DOING", "BRANCH", "LEASES", "SEEN", "", "",
+                ] {
+                    ui.label(RichText::new(header).strong());
+                }
+                ui.end_row();
+                for ((project, project_id), agents) in &groups {
+                    if self.focus.as_ref().is_some_and(|only| only != project_id) {
+                        continue;
+                    }
+                    // The project's own row: its colour, its name, and
+                    // what its agents are doing, so a glance answers "is
+                    // anything stuck here?" without reading the rows.
+                    ui.horizontal(|ui| {
+                        crate::projects::dot(ui, project_id);
+                        ui.label(
+                            RichText::new(project)
+                                .heading()
+                                .color(crate::projects::colour(project_id)),
+                        );
+                    });
+                    let blocked = agents
+                        .iter()
+                        .filter(|a| {
+                            matches!(
+                                self.activity.get(a.id.as_str()),
+                                Some(Activity::Blocked { .. })
+                            )
+                        })
+                        .count();
+                    let working = agents
+                        .iter()
+                        .filter(|a| {
+                            matches!(
+                                self.activity.get(a.id.as_str()),
+                                Some(Activity::Working { .. })
+                            )
+                        })
+                        .count();
+                    ui.label(
+                        RichText::new(format!(
+                            "{} agent{}",
+                            agents.len(),
+                            if agents.len() == 1 { "" } else { "s" }
+                        ))
+                        .weak(),
+                    );
+                    // What the project is doing, in the words a reader
+                    // would use: "1 blocked" is worth colour, "all idle"
+                    // is worth saying, and "0 working" is neither.
+                    if blocked > 0 {
+                        ui.label(
+                            RichText::new(format!("{blocked} blocked"))
+                                .color(Color32::from_rgb(200, 140, 60)),
+                        );
+                    } else if working > 0 && working == agents.len() {
+                        ui.label(
+                            RichText::new("all working").color(Color32::from_rgb(60, 170, 90)),
+                        );
+                    } else if working > 0 {
+                        ui.label(
+                            RichText::new(format!("{working} working"))
+                                .color(Color32::from_rgb(60, 170, 90)),
+                        );
+                    } else {
+                        ui.label(RichText::new("all idle").weak());
                     }
                     ui.end_row();
+
                     for agent in agents {
-                        ui.label(&agent.spec.name);
+                        // The dot repeats the project's colour on every
+                        // row, so a row read on its own still says whose
+                        // it is.
+                        ui.horizontal(|ui| {
+                            crate::projects::dot(ui, project_id);
+                            ui.label(&agent.spec.name);
+                        });
                         ui.label(&agent.spec.runtime);
                         // What it is doing, not merely that its process
                         // exists: blocked agents say what by.
@@ -470,9 +583,14 @@ impl App {
                         }
                         ui.end_row();
                     }
-                });
-            ui.add_space(8.0);
-        }
+                    // A blank row between projects: the striping alone
+                    // does not separate them once they share a grid.
+                    for _ in 0..8 {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
         if let Some(id) = stop {
             self.send(Cmd::Stop(id));
         }
@@ -642,6 +760,13 @@ impl App {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(self.name_of(&question.from)).strong());
+                    // Which project is asking: the same question text can
+                    // mean different things in different repositories.
+                    if let Some((id, name)) = self.project_of(&question.from) {
+                        ui.label(
+                            RichText::new(format!("· {name}")).color(crate::projects::colour(&id)),
+                        );
+                    }
                     ui.label(RichText::new(format!("· {} left", span(left))).weak());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(question.id.to_string()).weak().monospace());
@@ -846,13 +971,20 @@ impl App {
         }
         egui::Grid::new("leases")
             .striped(true)
-            .num_columns(5)
+            .num_columns(6)
             .show(ui, |ui| {
-                for header in ["RESOURCE", "HOLDER", "MODE", "EXPIRES", "NOTE"] {
+                for header in ["PROJECT", "RESOURCE", "HOLDER", "MODE", "EXPIRES", "NOTE"] {
                     ui.label(RichText::new(header).strong());
                 }
                 ui.end_row();
                 for lease in &self.leases {
+                    // A lease belongs to whichever project its holder is
+                    // in, and this list mixes them — so each row is
+                    // named, not merely coloured.
+                    if !self.in_focus(lease.holder.as_str()) {
+                        continue;
+                    }
+                    self.project_label(ui, lease.holder.as_str());
                     ui.label(lease.resource.as_str());
                     ui.label(self.name_of(lease.holder.as_str()));
                     ui.label(format!("{:?}", lease.mode).to_lowercase());
@@ -909,6 +1041,28 @@ impl eframe::App for App {
                         );
                         ui.label(RichText::new(reason).color(Color32::GRAY));
                     }
+                }
+                // One project at a time, when a fleet is too much at
+                // once. Placed here rather than per screen because it
+                // means the same thing on all of them.
+                let projects = self.projects();
+                if projects.len() > 1 {
+                    ui.separator();
+                    let showing = self
+                        .focus
+                        .as_ref()
+                        .and_then(|id| projects.iter().find(|(pid, _)| pid == id))
+                        .map(|(_, name)| name.clone())
+                        .unwrap_or_else(|| "All projects".to_owned());
+                    egui::ComboBox::from_id_salt("project-focus")
+                        .selected_text(showing)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.focus, None, "All projects");
+                            for (id, name) in &projects {
+                                let label = RichText::new(name).color(crate::projects::colour(id));
+                                ui.selectable_value(&mut self.focus, Some(id.clone()), label);
+                            }
+                        });
                 }
                 if !self.status.is_empty() {
                     ui.separator();
