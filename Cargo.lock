@@ -203,6 +203,7 @@ dependencies = [
  "criterion",
  "ignore",
  "libc",
+ "serde",
  "serde_json",
  "sha2",
  "shlex",
