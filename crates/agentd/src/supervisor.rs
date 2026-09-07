@@ -88,7 +88,10 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     command
         .args(args)
         .envs(&record.spec.env)
+        .env("AGENTDOCKER_HOME", &daemon.home)
         .env("AGENTDOCKER_SOCKET", &daemon.socket)
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
         .env("AGENTDOCKER_AGENT_ID", record.id.as_str())
         .env("AGENTDOCKER_AGENT_NAME", &record.spec.name)
         .env(
