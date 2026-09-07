@@ -3820,6 +3820,14 @@ impl State {
 
     /// Serve a query, from the ring when it can be.
     fn journal_query(&mut self, query: JournalQuery) -> Response {
+        let Some(head_seq) = self.store_op("journal head", |store| {
+            store.max_journal_seq(&query.project)
+        }) else {
+            return Response::error(
+                ErrorCode::StorageUnavailable,
+                "journal head could not be read",
+            );
+        };
         let simple = query.agent.is_none()
             && query.branch.is_none()
             && query.kind.is_none()
@@ -3844,6 +3852,7 @@ impl State {
                 return Response::Journal {
                     project: query.project,
                     entries: entries[start..].to_vec(),
+                    head_seq: Some(head_seq),
                 };
             }
         }
@@ -3851,6 +3860,7 @@ impl State {
             Some(entries) => Response::Journal {
                 project: query.project,
                 entries,
+                head_seq: Some(head_seq),
             },
             None => Response::error(ErrorCode::Internal, "journal query failed"),
         }
@@ -10655,9 +10665,35 @@ deny = ["send:all"]
             let mut state = lock(&daemon.state);
             state.move_cursor("user", &project, last);
             state.journal_prune(&project, last + 1);
+            for filtered in [false, true] {
+                let mut query = JournalQuery::new(project.clone(), 200);
+                if filtered {
+                    query.grep = Some("absent".into());
+                }
+                let Response::Journal {
+                    entries, head_seq, ..
+                } = state.journal_query(query)
+                else {
+                    panic!()
+                };
+                assert!(entries.is_empty());
+                assert_eq!(
+                    head_seq,
+                    Some(last),
+                    "pruning preserves the durable snapshot head"
+                );
+            }
         }
         drop(daemon);
         let daemon = open(&dir);
+        let Response::Journal {
+            entries, head_seq, ..
+        } = lock(&daemon.state).journal_query(JournalQuery::new(project.clone(), 200))
+        else {
+            panic!()
+        };
+        assert!(entries.is_empty());
+        assert_eq!(head_seq, Some(last), "empty snapshot head survives restart");
         let Response::JournalEntry { entry } = daemon
             .handle(Request::JournalAdd {
                 agent: "owner".into(),

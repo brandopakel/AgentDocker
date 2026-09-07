@@ -1,5 +1,7 @@
 """A failed resource preflight must stop the build before Cargo runs."""
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +9,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from contextlib import redirect_stderr
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("build_storage", ROOT / "scripts/build_storage.py")
@@ -15,6 +18,30 @@ SPEC.loader.exec_module(STORAGE)
 
 
 class BuildStorage(unittest.TestCase):
+    def test_report_does_not_publish_private_target_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-user-project"
+            root.mkdir()
+            target = root / "custom-cache"
+            target.mkdir()
+            args = SimpleNamespace(minimum_free_gib=1, max_current_gib=12, max_total_gib=40)
+            with patch.object(STORAGE, "ROOT", root), \
+                    patch.object(STORAGE.shutil, "disk_usage", return_value=SimpleNamespace(free=100 * STORAGE.GIB)), \
+                    patch.object(STORAGE.subprocess, "check_output", side_effect=[json.dumps({"target_directory":str(target)}), b""]), \
+                    patch.object(STORAGE, "allocated", return_value=4096):
+                report = STORAGE.inspect(args)
+            self.assertNotIn(str(root), json.dumps(report))
+            self.assertNotIn("current_target", report)
+
+    def test_failed_measurement_does_not_publish_private_oserror_path(self):
+        error = OSError(13, "permission denied", "/private-user-project/custom-cache")
+        captured = io.StringIO()
+        with patch.object(STORAGE.sys, "argv", ["build_storage.py"]), \
+                patch.object(STORAGE, "inspect", side_effect=error), redirect_stderr(captured):
+            self.assertEqual(STORAGE.main(), 1)
+        self.assertNotIn("private-user-project", captured.getvalue())
+        self.assertIn("no build started", captured.getvalue())
+
     def test_fallback_counts_directory_blocks_and_deduplicates_hardlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

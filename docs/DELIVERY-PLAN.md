@@ -159,3 +159,20 @@ private credentials, reports and running release binaries were preserved.
 Project documentation totals **1.6 MiB**, not 10 GB. Other projects' raw recovery
 databases, personal files and application state require separate retention
 review; Apple storage-category labels alone are not deletion evidence.
+
+
+### Runtime history and publication follow-up
+
+The window now caps its visible journal at 200 entries and console scrollback
+at 256 KiB, preserving a UTF-8 tail and bounding retained string capacity. A
+journal snapshot carries its durable project head so a late reply preserves
+newer live entries while a post-prune empty snapshot removes older rows. Older
+daemon responses retain their previous snapshot semantics. These are window
+history bounds; they do not delete the durable project journal.
+
+Source inspection also found unbounded GUI request/result channels and command
+recall history. Queue backpressure/coalescing, hidden-window behavior, command
+history budgets and actual 1/10/100-agent RSS/CPU/FD/soak measurements remain open
+T10/T11/L14 work. History fixes alone do not establish a runtime memory ceiling.
+The storage guard's JSON and error output exclude private cache paths; raw
+compiler/provider logs still require sanitization before publication.

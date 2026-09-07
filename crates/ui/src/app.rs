@@ -24,6 +24,8 @@ use crate::terminal::{Status, Terminal};
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
+const JOURNAL_WINDOW: usize = 200;
+const CONSOLE_BYTES: usize = 256 * 1024;
 /// How long a console command may run. Long enough for anything that
 /// finishes, short enough that `watch` or `logs -f` — which never do —
 /// give the worker thread back.
@@ -108,7 +110,7 @@ enum Msg {
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
-    Journal(String, Vec<JournalEntry>),
+    Journal(String, Option<u64>, Vec<JournalEntry>),
     Activity(Vec<AgentActivity>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
@@ -151,6 +153,7 @@ pub struct App {
     terminal: Option<Terminal>,
     console_input: String,
     console_output: String,
+    console_truncated: bool,
     /// What has been typed here before, oldest first, and where the up
     /// arrow currently is in it. `None` is the live line.
     console_history: Vec<String>,
@@ -234,6 +237,7 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
             console_focused: false,
@@ -277,6 +281,7 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
             console_focused: false,
@@ -303,9 +308,25 @@ impl App {
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
                 Msg::Discovered(found) => self.discovered = found,
-                Msg::Journal(project, entries) => {
+                Msg::Journal(project, head_seq, entries) => {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
-                        self.journal = entries;
+                        // An in-flight snapshot may predate live events. Merge
+                        // by sequence so a late reply cannot roll the view back.
+                        let mut merged: BTreeMap<_, _> = entries
+                            .into_iter()
+                            .map(|entry| (entry.seq, entry))
+                            .collect();
+                        // The durable head also makes an empty post-prune
+                        // snapshot authoritative. An older daemon has no such
+                        // boundary, so use its snapshot without guessing.
+                        merged.extend(
+                            self.journal
+                                .drain(..)
+                                .filter(|entry| head_seq.is_some_and(|head| entry.seq > head))
+                                .map(|entry| (entry.seq, entry)),
+                        );
+                        self.journal = merged.into_values().rev().take(JOURNAL_WINDOW).collect();
+                        self.journal.reverse();
                     }
                 }
                 Msg::Activity(activity) => {
@@ -391,8 +412,8 @@ impl App {
                     // Appended, not replaced: a terminal keeps what it
                     // said, and the command that produced this is
                     // already above it.
-                    self.console_output.push_str(text.trim_end());
-                    self.console_output.push('\n');
+                    self.append_console(text.trim_end());
+                    self.append_console("\n");
                     self.screen = Screen::Console;
                 }
             }
@@ -460,6 +481,8 @@ impl App {
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>
             {
                 self.journal.push(entry.clone());
+                let excess = self.journal.len().saturating_sub(JOURNAL_WINDOW);
+                self.journal.drain(..excess);
             }
             _ => {}
         }
@@ -959,6 +982,9 @@ impl App {
     /// transcript, the last commands on the up arrow, and output that
     /// accumulates instead of a box that is replaced.
     fn console_screen(&mut self, ui: &mut egui::Ui) {
+        if self.console_truncated {
+            ui.label("Earlier output omitted. Showing the latest 256 KiB.");
+        }
         let mut run = false;
         let palette = self.settings.palette();
         let font = egui::FontId::monospace(self.settings.terminal_size);
@@ -1036,14 +1062,41 @@ impl App {
             });
         if run && !self.console_input.trim().is_empty() {
             let line = self.console_input.trim().to_owned();
-            self.console_output
-                .push_str(&format!("agentdocker {line}\n"));
+            self.append_console(&format!("agentdocker {line}\n"));
             if self.console_history.last() != Some(&line) {
                 self.console_history.push(line.clone());
             }
             self.console_recall = None;
             self.console_input.clear();
             self.send(Cmd::Console(line));
+        }
+    }
+
+    /// Retain a UTF-8 tail without growing the window's buffer with each reply.
+    fn append_console(&mut self, text: &str) {
+        fn boundary(text: &str, mut at: usize) -> usize {
+            while !text.is_char_boundary(at) {
+                at += 1;
+            }
+            at
+        }
+        if text.len() >= CONSOLE_BYTES {
+            let at = boundary(text, text.len() - CONSOLE_BYTES);
+            self.console_output = text[at..].to_owned();
+            self.console_truncated = true;
+            return;
+        }
+        let excess = (self.console_output.len() + text.len()).saturating_sub(CONSOLE_BYTES);
+        if excess > 0 {
+            let at = boundary(&self.console_output, excess);
+            self.console_output.drain(..at);
+            self.console_truncated = true;
+        }
+        self.console_output.push_str(text);
+        // String::drain retains capacity. Also release any previously oversized
+        // allocation, rather than merely hiding its bytes from the UI.
+        if self.console_output.capacity() > CONSOLE_BYTES * 2 {
+            self.console_output.shrink_to(CONSOLE_BYTES);
         }
     }
 
@@ -1271,6 +1324,9 @@ impl App {
     }
 
     fn journal_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!(
+            "Latest {JOURNAL_WINDOW} entries. Earlier entries remain in the project journal."
+        ));
         let projects = self.projects();
         let mut changed: Option<String> = None;
         ui.horizontal(|ui| {
@@ -1793,10 +1849,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             kind: None,
             path: None,
             grep: None,
-            limit: 200,
+            limit: JOURNAL_WINDOW,
             digest: None,
         })? {
-            Response::Journal { entries, .. } => Some(Msg::Journal(project, entries)),
+            Response::Journal {
+                entries, head_seq, ..
+            } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
         Cmd::Me => match client.call(&Request::Me {
@@ -2027,6 +2085,120 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn journal_entry(seq: u64) -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "project":"fixture-project", "seq":seq, "at":Utc::now(),
+            "agent_name":"fixture", "kind":"note", "summary":format!("entry {seq}"),
+            "summary_source":"explicit"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn history_live_journal_is_bounded_and_late_snapshot_keeps_newer_entries() {
+        let (commands, _requests) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        for seq in 1..=1000 {
+            app.on_event(Event::new(
+                EventKind::JournalAppended {
+                    entry: journal_entry(seq),
+                },
+                Utc::now(),
+            ));
+        }
+        assert_eq!(
+            app.journal.len(),
+            200,
+            "live updates must respect the snapshot window"
+        );
+        assert_eq!(app.journal.first().unwrap().seq, 801);
+        // The RPC snapshot can have been read before the most recent events.
+        messages
+            .send(Msg::Journal(
+                "fixture-project".into(),
+                Some(900),
+                (701..=900).map(journal_entry).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.journal.first().unwrap().seq, 801);
+        assert_eq!(app.journal.last().unwrap().seq, 1000);
+        assert_eq!(app.journal.len(), 200);
+    }
+
+    #[test]
+    fn history_late_journal_snapshot_does_not_replace_newer_live_entries() {
+        let (commands, _requests) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        app.journal = (801..=1000).map(journal_entry).collect();
+        messages
+            .send(Msg::Journal(
+                "fixture-project".into(),
+                Some(900),
+                (701..=900).map(journal_entry).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.journal.last().unwrap().seq, 1000);
+        assert_eq!(app.journal.len(), 200);
+    }
+
+    #[test]
+    fn history_empty_snapshot_respects_pruning_and_legacy_responses() {
+        let (commands, _requests) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        app.journal = (801..=1001).map(journal_entry).collect();
+        messages
+            .send(Msg::Journal("fixture-project".into(), Some(1000), vec![]))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.journal
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [1001]
+        );
+        messages
+            .send(Msg::Journal("fixture-project".into(), None, vec![]))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.journal.is_empty(),
+            "do not invent a head for an older daemon"
+        );
+    }
+
+    #[test]
+    fn history_console_keeps_a_bounded_utf8_tail_across_large_and_repeated_replies() {
+        let (commands, _requests) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        messages
+            .send(Msg::Console(format!("{}\nLATEST", "🐋".repeat(200_000))))
+            .unwrap();
+        app.drain();
+        assert!(app.console_output.len() <= 256 * 1024);
+        assert!(
+            app.console_output.capacity() <= 512 * 1024,
+            "trimming must also bound retained allocation"
+        );
+        assert!(app.console_output.ends_with("\nLATEST\n"));
+        for _ in 0..20 {
+            messages.send(Msg::Console("é".repeat(20_000))).unwrap();
+            app.drain();
+        }
+        assert!(app.console_output.len() <= 256 * 1024);
+        assert!(app.console_output.capacity() <= 512 * 1024);
+        assert!(app.console_output.ends_with("é\n"));
+    }
 
     #[cfg(unix)]
     fn command_with_replies(

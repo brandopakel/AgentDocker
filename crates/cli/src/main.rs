@@ -2035,7 +2035,10 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             };
             // The snapshot, and where its tail starts.
             let snapshot = async {
-                let Response::Journal { project, entries } = client.call(&request).await? else {
+                let Response::Journal {
+                    project, entries, ..
+                } = client.call(&request).await?
+                else {
                     return Ok(None);
                 };
                 entries.iter().for_each(print);

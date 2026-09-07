@@ -803,6 +803,10 @@ pub enum Response {
     Journal {
         project: crate::ProjectId,
         entries: Vec<JournalEntry>,
+        /// Durable project head at the same snapshot, including pruned entries.
+        /// Absent on older daemons; readers must not infer it from an empty list.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head_seq: Option<u64>,
     },
     JournalEntry {
         entry: JournalEntry,
@@ -868,6 +872,23 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_snapshot_head_is_optional_for_older_daemons() {
+        let legacy = serde_json::json!({"type":"journal", "project":"fixture", "entries":[]});
+        let response: Response = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(response, Response::Journal { head_seq: None, .. }));
+        assert_eq!(serde_json::to_value(response).unwrap(), legacy);
+        let current = Response::Journal {
+            project: "fixture".into(),
+            entries: vec![],
+            head_seq: Some(1000),
+        };
+        assert_eq!(
+            serde_json::from_value::<Response>(serde_json::to_value(&current).unwrap()).unwrap(),
+            current
+        );
+    }
 
     #[test]
     fn terminal_bytes_survive_a_round_trip() {

@@ -12,6 +12,10 @@ GIB = 1024 ** 3
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class BudgetError(Exception):
+    """A storage refusal whose message contains no private paths."""
+
+
 def positive(value):
     number = int(value)
     if number < 1:
@@ -22,7 +26,7 @@ def positive(value):
 def allocated(path):
     """Measure allocated blocks without following links inside a cache."""
     if shutil.which("du"):
-        return int(subprocess.check_output(["du", "-sk", str(path)], text=True).split()[0]) * 1024
+        return int(subprocess.check_output(["du", "-sk", str(path)], text=True, stderr=subprocess.PIPE).split()[0]) * 1024
     total, seen = 0, set()
     def walk_error(error):
         raise error
@@ -42,7 +46,7 @@ def allocated(path):
 def existing_parent(path):
     while not path.exists():
         if path == path.parent:
-            raise ValueError(f"cannot locate filesystem for {path}")
+            raise BudgetError("cannot locate a cache filesystem")
         path = path.parent
     return path
 
@@ -50,11 +54,11 @@ def existing_parent(path):
 def inspect(args):
     # Refuse known low space before even invoking Cargo metadata.
     if shutil.disk_usage(ROOT).free < args.minimum_free_gib * GIB:
-        raise ValueError(f"less than {args.minimum_free_gib} GiB free; clean inactive build output before compiling")
+        raise BudgetError(f"less than {args.minimum_free_gib} GiB free; clean inactive build output before compiling")
     metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True))
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True, stderr=subprocess.PIPE))
     current = Path(metadata["target_directory"]).resolve()
-    worktrees = subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT)
+    worktrees = subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT, stderr=subprocess.PIPE)
     roots = [Path(os.fsdecode(field[9:])) for field in worktrees.split(b"\0") if field.startswith(b"worktree ")]
     candidates = {current, *(root / name for root in roots for name in ["target", "fuzz/target"])}
     caches, devices = {}, set()
@@ -66,17 +70,17 @@ def inspect(args):
         device = parent.stat().st_dev
         if device not in devices:
             if shutil.disk_usage(parent).free < args.minimum_free_gib * GIB:
-                raise ValueError(f"less than {args.minimum_free_gib} GiB free on the filesystem containing {path}")
+                raise BudgetError(f"a cache filesystem has less than {args.minimum_free_gib} GiB free")
             devices.add(device)
         if path.is_dir():
             caches[path] = allocated(path)
     current_bytes = caches.get(current, 0)
     total = sum(caches.values())
     if current_bytes > args.max_current_gib * GIB:
-        raise ValueError(f"current Cargo cache uses {current_bytes / GIB:.1f} GiB (limit {args.max_current_gib}); preserve reports and clean it when idle")
+        raise BudgetError(f"current Cargo cache uses {current_bytes / GIB:.1f} GiB (limit {args.max_current_gib}); preserve reports and clean it when idle")
     if total > args.max_total_gib * GIB:
-        raise ValueError(f"registered worktree caches use {total / GIB:.1f} GiB (limit {args.max_total_gib}); preserve reports and clean inactive caches")
-    return {"current_target": str(current), "current_cache_gib": round(current_bytes / GIB, 2),
+        raise BudgetError(f"registered worktree caches use {total / GIB:.1f} GiB (limit {args.max_total_gib}); preserve reports and clean inactive caches")
+    return {"current_cache_gib": round(current_bytes / GIB, 2),
             "registered_cache_gib": round(total / GIB, 2), "minimum_free_gib": args.minimum_free_gib,
             "max_current_gib": args.max_current_gib, "max_total_gib": args.max_total_gib}
 
@@ -90,8 +94,14 @@ def main():
     args = parser.parse_args()
     try:
         print(json.dumps(inspect(args), sort_keys=True))
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except BudgetError as error:
         print(f"build storage: {error}; no build started", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # OS exceptions and subprocess diagnostics can contain private checkout
+        # names. Raw verification logs remain private; the budget report is safe
+        # to publish on its own.
+        print(f"build storage: cannot measure caches ({type(error).__name__}); no build started", file=sys.stderr)
         return 1
     return 0
 
