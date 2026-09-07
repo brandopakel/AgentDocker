@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.agentdocker.desktop</id>
+  <name>agentdocker</name>
+  <summary>Discover and coordinate local AI agents</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description><p>A native desktop app for agent discovery, process supervision, shared working context and cooperative coordination. Container engines are optional.</p></description>
+  <launchable type="desktop-id">agentdocker.desktop</launchable>
+  <url type="homepage">https://github.com/brandopakel/AgentDocker</url>
+  <provides><binary>agentdocker-ui</binary></provides>
+</component>

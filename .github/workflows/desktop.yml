@@ -1,0 +1,59 @@
+name: Native desktop
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: package and graphical acceptance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Linux graphics and launcher validation
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers lsof desktop-file-utils
+      - run: python3 scripts/build_native.py --target '${{ matrix.target }}'
+      - name: Package exact source build
+        shell: bash
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python3 packaging/desktop/package.py --binary-dir target/release --output artifacts/desktop --version "$version" --source "$(git rev-parse HEAD)" --target '${{ matrix.target }}'
+      - name: Linux native window and fixture discovery
+        if: runner.os == 'Linux'
+        run: |
+          desktop-file-validate artifacts/desktop/agentdocker-desktop/share/applications/agentdocker.desktop
+          xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/desktop-smoke
+      - name: Mac native window and fixture discovery
+        if: runner.os == 'macOS'
+        run: python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker.app/Contents/MacOS --output artifacts/desktop-smoke
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            artifacts/desktop/*.zip
+            artifacts/desktop/*.tar.gz
+            artifacts/desktop/*.sha256
+            artifacts/desktop/manifest.json
+            artifacts/desktop-smoke
+          if-no-files-found: warn
