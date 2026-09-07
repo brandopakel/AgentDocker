@@ -1,13 +1,16 @@
-//! Advisory file locks (`flock`).
+//! Advisory file locks (`flock` on Unix, `LockFileEx` on Windows).
 //!
-//! One lock lives beside each daemon socket. The daemon holds it for its
+//! A lock is scoped to each daemon endpoint in its private state directory. The daemon holds it for its
 //! lifetime, so a second daemon on the same socket exits at once; a client
 //! that cannot connect takes it for an instant to tell "no daemon" (it got
 //! the lock) from "one is starting" (it did not), and starts one only in
 //! the first case.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
@@ -19,6 +22,7 @@ pub struct Lock {
 
 /// Take the exclusive lock on `path` without waiting. `Ok(None)` means
 /// another process holds it.
+#[cfg(unix)]
 pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
     let file = OpenOptions::new()
         .create(true)
@@ -35,6 +39,41 @@ pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
     match err.raw_os_error() {
         Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(None),
         _ => Err(err),
+    }
+}
+
+/// Windows byte-range locks are released with their owning file handle. A
+/// separate open in the same process still contends, matching the Unix API.
+#[cfg(windows)]
+pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{
+        Foundation::ERROR_LOCK_VIOLATION,
+        Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx},
+        System::IO::OVERLAPPED,
+    };
+    let file = crate::dirs::private_file(path, true, false)?;
+    // SAFETY: the synchronous file handle stays live; OVERLAPPED describes
+    // byte zero and is valid for this nonblocking, synchronous lock call.
+    let locked = unsafe {
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if locked != 0 {
+        return Ok(Some(Lock { _file: file }));
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Ok(None)
+    } else {
+        Err(error)
     }
 }
 

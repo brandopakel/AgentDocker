@@ -56,6 +56,9 @@ pub fn canonical(path: &Path) -> PathBuf {
 pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
     // The public helper accepts relative paths and returns an absolute key.
     // Resolve the base first so leading parent components cannot disappear.
+    #[cfg(windows)]
+    let absolute = std::path::absolute(path)?;
+    #[cfg(unix)]
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -64,6 +67,7 @@ pub fn try_canonical(path: &Path) -> std::io::Result<PathBuf> {
     normalize_absolute(&absolute, &mut 0)
 }
 
+#[cfg(unix)]
 fn normalize_absolute(absolute: &Path, links: &mut usize) -> std::io::Result<PathBuf> {
     let mut result = PathBuf::new();
     for component in absolute.components() {
@@ -90,6 +94,33 @@ fn normalize_absolute(absolute: &Path, links: &mut usize) -> std::io::Result<Pat
             }
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
             _ => {}
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(windows)]
+fn normalize_absolute(absolute: &Path, _links: &mut usize) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) => {
+                result.push(component.as_os_str());
+                continue;
+            }
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => continue,
+            _ => result.push(component.as_os_str()),
+        }
+        match std::fs::canonicalize(&result) {
+            // This expands short 8.3 aliases and reparse points and preserves
+            // the OS's verbatim prefix, including for a missing suffix.
+            Ok(physical) => result = physical,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
         }
     }
     Ok(result)
@@ -266,15 +297,17 @@ mod tests {
             canonical(&tmp.path().join("new/deeper/file.rs")),
             real.join("new/deeper/file.rs")
         );
-        let nowhere = Path::new("/definitely/not/here/x");
-        assert_eq!(canonical(nowhere), Path::new("/definitely/not/here/x"));
+        let nowhere = real.join("definitely-not-here/x");
+        assert_eq!(canonical(&nowhere), nowhere);
     }
 
     #[test]
     fn missing_directory_is_still_a_project() {
-        let project = discover(Path::new("/definitely/not/here"));
+        let temporary = TempDir::new().unwrap();
+        let missing = temporary.path().canonicalize().unwrap().join("not/here");
+        let project = discover(&missing);
         assert_eq!(project.source, ProjectSource::Directory);
-        assert_eq!(project.root, Path::new("/definitely/not/here"));
+        assert_eq!(project.root, missing);
     }
 
     #[test]

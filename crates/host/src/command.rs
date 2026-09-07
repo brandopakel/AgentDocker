@@ -1,12 +1,20 @@
 //! Bounded local command execution for Git integration operations.
+#[cfg(windows)]
+use process_wrap::std::{ChildWrapper, CommandWrap, JobObject};
 use std::io::{self, Read};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 struct ChildGroup {
+    #[cfg(unix)]
     child: Child,
+    #[cfg(windows)]
+    child: Box<dyn ChildWrapper>,
     reaped: bool,
 }
 impl Drop for ChildGroup {
@@ -14,9 +22,12 @@ impl Drop for ChildGroup {
         if !self.reaped {
             // SAFETY: the unreaped child still reserves its PID. Never signal
             // its cached group number once that identity can be reused.
+            #[cfg(unix)]
             unsafe {
                 libc::kill(-(self.child.id() as i32), libc::SIGKILL);
             }
+            #[cfg(windows)]
+            let _ = self.child.start_kill();
             let _ = self.child.wait();
         }
     }
@@ -43,8 +54,17 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
-        .stderr(errors.try_clone()?)
-        .process_group(0);
+        .stderr(errors.try_clone()?);
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    let mut command = {
+        let mut wrapped = CommandWrap::from(command);
+        // Assignment happens while suspended, before the command can spawn a
+        // descendant. Dropping the wrapper closes its kill-on-close Job Object.
+        wrapped.wrap(JobObject);
+        wrapped
+    };
     let mut child = ChildGroup {
         child: command.spawn()?,
         reaped: false,
@@ -91,7 +111,7 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -113,5 +133,96 @@ mod tests {
         .err()
         .unwrap();
         assert!(output.to_string().contains("output exceeded"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".into(),
+            format!("command::windows_tests::{name}"),
+            "--ignored".into(),
+            "--nocapture".into(),
+        ]
+    }
+
+    // These are child entry points invoked by the acceptance test below. They
+    // exercise native Rust process startup, independent of PowerShell cold start.
+    #[test]
+    #[ignore = "fixture subprocess, invoked by timeout_terminates_the_owned_descendant_and_output_is_bounded"]
+    fn job_descendant_fixture() {
+        if std::env::var_os("AGENTDOCKER_TEST_JOB_DESCENDANT").is_none() {
+            std::fs::write("phase", "entered").unwrap();
+            let argv = fixture("job_descendant_fixture");
+            let mut child = Command::new(&argv[0])
+                .args(&argv[1..])
+                .env("AGENTDOCKER_TEST_JOB_DESCENDANT", "1")
+                .spawn()
+                .unwrap();
+            std::fs::write("descendant.pid", child.id().to_string()).unwrap();
+            child.wait().unwrap();
+        } else {
+            std::fs::write("descendant-ready", "running").unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    #[ignore = "fixture subprocess, invoked by timeout_terminates_the_owned_descendant_and_output_is_bounded"]
+    fn excessive_output_fixture() {
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(&vec![b'x'; 5 * 1024 * 1024])
+            .unwrap();
+    }
+
+    #[test]
+    fn timeout_terminates_the_owned_descendant_and_output_is_bounded() {
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("descendant.pid");
+        let phase = temporary.path().join("phase");
+        let argv = fixture("job_descendant_fixture");
+        let result = run(temporary.path(), &argv, Duration::from_secs(5));
+        match result {
+            Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
+            Ok(output) => panic!("fixture exited before its deadline: {}", output.text),
+        }
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "descendant marker unavailable: {error}; native fixture phase={:?}",
+                    std::fs::read_to_string(&phase)
+                )
+            })
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            crate::procinfo::start_time(pid).is_none(),
+            "owned job descendant survived cancellation"
+        );
+        assert!(
+            temporary.path().join("descendant-ready").exists(),
+            "the descendant actually executed before cancellation"
+        );
+        let output = run(
+            temporary.path(),
+            &fixture("excessive_output_fixture"),
+            Duration::from_secs(10),
+        );
+        assert!(
+            output
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("output exceeded")
+        );
     }
 }

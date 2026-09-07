@@ -12,6 +12,7 @@
 //! a native `claude`. Only the working directory needs platform code.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use chrono::{DateTime, Utc};
@@ -36,6 +37,7 @@ pub struct Process {
 
 /// Every process `ps` will show us. Failure is distinct from an empty
 /// successful scan, so background discovery never invents exits on an outage.
+#[cfg(unix)]
 pub fn processes() -> std::io::Result<Vec<Process>> {
     let output = crate::command::run(
         Path::new("/"),
@@ -49,6 +51,7 @@ pub fn processes() -> std::io::Result<Vec<Process>> {
 }
 
 /// One process, if it exists.
+#[cfg(unix)]
 pub fn inspect(pid: u32) -> Option<Process> {
     let output = Command::new("ps")
         .args(["-o", "pid=,ppid=,args=", "-p", &pid.to_string()])
@@ -59,6 +62,7 @@ pub fn inspect(pid: u32) -> Option<Process> {
         .find(|p| p.pid == pid)
 }
 
+#[cfg(unix)]
 fn parse_ps(text: &str) -> Vec<Process> {
     text.lines()
         .filter_map(|line| {
@@ -80,6 +84,10 @@ fn parse_ps(text: &str) -> Vec<Process> {
 /// not a known agent.
 pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     let exe = basename(argv.first()?);
+    #[cfg(windows)]
+    let normalized = exe.to_ascii_lowercase();
+    #[cfg(windows)]
+    let exe = normalized.strip_suffix(".exe").unwrap_or(&normalized);
     match exe {
         // Claude Code runs helper processes under the same binary; only the
         // interactive session is an agent.
@@ -101,6 +109,8 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
         "opencode" => Some("opencode"),
         "node" | "bun" | "deno" | "python" | "python3" => {
             let script = argv.get(1)?;
+            #[cfg(windows)]
+            let script = script.replace('\\', "/");
             [
                 ("@anthropic-ai/claude-code", "claude-code"),
                 ("@openai/codex", "codex"),
@@ -114,6 +124,20 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(windows)]
+pub fn processes() -> std::io::Result<Vec<Process>> {
+    imp::processes()
+}
+
+#[cfg(windows)]
+pub fn inspect(pid: u32) -> Option<Process> {
+    imp::inspect(pid)
+}
+
+#[cfg(windows)]
+#[path = "procinfo/windows.rs"]
+mod imp;
 
 fn basename(path: &str) -> &str {
     Path::new(path)
@@ -223,7 +247,7 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use std::path::PathBuf;
 

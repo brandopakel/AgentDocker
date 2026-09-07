@@ -29,14 +29,30 @@ pub fn default_home() -> PathBuf {
     if let Some(home) = env::var_os("AGENTDOCKER_HOME") {
         return PathBuf::from(home);
     }
+    #[cfg(windows)]
+    if let Some(local) = env::var_os("LOCALAPPDATA").filter(|path| !path.is_empty()) {
+        return PathBuf::from(local).join("agentdocker");
+    }
     env::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".agentdocker")
 }
 
 /// Whether a path is short enough to name a Unix socket at all.
+#[cfg(unix)]
 pub fn fits_socket(path: &Path) -> bool {
     path.as_os_str().len() <= SOCKET_PATH_MAX
+}
+
+/// Windows control endpoints are local named pipes, bounded in UTF-16 units.
+#[cfg(windows)]
+pub fn fits_socket(path: &Path) -> bool {
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    text.strip_prefix(r"\\.\pipe\").is_some_and(|name| {
+        !name.is_empty() && !name.contains(['\\', '/', '\0']) && text.encode_utf16().count() <= 256
+    })
 }
 
 /// Where a home's sockets live: the home itself when both socket names fit
@@ -47,9 +63,13 @@ pub fn fits_socket(path: &Path) -> bool {
 /// that differ only outside UTF-8 still get two directories. Deterministic,
 /// so the daemon and its clients compute the same place independently.
 pub fn socket_dir(home: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return home.to_owned();
+    #[cfg(unix)]
     socket_dir_in(home, &runtime_dir())
 }
 
+#[cfg(unix)]
 fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     if fits_socket(&home.join(CONTAINER_SOCKET)) && fits_socket(&home.join(HOST_SOCKET)) {
         return home.to_path_buf();
@@ -71,16 +91,23 @@ fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
 /// Workspace state needs more socket room than the public endpoints (including
 /// OpenSSH's temporary control-socket suffix). Keep credentials private per home.
 pub fn workspace_dir(home: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return home.join("mounts");
+    #[cfg(unix)]
     workspace_dir_in(home, &runtime_dir())
 }
+#[cfg(unix)]
 const WORKSPACE_SOCKET_MAX: usize = 103;
+#[cfg(unix)]
 const CANONICAL_PREFIX_ALLOWANCE: usize = 8;
+#[cfg(unix)]
 fn workspace_fits(root: &Path) -> bool {
     let longest = root
         .join(format!("bridge-{}", "0".repeat(32)))
         .join(format!("ctl.{}", "0".repeat(16)));
     longest.as_os_str().len() + CANONICAL_PREFIX_ALLOWANCE <= WORKSPACE_SOCKET_MAX
 }
+#[cfg(unix)]
 fn workspace_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     let candidate = home.join("mounts");
     if workspace_fits(&candidate) {
@@ -113,6 +140,7 @@ pub fn worktree_dir(home: &Path) -> PathBuf {
 /// Where the short socket directories live. `/tmp` is world-writable, so
 /// the directory itself is created private and checked for ownership
 /// before anything binds in it (see `agentdocker_host::dirs`).
+#[cfg(unix)]
 fn runtime_dir() -> PathBuf {
     PathBuf::from("/tmp")
 }
@@ -122,13 +150,44 @@ pub fn socket_path(home: &Path) -> PathBuf {
     if let Some(sock) = env::var_os("AGENTDOCKER_SOCKET") {
         return PathBuf::from(sock);
     }
+    #[cfg(windows)]
+    return pipe_name(home, "host");
+    #[cfg(unix)]
     socket_dir(home).join(HOST_SOCKET)
 }
 
 /// The restricted authenticated endpoint, beside the host control socket in
 /// the home's socket directory and never the same file.
 pub fn container_socket(home: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return pipe_name(home, "restricted");
+    #[cfg(unix)]
     socket_dir(home).join(CONTAINER_SOCKET)
+}
+
+#[cfg(windows)]
+fn pipe_name(home: &Path, channel: &str) -> PathBuf {
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        home.as_os_str().as_encoded_bytes(),
+    );
+    PathBuf::from(format!(r"\\.\pipe\agentdocker-{}-{channel}", id.simple()))
+}
+
+/// Windows pipe names have no filesystem parent. Keep the daemon lock in its
+/// explicit state directory, independent of the caller's inherited home.
+pub fn daemon_lock(home: &Path, socket: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let name = socket.to_string_lossy().to_lowercase();
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, name.as_bytes());
+        home.join(format!("agentd-{}.lock", id.simple()))
+    }
+    #[cfg(unix)]
+    {
+        let _ = home;
+        lock_path(socket)
+    }
 }
 
 /// The lock that guarantees one daemon per socket: `agentd.sock` →
@@ -142,7 +201,7 @@ pub fn daemon_log(home: &Path) -> PathBuf {
     home.join("agentd.log")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -247,5 +306,38 @@ mod tests {
             lock_path(Path::new("/tmp/ad")),
             PathBuf::from("/tmp/ad.lock")
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn pipes_are_local_bounded_and_separated_from_state_locks() {
+        let home = PathBuf::from(format!(
+            r"C:\Users\fixture\{}\agentdocker",
+            "long".repeat(100)
+        ));
+        let host = pipe_name(&home, "host");
+        let restricted = container_socket(&home);
+        assert!(fits_socket(&host));
+        assert!(fits_socket(&restricted));
+        assert_ne!(host, restricted);
+        assert_eq!(host, pipe_name(&home, "host"));
+        assert_ne!(host, pipe_name(&home.join("another"), "host"));
+        assert_eq!(daemon_lock(&home, &host).parent(), Some(home.as_path()));
+        assert_eq!(
+            daemon_lock(&home, &host),
+            daemon_lock(&home, &PathBuf::from(host.to_str().unwrap().to_uppercase()))
+        );
+        for invalid in [
+            r"\\server\pipe\remote",
+            r"C:\state\agentd.sock",
+            r"\\.\pipe\",
+            r"\\.\pipe\nested\path",
+        ] {
+            assert!(!fits_socket(Path::new(invalid)));
+        }
     }
 }

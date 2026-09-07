@@ -83,7 +83,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     agentdocker_host::dirs::secure_state_dir(&home)?;
     let socket = args.socket.unwrap_or_else(|| paths::socket_path(&home));
     agentdocker_host::dirs::check_socket_parent(&socket)?;
-    let lock_path = paths::lock_path(&socket);
+    let lock_path = paths::daemon_lock(&home, &socket);
     if let Some(parent) = lock_path.parent() {
         if parent == paths::socket_dir(&home) && parent != home {
             agentdocker_host::dirs::ensure_private_dir(parent)?;

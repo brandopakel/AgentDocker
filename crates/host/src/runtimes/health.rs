@@ -2,6 +2,7 @@
 //! or include configuration snapshots, arguments or environment values in reports.
 
 use std::io::{self, Read};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,36 @@ use super::{
 };
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Whether a path names something this host would run.
+///
+/// Two different questions on the two platforms. Unix asks the file
+/// whether anybody may execute it; Windows has no such bit and decides
+/// from the extension, which is why `PATHEXT` exists. Asking the Unix
+/// question on Windows would report every provider as unavailable.
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.BAT;.CMD;.COM".into());
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|found| {
+                extensions
+                    .split(';')
+                    .any(|want| want.trim_start_matches('.').eq_ignore_ascii_case(found))
+            })
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,10 +84,15 @@ impl Check {
 /// Bound reads and reject special files before attempting to consume their data.
 /// Provider configuration may be an intentional symlink; follow its file target.
 pub(super) fn read_configuration(path: &Path) -> io::Result<String> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Opening a FIFO blocks until somebody writes to it, and provider
+    // configuration is a path we did not choose. `O_NONBLOCK` makes the
+    // open return instead, and the regular-file check below rejects it.
+    // Windows has no FIFOs to open by accident and no such flag.
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES {
         return Err(io::Error::new(
@@ -273,10 +309,7 @@ fn executable(
             "Relative command requires the provider's working directory to resolve",
         );
     };
-    let available = resolved.as_ref().is_some_and(|path| {
-        std::fs::metadata(path)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    });
+    let available = resolved.as_ref().is_some_and(|path| is_executable(path));
     let mut check = Check::new(
         channel,
         Some(config),
@@ -319,6 +352,21 @@ mod tests {
         RUNTIMES.iter().find(|spec| spec.name == name).unwrap()
     }
 
+    /// An absolute path to something that is not there.
+    ///
+    /// Absolute matters: the check answers "no working directory to
+    /// resolve this against" for a relative command and only reaches
+    /// the does-it-exist question for an absolute one. `/absent/...`
+    /// is absolute on Unix and *relative* on Windows, where absolute
+    /// means a drive letter or a UNC prefix.
+    fn absent() -> &'static str {
+        if cfg!(windows) {
+            r"C:\absent\agentdocker"
+        } else {
+            "/absent/agentdocker"
+        }
+    }
+
     fn write_mcp(roots: &Roots, command: &str, extra: Value) {
         let path = roots.home.join(".gemini/settings.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -335,6 +383,8 @@ mod tests {
     }
 
     #[test]
+    // sets the execute bit directly, which Windows does not have.
+    #[cfg(unix)]
     fn configured_missing_non_executable_and_available_are_distinct_without_execution() {
         let (_temporary, roots) = machine();
         let executable = roots.home.join("bin/agentdocker");
@@ -361,7 +411,7 @@ mod tests {
     #[test]
     fn disabled_and_wrapped_registrations_are_not_reported_as_available() {
         let (_temporary, roots) = machine();
-        write_mcp(&roots, "/absent/agentdocker", json!({"disabled":true}));
+        write_mcp(&roots, absent(), json!({"disabled":true}));
         assert_eq!(
             mcp(spec("gemini-cli"), &roots, "agentdocker")[0].status,
             Status::Disabled
@@ -384,7 +434,7 @@ mod tests {
             json!(["mcp", "--runtime", "--unexpected"]),
             json!(["mcp", "--runtime", "gemini-cli", "extra"]),
         ] {
-            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            write_mcp(&roots, absent(), json!({"args": args}));
             assert_eq!(
                 mcp(runtime, &roots, "agentdocker")[0].status,
                 Status::Unverified
@@ -396,7 +446,7 @@ mod tests {
         }
         // The generated setup registration carries its provider runtime.
         for args in [json!(["mcp"]), json!(["mcp", "--runtime", "gemini-cli"])] {
-            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            write_mcp(&roots, absent(), json!({"args": args}));
             assert_eq!(
                 mcp(runtime, &roots, "agentdocker")[0].status,
                 Status::ExecutableMissing
@@ -435,6 +485,8 @@ mod tests {
     }
 
     #[test]
+    // sets the execute bit directly, which Windows does not have.
+    #[cfg(unix)]
     fn relative_paths_require_a_known_working_directory() {
         let (_temporary, roots) = machine();
         let executable = roots.home.join("bin/agentdocker");
@@ -494,6 +546,8 @@ mod tests {
     }
 
     #[test]
+    // makes a FIFO, which Windows has no equivalent of.
+    #[cfg(unix)]
     fn oversized_and_special_files_are_refused_without_waiting_for_a_writer() {
         let (_temporary, roots) = machine();
         let oversized = roots.home.join("oversized");
