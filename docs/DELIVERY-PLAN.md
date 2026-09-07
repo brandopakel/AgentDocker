@@ -86,3 +86,12 @@ A feature is complete only when its invariant, relevant UI/adapter behavior, doc
 ### Desktop discovery implementation checkpoint
 
 The desktop inventory follow-up separates Codex CLI, Codex desktop and ChatGPT, adds curated Linux desktop-entry inventory with XDG overrides, and adds standard CLI installation locations for native app launches with a minimal PATH. Inventory errors preserve the last GUI rows and connection state; explicit setup is isolated from unrelated invalid launchers. Focused fixtures cover hidden overrides, special/oversized/malformed files, symlink exports, non-executed launcher declarations and distinct integration attribution. Full integrated acceptance and target-distribution trials remain required for L03; this does not close Windows desktop inventory or universal provider support.
+
+
+### Desktop maintenance implementation checkpoint
+
+Local uninstall/retention now has reviewed CLI and GUI plans, conservative
+legacy/service retention, payload identity checks and running-release lifetime
+locks. Focused tests cover removal scope, resumability and lock contention.
+L12 still requires packaged real-process acceptance and final-source platform
+checks; download/update distribution and safe live daemon transfer remain open.

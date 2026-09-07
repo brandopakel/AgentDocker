@@ -81,7 +81,7 @@ def build(target, schema_runner=()):
         raise RuntimeError("source changed during the native build; no provenance manifest written")
     result = {
         "format": 1, **before, "target": target, "version": version, "rustc": rustc,
-        "state_schema": metadata["state_schema"], "binary_directory": str(directory),
+        "state_schema": metadata["state_schema"], "installation_lock": metadata.get("installation_lock", 0), "binary_directory": str(directory),
         "binary_sha256": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in BINARIES},
     }
     (directory / "native-build.json").write_text(json.dumps(result, indent=2) + "\n")

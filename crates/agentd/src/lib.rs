@@ -50,6 +50,7 @@ pub struct Args {
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     run(Args::parse())
 }
 
@@ -67,6 +68,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
                 "state_schema": store::SCHEMA_VERSION,
+                "installation_lock": agentdocker_host::installation::LOCK_FORMAT,
             })
         );
         return Ok(());

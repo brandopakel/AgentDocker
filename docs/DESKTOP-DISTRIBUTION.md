@@ -66,6 +66,39 @@ Updates affect the next app/CLI launch. They do not stop a live daemon or its ag
 
 `scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/install-smoke` tests this flow under a disposable prefix, including stale-preview rejection, tampered executables, private activation metadata, retained versions and a responsive daemon across activation/rollback. CI uses two package generations of the same binaries and labels that limitation. `--previous-source` accepts a separately built older package for a trial between source revisions. Graphical acceptance and real-provider round trips are separate checks.
 
+## Remove launchers and clean up retained versions
+
+The native Installation panel offers **Preview removal** and **Preview cleanup**.
+It lists the exact removals and retention reasons; **Apply reviewed cleanup**
+refuses a changed plan. CLI equivalents are:
+
+```sh
+agentdocker desktop --prefix /tmp/agentdocker-trial uninstall --preview
+agentdocker desktop --prefix /tmp/agentdocker-trial uninstall --expect-plan PLAN_ID
+agentdocker desktop --prefix /tmp/agentdocker-trial prune --keep 2 --preview
+agentdocker desktop --prefix /tmp/agentdocker-trial prune --keep 2 --expect-plan PLAN_ID
+```
+
+Use the `plan_id` returned by the matching preview. Uninstall removes only owned
+launchers and the active installation pointer. It preserves running sessions,
+daemon state, provider configuration and retained payloads. Provider connections
+that used the removed CLI link require reinstallation or an explicit setup
+change. Uninstall is resumable if interrupted between launcher removals.
+
+Prune keeps the active and rollback versions, plus `--keep` additional inactive
+versions, newest first. It also keeps every running release and legacy releases
+that lack lifetime locking. New CLI, daemon and window processes hold shared
+version locks; cleanup requires an exclusive lock and rechecks payload hashes
+before deletion. A process losing the startup/removal race exits before normal
+operation. Pin files and activation records remain; retention does not delete
+unknown or modified payloads. Cleanup is explicit, not scheduled.
+
+An installed user service blocks launcher removal and protects all retained
+versions because its configuration may reference an older binary directly.
+Review `agentdocker daemon uninstall --dry-run` and explicitly remove that
+service first. Desktop cleanup never changes the service registration itself.
+Public signing requirements and daemon replacement boundaries still apply.
+
 ## Remaining delivery requirements
 
-The current installer handles verified local packages and explicit activation/rollback. A download/update feed, automatic update scheduling, uninstall/retention controls, Homebrew cask, Linux distribution packages, and Windows support remain. They also do not retroactively update the existing public v0.1.0 release. Guided setup with preview/undo/health and safe daemon upgrade boundaries are tracked in [NATIVE-DELIVERY.md](NATIVE-DELIVERY.md). New distribution artifacts must pass their checks and review before publication.
+The current installer handles verified local packages and explicit activation/rollback. A download/update feed, automatic update scheduling, Homebrew cask, Linux distribution packages, and Windows support remain. They also do not retroactively update the existing public v0.1.0 release. Guided setup with preview/undo/health and safe daemon upgrade boundaries are tracked in [NATIVE-DELIVERY.md](NATIVE-DELIVERY.md). New distribution artifacts must pass their checks and review before publication.

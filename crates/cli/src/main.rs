@@ -936,6 +936,7 @@ struct ClaimArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
     let socket = cli.socket.clone();
     let client = Client::new(cli.socket);
