@@ -85,7 +85,7 @@ unsafe fn sid_text(sid: PSID) -> io::Result<String> {
         .map_err(|_| denied("security identifier is not valid Unicode"))
 }
 
-fn current_sid() -> io::Result<String> {
+pub(crate) fn current_sid() -> io::Result<String> {
     let mut token = null_mut();
     // SAFETY: pseudohandle is valid; successful OpenProcessToken transfers a
     // real handle, immediately owned below. No privilege changes are requested.
@@ -93,9 +93,13 @@ fn current_sid() -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    token_sid(token.as_raw_handle())
+}
+
+fn token_sid(token: HANDLE) -> io::Result<String> {
     let mut bytes = 0;
     unsafe {
-        GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut bytes);
+        GetTokenInformation(token, TokenUser, null_mut(), 0, &mut bytes);
     }
     if bytes < std::mem::size_of::<TOKEN_USER>() as u32 || bytes > 64 * 1024 {
         return Err(denied("unexpected token size"));
@@ -104,7 +108,7 @@ fn current_sid() -> io::Result<String> {
     let mut buffer = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
     if unsafe {
         GetTokenInformation(
-            token.as_raw_handle(),
+            token,
             TokenUser,
             buffer.as_mut_ptr().cast(),
             bytes,
@@ -116,6 +120,23 @@ fn current_sid() -> io::Result<String> {
     }
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
     unsafe { sid_text(user.User.Sid) }
+}
+
+/// Query an actual process token; never infer ownership from an executable or
+/// accept an unavailable owner as the current user.
+pub(crate) fn process_sid(pid: u32) -> io::Result<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    token_sid(token.as_raw_handle())
 }
 
 struct Protection {

@@ -13,10 +13,11 @@ use windows_sys::Win32::{
     },
 };
 
-/// Snapshot only the requested fields; never read process environments or
-/// elevate privileges. Missing current-user evidence is an inspection failure.
-fn snapshot(pid: Option<u32>) -> io::Result<(System, Pid)> {
+/// Discover PIDs first, then verify tokens before requesting command/cwd data.
+/// sysinfo's optional cached user field is not the authority for ownership.
+fn snapshot(pid: Option<u32>) -> io::Result<(System, Vec<Pid>)> {
     let me = Pid::from_u32(std::process::id());
+    let owner = crate::dirs::current_sid()?;
     let selected = [me, Pid::from_u32(pid.unwrap_or(std::process::id()))];
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -26,22 +27,28 @@ fn snapshot(pid: Option<u32>) -> io::Result<(System, Pid)> {
             ProcessesToUpdate::All
         },
         true,
-        ProcessRefreshKind::nothing()
-            .with_cmd(UpdateKind::Always)
-            .with_cwd(UpdateKind::Always)
-            .with_exe(UpdateKind::Always)
-            .with_user(UpdateKind::Always),
+        ProcessRefreshKind::nothing(),
     );
-    if system
-        .process(me)
-        .and_then(|process| process.user_id())
-        .is_none()
-    {
+    let owned: Vec<_> = system
+        .processes()
+        .keys()
+        .copied()
+        .filter(|pid| crate::dirs::process_sid(pid.as_u32()).is_ok_and(|sid| sid == owner))
+        .collect();
+    if !owned.contains(&me) {
         return Err(io::Error::other(
             "Windows process scan could not verify the current user",
         ));
     }
-    Ok((system, me))
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&owned),
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_exe(UpdateKind::Always),
+    );
+    Ok((system, owned))
 }
 
 fn row(process: &sysinfo::Process) -> Option<super::Process> {
@@ -60,28 +67,27 @@ fn row(process: &sysinfo::Process) -> Option<super::Process> {
 }
 
 pub(super) fn processes() -> io::Result<Vec<super::Process>> {
-    let (system, me) = snapshot(None)?;
-    let owner = system.process(me).and_then(|process| process.user_id());
+    let (system, owned) = snapshot(None)?;
     Ok(system
         .processes()
         .values()
-        .filter(|process| process.user_id() == owner)
+        .filter(|process| owned.contains(&process.pid()))
         .filter_map(row)
         .collect())
 }
 
 pub(super) fn inspect(pid: u32) -> Option<super::Process> {
-    let (system, me) = snapshot(Some(pid)).ok()?;
+    let (system, owned) = snapshot(Some(pid)).ok()?;
     let process = system.process(Pid::from_u32(pid))?;
-    (process.user_id() == system.process(me)?.user_id())
+    (owned.contains(&process.pid()))
         .then(|| row(process))
         .flatten()
 }
 
 pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
-    let (system, me) = snapshot(Some(pid)).ok()?;
+    let (system, owned) = snapshot(Some(pid)).ok()?;
     let process = system.process(Pid::from_u32(pid))?;
-    (process.user_id() == system.process(me)?.user_id())
+    (owned.contains(&process.pid()))
         .then(|| process.cwd().map(PathBuf::from))
         .flatten()
 }
@@ -139,8 +145,17 @@ mod tests {
         let first = start_time(pid).unwrap();
         assert_eq!(start_time(pid), Some(first));
         assert!(first <= Utc::now());
-        let (system, me) = snapshot(Some(pid)).expect("same-user snapshot");
-        let process = system.process(me).expect("own PID in snapshot");
+        assert_eq!(
+            crate::dirs::process_sid(pid).unwrap(),
+            crate::dirs::current_sid().unwrap()
+        );
+        assert!(crate::dirs::process_sid(u32::MAX).is_err());
+        let (system, owned) = snapshot(Some(pid)).expect("same-user snapshot");
+        let process = system
+            .process(Pid::from_u32(pid))
+            .expect("own PID in snapshot");
+        assert!(owned.contains(&process.pid()));
+        assert!(system.processes().values().all(|p| p.environ().is_empty()));
         assert!(
             !process.cmd().is_empty(),
             "own process fields: owner={}, executable={}, cwd={}",
