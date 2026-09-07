@@ -29,7 +29,7 @@ class DesktopPackaging(unittest.TestCase):
             path.chmod(0o755)
         self.manifest = {"format": 1, "version": "0.1.0", "source_commit": "a" * 40,
                          "source_tree": "b" * 40, "source_input_sha256": "c" * 64,
-                         "source_dirty": False, "state_schema": 8, "target": "x86_64-unknown-linux-gnu",
+                         "source_dirty": False, "state_schema": 8, "installation_lock": 1, "target": "x86_64-unknown-linux-gnu",
                          "binary_sha256": {name: PACKAGE.sha256(self.binaries / name) for name in PACKAGE.BINARIES}}
         self.save_manifest()
         self.args = PACKAGE.parser().parse_args(["--binary-dir", str(self.binaries), "--output", str(self.output),
@@ -52,7 +52,16 @@ class DesktopPackaging(unittest.TestCase):
             metadata = json.load(bundle.extractfile("agentdocker-desktop/build.json"))
             self.assertEqual(metadata["binary_sha256"], self.manifest["binary_sha256"])
             self.assertEqual(metadata["state_schema"], self.manifest["state_schema"])
+            self.assertEqual(metadata["installation_lock"], 1)
         self.assertEqual(result["artifacts"][archive.name], PACKAGE.sha256(archive))
+
+    def test_invalid_lifetime_pin_contract_never_publishes(self):
+        for pin in [True, "1", -1, 2]:
+            self.manifest["installation_lock"] = pin
+            self.save_manifest()
+            with self.assertRaisesRegex(ValueError, "lifetime pin contract"):
+                PACKAGE.package(self.args)
+            self.assertFalse(self.output.exists())
 
     def test_changed_binary_never_publishes(self):
         (self.binaries / "agentd").write_bytes(b"substituted")

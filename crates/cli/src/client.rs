@@ -293,7 +293,7 @@ fn absent(err: &std::io::Error) -> bool {
 /// log, the same home as this client. The binary beside ours is preferred
 /// so a build in `target/` starts the matching daemon; else `PATH`.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
-    let exe = std::env::current_exe()
+    let exe = agentdocker_host::procinfo::executable_path()
         .ok()
         .and_then(|me| {
             me.parent()

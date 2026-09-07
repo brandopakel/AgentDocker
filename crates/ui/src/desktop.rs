@@ -33,7 +33,7 @@ impl Panel {
             args.extend(["--prefix".into(), self.prefix.clone()]);
         }
         args.push(operation.into());
-        if self.local_preview && operation != "status" {
+        if self.local_preview && matches!(operation, "install" | "rollback") {
             args.push("--local-preview".into());
         }
         args
@@ -52,7 +52,7 @@ impl Panel {
             ui.label("Application bundle or extracted desktop package");
             let mut changed = ui.text_edit_singleline(&mut self.source).changed();
             if ui.button("Use this application").clicked() {
-                match std::env::current_exe().ok().and_then(|exe| {
+                match agentdocker_host::procinfo::executable_path().ok().and_then(|exe| {
                     exe.parent()?.parent().map(|parent| {
                         if cfg!(target_os = "macos") { parent.parent().unwrap_or(parent) } else { parent }.to_owned()
                     })
@@ -76,6 +76,16 @@ impl Panel {
                     args.extend(["--from".into(), self.source.clone(), "--preview".into()]);
                     command = Some(args);
                 }
+                if ui.button("Preview removal").clicked() {
+                    let mut args = self.command("uninstall");
+                    args.push("--preview".into());
+                    command = Some(args);
+                }
+                if ui.button("Preview cleanup").clicked() {
+                    let mut args = self.command("prune");
+                    args.push("--preview".into());
+                    command = Some(args);
+                }
                 if ui.button("Preview rollback").clicked() {
                     let mut args = self.command("rollback");
                     args.push("--preview".into());
@@ -84,7 +94,25 @@ impl Panel {
             });
             if let Some(report) = &self.report {
                 ui.separator();
-                if report.get("installation").is_some() {
+                if let Some(plan) = report.get("maintenance") {
+                    ui.label("Running sessions and your settings are preserved. Installed user services must be removed separately before removing desktop launchers or pruning versions.");
+                    if let Some(paths) = plan["remove"].as_array() {
+                        for path in paths { ui.label(format!("Remove: {}", path.as_str().unwrap_or("unknown"))); }
+                    }
+                    if let Some(entries) = plan["retained"].as_array() {
+                        for entry in entries { ui.label(format!("Keep: {} — {}", entry["path"].as_str().unwrap_or("unknown"), entry["reason"].as_str().unwrap_or("unknown"))); }
+                    }
+                    if report["preview"] == true && plan["remove"].as_array().is_some_and(|paths| !paths.is_empty()) {
+                        if ui.button("Apply reviewed cleanup").clicked() {
+                            let mut args = self.command(plan["operation"].as_str()?);
+                            args.extend(["--expect-plan".into(), report["plan_id"].as_str()?.into()]);
+                            if let Some(keep) = plan["keep"].as_u64() { args.extend(["--keep".into(), keep.to_string()]); }
+                            command = Some(args);
+                        }
+                    } else if report["preview"] == false {
+                        ui.label("Cleanup completed.");
+                    }
+                } else if report.get("installation").is_some() {
                     if report["installation"].is_null() {
                         ui.label("No managed desktop installation at this prefix.");
                     } else {

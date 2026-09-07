@@ -1950,7 +1950,7 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 
 /// The named binary next to this one, else whatever is on `PATH`.
 fn beside(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
+    agentdocker_host::procinfo::executable_path()
         .ok()
         .and_then(|me| me.parent().map(|dir| dir.join(name)))
         .filter(|sibling| sibling.is_file())

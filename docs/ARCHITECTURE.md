@@ -521,6 +521,18 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 
 #### Native desktop app *(done)*
 
+Local desktop installation uses immutable payload versions and one activation
+pointer. `desktop uninstall` removes owned launchers and deactivates the prefix;
+`desktop prune` removes verified unused payloads. CLI and GUI previews carry a
+plan hash rechecked at apply. Host installation helpers give each managed
+binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
+and rechecks content identity. Pins outlive deleted versions to prevent inode
+replacement races. Active, rollback, legacy unpinned and running versions remain;
+an installed user service protects retained binaries and blocks uninstall.
+These are local host operations, not daemon protocol mutations. They preserve
+state/provider configuration and do not replace a running daemon. See
+[desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and limitations.
+
 `agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents grouped by project — each project in a colour derived from its id, so it is the same colour every session and on every machine, shown as a dot on every row and named wherever rows from several projects mix, with a filter in the title bar for one project at a time — carrying status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs CLI commands with a 20-second limit and shows their output (long-running and streaming operations are not a persistent shell), because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so notification attempts do not depend on the window being open; OS permission or tool failure can prevent display, and display does not prove a person read it. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
 
 #### Wait queue, deadlock detection, and what an agent is doing *(done)*

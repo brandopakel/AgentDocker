@@ -913,7 +913,8 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
             .with_context(|| format!("{} is not valid JSON", path.display()))?,
         None => json!({}),
     };
-    let exe = std::env::current_exe().context("cannot locate the agentdocker binary")?;
+    let exe = crate::desktop::setup_executable()
+        .context("cannot locate the active agentdocker binary")?;
     let command = agentdocker_host::runtimes::claude_hook_command(&exe)?;
     let added = merge_claude_code_hooks(&mut settings, &command)?;
     if added == 0 {

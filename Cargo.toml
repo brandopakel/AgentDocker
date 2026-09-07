@@ -44,3 +44,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 process-wrap = { version = "10", default-features = false, features = ["std", "job-object", "creation-flags"] }
 filetime = "0.2"
+
+# Repeated isolated worktrees otherwise retain many GiB of incremental state.
+# Keep full debugging information; release/benchmark optimization is unchanged.
+[profile.dev]
+incremental = false

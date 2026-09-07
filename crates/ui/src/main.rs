@@ -14,6 +14,8 @@ mod terminal;
 mod theme;
 
 fn main() -> eframe::Result {
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()
+        .unwrap_or_else(|error| usage_error(&format!("cannot open installed release: {error}")));
     let mut args = std::env::args_os().skip(1);
     let mut smoke_output = None;
     let mut expected_pid = None;
@@ -68,7 +70,7 @@ fn main() -> eframe::Result {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("AgentDocker")
+            .with_title("agentdocker")
             .with_inner_size([1100.0, 720.0])
             // Small enough to be honest about: below this the agent
             // table's columns start colliding, and a window that cannot
@@ -84,7 +86,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let result = eframe::run_native(
-        "AgentDocker",
+        "agentdocker",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc).with_smoke(smoke)))),
     );

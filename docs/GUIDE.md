@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/instal
 ```
 
 That puts `agentdocker`, `agentd` and the desktop app under `~/.local/bin`,
-and on macOS installs `AgentDocker.app` as well. From a checkout:
+and on macOS installs `agentdocker.app` as well. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -70,7 +70,7 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 
 A native window over the same Unix socket as the CLI. No HTTP, no browser,
 no localhost. `agentdocker ui` opens it, and on macOS it opens
-`AgentDocker.app` if that is installed so the Dock and the app switcher
+`agentdocker.app` if that is installed so the Dock and the app switcher
 name it properly.
 
 Agents are grouped by project, and every project keeps one colour
@@ -78,6 +78,15 @@ everywhere it appears — the heading, the dot on each of its rows, the
 lease list. The colour comes from the project's id, so it is the same
 colour in every session and on every machine. The **All projects** menu in
 the title bar narrows every screen to one project at a time.
+
+### Installation and cleanup
+
+The **Installation** panel previews local package installation, rollback,
+launcher removal and retained-version cleanup. Applying a reviewed plan refuses
+changed inputs. Cleanup preserves running sessions and settings, protects active
+and rollback versions, and retains older releases without lifetime locks.
+Installed user services require explicit service removal first. See
+[desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and full limits.
 
 ### Agents
 
@@ -501,11 +510,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
-- The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
+- The desktop app ships as `agentdocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
-  prefers the bundle. The bundle is ad-hoc signed: it runs on the machine
-  that built it, and needs Developer ID signing and notarization before
-  it will open on anyone else's Mac.
+  prefers the bundle. Local preview bundles use ad-hoc signing. Public macOS
+  distribution still requires Developer ID signing and notarization; the
+  current public release predates this desktop work.
 - A new mark: three agents, in the app's own project colours, meeting at
   one host. Drawn on Apple's icon grid, and simplified below 24pt where
   the connectors would otherwise be a smudge.

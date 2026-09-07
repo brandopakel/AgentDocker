@@ -66,3 +66,33 @@ and all applicable checks on the published head are required before integration.
 
 
 Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On this Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.
+
+
+## Development disk budget
+
+The September 7 local campaign exhausted disk space by retaining debug outputs
+in 31 isolated worktrees. About 187 GiB of allocated regenerable caches were
+removed; source, credentials and reports were preserved. The installed desktop
+app was not the cause. Treat build storage as part of T12 cleanup evidence.
+
+`verify.sh` and `build_native.py` now run a read-only storage preflight before
+compilation. It checks the Cargo-reported active target directory, registered
+worktrees' default targets and fuzz targets. Defaults require 20 GiB free locally
+(5 GiB on CI), limit the current target to 12 GiB, and limit their aggregate to
+40 GiB. Override the positive GiB limits with `AGENTDOCKER_BUILD_MIN_FREE_GIB`,
+`AGENTDOCKER_BUILD_MAX_CURRENT_GIB` and `AGENTDOCKER_BUILD_MAX_TOTAL_GIB` for the
+machine's capacity. A preflight is not a filesystem quota or a reservation;
+concurrent tools can still consume space. Nonstandard targets belonging to other
+worktrees are outside this inventory.
+
+Keep only one local build campaign active and at most two debug caches. Retain
+JUnit, coverage, benchmark manifests/results and failure logs before clearing
+inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html).
+`cargo clean --profile dev` removes generated development output; inspect
+`--dry-run` first. Do not clean an active build/test directory, running binaries,
+or another session's cache. Each worktree keeps its own target directory.
+Workspace development builds disable incremental compilation, while keeping
+full debug information and unchanged release/benchmark optimization. Direct
+Cargo commands do not invoke the storage preflight; run
+`python3 scripts/build_storage.py` first. This bounds the campaign workflow,
+not all disk use by arbitrary programs.

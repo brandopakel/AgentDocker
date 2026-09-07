@@ -56,6 +56,9 @@ def validate_inputs(args):
             raise ValueError("build provenance does not match the requested source/version")
         if type(manifest.get("state_schema")) is not int or not 1 <= manifest["state_schema"] <= 0xFFFF_FFFF:
             raise ValueError("build provenance lacks the daemon state schema; rebuild the binaries")
+        pin = manifest.get("installation_lock", 0)
+        if type(pin) is not int or pin not in (0, 1):
+            raise ValueError("invalid desktop lifetime pin contract")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")
         expected_target = args.target
@@ -74,6 +77,8 @@ def validate_inputs(args):
         raise ValueError("universal binaries were built from different source inputs")
     if len({m["state_schema"] for m in manifests}) != 1:
         raise ValueError("universal binaries have different state schemas")
+    if len({m.get("installation_lock", 0) for m in manifests}) != 1:
+        raise ValueError("universal binaries have different lifetime pin contracts")
     return manifests[0]
 
 
@@ -225,6 +230,7 @@ def package(args):
         stage = Path(scratch)
         info = metadata(args)
         info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty", "state_schema"]})
+        info["installation_lock"] = provenance.get("installation_lock", 0)
         build = macos if "apple-darwin" in args.target else linux
         app, archive, binaries = build(args, stage, info)
         info["binary_sha256"] = {name: sha256(binaries / name) for name in BINARIES}
