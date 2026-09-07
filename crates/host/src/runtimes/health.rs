@@ -119,7 +119,11 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     checks
 }
 
-fn configuration(channel: &'static str, path: &Path, toml: bool) -> Result<Value, Check> {
+pub(super) fn configuration(
+    channel: &'static str,
+    path: &Path,
+    toml: bool,
+) -> Result<Value, Check> {
     let raw = read_configuration(path).map_err(|error| {
         Check::new(
             channel,
@@ -443,7 +447,7 @@ mod tests {
             );
             assert_eq!(
                 super::super::mcp_wiring(runtime, &roots, "agentdocker"),
-                agentdocker_core::runtime::Wiring::Missing
+                agentdocker_core::runtime::Wiring::Unverified
             );
         }
         // The generated setup registration carries its provider runtime.
@@ -543,7 +547,7 @@ mod tests {
         );
         assert_eq!(
             super::super::hooks_wiring(spec("claude-code"), &roots.home, "agentdocker"),
-            agentdocker_core::runtime::Wiring::Missing
+            agentdocker_core::runtime::Wiring::Unverified
         );
     }
 

@@ -2693,13 +2693,12 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
         ],
         &rows,
     );
-    if runtimes.iter().any(|r| {
-        r.installed()
-            && (r.mcp == agentdocker_core::Wiring::Missing
-                || r.hooks == agentdocker_core::Wiring::Missing)
-    }) {
+    if runtimes
+        .iter()
+        .any(|r| r.installed() && (r.mcp.needs_review() || r.hooks.needs_review()))
+    {
         println!(
-            "\n`agentdocker setup` wires AgentDocker into what is installed; `--dry-run` shows what it would change."
+            "\n`agentdocker setup --preview` reviews missing or unverified integrations; `agentdocker setup --health` explains connection issues."
         );
     }
 }
