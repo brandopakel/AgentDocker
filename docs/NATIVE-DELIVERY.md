@@ -2,6 +2,8 @@
 
 The target is an installed agentdocker desktop app that discovers and coordinates local agents on macOS, Linux and Windows, with optional engines. This record distinguishes implementation, acceptance evidence and release availability. The [September 6 audit](AUDIT-2026-09-06.md) is the original f66cd3f baseline; [LOCAL-TRIAL.md](LOCAL-TRIAL.md) defines the broader acceptance matrix.
 
+The [active delivery plan](DELIVERY-PLAN.md) now requires a renewed review of recent commits, every open PR, engineering contracts and all project documentation. Its testing crosswalk covers every category in the testing standard and local trial. The [September 7 ledger](REVIEW-2026-09-07.md) records the initial source scope, known gaps and evidence; the review and full acceptance program remain in progress.
+
 ## Restore and private state
 
 Implemented after the audit:
