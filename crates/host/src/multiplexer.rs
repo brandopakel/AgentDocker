@@ -340,16 +340,68 @@ pub mod tmux {
         pub pid: u32,
     }
 
-    /// Whether tmux is on the PATH at all. Asked before anything else,
-    /// so "tmux is not installed" is not reported as a failed command.
-    pub fn available() -> bool {
-        Command::new("tmux")
+    /// `new-session -e`, which is how the agent is told its own id,
+    /// arrived in tmux 3.2. An older tmux rejects the flag, and the
+    /// failure would surface as a started-then-failed agent rather than
+    /// as the plain fact that this tmux is too old.
+    pub const MINIMUM: (u32, u32) = (3, 2);
+
+    /// Whether this machine's tmux can do what `--in-pane` needs. Asked
+    /// before anything is created, so both "not installed" and "too old"
+    /// are answers rather than failures.
+    pub fn usable() -> Result<(), String> {
+        let output = Command::new("tmux")
             .arg("-V")
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+            .output()
+            .map_err(|_| {
+                "tmux is not on this machine's PATH, so there is no pane to run in".to_owned()
+            })?;
+        if !output.status.success() {
+            return Err("tmux is on the PATH but would not report its version".to_owned());
+        }
+        let reported = String::from_utf8_lossy(&output.stdout);
+        let Some(version) = parse_version(&reported) else {
+            return Err(format!(
+                "could not read a version out of `tmux -V` ({}); \
+                 --in-pane needs {}.{} or newer",
+                reported.trim(),
+                MINIMUM.0,
+                MINIMUM.1
+            ));
+        };
+        if version < MINIMUM {
+            return Err(format!(
+                "tmux {}.{} is too old for --in-pane: passing the agent its own id needs \
+                 `new-session -e`, which arrived in tmux {}.{}",
+                version.0, version.1, MINIMUM.0, MINIMUM.1
+            ));
+        }
+        Ok(())
+    }
+
+    /// The major and minor out of `tmux -V`. Its output is `tmux 3.7c`,
+    /// and on a development build `tmux next-3.4` — so the digits are
+    /// found rather than assumed to start the word, and a trailing letter
+    /// is not part of the minor.
+    pub fn parse_version(reported: &str) -> Option<(u32, u32)> {
+        let digits = reported.find(|c: char| c.is_ascii_digit())?;
+        let rest = &reported[digits..];
+        let mut parts = rest.split('.');
+        let major = parts.next()?;
+        let minor = parts.next().unwrap_or("0");
+        let take_number = |text: &str| {
+            let end = text
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(text.len());
+            text[..end].parse::<u32>().ok()
+        };
+        Some((take_number(major)?, take_number(minor).unwrap_or(0)))
+    }
+
+    /// Whether tmux is on the PATH and new enough.
+    pub fn available() -> bool {
+        usable().is_ok()
     }
 
     /// Start `command` in a new detached session named `session`, in
@@ -448,6 +500,29 @@ pub mod tmux {
             assert_eq!(session_name("claude.main:1"), "claude-main-1");
             assert_eq!(session_name("..."), "agent");
             assert_eq!(session_name(""), "agent");
+        }
+
+        #[test]
+        fn versions_are_read_out_of_what_tmux_actually_prints() {
+            assert_eq!(parse_version("tmux 3.7c\n"), Some((3, 7)));
+            assert_eq!(parse_version("tmux 2.8"), Some((2, 8)));
+            assert_eq!(parse_version("tmux 3.2a"), Some((3, 2)));
+            // A development build names itself before the number.
+            assert_eq!(parse_version("tmux next-3.4"), Some((3, 4)));
+            assert_eq!(parse_version("tmux 3"), Some((3, 0)));
+            assert_eq!(parse_version("tmux master"), None);
+            assert_eq!(parse_version(""), None);
+            // And the comparison the gate makes is the ordinary one.
+            assert!((3, 2) >= MINIMUM);
+            assert!((3, 7) >= MINIMUM);
+            assert!((3, 1) < MINIMUM);
+            assert!((2, 9) < MINIMUM);
+        }
+
+        #[test]
+        fn this_machines_tmux_is_reported_consistently() {
+            // Whatever is installed here, the two answers must agree.
+            assert_eq!(usable().is_ok(), available());
         }
 
         #[test]

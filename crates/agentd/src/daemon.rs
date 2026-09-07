@@ -905,7 +905,19 @@ impl Daemon {
                 spec,
                 build,
                 options,
-            } => self.run_container(spec, build, options).await,
+            } => {
+                if spec.in_pane {
+                    // A container has its own lifecycle and its own
+                    // terminal; a tmux pane would own neither.
+                    Response::error(
+                        ErrorCode::Invalid,
+                        "in_pane is for a process on this host; a container is started by the \
+                         engine, so there is nothing for tmux to own",
+                    )
+                } else {
+                    self.run_container(spec, build, options).await
+                }
+            }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
@@ -3526,7 +3538,20 @@ impl State {
         }
     }
 
-    fn insert_record(&mut self, mut record: AgentRecord) -> Response {
+    fn insert_record(&mut self, record: AgentRecord) -> Response {
+        self.insert_record_announcing(record, true)
+    }
+
+    /// `announce_start` is false where the record exists before its
+    /// process does — a pane agent, whose process tmux has not been asked
+    /// for yet. Announcing there would tell subscribers an agent started
+    /// that might never start, and would then announce it twice when it
+    /// did.
+    fn insert_record_announcing(
+        &mut self,
+        mut record: AgentRecord,
+        announce_start: bool,
+    ) -> Response {
         if let Some(error) = self.storage_failure() {
             return error;
         }
@@ -3551,7 +3576,7 @@ impl State {
             name: record.spec.name.clone(),
             project: record.project.as_ref().map(ProjectRef::id),
         });
-        if !record.managed {
+        if !record.managed && announce_start {
             self.emit(EventKind::AgentStarted {
                 agent: record.id.clone(),
                 pid: record.pid,
@@ -5380,6 +5405,42 @@ mod tests {
                      if message.contains("nothing to bring back")),
             "unexpected {response:?}"
         );
+
+        // And a container is the engine's to start, so there is nothing
+        // for tmux to own. `run_container` never reached `run_in_pane`,
+        // so the flag would otherwise have been silently ignored.
+        let mut containerised = spec("engine-started");
+        containerised.workdir = Some(dir.path().to_path_buf());
+        containerised.in_pane = true;
+        containerised.command = vec!["sh".into()];
+        let response = daemon
+            .handle(Request::RunContainer {
+                spec: containerised,
+                build: "nosuchbuild".to_owned(),
+                options: agentdocker_core::container::ContainerRunOptions::default(),
+            })
+            .await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("nothing for tmux to own")),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pane_agent_needs_a_workdir_for_tmux_to_start_in() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("nowhere");
+        spec.in_pane = true;
+        spec.workdir = None;
+        spec.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("workdir")),
+            "unexpected {response:?}"
+        );
     }
 
     /// Two agents each holding what the other wants, asking at once:
@@ -5457,6 +5518,46 @@ mod tests {
                 "round {round}: the other one simply waited: {outcomes:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_pane_agent_is_announced_as_started_once_and_only_after_tmux_has_it() {
+        if !agentdocker_host::multiplexer::tmux::available() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let daemon = open(&dir);
+        let name = format!("announce-{}", std::process::id());
+        let _cleanup = TmuxSession(name.clone());
+
+        let mut events = daemon.subscribe_events();
+        let mut spec = spec(&name);
+        spec.workdir = Some(work);
+        spec.in_pane = true;
+        spec.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run --in-pane failed")
+        };
+
+        // The record exists before tmux is asked for the process, so the
+        // ordinary unmanaged-registration announcement is suppressed:
+        // otherwise subscribers would be told an agent started that might
+        // never start, and told again when it did.
+        let mut starts = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentStarted { agent: id, pid } = event.kind
+                && id == agent.id
+            {
+                starts.push(pid);
+            }
+        }
+        assert_eq!(starts.len(), 1, "announced once, not twice: {starts:?}");
+        assert_eq!(
+            starts[0], agent.pid,
+            "and with the pid tmux actually started, never None"
+        );
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

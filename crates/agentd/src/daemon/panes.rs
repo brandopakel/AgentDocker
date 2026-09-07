@@ -40,11 +40,18 @@ impl Daemon {
                  daemon has nothing to bring back",
             );
         }
-        if !tmux::available() {
-            return Response::error(
-                ErrorCode::Unavailable,
-                "tmux is not on this machine's PATH, so there is no pane to run in",
-            );
+        // Probing tmux runs a process and waits for it, so it does not
+        // belong on a runtime worker. Asked before the record exists, so
+        // "tmux is too old" is never reported as a failed agent.
+        match tokio::task::spawn_blocking(tmux::usable).await {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Response::error(ErrorCode::Unavailable, reason),
+            Err(error) => {
+                return Response::error(
+                    ErrorCode::Internal,
+                    format!("could not ask tmux for its version: {error}"),
+                );
+            }
         }
         let workdir = match spec.workdir.clone() {
             Some(dir) => dir,
@@ -67,7 +74,9 @@ impl Daemon {
         record.vcs = Self::vcs_for(Some(workdir.clone())).await;
         // Bound before the match: a `lock(...)` temporary would live for
         // the whole expression, and one arm awaits.
-        let inserted = lock(&self.state).insert_record(record.clone());
+        // Not announced yet: tmux has not been asked for the process, so
+        // there is nothing to say started. The event goes out below, once.
+        let inserted = lock(&self.state).insert_record_announcing(record.clone(), false);
         let record = match inserted {
             Response::Agent { agent } => agent,
             other => {
@@ -86,6 +95,7 @@ impl Daemon {
                     reason: reason.clone(),
                 },
             );
+            self.cleanup_isolate(&record).await;
             return Response::error(ErrorCode::Unavailable, reason);
         }
 
@@ -130,15 +140,20 @@ impl Daemon {
                         reason: reason.clone(),
                     },
                 );
+                self.cleanup_isolate(&record).await;
                 return Response::error(ErrorCode::Internal, reason);
             }
         };
 
+        // Read before the lock: inspecting the process table is host I/O,
+        // and the rule here is that it never holds the coordination guard
+        // — every `claim`, `release` and `send` would queue behind it.
+        let started_at = procinfo::start_time(pane.pid);
         let updated = {
             let mut state = lock(&self.state);
             if let Some(stored) = state.registry.get_mut(&record.id) {
                 stored.pid = Some(pane.pid);
-                stored.process_started_at = procinfo::start_time(pane.pid);
+                stored.process_started_at = started_at;
                 // Not a process group of ours: tmux made it, and signalling
                 // the pid is what `stop` should do.
                 stored.session = Some(agentdocker_core::multiplexer::Session {
