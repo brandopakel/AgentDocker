@@ -1,0 +1,261 @@
+{
+  "format": 1,
+  "date": "2026-09-07",
+  "platform": "macOS aarch64",
+  "scope": "Selected exact-source local campaigns; this is not final release acceptance.",
+  "privacy": "Only selected source identities, counts and digests are published. Credentials, user paths, provider transcripts and screenshots are excluded.",
+  "campaigns": [
+    {
+      "campaign": "ad-late-reaper-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "dirty": false,
+        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+      },
+      "source_after": {
+        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "dirty": false,
+        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 306.36,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "8d2bde45f75ea19a19a81f45c59fec2bedaff308710ea7969b091d1d1d3a92ee"
+    },
+    {
+      "campaign": "ad-desktop-review-fixed-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
+        "dirty": false,
+        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
+      },
+      "source_after": {
+        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
+        "dirty": false,
+        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 182.63,
+      "rust_summary": [
+        "531",
+        "531",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "dd6a303d9423410d39ca27b7e44b9dd732850379a96740a57de046477087ddbf"
+    },
+    {
+      "campaign": "ad-lease-review-fixed-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
+        "dirty": false,
+        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
+      },
+      "source_after": {
+        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
+        "dirty": false,
+        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 77.07,
+      "rust_summary": [
+        "528",
+        "528",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "09f35b4c2f739c058a5d7aad583173772ff5e625c8dfa27ea05307b11990afed"
+    },
+    {
+      "campaign": "ad-maintenance-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "dirty": false,
+        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
+      },
+      "source_after": {
+        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "dirty": false,
+        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 232.15,
+      "rust_summary": [
+        "539",
+        "539",
+        "",
+        "4"
+      ],
+      "python_count": 31,
+      "private_raw_log_sha256": "d0e08f80e36685147941c7dc4fa004575d2cfd318694a8d5cc68e15dcccb37ab"
+    },
+    {
+      "campaign": "ad-storage-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
+        "dirty": false,
+        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
+      },
+      "source_after": {
+        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
+        "dirty": false,
+        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
+      },
+      "source_unchanged": true,
+      "exit": 1,
+      "elapsed_seconds": 122.62,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 31,
+      "private_raw_log_sha256": "5603e85a9d01b7797fd186438b1ecb2f5ce65abb6b0363be26786cda32fdb32f"
+    },
+    {
+      "campaign": "ad-benchmark-campaign-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "ce9f41f6f59a2e7d284f9d0bec02eb2db348f6f0",
+        "dirty": false,
+        "content_sha256": "6efe2163066f2575b0923829a39578518734322ba64e35f22a5e04bd7d99f26f"
+      },
+      "source_after": {
+        "commit": "ce9f41f6f59a2e7d284f9d0bec02eb2db348f6f0",
+        "dirty": false,
+        "content_sha256": "6efe2163066f2575b0923829a39578518734322ba64e35f22a5e04bd7d99f26f"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 287.19,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "d435b0164b586d8a85a82a611db964f551b99293614742aed2d9e89323d0a75c"
+    },
+    {
+      "campaign": "ad-expanded-fuzz-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "fb2fdda51b81e9e18fb22fdf73acb63308ecc946",
+        "dirty": false,
+        "content_sha256": "5e54684cd434b2d91d26ae49a22c68120dec8ffe02361ee92b66d1b743dbe303"
+      },
+      "source_after": {
+        "commit": "fb2fdda51b81e9e18fb22fdf73acb63308ecc946",
+        "dirty": false,
+        "content_sha256": "5e54684cd434b2d91d26ae49a22c68120dec8ffe02361ee92b66d1b743dbe303"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 519.86,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 28,
+      "private_raw_log_sha256": "2dea3779ba1515a35d1a7eadee857e1bec2517e9e230d6328ac110cb1e2d0425"
+    },
+    {
+      "campaign": "ad-final-review-followups-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7d5714a6cc7233f2fe319de4a0d9a9d4c1d7330b",
+        "dirty": false,
+        "content_sha256": "b5efabd3be8f9353c129a428e6622c480b2b0b9443997390ba99f9cb0f4d96cd"
+      },
+      "source_after": {
+        "commit": "7d5714a6cc7233f2fe319de4a0d9a9d4c1d7330b",
+        "dirty": false,
+        "content_sha256": "b5efabd3be8f9353c129a428e6622c480b2b0b9443997390ba99f9cb0f4d96cd"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 377.76,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "99a7598fc69933582865068e602bbdd774adf090800f8454cc646651fe7a3b03"
+    },
+    {
+      "campaign": "ad-access-event-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
+        "dirty": false,
+        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
+      },
+      "source_after": {
+        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
+        "dirty": false,
+        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 495.8,
+      "rust_summary": [
+        "498",
+        "498",
+        "",
+        "4"
+      ],
+      "python_count": 22,
+      "private_raw_log_sha256": "6f8a4857d76b7d93da8cb9496f0c339a95dbf63039f0dead18a5d1f9788ba0ea"
+    }
+  ],
+  "failures": [
+    {
+      "campaign": "ad-storage-full-check",
+      "finding": "Benchmark orchestration fixture omitted the newly required resource preflight script; Python failed after Rust checks passed. Fixture updated to provide successful resource admission; final full check pending."
+    },
+    {
+      "campaign": "ad-maintenance-packaged-trial",
+      "source": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+      "finding": "First five install/rollback scenarios passed, but the running inactive daemon version was incorrectly eligible for pruning. Product fix and retest pending; maintenance is not release ready."
+    },
+    {
+      "campaign": "ad-gui-command-errors-baseline2",
+      "source": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
+      "finding": "Three new fault tests reproduced answer/adopt/stop transport failures reported as connected. Implementation and final verification pending."
+    },
+    {
+      "campaign": "socket-1410d1b",
+      "finding": "Five-second shared 100-client claim timeout remains unexplained. Later complete quiet campaigns passed and do not diagnose it."
+    }
+  ],
+  "storage": {
+    "temporary_caches_removed_allocated_gib": 187.4,
+    "measured_free_space_recovered_gib": 185.21,
+    "project_docs_mib": 1.6,
+    "current_mac_preview_payload_mib": 36,
+    "generated_cache_policy": "Publish sanitized evidence, then prune local intermediates. One local campaign at a time."
+  }
+}

@@ -49,3 +49,16 @@ The [active delivery plan](DELIVERY-PLAN.md) adds a required review of recent co
 6. Add authenticated federation only after the single-host product is dependable. Two installations currently have independent registries and leases; exported handoff files do not create a shared cluster.
 
 Historical phase numbers in the architecture are implementation dependency labels, not GitHub PR numbers or an override of this delivery order. Additional terminal managers, a cloud control plane and a required web dashboard are not prerequisites for the native desktop product.
+
+
+## Lightweight operation
+
+Native operation must have a small installed footprint and bounded disk/memory
+growth during sustained use. Container engines and development toolchains are
+optional development/execution choices, not application dependencies. Measure
+package size, idle/loaded RSS and CPU, persistent state and cleanup recovery on
+each platform. The delivery plan now treats those budgets and the full local
+storage audit as release gates. Source and sanitized verification reports live
+in GitHub; local build outputs and disposable trial data are pruned after their
+reports are published. Private user state and credentials remain local/private,
+and native operation does not require a GitHub connection.
