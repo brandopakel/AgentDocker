@@ -3554,17 +3554,22 @@ impl State {
         if self.last_head.get(&checkout) == Some(&head) {
             return;
         }
+        if self.committing.contains(&checkout) {
+            // The daemon is making this commit itself and will record it
+            // against the agent that asked, so there is nothing to say
+            // here. Nothing is remembered either: advancing `last_head`
+            // would mean that if the commit never got as far as writing
+            // its entry, no later sweep would notice the move and the
+            // commit would go unrecorded by anyone. Leaving the mark
+            // where it was costs one repeated check per sweep and makes
+            // the watcher the backstop it is supposed to be.
+            return;
+        }
         self.last_head.insert(checkout.clone(), head.clone());
         let was_on = self
             .last_branch
             .insert(checkout.clone(), new.branch.clone())
             .flatten();
-        if self.committing.contains(&checkout) {
-            // The daemon is making this commit itself and will record it
-            // against the agent that asked. `last_head` is updated above,
-            // so the move is not noticed twice either.
-            return;
-        }
         if old.is_none() {
             return; // first observation, not a move
         }
