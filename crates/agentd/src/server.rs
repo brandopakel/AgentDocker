@@ -758,6 +758,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         let Response::Access { token, grant, .. } = daemon
@@ -873,6 +874,7 @@ mod tests {
                         ..AgentSpec::default()
                     },
                     pid: None,
+                    session: None,
                 })
                 .await;
         }
@@ -929,6 +931,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         // Too long for the kernel: refused up front, with the limit named.

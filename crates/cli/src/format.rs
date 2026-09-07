@@ -1,6 +1,6 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Envelope, Event, EventKind, Question, ResourceKey};
+use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceKey};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -140,8 +140,85 @@ pub fn question_line(question: &Question) -> String {
     )
 }
 
+/// One cell for a `ps` row: the word, and for the one state that has a
+/// reason, the reason.
+pub fn activity_cell(activity: &Activity) -> String {
+    match activity {
+        Activity::Blocked { resource: key, .. } => format!("blocked on {}", resource(key)),
+        other => other.label().to_owned(),
+    }
+}
+
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::ContestOpened {
+            contest,
+            task,
+            measure,
+            entrants,
+        } => format!(
+            "contest opened   {contest} on {task}, ranked by {measure} ({} entrant(s))",
+            entrants.len()
+        ),
+        EventKind::ContestEntered { contest, agent } => {
+            format!("contest entered  {contest} by {}", agent.short())
+        }
+        EventKind::ContestSubmitted {
+            contest,
+            agent,
+            score,
+            ..
+        } => format!(
+            "contest entry    {contest}: {} scored {score}",
+            agent.short()
+        ),
+        EventKind::ContestClosed {
+            contest,
+            winner,
+            resolution,
+        } => format!(
+            "contest closed   {contest}{}{}",
+            winner
+                .as_ref()
+                .map(|w| format!(": {} wins", w.short()))
+                .unwrap_or_else(|| " with no winner".to_owned()),
+            resolution
+                .as_ref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
+        EventKind::LeaseWaiting {
+            resource: key,
+            requester,
+            position,
+        } => format!(
+            "lease waiting    {} for {} (#{})",
+            requester.short(),
+            resource(key),
+            position + 1
+        ),
+        EventKind::LeaseWaitEnded {
+            resource: key,
+            requester,
+            outcome,
+        } => format!(
+            "lease wait ended {} for {} ({outcome:?})",
+            requester.short(),
+            resource(key)
+        ),
+        EventKind::LeaseDeadlock { cycle } => format!(
+            "lease deadlock   {}",
+            cycle
+                .iter()
+                .map(|step| format!(
+                    "{} waits for {} held by {}",
+                    step.agent.short(),
+                    resource(&step.resource),
+                    step.held_by.short()
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
         EventKind::AgentRestored { agent, pid, stale } => format!(
             "agent restored: {} (pid {}){}",
             agent.short(),

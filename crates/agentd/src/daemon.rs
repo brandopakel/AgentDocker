@@ -35,20 +35,23 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 use tracing::{debug, error, info, warn};
 
-use agentdocker_host::{procinfo, project, vcs};
+use agentdocker_host::{multiplexer, procinfo, project, vcs};
 
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
 mod channels;
 mod containers;
+mod contests;
 mod handoff;
 pub mod humans;
 mod images;
+mod panes;
 mod recovery;
 mod relay;
 mod restore;
 mod transport;
+mod waiting;
 mod working;
 mod worktrees;
 
@@ -203,6 +206,10 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Claims waiting for a resource, in arrival order. Connection-scoped
+    /// and never persisted: a restart drops every waiting client, which
+    /// reconnects and takes a new place.
+    waiting: agentdocker_core::WaitQueue,
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
@@ -298,6 +305,26 @@ fn same_process(pid: u32, recorded: Option<DateTime<Utc>>) -> bool {
 
 /// Wait until a lease overlapping `resource` is released or expires, or the
 /// deadline passes. `true` means a retry is worthwhile.
+/// A cycle as a sentence: `a → task:x (b) → task:y (a)`.
+fn describe(cycle: &[agentdocker_core::Blocked]) -> String {
+    cycle
+        .iter()
+        .map(|step| {
+            format!(
+                "{} waits for {} held by {}",
+                step.agent.short(),
+                step.resource,
+                step.held_by.short()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Sleep until something happens that could change this waiter's answer:
+/// an overlapping lease clearing, or a waiter ahead of it leaving the
+/// queue. The second matters as much as the first — the head of a queue
+/// giving up makes the next one next, and nothing else would say so.
 async fn wait_for_release(
     events: &mut broadcast::Receiver<Event>,
     resource: &ResourceKey,
@@ -311,6 +338,9 @@ async fn wait_for_release(
                 {
                     return true;
                 }
+                EventKind::LeaseWaitEnded {
+                    resource: freed, ..
+                } if freed.overlaps(resource) => return true,
                 _ => {}
             },
             // Events were dropped; a retry costs nothing.
@@ -723,6 +753,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions: HashMap::new(),
+                waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
             }),
             shutdown: Notify::new(),
@@ -785,7 +816,14 @@ impl Daemon {
         if let Some(error) = lock(&self.state).storage_failure() {
             return error;
         }
-        let response = self.handle_healthy(request).await;
+        // Boxed: `handle_healthy` is one match over every request the
+        // protocol has, so the future it returns is as large as the
+        // biggest arm plus everything the match holds live across an
+        // await. Left inline it lands on the caller's stack, and every
+        // caller that awaits a `handle` inside its own async fn pays for
+        // it again — which overflows a thread stack once the protocol is
+        // big enough. On the heap it costs one allocation per request.
+        let response = Box::pin(self.handle_healthy(request)).await;
         lock(&self.state).storage_failure().unwrap_or(response)
     }
 
@@ -867,9 +905,21 @@ impl Daemon {
                 spec,
                 build,
                 options,
-            } => self.run_container(spec, build, options).await,
+            } => {
+                if spec.in_pane {
+                    // A container has its own lifecycle and its own
+                    // terminal; a tmux pane would own neither.
+                    Response::error(
+                        ErrorCode::Invalid,
+                        "in_pane is for a process on this host; a container is started by the \
+                         engine, so there is nothing for tmux to own",
+                    )
+                } else {
+                    self.run_container(spec, build, options).await
+                }
+            }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
-            Request::Register { spec, pid } => self.register(spec, pid).await,
+            Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
@@ -927,6 +977,39 @@ impl Daemon {
                 text,
             } => self.answer(from, message, text).await,
             Request::Questions { agent } => self.questions(agent),
+            Request::Activity {
+                agent,
+                project,
+                all,
+            } => self.activity(agent, project, all).await,
+            Request::Waiting => self.waiting(),
+            Request::ContestOpen {
+                agent,
+                project,
+                task,
+                metric,
+                entrants,
+                channel,
+            } => self.contest_open(&agent, project, task, metric, entrants, channel),
+            Request::ContestEnter { agent, contest } => self.contest_enter(&agent, &contest),
+            Request::ContestSubmit {
+                agent,
+                contest,
+                validation,
+                score,
+            } => self.contest_submit(&agent, &contest, &validation, score),
+            Request::Contests {
+                contest,
+                project,
+                agent,
+                all,
+            } => self.contests(contest, project, agent, all),
+            Request::ContestClose {
+                agent,
+                contest,
+                winner,
+                resolution,
+            } => self.contest_close(&agent, &contest, winner, resolution),
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
             Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
@@ -1033,6 +1116,11 @@ impl Daemon {
     }
 
     async fn run(self: &Arc<Self>, spec: AgentSpec) -> Response {
+        // A pane is somebody else's to own, so that path registers what
+        // tmux starts rather than supervising a child of ours.
+        if spec.in_pane {
+            return self.run_in_pane(spec).await;
+        }
         if spec.command.first().is_none_or(String::is_empty) {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
@@ -1119,7 +1207,12 @@ impl Daemon {
         }
     }
 
-    async fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
+    async fn register(
+        &self,
+        spec: AgentSpec,
+        pid: Option<u32>,
+        reported: Option<agentdocker_core::multiplexer::Session>,
+    ) -> Response {
         if pid.is_some_and(|pid| signal_pid(pid).is_none()) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -1135,6 +1228,11 @@ impl Daemon {
         record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;
         record.started_at = Some(Utc::now());
+        // An agent that registered itself was started by somebody, and
+        // that somebody may have been a multiplexer. Knowing which lets
+        // a person reach it with the tool that already owns its
+        // terminal.
+        record.session = pid.and_then(|pid| Self::session_of(pid, reported.clone()));
         let response = lock(&self.state).insert_record(record);
         // The reply is what a session waits for before its first edit, so
         // the checkout is watched by the time it goes out.
@@ -1154,6 +1252,20 @@ impl Daemon {
             }
         }
         response
+    }
+
+    /// Where a process lives, when that is somebody else's terminal.
+    /// Best-effort: reading another process's environment is refused on
+    /// macOS, so a `None` here means "we could not tell", never "it is
+    /// homeless".
+    fn session_of(
+        pid: u32,
+        reported: Option<agentdocker_core::multiplexer::Session>,
+    ) -> Option<agentdocker_core::multiplexer::Session> {
+        let by_pid: BTreeMap<u32, procinfo::Process> = procinfo::processes()
+            .map(|table| table.into_iter().map(|p| (p.pid, p)).collect())
+            .unwrap_or_default();
+        multiplexer::of(pid, &by_pid, reported)
     }
 
     async fn cleanup_isolate(&self, record: &AgentRecord) {
@@ -1463,8 +1575,12 @@ impl Daemon {
     async fn scan(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let mine = std::process::id();
         tokio::task::spawn_blocking(move || {
-            let mut found: Vec<DiscoveredProcess> = procinfo::processes()
-                .map_err(|e| e.to_string())?
+            let table = procinfo::processes().map_err(|e| e.to_string())?;
+            // Ancestry needs the whole table, and only agents are asked
+            // about, so it is built once rather than per candidate.
+            let by_pid: BTreeMap<u32, procinfo::Process> =
+                table.iter().map(|p| (p.pid, p.clone())).collect();
+            let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
                 .filter(|p| p.pid != mine)
                 .filter_map(|p| {
@@ -1478,6 +1594,7 @@ impl Daemon {
                         project: cwd.as_deref().map(project::discover),
                         cwd,
                         started_at: procinfo::start_time(p.pid),
+                        session: multiplexer::of(p.pid, &by_pid, None),
                     })
                 })
                 .collect();
@@ -1532,7 +1649,7 @@ impl Daemon {
             labels: BTreeMap::from([("adopted".to_owned(), "true".to_owned())]),
             ..AgentSpec::default()
         };
-        let response = self.register(spec, Some(pid)).await;
+        let response = self.register(spec, Some(pid), None).await;
         if matches!(response, Response::Agent { .. }) {
             let mut state = lock(&self.state);
             if let Some(index) = state.discovered.processes.iter().position(|p| p.pid == pid) {
@@ -1942,6 +2059,13 @@ impl Daemon {
                 continue;
             };
             change.seq = seq;
+            // The strongest "working" signal there is: a file changed
+            // under a lease this agent holds. Recording it keeps derived
+            // activity honest for a runtime with no hooks at all.
+            if let Attribution::Agent { agent, .. } = &change.by {
+                let agent = agent.clone();
+                state.registry.touch(&agent, now);
+            }
             state.warn_readers(&change, physical.as_deref());
             // A second checkout on this path means two agents are in the
             // same work: give them a room.
@@ -2217,6 +2341,12 @@ impl Daemon {
         // a failed attempt and the wait is not missed.
         let mut events = self.subscribe_events();
         let mut reported_conflict = false;
+        // The place in the queue, taken on the first conflict and given
+        // up however this ends — including by the client disappearing,
+        // which drops this future and with it the guard. A cancelled
+        // claim left at the head of a queue would starve everyone
+        // behind it.
+        let mut waiting = waiting::Waiting::new(self, holder.clone(), resource.clone());
         loop {
             let (message, held_by) = {
                 let mut state = lock(&self.state);
@@ -2233,14 +2363,30 @@ impl Daemon {
                 state.touch(&holder);
                 let now = Utc::now();
                 state.expire_leases_at(now);
-                let result = state.leases.claim(
-                    resource.clone(),
-                    holder.clone(),
-                    mode,
-                    ttl(ttl_secs),
-                    note.clone(),
-                    now,
-                );
+                // Fairness: a waiter with somebody ahead of it on an
+                // overlapping resource does not try, so a newcomer
+                // cannot take what somebody has been waiting minutes
+                // for. A first attempt has no ticket and always tries.
+                let result = if state.may_attempt(waiting.ticket()) {
+                    state.leases.claim(
+                        resource.clone(),
+                        holder.clone(),
+                        mode,
+                        ttl(ttl_secs),
+                        note.clone(),
+                        now,
+                    )
+                } else {
+                    Err(LeaseError::Conflict {
+                        resource: resource.clone(),
+                        held_by: state
+                            .leases
+                            .holders_of(&resource)
+                            .into_iter()
+                            .cloned()
+                            .collect(),
+                    })
+                };
                 let (message, held_by) = match result {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
@@ -2250,6 +2396,8 @@ impl Daemon {
                         state.emit(EventKind::LeaseClaimed {
                             lease: lease.clone(),
                         });
+                        drop(state);
+                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
                     Ok(Claimed::Renewed(lease)) => {
@@ -2257,6 +2405,8 @@ impl Daemon {
                         state.emit(EventKind::LeaseRenewed {
                             lease: lease.clone(),
                         });
+                        drop(state);
+                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
                     Err(err) => {
@@ -2277,9 +2427,44 @@ impl Daemon {
                         held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
                     });
                 }
+                // Before agreeing to wait: would waiting close a cycle?
+                // If it would, nobody in it could ever proceed, and the
+                // newcomer is always the victim — deterministic, and it
+                // needs no priorities.
+                if wait_secs > 0 && waiting.ticket().is_none() {
+                    if let Some(cycle) = state.deadlock(&holder, &resource) {
+                        warn!(agent = %holder.short(), %resource, "claim would deadlock");
+                        state.emit(EventKind::LeaseDeadlock {
+                            cycle: cycle.clone(),
+                        });
+                        // A wait that never began still ended, and its
+                        // outcome is one subscribers are told to expect.
+                        waiting.never_started(&mut state, agentdocker_core::WaitOutcome::Deadlock);
+                        return Response::Error {
+                            code: ErrorCode::Deadlock,
+                            message: format!(
+                                "waiting for {resource} would deadlock: {}",
+                                describe(&cycle)
+                            ),
+                            details: Some(json!({ "cycle": cycle, "held_by": held_by })),
+                        };
+                    }
+                    // Joined under the same lock the check ran under.
+                    // Letting go in between would let two claims each
+                    // see no cycle and then both create one.
+                    waiting.join_locked(&mut state, mode);
+                }
                 (message, held_by)
             };
-            if wait_secs == 0 || !wait_for_release(&mut events, &resource, deadline).await {
+            if wait_secs == 0 {
+                return Response::Error {
+                    code: ErrorCode::Conflict,
+                    message,
+                    details: Some(json!({ "held_by": held_by })),
+                };
+            }
+            if !wait_for_release(&mut events, &resource, deadline).await {
+                waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
                     code: ErrorCode::Conflict,
                     message,
@@ -3353,7 +3538,20 @@ impl State {
         }
     }
 
-    fn insert_record(&mut self, mut record: AgentRecord) -> Response {
+    fn insert_record(&mut self, record: AgentRecord) -> Response {
+        self.insert_record_announcing(record, true)
+    }
+
+    /// `announce_start` is false where the record exists before its
+    /// process does — a pane agent, whose process tmux has not been asked
+    /// for yet. Announcing there would tell subscribers an agent started
+    /// that might never start, and would then announce it twice when it
+    /// did.
+    fn insert_record_announcing(
+        &mut self,
+        mut record: AgentRecord,
+        announce_start: bool,
+    ) -> Response {
         if let Some(error) = self.storage_failure() {
             return error;
         }
@@ -3378,7 +3576,7 @@ impl State {
             name: record.spec.name.clone(),
             project: record.project.as_ref().map(ProjectRef::id),
         });
-        if !record.managed {
+        if !record.managed && announce_start {
             self.emit(EventKind::AgentStarted {
                 agent: record.id.clone(),
                 pid: record.pid,
@@ -3483,6 +3681,8 @@ impl Drop for Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentdocker_core::Activity;
+    use agentdocker_core::contest::{Contest, Measure, Metric, Standing};
     use tempfile::TempDir;
 
     fn open(dir: &TempDir) -> Arc<Daemon> {
@@ -3502,6 +3702,7 @@ mod tests {
             .handle(Request::Register {
                 spec: spec(name),
                 pid,
+                session: None,
             })
             .await
         {
@@ -4171,6 +4372,1197 @@ mod tests {
         assert_eq!(text, "at once");
     }
 
+    // ----- the wait queue, deadlock, and derived activity ----------------
+
+    async fn activity_of(daemon: &Arc<Daemon>, agent: &str) -> Activity {
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: Some(agent.to_owned()),
+                project: None,
+                all: true,
+            })
+            .await
+        else {
+            panic!("activity did not answer with activity")
+        };
+        activity.into_iter().next().expect("one agent").activity
+    }
+
+    async fn claim_waiting(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        resource: &str,
+        wait_secs: u64,
+    ) -> Response {
+        daemon
+            .handle(Request::Claim {
+                agent: agent.to_owned(),
+                resource: resource.to_owned(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs,
+            })
+            .await
+    }
+
+    /// Wait until the queue is this deep, so a test never races the tasks
+    /// it started.
+    async fn queued(daemon: &Arc<Daemon>, want: usize) -> Vec<agentdocker_core::Waiter> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let Response::Waiting { waiting } = daemon.handle(Request::Waiting).await else {
+                    panic!("waiting did not answer with waiters")
+                };
+                if waiting.len() == want {
+                    return waiting;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the queue reached the expected depth")
+    }
+
+    async fn release(daemon: &Arc<Daemon>, agent: &str, lease: LeaseId) {
+        daemon
+            .handle(Request::Release {
+                agent: agent.to_owned(),
+                lease,
+                summary: None,
+                summary_source: agentdocker_core::SummarySource::Explicit,
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn the_agent_that_waited_longest_gets_the_lease() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        let first = register(&daemon, "first", Some(std::process::id())).await;
+        let second = register(&daemon, "second", Some(std::process::id())).await;
+
+        let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
+            panic!("the first claim should succeed")
+        };
+
+        let first_claim = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "first", "task:contested", 10).await })
+        };
+        // Queued before the second one arrives, so the arrival order
+        // under test is the one intended rather than whichever task the
+        // runtime happened to poll first.
+        let queue = queued(&daemon, 1).await;
+        assert_eq!(queue[0].agent, first.id);
+
+        let second_claim = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "second", "task:contested", 10).await },
+            )
+        };
+        let queue = queued(&daemon, 2).await;
+        assert_eq!(queue[1].agent, second.id, "and behind the first");
+
+        release(&daemon, holder.id.as_str(), lease.id).await;
+
+        let won = tokio::time::timeout(std::time::Duration::from_secs(5), first_claim)
+            .await
+            .expect("the first waiter finished")
+            .unwrap();
+        let Response::Lease { lease: won } = won else {
+            panic!("the older waiter should have won: {won:?}")
+        };
+        assert_eq!(won.holder, first.id, "not whoever raced fastest");
+        second_claim.abort();
+    }
+
+    #[tokio::test]
+    async fn a_waiter_that_goes_away_does_not_hold_the_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        register(&daemon, "leaver", Some(std::process::id())).await;
+        let stayer = register(&daemon, "stayer", Some(std::process::id())).await;
+
+        let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
+            panic!("the first claim should succeed")
+        };
+        let leaving = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "leaver", "task:contested", 30).await },
+            )
+        };
+        queued(&daemon, 1).await;
+        let staying = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "stayer", "task:contested", 30).await },
+            )
+        };
+        queued(&daemon, 2).await;
+
+        // The client at the head of the queue disconnects: its future is
+        // dropped, which must give up its place rather than starve the
+        // one behind it.
+        leaving.abort();
+        queued(&daemon, 1).await;
+        release(&daemon, holder.id.as_str(), lease.id).await;
+
+        let won = tokio::time::timeout(std::time::Duration::from_secs(5), staying)
+            .await
+            .expect("the remaining waiter finished")
+            .unwrap();
+        let Response::Lease { lease: won } = won else {
+            panic!("the waiter behind it should have won: {won:?}")
+        };
+        assert_eq!(won.holder, stayer.id);
+    }
+
+    #[tokio::test]
+    async fn a_claim_that_would_close_a_ring_is_refused_with_the_ring() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+
+        // alpha holds x, beta holds y.
+        assert!(matches!(
+            claim(&daemon, "alpha", "task:x").await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            claim(&daemon, "beta", "task:y").await,
+            Response::Lease { .. }
+        ));
+        // alpha waits for y.
+        let alpha_waits = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "alpha", "task:y", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        // beta asking for x closes the ring, so it is refused at once
+        // rather than after both TTLs.
+        let refused = claim_waiting(&daemon, "beta", "task:x", 30).await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("beta should have been refused")
+        };
+        assert_eq!(code, ErrorCode::Deadlock);
+        assert!(message.contains("deadlock"), "{message}");
+        let cycle = details.expect("a cycle").get("cycle").cloned().unwrap();
+        let cycle: Vec<agentdocker_core::Blocked> = serde_json::from_value(cycle).unwrap();
+        assert_eq!(cycle.len(), 2, "beta → alpha → beta: {cycle:?}");
+        assert_eq!(cycle[0].agent, beta.id);
+        assert_eq!(cycle[0].held_by, alpha.id);
+        assert_eq!(cycle[1].agent, alpha.id);
+        assert_eq!(cycle[1].held_by, beta.id);
+        // And the refusal changed nothing: alpha is still waiting.
+        assert_eq!(queued(&daemon, 1).await.len(), 1);
+        alpha_waits.abort();
+    }
+
+    #[tokio::test]
+    async fn plain_contention_still_waits_rather_than_being_called_a_deadlock() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "holder", Some(std::process::id())).await;
+        register(&daemon, "waiter", Some(std::process::id())).await;
+        assert!(matches!(
+            claim(&daemon, "holder", "task:x").await,
+            Response::Lease { .. }
+        ));
+        // The holder wants nothing, so there is no cycle: the waiter
+        // waits and then reports an ordinary conflict.
+        let response = claim_waiting(&daemon, "waiter", "task:x", 1).await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_says_what_an_agent_is_blocked_on_and_who_has_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        let waiter = register(&daemon, "waiter", Some(std::process::id())).await;
+
+        // Both have just acted through the daemon, so both are working.
+        assert!(matches!(
+            activity_of(&daemon, "holder").await,
+            Activity::Working { .. }
+        ));
+
+        assert!(matches!(
+            claim(&daemon, "holder", "task:the-work").await,
+            Response::Lease { .. }
+        ));
+        let blocked = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "waiter", "task:the-work", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        let activity = activity_of(&daemon, waiter.id.as_str()).await;
+        let Activity::Blocked {
+            resource, held_by, ..
+        } = activity
+        else {
+            panic!("the waiter should be blocked: {activity:?}")
+        };
+        assert_eq!(resource.as_str(), "task:the-work", "on a named resource");
+        assert_eq!(held_by, vec![holder.id.clone()], "held by a named agent");
+
+        // Blocked sorts first, because it is the one somebody has to do
+        // something about.
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: None,
+                project: None,
+                all: false,
+            })
+            .await
+        else {
+            panic!("activity did not answer with activity")
+        };
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity[0].agent, waiter.id);
+        assert_eq!(activity[0].activity.label(), "blocked");
+
+        blocked.abort();
+    }
+
+    #[tokio::test]
+    async fn a_quiet_agent_is_idle_and_a_finished_one_is_finished() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let quiet = register(&daemon, "quiet", Some(std::process::id())).await;
+        // Backdate its last contact past the activity window.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&quiet.id).unwrap();
+            record.last_seen = Utc::now() - Duration::hours(1);
+        }
+        assert!(matches!(
+            activity_of(&daemon, quiet.id.as_str()).await,
+            Activity::Idle { .. }
+        ));
+
+        daemon
+            .handle(Request::Deregister {
+                agent: quiet.id.to_string(),
+            })
+            .await;
+        assert_eq!(
+            activity_of(&daemon, quiet.id.as_str()).await,
+            Activity::Finished
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deadlock_refusal_says_the_wait_ended() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "alpha", Some(std::process::id())).await;
+        register(&daemon, "beta", Some(std::process::id())).await;
+        assert!(matches!(
+            claim(&daemon, "alpha", "task:x").await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            claim(&daemon, "beta", "task:y").await,
+            Response::Lease { .. }
+        ));
+        let alpha_waits = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "alpha", "task:y", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        let mut events = daemon.subscribe_events();
+        let refused = claim_waiting(&daemon, "beta", "task:x", 30).await;
+        assert!(matches!(
+            &refused,
+            Response::Error {
+                code: ErrorCode::Deadlock,
+                ..
+            }
+        ));
+
+        // A wait that never began still ended, and `lease_wait_ended` is
+        // the event subscribers are told to expect for every outcome —
+        // including the one that was refused before it could queue.
+        let mut saw_deadlock = false;
+        let mut saw_ended = false;
+        while let Ok(event) = events.try_recv() {
+            match event.kind {
+                EventKind::LeaseDeadlock { .. } => saw_deadlock = true,
+                EventKind::LeaseWaitEnded {
+                    outcome: agentdocker_core::WaitOutcome::Deadlock,
+                    ..
+                } => saw_ended = true,
+                _ => {}
+            }
+        }
+        assert!(saw_deadlock, "the cycle itself is announced");
+        assert!(saw_ended, "and so is the wait ending on it");
+        alpha_waits.abort();
+    }
+
+    // ----- contests -------------------------------------------------------
+
+    /// A registered agent in its own checkout, which is what a contest
+    /// entrant is.
+    async fn entrant(daemon: &Arc<Daemon>, root: &Path, name: &str) -> AgentRecord {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("work.txt"), name).unwrap();
+        let mut spec = spec(name);
+        spec.workdir = Some(dir);
+        register_spec(daemon, spec).await
+    }
+
+    /// Run a validation for this agent and return its id.
+    async fn validate(daemon: &Arc<Daemon>, agent: &str, command: &str) -> Response {
+        daemon
+            .handle(Request::Validate {
+                agent: agent.to_owned(),
+                command: vec!["sh".into(), "-c".into(), command.to_owned()],
+                timeout_secs: 30,
+            })
+            .await
+    }
+
+    async fn validation_id(daemon: &Arc<Daemon>, agent: &str, command: &str) -> String {
+        match validate(daemon, agent, command).await {
+            Response::Validation { validation, .. } => validation.id,
+            other => panic!("validate failed: {other:?}"),
+        }
+    }
+
+    async fn open_contest(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        measure: Measure,
+        noise: f64,
+        entrants: Vec<String>,
+    ) -> Contest {
+        let response = daemon
+            .handle(Request::ContestOpen {
+                agent: agent.to_owned(),
+                project: None,
+                task: "make it faster".to_owned(),
+                metric: Metric {
+                    measure,
+                    direction: agentdocker_core::contest::Direction::Lower,
+                    noise,
+                },
+                entrants,
+                channel: true,
+            })
+            .await;
+        match response {
+            Response::Contest { contest, .. } => contest,
+            other => panic!("contest_open failed: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_entry_needs_a_passing_validation_of_its_own() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            0.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+
+        // A failing run is not evidence of anything.
+        let failed = validation_id(&daemon, alpha.id.as_str(), "exit 1").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: failed,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    message,
+                    ..
+                } if message.contains("did not pass")
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Nor is somebody else's passing run.
+        let borrowed = validation_id(&daemon, beta.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: borrowed,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Its own passing run is.
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: mine.clone(),
+                score: Some(7.0),
+            })
+            .await
+        else {
+            panic!("a passing validation of its own should be accepted")
+        };
+        assert_eq!(contest.entries.len(), 1);
+        assert_eq!(contest.entries[0].validation, mine);
+        assert_eq!(contest.entries[0].score, 7.0);
+    }
+
+    #[tokio::test]
+    async fn a_measured_contest_ignores_what_the_entrant_says_the_score_was() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: mine,
+                // A flattering claim, which must be ignored: the daemon
+                // timed the run itself.
+                score: Some(-999.0),
+            })
+            .await
+        else {
+            panic!("submit failed")
+        };
+        let score = contest.entries[0].score;
+        assert!(
+            (0.0..30.0).contains(&score),
+            "the daemon's own timing, not the claim: {score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reported_contest_needs_a_number() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            0.0,
+            vec![],
+        )
+        .await;
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id,
+                validation: mine,
+                score: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    message,
+                    ..
+                } if message.contains("allocations")
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tie_cannot_be_closed_by_the_metric_and_a_clear_win_can() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            // A generous noise floor, so two close numbers tie.
+            5.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+
+        for (agent, score) in [(&alpha, 100.0), (&beta, 102.0)] {
+            let evidence = validation_id(&daemon, agent.id.as_str(), "true").await;
+            daemon
+                .handle(Request::ContestSubmit {
+                    agent: agent.id.to_string(),
+                    contest: contest.id.clone(),
+                    validation: evidence,
+                    score: Some(score),
+                })
+                .await;
+        }
+
+        // Two apart with a floor of five: the metric has said all it can.
+        let refused = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    message,
+                    ..
+                } if message.contains("noise floor")
+            ),
+            "unexpected {refused:?}"
+        );
+
+        // Review is the tie-break, so an explicit winner settles it.
+        let Response::Contest { contest, standing } = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: Some(beta.id.to_string()),
+                resolution: Some("clearer, and the numbers were a tie".to_owned()),
+            })
+            .await
+        else {
+            panic!("an explicit winner should settle it")
+        };
+        assert_eq!(contest.winner, Some(beta.id.clone()));
+        assert!(!contest.is_open());
+        assert!(matches!(standing, Standing::Settled { .. }));
+
+        // And a closed contest takes nothing more.
+        let evidence = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id,
+                validation: evidence,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(&response, Response::Error { .. }),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clear_winner_needs_no_arbiter_and_a_stranger_cannot_enter_by_submitting() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let stranger = entrant(&daemon, &root, "stranger").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            1.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+        // A channel came with it, because a tie has to be argued
+        // somewhere and asking for a room afterwards looks like a
+        // rematch.
+        assert!(contest.channel.is_some());
+
+        for (agent, score) in [(&alpha, 100.0), (&beta, 40.0)] {
+            let evidence = validation_id(&daemon, agent.id.as_str(), "true").await;
+            daemon
+                .handle(Request::ContestSubmit {
+                    agent: agent.id.to_string(),
+                    contest: contest.id.clone(),
+                    validation: evidence,
+                    score: Some(score),
+                })
+                .await;
+        }
+
+        // Somebody who never entered cannot submit.
+        let evidence = validation_id(&daemon, stranger.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: stranger.id.to_string(),
+                contest: contest.id.clone(),
+                validation: evidence,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Sixty apart with a floor of one: no arbiter needed.
+        let Response::Contest { contest, standing } = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await
+        else {
+            panic!("a clear win should close on the ranking")
+        };
+        assert_eq!(contest.winner, Some(beta.id.clone()));
+        assert!(matches!(standing, Standing::Settled { winner, .. } if winner == beta.id));
+    }
+
+    #[tokio::test]
+    async fn entering_admits_a_latecomer_to_the_contests_channel() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let latecomer = entrant(&daemon, &root, "latecomer").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+        let channel = contest.channel.clone().expect("a room");
+
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestEnter {
+                agent: latecomer.id.to_string(),
+                contest: contest.id,
+            })
+            .await
+        else {
+            panic!("entering failed")
+        };
+        assert!(contest.has(&latecomer.id));
+        let room = lock(&daemon.state)
+            .channels
+            .get(&channel)
+            .cloned()
+            .expect("the channel is still there");
+        assert!(
+            room.has(&latecomer.id),
+            "and the latecomer can argue its own case"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_people_in_a_contest_can_close_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let outsider = entrant(&daemon, &root, "outsider").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+        let evidence = validation_id(&daemon, beta.id.as_str(), "true").await;
+        daemon
+            .handle(Request::ContestSubmit {
+                agent: beta.id.to_string(),
+                contest: contest.id.clone(),
+                validation: evidence,
+                score: None,
+            })
+            .await;
+
+        // Closing settles somebody's work, so an agent that is neither
+        // the opener nor an entrant may not do it.
+        let refused = daemon
+            .handle(Request::ContestClose {
+                agent: outsider.id.to_string(),
+                contest: contest.id.clone(),
+                winner: Some(beta.id.to_string()),
+                resolution: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {refused:?}"
+        );
+
+        // An entrant can, and so could the opener.
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestClose {
+                agent: beta.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await
+        else {
+            panic!("an entrant should be able to close it")
+        };
+        assert_eq!(contest.winner, Some(beta.id));
+    }
+
+    #[tokio::test]
+    async fn one_contest_is_looked_up_rather_than_scanned_for() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let wanted = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+        open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+
+        let Response::Contests { contests } = daemon
+            .handle(Request::Contests {
+                contest: Some(wanted.id.clone()),
+                project: None,
+                agent: None,
+                all: true,
+            })
+            .await
+        else {
+            panic!("contests did not answer with contests")
+        };
+        assert_eq!(contests.len(), 1, "the one asked for, not both");
+        assert_eq!(contests[0].id, wanted.id);
+
+        let missing = daemon
+            .handle(Request::Contests {
+                contest: Some(agentdocker_core::ContestId::from(
+                    "nosuchcontest".to_owned(),
+                )),
+                project: None,
+                agent: None,
+                all: true,
+            })
+            .await;
+        assert!(
+            matches!(
+                &missing,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "a lookup that finds nothing says so: {missing:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_says_which_multiplexer_it_lives_in_and_the_daemon_keeps_it() {
+        use agentdocker_core::multiplexer::{Evidence, Session};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        // A client registering itself is inside the session it reports,
+        // and on macOS that is the only exact answer: a process's
+        // environment is not readable from outside.
+        let reported = Session {
+            kind: "tmux".to_owned(),
+            session: Some("work".to_owned()),
+            pane: Some("%3".to_owned()),
+            evidence: Evidence::Environment,
+        };
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: spec("in-tmux"),
+                pid: Some(std::process::id()),
+                session: Some(reported.clone()),
+            })
+            .await
+        else {
+            panic!("register failed")
+        };
+        assert_eq!(
+            agent.session.as_ref().map(Session::describe).as_deref(),
+            Some("tmux:%3")
+        );
+        assert_eq!(agent.session, Some(reported));
+
+        // And it survives, because it is part of the record rather than
+        // something re-derived on every listing.
+        let Response::Agent { agent } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("inspect failed")
+        };
+        assert_eq!(agent.session.map(|s| s.kind), Some("tmux".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_process_is_in_no_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // No pid: nothing to look up, and nothing reported.
+        let agent = register(&daemon, "bodiless", None).await;
+        assert_eq!(agent.session, None);
+    }
+
+    // ----- run --in-pane --------------------------------------------------
+
+    /// Kill a tmux session however a test ends, so a failure does not
+    /// leave a stray server behind for the next one.
+    struct TmuxSession(String);
+
+    impl Drop for TmuxSession {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &self.0])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    fn tmux_says(pane: &str, format: &str) -> String {
+        let out = std::process::Command::new("tmux")
+            .args(["display-message", "-p", "-t", pane, format])
+            .output()
+            .expect("tmux answers");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[tokio::test]
+    async fn an_agent_in_a_pane_is_registered_rather_than_supervised() {
+        if !agentdocker_host::multiplexer::tmux::available() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let daemon = open(&dir);
+        // A distinct name per run, so concurrent tests cannot collide on
+        // one tmux session.
+        let name = format!("paned-{}", std::process::id());
+        let _cleanup = TmuxSession(name.clone());
+
+        let mut spec = spec(&name);
+        spec.workdir = Some(work.clone());
+        spec.in_pane = true;
+        spec.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run --in-pane failed")
+        };
+
+        // tmux owns the process, so the daemon registered it rather than
+        // supervising a child of its own.
+        assert!(!agent.managed, "tmux started it, not us");
+        assert_eq!(agent.status, AgentStatus::Running);
+        let session = agent.session.as_ref().expect("the pane is on the record");
+        assert_eq!(session.kind, "tmux");
+        assert_eq!(session.session.as_deref(), Some(name.as_str()));
+        let pane = session.pane.as_deref().expect("a pane id");
+
+        // And tmux agrees about which process that is, which is what
+        // makes `stop`, liveness and attribution work at all.
+        assert_eq!(
+            tmux_says(pane, "#{pane_pid}"),
+            agent.pid.expect("a pid").to_string(),
+            "the record's pid is the pane's pid"
+        );
+        assert_eq!(tmux_says(pane, "#{session_name}"), name);
+
+        // It can coordinate like any other agent: the pane got its id.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:in-a-pane").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_pane_agent_cannot_also_ask_for_a_terminal_or_a_restore() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().to_path_buf();
+
+        // The CLI refuses these combinations too, but the daemon has to:
+        // MCP, an Agentfile and the protocol itself all bypass clap.
+        let mut both = spec("two-terminals");
+        both.workdir = Some(work.clone());
+        both.in_pane = true;
+        both.tty = true;
+        both.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec: both }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("two terminals")),
+            "unexpected {response:?}"
+        );
+
+        let mut restoring = spec("not-ours-to-restore");
+        restoring.workdir = Some(work);
+        restoring.in_pane = true;
+        restoring.restore = true;
+        restoring.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec: restoring }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("nothing to bring back")),
+            "unexpected {response:?}"
+        );
+
+        // And a container is the engine's to start, so there is nothing
+        // for tmux to own. `run_container` never reached `run_in_pane`,
+        // so the flag would otherwise have been silently ignored.
+        let mut containerised = spec("engine-started");
+        containerised.workdir = Some(dir.path().to_path_buf());
+        containerised.in_pane = true;
+        containerised.command = vec!["sh".into()];
+        let response = daemon
+            .handle(Request::RunContainer {
+                spec: containerised,
+                build: "nosuchbuild".to_owned(),
+                options: agentdocker_core::container::ContainerRunOptions::default(),
+            })
+            .await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("nothing for tmux to own")),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    /// Deliberately not skipped where tmux is absent: whether a request
+    /// is well formed does not depend on the machine, and CI proved the
+    /// point by failing here when the tmux probe ran first.
+    async fn a_pane_agent_needs_a_workdir_for_tmux_to_start_in() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("nowhere");
+        spec.in_pane = true;
+        spec.workdir = None;
+        spec.command = vec!["sh".into()];
+        let response = daemon.handle(Request::Run { spec }).await;
+        assert!(
+            matches!(&response, Response::Error { code: ErrorCode::Invalid, message, .. }
+                     if message.contains("workdir")),
+            "unexpected {response:?}"
+        );
+    }
+
+    /// Two agents each holding what the other wants, asking at once:
+    /// exactly one is refused and the other simply waits.
+    ///
+    /// This is the user-visible invariant — a ring is always broken, and
+    /// broken once — and it holds whichever order the two arrive in,
+    /// because the state lock serialises their first attempts.
+    ///
+    /// It is **not** a test of the atomicity fix, and it is worth saying
+    /// so where somebody will read it. I checked: reintroducing the old
+    /// shape — releasing the lock between the deadlock check and the
+    /// join — leaves this test passing, because the window is nanoseconds
+    /// wide in the same task and nothing makes the other task land in it.
+    /// A test that did catch it would need a hook inside that window,
+    /// and the fix's whole point is that the window no longer exists, so
+    /// the hook would have to be restored by the same regression it was
+    /// meant to catch. That fix rests on reading the code: there is no
+    /// unlock between `state.deadlock(..)` and `waiting.join_locked(..)`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_agents_closing_one_ring_leave_exactly_one_refused() {
+        for round in 0..6 {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+            let beta = register(&daemon, "beta", Some(std::process::id())).await;
+            assert!(matches!(
+                claim(&daemon, "alpha", "task:x").await,
+                Response::Lease { .. }
+            ));
+            assert!(matches!(
+                claim(&daemon, "beta", "task:y").await,
+                Response::Lease { .. }
+            ));
+
+            let a = {
+                let daemon = daemon.clone();
+                let id = alpha.id.to_string();
+                tokio::spawn(async move { claim_waiting(&daemon, &id, "task:y", 1).await })
+            };
+            let b = {
+                let daemon = daemon.clone();
+                let id = beta.id.to_string();
+                tokio::spawn(async move { claim_waiting(&daemon, &id, "task:x", 1).await })
+            };
+            let outcomes = [a.await.unwrap(), b.await.unwrap()];
+
+            let deadlocked = outcomes
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r,
+                        Response::Error {
+                            code: ErrorCode::Deadlock,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            assert_eq!(
+                deadlocked, 1,
+                "round {round}: the ring is broken exactly once, got {outcomes:?}"
+            );
+            // The other waited its second and reported an ordinary
+            // conflict, which is the honest answer: it is queued behind a
+            // lease nobody released.
+            assert!(
+                outcomes.iter().any(|r| matches!(
+                    r,
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        ..
+                    }
+                )),
+                "round {round}: the other one simply waited: {outcomes:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pane_agent_is_announced_as_started_once_and_only_after_tmux_has_it() {
+        if !agentdocker_host::multiplexer::tmux::available() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let daemon = open(&dir);
+        let name = format!("announce-{}", std::process::id());
+        let _cleanup = TmuxSession(name.clone());
+
+        let mut events = daemon.subscribe_events();
+        let mut spec = spec(&name);
+        spec.workdir = Some(work);
+        spec.in_pane = true;
+        spec.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run --in-pane failed")
+        };
+
+        // The record exists before tmux is asked for the process, so the
+        // ordinary unmanaged-registration announcement is suppressed:
+        // otherwise subscribers would be told an agent started that might
+        // never start, and told again when it did.
+        let mut starts = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentStarted { agent: id, pid } = event.kind
+                && id == agent.id
+            {
+                starts.push(pid);
+            }
+        }
+        assert_eq!(starts.len(), 1, "announced once, not twice: {starts:?}");
+        assert_eq!(
+            starts[0], agent.pid,
+            "and with the pid tmux actually started, never None"
+        );
+    }
+
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
         daemon
             .handle(Request::Claim {
@@ -4625,7 +6017,14 @@ mod tests {
     }
 
     async fn register_spec(daemon: &Arc<Daemon>, spec: AgentSpec) -> AgentRecord {
-        match daemon.handle(Request::Register { spec, pid: None }).await {
+        match daemon
+            .handle(Request::Register {
+                spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
@@ -4971,6 +6370,7 @@ mod tests {
             cwd: None,
             project: None,
             started_at: Some(started_at),
+            session: None,
         }
     }
 
@@ -5075,6 +6475,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 Some(child.id()),
+                None,
             )
             .await;
         assert!(matches!(response, Response::Agent { .. }), "{response:?}");
@@ -5471,7 +6872,8 @@ mod tests {
                 daemon
                     .handle(Request::Register {
                         spec: spec("invalid"),
-                        pid: Some(pid)
+                        pid: Some(pid),
+                        session: None,
                     })
                     .await,
                 Response::Error {

@@ -165,11 +165,17 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         isolate: false,
         tty: false,
         restore: false,
+        in_pane: false,
     };
     match client
         .call(&Request::Register {
             spec,
             pid: Some(host_pid),
+            // Read here rather than by the daemon: this process is
+            // *inside* whatever session it is reporting, which is
+            // first-hand — and on macOS the only way to know, since
+            // a process's environment is not readable from outside.
+            session: agentdocker_host::multiplexer::own(),
         })
         .await
         .context("failed to register with agentd")?
@@ -440,6 +446,43 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
+            "contests" => {
+                let args: ContestsArgs = parse(arguments)?;
+                self.forward(Request::Contests {
+                    contest: None,
+                    project: None,
+                    agent: Some(me),
+                    all: args.all,
+                })
+                .await
+            }
+            "enter_contest" => {
+                let args: EnterContestArgs = parse(arguments)?;
+                self.forward(Request::ContestEnter {
+                    agent: me,
+                    contest: agentdocker_core::ContestId::from(args.contest),
+                })
+                .await
+            }
+            "submit_entry" => {
+                let args: SubmitEntryArgs = parse(arguments)?;
+                self.forward(Request::ContestSubmit {
+                    agent: me,
+                    contest: agentdocker_core::ContestId::from(args.contest),
+                    validation: args.validation,
+                    score: args.score,
+                })
+                .await
+            }
+            "activity" => {
+                let args: ActivityArgs = parse(arguments)?;
+                self.forward(Request::Activity {
+                    agent: None,
+                    project: args.project.as_deref().map(crate::project_selector),
+                    all: args.all,
+                })
+                .await
+            }
             "claim" => {
                 let args: ClaimArgs = parse(arguments)?;
                 let response = self
@@ -638,6 +681,33 @@ struct OpenQuestionsArgs {
 }
 
 #[derive(Deserialize)]
+struct ContestsArgs {
+    #[serde(default)]
+    all: bool,
+}
+
+#[derive(Deserialize)]
+struct EnterContestArgs {
+    contest: String,
+}
+
+#[derive(Deserialize)]
+struct SubmitEntryArgs {
+    contest: String,
+    validation: String,
+    #[serde(default)]
+    score: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct ActivityArgs {
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    all: bool,
+}
+
+#[derive(Deserialize)]
 struct ClaimArgs {
     resource: String,
     #[serde(default)]
@@ -796,6 +866,32 @@ fn brief_channel(channel: &agentdocker_core::Channel) -> Value {
     }))
 }
 
+/// What an entrant reads about a contest: the task, what it is ranked
+/// by, where it stands, and each attempt's agent and score. Not the
+/// absolute checkout path of every entry, nor its validation id, nor the
+/// whole entrant list — a listing pays for all of that in tokens and
+/// none of it changes what the reader does next.
+fn brief_contest(contest: &agentdocker_core::Contest) -> Value {
+    tight(json!({
+        "id": contest.id,
+        "task": contest.task,
+        "measure": contest.metric.measure.name(),
+        "lower_is_better": matches!(
+            contest.metric.direction,
+            agentdocker_core::contest::Direction::Lower
+        ),
+        "noise": contest.metric.noise,
+        "open": contest.is_open(),
+        "entrants": contest.entrants.len(),
+        "standing": contest.standing(),
+        "entries": contest
+            .ranked()
+            .iter()
+            .map(|entry| json!({ "agent": entry.agent, "score": entry.score }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 /// Turn a daemon response into a tool result, unwrapping the payload so the
 /// model sees the data rather than the protocol envelope. Records come back
 /// as a projection unless `verbose`, because everything here is an input
@@ -805,6 +901,11 @@ fn render(response: Response, verbose: bool) -> Value {
         return render_whole(response);
     }
     match response {
+        Response::Contest { contest, .. } => text_result(&brief_contest(&contest), false),
+        Response::Contests { contests } => text_result(
+            &json!({ "contests": contests.iter().map(brief_contest).collect::<Vec<_>>() }),
+            false,
+        ),
         Response::Agent { agent } => text_result(&brief_agent(&agent), false),
         Response::Agents { agents } => text_result(
             &json!({ "agents": agents.iter().map(brief_agent).collect::<Vec<_>>() }),
@@ -858,6 +959,10 @@ fn render_whole(response: Response) -> Value {
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
         Response::Channel { channel } => text_result(&json!(channel), false),
         Response::Channels { channels } => text_result(&json!({ "channels": channels }), false),
+        Response::Contest { contest, standing } => {
+            text_result(&json!({ "contest": contest, "standing": standing }), false)
+        }
+        Response::Contests { contests } => text_result(&json!({ "contests": contests }), false),
         Response::Handoff { bundle } => text_result(&json!(bundle), false),
         Response::Overlap { overlaps } => text_result(&json!({ "overlaps": overlaps }), false),
         Response::Handoffs { bundles } => text_result(&json!({ "handoffs": bundles }), false),
@@ -1075,6 +1180,53 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "mine": { "type": "boolean", "default": true, "description": "Only the questions put to this agent." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "contests",
+            "description": "Contests you are in: a task several agents attempt, ranked by a measure fixed before any of them started. Read it to see what you are competing on and where you stand.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "all": { "type": "boolean", "default": false, "description": "Include closed contests." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "enter_contest",
+            "description": "Join an open contest. Work in your own worktree; nothing you submit counts until `validate` passes on it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "contest": { "type": "string" } },
+                "required": ["contest"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "submit_entry",
+            "description": "Submit your attempt at a contest: the id of a passing `validate` run of your own, and — only when the contest is ranked by a reported measure — the number you scored. A failing or borrowed validation is refused. Resubmitting replaces your earlier entry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "contest": { "type": "string" },
+                    "validation": { "type": "string", "description": "From `validate`; must be yours and must have passed." },
+                    "score": { "type": "number", "description": "Only for a reported measure; a `seconds` contest is timed by the daemon." }
+                },
+                "required": ["contest", "validation"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "activity",
+            "description": "What every agent is doing: working, idle, starting, or blocked on a named resource held by named agents. Derived from the working set, so `blocked` says what by — read it before assuming another agent is stuck or gone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only agents in this project; an id prefix or an absolute path inside it." },
+                    "all": { "type": "boolean", "default": false, "description": "Include agents that have finished." }
                 },
                 "additionalProperties": false
             }
@@ -1371,6 +1523,10 @@ mod tests {
                 "ask_human",
                 "answer_question",
                 "open_questions",
+                "contests",
+                "enter_contest",
+                "submit_entry",
+                "activity",
                 "claim",
                 "renew",
                 "release",

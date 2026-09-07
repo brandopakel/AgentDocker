@@ -8,6 +8,20 @@ use crate::{
     ProjectRef, ResourceKey, VcsState,
 };
 
+/// How a wait finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitOutcome {
+    /// The waiter got the lease.
+    Claimed,
+    /// It ran out of the time it asked for.
+    Timeout,
+    /// Its connection went away, so the request no longer exists.
+    Cancelled,
+    /// It would have closed a cycle.
+    Deadlock,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
@@ -147,6 +161,57 @@ pub enum EventKind {
     AgentStarted {
         agent: AgentId,
         pid: Option<u32>,
+    },
+    /// A task several agents will attempt, with the measure that ranks
+    /// them fixed before any of them starts.
+    ContestOpened {
+        contest: crate::ContestId,
+        task: String,
+        measure: String,
+        entrants: Vec<AgentId>,
+    },
+    ContestEntered {
+        contest: crate::ContestId,
+        agent: AgentId,
+    },
+    /// An attempt with passing evidence behind it.
+    ContestSubmitted {
+        contest: crate::ContestId,
+        agent: AgentId,
+        validation: String,
+        /// Rendered, because `EventKind` is comparable and a float is
+        /// not. The number itself lives in the contest record, which is
+        /// where anyone ranking things reads it.
+        score: String,
+    },
+    /// The answer, and whether the metric settled it or a person did.
+    ContestClosed {
+        contest: crate::ContestId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        winner: Option<AgentId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
+    },
+    /// A claim could not be satisfied and took a place in the queue.
+    /// `position` is how many waiters are ahead of it on an overlapping
+    /// resource; zero means it is next.
+    LeaseWaiting {
+        resource: crate::ResourceKey,
+        requester: AgentId,
+        position: usize,
+    },
+    /// A wait ended: the lease was taken, the caller gave up, its
+    /// connection went away, or a cycle was found.
+    LeaseWaitEnded {
+        resource: crate::ResourceKey,
+        requester: AgentId,
+        outcome: WaitOutcome,
+    },
+    /// A claim was refused because granting the wait would have closed a
+    /// cycle. The newcomer is always the victim: deterministic, and it
+    /// needs no priorities.
+    LeaseDeadlock {
+        cycle: Vec<crate::Blocked>,
     },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.

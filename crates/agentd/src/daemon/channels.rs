@@ -149,7 +149,7 @@ impl State {
     }
 
     /// Store, announce and journal a new channel.
-    fn install_channel(&mut self, channel: Channel, members: &[AgentRecord]) {
+    pub(super) fn install_channel(&mut self, channel: Channel, members: &[AgentRecord]) {
         self.channels.insert(channel.id.clone(), channel.clone());
         self.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
@@ -183,7 +183,7 @@ impl State {
     }
 
     /// A notice from the daemon to everyone in a channel.
-    fn tell_channel(&mut self, channel: &Channel, text: String) {
+    pub(super) fn tell_channel(&mut self, channel: &Channel, text: String) {
         self.send(
             "agentd".to_owned(),
             Destination::Channel(channel.id.clone()),
@@ -684,6 +684,7 @@ mod tests {
                         ..AgentSpec::default()
                     },
                     pid: None,
+                    session: None,
                 })
                 .await;
         }

@@ -89,6 +89,7 @@ fn main() -> Result<()> {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             },
         )? {
             Response::Agent { agent } => agent.id.to_string(),

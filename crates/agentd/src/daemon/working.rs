@@ -250,6 +250,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         daemon
@@ -346,6 +347,7 @@ mod warning_tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await
         {

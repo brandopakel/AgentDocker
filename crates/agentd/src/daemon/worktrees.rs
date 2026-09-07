@@ -458,6 +458,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         let branch = tmp.path().join("branch");
@@ -479,6 +480,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         std::fs::write(branch.join("file"), "two").unwrap();

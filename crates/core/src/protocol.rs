@@ -14,8 +14,8 @@ use serde_json::Value;
 use crate::handoff::HandoffBundle;
 use crate::journal::{Digest, SummarySource};
 use crate::{
-    AgentRecord, Change, DiscoveredProcess, Envelope, Event, JournalEntry, Lease, LeaseId,
-    LeaseMode, MessageId, VcsState,
+    AgentRecord, Change, ContestId, DiscoveredProcess, Envelope, Event, JournalEntry, Lease,
+    LeaseId, LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -166,6 +166,12 @@ pub enum Request {
         spec: crate::AgentSpec,
         #[serde(default)]
         pid: Option<u32>,
+        /// The multiplexer the *client* can see it is in. A registering
+        /// client runs inside the session it is reporting, so this is
+        /// first-hand — and on macOS it is the only exact answer, since
+        /// the daemon cannot read another process's environment there.
+        #[serde(default)]
+        session: Option<crate::multiplexer::Session>,
     },
     /// Mark an externally managed agent as finished.
     Deregister {
@@ -298,6 +304,74 @@ pub enum Request {
     Questions {
         #[serde(default)]
         agent: Option<String>,
+    },
+    /// What each agent is doing: working, idle, blocked on a named
+    /// resource held by named agents, starting, or finished. Derived
+    /// from the working set, never from terminal output.
+    Activity {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        /// Include agents that have finished.
+        #[serde(default)]
+        all: bool,
+    },
+    /// Who is waiting for what, oldest first.
+    Waiting,
+
+    /// Announce a task several agents will attempt, with the measure
+    /// that ranks them. The measure is fixed here and never changes.
+    ContestOpen {
+        agent: String,
+        #[serde(default)]
+        project: Option<String>,
+        task: String,
+        metric: crate::Metric,
+        /// Entrants beyond the opener; more may join while it is open.
+        #[serde(default)]
+        entrants: Vec<String>,
+        /// Open a channel for the entrants at the same time, which is
+        /// where a tie is argued out.
+        #[serde(default = "crate::protocol::yes")]
+        channel: bool,
+    },
+    /// Join an open contest.
+    ContestEnter {
+        agent: String,
+        contest: ContestId,
+    },
+    /// Submit an attempt: the validation that says it works, and the
+    /// number it scored. A `validation_seconds` contest ignores `score`
+    /// and takes the time from the evidence.
+    ContestSubmit {
+        agent: String,
+        contest: ContestId,
+        validation: String,
+        #[serde(default)]
+        score: Option<f64>,
+    },
+    /// Contests in a project; open ones unless `all`. One `contest` is
+    /// a lookup by id and ignores every other filter.
+    Contests {
+        #[serde(default)]
+        contest: Option<ContestId>,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        all: bool,
+    },
+    /// Declare the answer. Without `winner` the ranking decides, which
+    /// only works when it is not a tie.
+    ContestClose {
+        agent: String,
+        contest: ContestId,
+        #[serde(default)]
+        winner: Option<String>,
+        #[serde(default)]
+        resolution: Option<String>,
     },
 
     Claim {
@@ -535,6 +609,11 @@ fn default_ask_timeout() -> u64 {
     300
 }
 
+/// A contest wants a room by default: a tie has to be argued somewhere.
+pub(crate) fn yes() -> bool {
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -554,6 +633,10 @@ pub enum ErrorCode {
     /// The caller waited as long as it asked to and the thing it waited
     /// for did not happen. Nothing failed; nobody answered yet.
     Timeout,
+    /// Waiting for this would close a cycle: every agent in it is
+    /// waiting for something another member holds, so none could ever
+    /// proceed. `details.cycle` says who and what.
+    Deadlock,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -665,6 +748,19 @@ pub enum Response {
     },
     Questions {
         questions: Vec<crate::Question>,
+    },
+    Activity {
+        activity: Vec<crate::AgentActivity>,
+    },
+    Waiting {
+        waiting: Vec<crate::Waiter>,
+    },
+    Contest {
+        contest: crate::Contest,
+        standing: crate::Standing,
+    },
+    Contests {
+        contests: Vec<crate::Contest>,
     },
     Lease {
         lease: Lease,

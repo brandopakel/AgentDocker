@@ -13,9 +13,12 @@ mod teams;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use agentdocker_core::contest::Direction;
+use agentdocker_core::multiplexer::Session;
 use agentdocker_core::{
-    AgentRecord, AgentSpec, DiscoveredProcess, HUMAN, Lease, LeaseId, LeaseMode, MessageId,
-    Request, Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
+    Activity, AgentActivity, AgentRecord, AgentSpec, Contest, ContestId, DiscoveredProcess, HUMAN,
+    Lease, LeaseId, LeaseMode, Measure, MessageId, Metric, Request, Response, Standing, VcsState,
+    protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use agentdocker_core::{Change, ProjectRef};
 use anyhow::{Context, Result, bail};
@@ -442,6 +445,36 @@ enum Command {
         /// The answer.
         text: String,
     },
+    /// What each agent is doing: working, idle, or blocked on a named
+    /// resource held by a named agent.
+    Activity {
+        /// Only this agent.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Only agents in this project.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Include agents that have finished.
+        #[arg(long, short = 'a')]
+        all: bool,
+    },
+    /// Claims waiting for a resource, oldest first.
+    Waiting,
+    /// Contests: several agents attempt one task, ranked by a measure
+    /// declared before any of them starts.
+    Contest(ContestArgs),
+    /// List contests in a project.
+    Contests {
+        /// Only contests in this project; defaults to every project.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only contests this agent is in.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Include closed ones.
+        #[arg(long, short = 'a')]
+        all: bool,
+    },
     /// Questions waiting for an answer.
     Questions {
         /// Only the questions put to this agent; `--me` is the shorthand
@@ -574,6 +607,11 @@ struct RunArgs {
     /// still describe it.
     #[arg(long)]
     restore: bool,
+    /// Put the agent in a new `tmux` session instead of running it here,
+    /// so you can reach it with `tmux attach`. tmux owns the process, so
+    /// there is no captured log and the agent ends when its command does.
+    #[arg(long, conflicts_with_all = ["tty", "restore", "image_build"])]
+    in_pane: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -728,6 +766,81 @@ struct SendArgs {
     /// Raw JSON payload instead of text.
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
+}
+
+#[derive(Args)]
+struct ContestArgs {
+    #[command(subcommand)]
+    command: ContestCommand,
+}
+
+#[derive(Subcommand)]
+enum ContestCommand {
+    /// Announce a task and fix the measure that ranks the attempts.
+    Open {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        /// What everyone is attempting.
+        task: String,
+        /// What is compared: `seconds` (how long each entry's own
+        /// validation took, as the daemon timed it — nobody reports it)
+        /// or any other name, which entrants report themselves.
+        #[arg(long, default_value = "seconds")]
+        measure: String,
+        /// More is better, rather than less.
+        #[arg(long)]
+        higher_is_better: bool,
+        /// Differences smaller than this are ties for review to settle.
+        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        noise: f64,
+        /// Other entrants; more may join while it is open.
+        #[arg(long)]
+        entrant: Vec<String>,
+        /// Project to open it in; defaults to the opener's own.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Do not open a channel for the entrants.
+        #[arg(long)]
+        no_channel: bool,
+    },
+    /// Join an open contest.
+    Enter {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+    },
+    /// Submit an attempt: the validation that says it works, and — for a
+    /// reported measure — the number it scored.
+    Submit {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+        /// A passing validation of your own, from `agentdocker validate`.
+        validation: String,
+        /// The score, for a contest ranked by a reported measure. A
+        /// measure can legitimately be negative — a delta, a margin —
+        /// so a leading minus is a number here, not another flag.
+        #[arg(long, allow_negative_numbers = true)]
+        score: Option<f64>,
+    },
+    /// Show where a contest stands.
+    Show { contest: String },
+    /// Declare the answer. Without `--winner` the ranking decides, which
+    /// it can only do when the metric actually separated the entries.
+    Close {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+        /// Who won. Omit it to let the ranking decide, which it can only
+        /// do when the entries are further apart than the noise floor.
+        #[arg(long)]
+        winner: Option<String>,
+        /// Why, in a sentence. It goes to the channel and the journal,
+        /// which is where anyone reads back what was decided and on what
+        /// grounds.
+        #[arg(long)]
+        resolution: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -1037,7 +1150,21 @@ async fn main() -> Result<()> {
                     unadopted = processes;
                 }
             }
-            print_agents(&agents, &unadopted);
+            // What each one is doing comes from the same daemon in a
+            // second call rather than from the record, because it is
+            // derived: nothing durable says "blocked".
+            let activity = match client
+                .call(&Request::Activity {
+                    agent: None,
+                    project: project.as_deref().map(project_selector),
+                    all,
+                })
+                .await
+            {
+                Ok(Response::Activity { activity }) => activity,
+                _ => Vec::new(),
+            };
+            print_agents(&agents, &unadopted, &activity);
             if !unadopted.is_empty() {
                 eprintln!(
                     "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
@@ -1284,6 +1411,7 @@ async fn main() -> Result<()> {
                 isolate: args.isolate,
                 tty: args.tty,
                 restore: args.restore,
+                in_pane: args.in_pane,
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1322,10 +1450,16 @@ async fn main() -> Result<()> {
                 isolate: false,
                 tty: false,
                 restore: false,
+                in_pane: false,
             };
             let request = Request::Register {
                 spec,
                 pid: args.pid,
+                // Read here rather than by the daemon: this process is
+                // *inside* whatever session it is reporting, which is
+                // first-hand — and on macOS the only way to know, since
+                // a process's environment is not readable from outside.
+                session: agentdocker_host::multiplexer::own(),
             };
             if let Response::Agent { agent } = client.call(&request).await? {
                 println!("{}", agent.id);
@@ -1433,6 +1567,65 @@ async fn main() -> Result<()> {
             };
             if let Response::Sent { message, .. } = client.call(&request).await? {
                 println!("{message}");
+            }
+        }
+        Command::Activity {
+            agent,
+            project,
+            all,
+        } => {
+            let request = Request::Activity {
+                agent,
+                project: project.as_deref().map(project_selector),
+                all,
+            };
+            if let Response::Activity { activity } = client.call(&request).await? {
+                print_activity(&client, &activity).await;
+            }
+        }
+        Command::Waiting => {
+            if let Response::Waiting { waiting } = client.call(&Request::Waiting).await? {
+                if waiting.is_empty() {
+                    println!("nobody is waiting for a resource");
+                } else {
+                    let names = agent_names(&client).await;
+                    let rows: Vec<Vec<String>> = waiting
+                        .iter()
+                        .enumerate()
+                        .map(|(place, w)| {
+                            vec![
+                                (place + 1).to_string(),
+                                named(&names, &w.agent),
+                                format::resource(&w.resource),
+                                w.mode.to_string(),
+                                format::ago(w.since),
+                            ]
+                        })
+                        .collect();
+                    format::table(&["#", "AGENT", "RESOURCE", "MODE", "WAITING"], &rows);
+                }
+            }
+        }
+        Command::Contest(args) => contest(&client, args.command).await?,
+        Command::Contests {
+            project,
+            agent,
+            all,
+        } => {
+            let request = Request::Contests {
+                contest: None,
+                project: project.as_deref().map(project_selector),
+                agent,
+                all,
+            };
+            if let Response::Contests { contests } = client.call(&request).await? {
+                if contests.is_empty() {
+                    println!("no contests; open one with `agentdocker contest open`");
+                } else {
+                    for contest in &contests {
+                        println!("{}", contest.line());
+                    }
+                }
             }
         }
         Command::Questions { agent, me } => {
@@ -1806,13 +1999,272 @@ fn project_cell(agent: &AgentRecord) -> String {
     }
 }
 
+/// The contest verbs. Opening prints the new id and nothing else, as
+/// every other creating verb here does — `channel open`, `claim`,
+/// `checkpoint` — so `contest=$(agentdocker contest open …)` captures an
+/// id rather than a report. The rest print where the contest stands,
+/// because that is the only question anyone has about one.
+async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
+    // Opening is handled first because it answers differently: an id,
+    // not a report.
+    if let ContestCommand::Open {
+        agent,
+        task,
+        measure,
+        higher_is_better,
+        noise,
+        entrant,
+        project,
+        no_channel,
+    } = command
+    {
+        let request = Request::ContestOpen {
+            agent,
+            project: project.as_deref().map(project_selector),
+            task,
+            metric: Metric {
+                // `seconds` is the one the daemon takes itself, so it is
+                // the default: a number nobody can inflate.
+                measure: match measure.as_str() {
+                    "seconds" | "validation_seconds" => Measure::ValidationSeconds,
+                    name => Measure::Reported {
+                        name: name.to_owned(),
+                    },
+                },
+                direction: if higher_is_better {
+                    Direction::Higher
+                } else {
+                    Direction::Lower
+                },
+                noise,
+            },
+            entrants: entrant,
+            channel: !no_channel,
+        };
+        if let Response::Contest { contest, .. } = client.call(&request).await? {
+            println!("{}", contest.id);
+        }
+        return Ok(());
+    }
+    let request = match command {
+        // Handled above; the compiler still wants the arm.
+        ContestCommand::Open { .. } => unreachable!("opening returns early"),
+        ContestCommand::Enter { agent, contest } => Request::ContestEnter {
+            agent,
+            contest: ContestId::from(contest),
+        },
+        ContestCommand::Submit {
+            agent,
+            contest,
+            validation,
+            score,
+        } => Request::ContestSubmit {
+            agent,
+            contest: ContestId::from(contest),
+            validation,
+            score,
+        },
+        ContestCommand::Show { contest } => {
+            // A lookup by id, not a scan: the daemon reads the one
+            // document rather than every contest the project has had.
+            let request = Request::Contests {
+                contest: Some(ContestId::from(contest)),
+                project: None,
+                agent: None,
+                all: true,
+            };
+            let Response::Contests { contests } = client.call(&request).await? else {
+                return Ok(());
+            };
+            match contests.first() {
+                Some(found) => print_contest(client, found, &found.standing()).await,
+                None => bail!("the daemon found no such contest"),
+            }
+            return Ok(());
+        }
+        ContestCommand::Close {
+            agent,
+            contest,
+            winner,
+            resolution,
+        } => Request::ContestClose {
+            agent,
+            contest: ContestId::from(contest),
+            winner,
+            resolution,
+        },
+    };
+    if let Response::Contest { contest, standing } = client.call(&request).await? {
+        print_contest(client, &contest, &standing).await;
+    }
+    Ok(())
+}
+
+/// A contest as a table of attempts, best first, with where it stands.
+async fn print_contest(client: &Client, contest: &Contest, standing: &Standing) {
+    let names = agent_names(client).await;
+    println!("{}  {}", contest.id, contest.task);
+    println!(
+        "ranked by {} ({}), ties within {}{}",
+        contest.metric.measure.name(),
+        match contest.metric.direction {
+            Direction::Lower => "lower is better",
+            Direction::Higher => "higher is better",
+        },
+        contest.metric.noise,
+        if contest.metric.measure.measured() {
+            " — measured by the daemon, not reported"
+        } else {
+            " — reported by entrants, so review is the check"
+        }
+    );
+    if let Some(channel) = &contest.channel {
+        println!("channel: {channel}");
+    }
+    let ranked = contest.ranked();
+    if ranked.is_empty() {
+        println!(
+            "\nno passing entries yet from {} entrant(s)",
+            contest.entrants.len()
+        );
+    } else {
+        println!();
+        let rows: Vec<Vec<String>> = ranked
+            .iter()
+            .enumerate()
+            .map(|(place, entry)| {
+                vec![
+                    (place + 1).to_string(),
+                    named(&names, &entry.agent),
+                    format!("{}", entry.score),
+                    entry
+                        .head
+                        .as_deref()
+                        .unwrap_or("-")
+                        .chars()
+                        .take(7)
+                        .collect(),
+                    entry.validation.clone(),
+                    format::ago(entry.submitted_at),
+                ]
+            })
+            .collect();
+        format::table(
+            &["#", "AGENT", "SCORE", "HEAD", "EVIDENCE", "SUBMITTED"],
+            &rows,
+        );
+    }
+    println!();
+    match standing {
+        Standing::Open { entrants, entries } => {
+            println!("{entries} of {entrants} entrant(s) have submitted");
+        }
+        Standing::Leader {
+            agent,
+            score,
+            margin: Some(margin),
+        } => println!(
+            "{} leads with {score}, {margin} clear of the next",
+            named(&names, agent)
+        ),
+        Standing::Leader { agent, score, .. } => {
+            println!("{} is the only entry: {score}", named(&names, agent));
+        }
+        Standing::Tied { agents, score } => println!(
+            "tied at {score}, inside the noise floor: {}. The metric has said all it can — \
+             review them in the channel and close with an explicit winner.",
+            agents
+                .iter()
+                .map(|a| named(&names, a))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+        Standing::Settled { winner, resolution } => println!(
+            "settled: {} wins{}",
+            named(&names, winner),
+            resolution
+                .as_ref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
+    }
+}
+
+/// What each agent is doing, blocked ones first, with the reason spelled
+/// out: a blocked agent is blocked on a named resource held by a named
+/// agent, which is the whole point of deriving this rather than guessing.
+async fn print_activity(client: &Client, activity: &[AgentActivity]) {
+    if activity.is_empty() {
+        println!("no agents");
+        return;
+    }
+    let names = agent_names(client).await;
+    let rows: Vec<Vec<String>> = activity
+        .iter()
+        .map(|a| {
+            let (detail, since) = match &a.activity {
+                Activity::Blocked {
+                    resource,
+                    held_by,
+                    since,
+                } => (
+                    format!(
+                        "{} held by {}",
+                        format::resource(resource),
+                        if held_by.is_empty() {
+                            "nobody yet".to_owned()
+                        } else {
+                            held_by
+                                .iter()
+                                .map(|h| named(&names, h))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ),
+                    Some(*since),
+                ),
+                Activity::Working { since } | Activity::Idle { since } => {
+                    (String::new(), Some(*since))
+                }
+                Activity::Starting | Activity::Finished => (String::new(), None),
+            };
+            vec![
+                a.agent.short().to_owned(),
+                a.name.clone(),
+                a.activity.label().to_owned(),
+                detail,
+                since.map(format::ago).unwrap_or_else(|| "-".to_owned()),
+            ]
+        })
+        .collect();
+    format::table(&["AGENT ID", "NAME", "DOING", "DETAIL", "SINCE"], &rows);
+}
+
 /// Agents, then — dimmed — running agent processes nobody registered,
 /// shown under the name `adopt` would give them.
-fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
+fn print_agents(
+    agents: &[AgentRecord],
+    unadopted: &[DiscoveredProcess],
+    activity: &[AgentActivity],
+) {
+    let doing = |id: &agentdocker_core::AgentId| {
+        activity
+            .iter()
+            .find(|a| a.agent == *id)
+            .map(|a| format::activity_cell(&a.activity))
+            .unwrap_or_else(|| "-".to_owned())
+    };
+    let in_session =
+        agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    let session_cell = |session: Option<&Session>| {
+        session
+            .map(Session::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
-            vec![
+            let mut row = vec![
                 a.id.short().to_owned(),
                 a.spec.name.clone(),
                 project_cell(a),
@@ -1832,16 +2284,23 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
+                doing(&a.id),
+            ];
+            if in_session {
+                row.push(session_cell(a.session.as_ref()));
+            }
+            row.push(
                 a.pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".to_owned()),
-                format::ago(a.created_at),
-            ]
+            );
+            row.push(format::ago(a.created_at));
+            row
         })
         .collect();
     let first_unadopted = rows.len();
     rows.extend(unadopted.iter().map(|p| {
-        vec![
+        let mut row = vec![
             "-".to_owned(),
             p.default_name(),
             p.project
@@ -1853,20 +2312,27 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
             p.runtime.clone(),
             "-".to_owned(),
             "unadopted".to_owned(),
-            p.pid.to_string(),
+            "-".to_owned(),
+        ];
+        if in_session {
+            row.push(session_cell(p.session.as_ref()));
+        }
+        row.push(p.pid.to_string());
+        row.push(
             p.started_at
                 .map(format::ago)
                 .unwrap_or_else(|| "-".to_owned()),
-        ]
+        );
+        row
     }));
-    format::table_dimming(
-        &[
-            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "PID",
-            "CREATED",
-        ],
-        &rows,
-        |i| i >= first_unadopted,
-    );
+    let mut headers = vec![
+        "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "DOING",
+    ];
+    if in_session {
+        headers.push("LIVES IN");
+    }
+    headers.extend(["PID", "CREATED"]);
+    format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
 }
 
 /// One row per channel, with how many reviews it carries.
@@ -2010,6 +2476,9 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
 }
 
 fn print_processes(processes: &[DiscoveredProcess]) {
+    // The column only appears when something is in a multiplexer, so the
+    // usual listing stays as narrow as it was.
+    let anywhere = processes.iter().any(|p| p.session.is_some());
     let rows: Vec<Vec<String>> = processes
         .iter()
         .map(|p| {
@@ -2017,7 +2486,7 @@ fn print_processes(processes: &[DiscoveredProcess]) {
             if p.command.chars().count() > 60 {
                 command.push('…');
             }
-            vec![
+            let mut row = vec![
                 p.pid.to_string(),
                 p.runtime.clone(),
                 p.project
@@ -2031,14 +2500,25 @@ fn print_processes(processes: &[DiscoveredProcess]) {
                 p.started_at
                     .map(format::ago)
                     .unwrap_or_else(|| "-".to_owned()),
-                command,
-            ]
+            ];
+            if anywhere {
+                row.push(
+                    p.session
+                        .as_ref()
+                        .map(Session::describe)
+                        .unwrap_or_else(|| "-".to_owned()),
+                );
+            }
+            row.push(command);
+            row
         })
         .collect();
-    format::table(
-        &["PID", "RUNTIME", "PROJECT", "CWD", "STARTED", "COMMAND"],
-        &rows,
-    );
+    let mut headers = vec!["PID", "RUNTIME", "PROJECT", "CWD", "STARTED"];
+    if anywhere {
+        headers.push("LIVES IN");
+    }
+    headers.push("COMMAND");
+    format::table(&headers, &rows);
 }
 
 fn print_leases(leases: &[Lease]) {
