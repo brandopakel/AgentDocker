@@ -17,6 +17,7 @@ fn main() -> eframe::Result {
     let mut args = std::env::args_os().skip(1);
     let mut smoke_output = None;
     let mut expected_pid = None;
+    let mut smoke_deadline = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version" | "-V") => {
@@ -42,8 +43,20 @@ fn main() -> eframe::Result {
                         }),
                 );
             }
+            Some("--smoke-deadline") => {
+                smoke_deadline = Some(
+                    args.next()
+                        .and_then(|secs| secs.to_str()?.parse::<u64>().ok())
+                        .filter(|secs| (1..=600).contains(secs))
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or_else(|| usage_error("--smoke-deadline requires 1-600 seconds")),
+                );
+            }
             Some("--help" | "-h") => {
-                println!("agentdocker-ui [--version] [--smoke-test OUTPUT --expect-pid PID]");
+                println!(
+                    "agentdocker-ui [--version] [--smoke-test OUTPUT --expect-pid PID \
+                     --smoke-deadline SECONDS]"
+                );
                 return Ok(());
             }
             Some(value) if cfg!(target_os = "macos") && value.starts_with("-psn_") => (),
@@ -53,11 +66,11 @@ fn main() -> eframe::Result {
             }
         }
     }
-    if expected_pid.is_some() && smoke_output.is_none() {
-        usage_error("--expect-pid requires --smoke-test");
+    if smoke_output.is_none() && (expected_pid.is_some() || smoke_deadline.is_some()) {
+        usage_error("--expect-pid and --smoke-deadline require --smoke-test");
     }
     let (smoke, outcome) = match smoke_output {
-        Some(output) => match smoke::Smoke::new(output, expected_pid) {
+        Some(output) => match smoke::Smoke::new(output, expected_pid, smoke_deadline) {
             Ok((smoke, outcome)) => (Some(smoke), Some(outcome)),
             Err(error) => {
                 eprintln!("{error:#}");
