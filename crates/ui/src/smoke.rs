@@ -61,6 +61,7 @@ impl Smoke {
         let fixture = self
             .expected_pid
             .is_none_or(|pid| discovered.iter().any(|agent| agent.pid == pid));
+        let viewport = ctx.input(|input| input.viewport().clone());
         let screenshot = ctx.input(|input| {
             input.events.iter().find_map(|event| {
                 if let egui::Event::Screenshot { image, .. } = event {
@@ -121,6 +122,10 @@ impl Smoke {
             report["screenshot_requested"] = json!(self.requested);
             report["frames"] = json!(self.frames);
             report["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
+            report["viewport_visible"] = json!(viewport.visible());
+            report["viewport_occluded"] = json!(viewport.occluded);
+            report["viewport_minimized"] = json!(viewport.minimized);
+            report["viewport_focused"] = json!(viewport.focused);
             let write = (|| -> anyhow::Result<()> {
                 use std::io::Write;
                 agentdocker_host::dirs::private_file(
@@ -137,6 +142,14 @@ impl Smoke {
             );
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else if connected && runtimes > 0 && fixture && self.frames >= 3 && !self.requested {
+            eprintln!(
+                "graphical acceptance screenshot requested at {:?}: visible={:?}, occluded={:?}, minimized={:?}, focused={:?}",
+                self.started.elapsed(),
+                viewport.visible(),
+                viewport.occluded,
+                viewport.minimized,
+                viewport.focused
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }

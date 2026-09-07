@@ -68,7 +68,7 @@ fn main() -> eframe::Result {
         },
         None => (None, None),
     };
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("agentdocker")
             .with_inner_size([1100.0, 720.0])
@@ -85,6 +85,19 @@ fn main() -> eframe::Result {
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
+    if smoke.is_some() {
+        // Keep renderer failures observable in explicit fixture mode. Preserve
+        // the backend's recovery behavior and bound repetitive log messages.
+        let original = options.wgpu_options.on_surface_status.clone();
+        let count = std::sync::atomic::AtomicU64::new(0);
+        options.wgpu_options.on_surface_status = std::sync::Arc::new(move |status| {
+            let count = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if count <= 16 || count.is_power_of_two() {
+                eprintln!("graphical acceptance surface #{count}: {status:?}");
+            }
+            original(status)
+        });
+    }
     let result = eframe::run_native(
         "agentdocker",
         options,
