@@ -27,9 +27,9 @@ on Windows until a checked named-pipe/VM transport is implemented.
 
 Work still required before platform support can be claimed:
 
-- Native runtime acceptance of the new shared named-pipe listener/clients,
-  peer verification, bounded streams and desktop cancellation; these modules
-  cross-compile but do not yet constitute a running Windows daemon.
+- Integrate the shared named-pipe listener/clients into a full native daemon.
+  Native core/host CI has exercised peer verification, bounded streams,
+  admission and desktop cancellation; it does not constitute a running Windows product.
 - Native supervised processes, ConPTY terminal input/output/resize, same-user
   identity checks for stopping adopted processes, and restart recovery.
 - Windows provider configuration and desktop application inventory.
@@ -61,3 +61,10 @@ broad-read ACL refusal, desktop read deadlines and connection cancellation.
 
 The implementation follows [Microsoft's pipe security model](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
 and the [Tokio named-pipe API](https://docs.rs/tokio/latest/tokio/net/windows/named_pipe/struct.ServerOptions.html).
+
+Policy reload uses the volume serial number and 128-bit native file identifier,
+plus file change metadata, before reusing a previous policy. Last-write time
+and length alone missed an equal-size replacement in native Windows CI. Reads
+open regular files without following a final reparse point and compare the
+handle's stamp before and after the bounded read. The replacement regression
+sets identical last-write times explicitly; a timing delay is not its fix.

@@ -60,7 +60,9 @@ Socket load reports connect/write/read/decode failures by operation and retains 
 Managed workspace and relay campaigns use a private `0077` umask. This reproduced a helper-image defect: copied relay source retained root-owned `0600`, preventing the workspace UID from reading it. The image recipe now explicitly makes its embedded source readable (`0444`); host fixtures and credentials remain private. The original recipe failed with permission denied and the corrected recipe reported readiness in a real Podman VM before the fix was applied. Both engine CI relay jobs must pass on the final source.
 
 The engine-metadata target mutates real inspection JSON, verifies exit evidence
-and requires foreign identity/ownership changes to be refused. The token-filter
+and requires foreign identity/ownership changes to be refused. Both unmounted
+and scoped read-only workspace records are exercised; changing or removing
+required mount evidence must fail. The token-filter
 target creates an isolated daemon registry and tests the actual restricted
 request filter with valid, altered and revoked credentials, another agent,
 an outside-project peer and symlink escapes. It never dispatches generated
@@ -70,3 +72,8 @@ must set `AGENTDOCKER_FUZZ_ROOT` to a new private disposable directory and remov
 it afterwards. The driver sets an explicit 10-second per-input timeout and
 1024 MiB RSS limit, in addition to the campaign duration, and retains per-target
 logs and final statistics. Limits follow [libFuzzer's documented options](https://llvm.org/docs/LibFuzzer.html#options).
+
+CodeRabbit automatic review includes every base branch, including stacked
+fix/test/docs branches. A skipped or rate-limited review remains pending even
+when its status context is green. Draft PRs can run preliminary CI; final review
+and all applicable checks on the published head are required before integration.

@@ -11,9 +11,14 @@ pub struct Stamp {
     modified: SystemTime,
     #[cfg(unix)]
     identity: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    identity: (u64, [u8; 16]),
+    #[cfg(windows)]
+    changed: crate::files::Stamp,
 }
 
 impl Stamp {
+    #[cfg(unix)]
     fn of(meta: &fs::Metadata) -> io::Result<Self> {
         if !meta.is_file() || meta.len() > MAX_BYTES {
             return Err(io::Error::new(
@@ -29,6 +34,47 @@ impl Stamp {
             #[cfg(unix)]
             identity: (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec()),
         })
+    }
+
+    fn of_file(file: &fs::File) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            Self::of(&file.metadata()?)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+            };
+            let meta = file.metadata()?;
+            if !meta.is_file() || meta.len() > MAX_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "policy must be a regular file of at most 1 MiB",
+                ));
+            }
+            let mut id = FILE_ID_INFO::default();
+            // SAFETY: file owns the live handle and id is the correctly sized
+            // output buffer for FileIdInfo. No identity is inferred from time.
+            if unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle(),
+                    FileIdInfo,
+                    (&mut id as *mut FILE_ID_INFO).cast(),
+                    std::mem::size_of_val(&id) as u32,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self {
+                len: meta.len(),
+                modified: meta.modified()?,
+                identity: (id.VolumeSerialNumber, id.FileId.Identifier),
+                changed: crate::files::stamp(file)?,
+            })
+        }
     }
 }
 
@@ -63,24 +109,34 @@ pub fn read_changed(path: &Path, previous: Option<&Stamp>) -> io::Result<ReadPol
         }
         Err(error) => return Err(error),
     };
-    let stamp = Stamp::of(&meta)?;
+    #[cfg(unix)]
+    let initial = Stamp::of(&meta)?;
+    #[cfg(unix)]
+    if previous == Some(&initial) {
+        return Ok(ReadPolicy::Unchanged);
+    }
+    #[cfg(windows)]
+    if !meta.is_file() || meta.len() > MAX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "policy must be a regular file of at most 1 MiB",
+        ));
+    }
+    // Windows needs the native file ID and change time from an open handle:
+    // equal-size replacements can share their last-write timestamp. This also
+    // rejects a final reparse-point substitution on either platform.
+    let file = crate::files::open_regular(path)?;
+    let stamp = Stamp::of_file(&file)?;
+    #[cfg(unix)]
+    if stamp != initial {
+        return Err(io::Error::other("policy changed before reading"));
+    }
     if previous == Some(&stamp) {
         return Ok(ReadPolicy::Unchanged);
     }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
-    if Stamp::of(&file.metadata()?)? != stamp {
-        return Err(io::Error::other("policy changed before reading"));
-    }
     let mut text = String::new();
     (&file).take(MAX_BYTES + 1).read_to_string(&mut text)?;
-    if text.len() as u64 > MAX_BYTES || Stamp::of(&file.metadata()?)? != stamp {
+    if text.len() as u64 > MAX_BYTES || Stamp::of_file(&file)? != stamp {
         return Err(io::Error::other("policy changed during reading"));
     }
     Ok(ReadPolicy::Text { stamp, text })
@@ -108,6 +164,10 @@ mod tests {
         ));
         let replacement = dir.path().join("replacement");
         fs::write(&replacement, "other").unwrap();
+        // Equal length and deliberately equal mtime cannot hide a new file.
+        let original_time =
+            filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap());
+        filetime::set_file_mtime(&replacement, original_time).unwrap();
         fs::rename(&replacement, &path).unwrap();
         assert!(
             matches!(read_changed(&path, Some(&stamp)).unwrap(), ReadPolicy::Text {text, ..} if text == "other")
