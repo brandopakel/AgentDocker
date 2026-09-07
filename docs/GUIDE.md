@@ -502,7 +502,19 @@ Newest first. Only what changes how the product is used.
 
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
-  prefers the bundle.
+  prefers the bundle. The bundle is ad-hoc signed: it runs on the machine
+  that built it, and needs Developer ID signing and notarization before
+  it will open on anyone else's Mac.
+- A new mark: three agents, in the app's own project colours, meeting at
+  one host. Drawn on Apple's icon grid, and simplified below 24pt where
+  the connectors would otherwise be a smudge.
+- An event kind a client has never heard of is ignored instead of taking
+  the event stream down with it. Upgrading the daemon under a window
+  that is already open used to show it as disconnected.
+- The window fits what is in it: the initial size is clamped to the
+  monitor, the terminal grid is measured from the font you chose rather
+  than a hard-coded 13pt cell, and a table wider than the window scrolls
+  sideways instead of being cut off.
 - The console looks and behaves like a terminal: dark ground, monospace,
   a prompt on the floor, the up arrow for history, and a transcript that
   accumulates.

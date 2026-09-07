@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,6 +27,34 @@ case "$url" in
   *) cp "$TEST_ARCHIVE" "$output" ;;
 esac
 """
+
+
+def _read_png(path):
+    """Rows of RGBA bytes from one of our own PNGs.
+
+    Only handles what `scripts/icon.py` writes — 8-bit RGBA, one IDAT,
+    no row filtering — which is the point: a decoder that accepts more
+    would also accept a file the icon script never produces.
+    """
+    raw = path.read_bytes()
+    pos, size, idat = 8, 0, b""
+    while pos < len(raw):
+        length = struct.unpack(">I", raw[pos : pos + 4])[0]
+        kind = raw[pos + 4 : pos + 8]
+        body = raw[pos + 8 : pos + 8 + length]
+        if kind == b"IHDR":
+            size = struct.unpack(">I", body[:4])[0]
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + length
+    data = zlib.decompress(idat)
+    stride = size * 4
+    rows = []
+    for y in range(size):
+        start = y * (stride + 1)
+        assert data[start] == 0, "the icon script writes unfiltered rows"
+        rows.append(data[start + 1 : start + 1 + stride])
+    return rows, size
 
 
 class InstallerTests(unittest.TestCase):
@@ -131,6 +160,71 @@ class InstallerTests(unittest.TestCase):
                 width, height = struct.unpack(">II", head[16:24])
                 self.assertEqual(width, height, png.name)
                 self.assertIn(width, {16, 32, 64, 128, 256, 512, 1024}, png.name)
+
+    def test_icon_sits_on_apples_grid(self):
+        """macOS sizes every Dock icon against a 1024pt canvas whose body
+        is 824pt square and centred. An icon drawn edge to edge is not
+        rejected by anything — it just renders about a quarter larger
+        than everything beside it, which is why this is asserted rather
+        than eyeballed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["python3", str(ROOT / "scripts/icon.py"), tmp],
+                check=True,
+                capture_output=True,
+            )
+            pixels, size = _read_png(Path(tmp) / "icon-1024.png")
+            self.assertEqual(size, 1024)
+
+            def alpha(x, y):
+                return pixels[y][x * 4 + 3]
+
+            middle = size // 2
+            # 100pt of margin: the corner and the outer band are empty.
+            for x, y in [(0, 0), (size - 1, 0), (0, size - 1), (40, middle), (middle, 40)]:
+                self.assertEqual(alpha(x, y), 0, f"margin at {x},{y} is not clear")
+            # And the body fills what is left, edge and centre alike.
+            for x, y in [(middle, middle), (120, middle), (size - 120, middle)]:
+                self.assertEqual(alpha(x, y), 255, f"body at {x},{y} is not solid")
+
+    def test_the_smallest_icon_is_simplified_rather_than_reduced(self):
+        """At 16pt the body is thirteen pixels across, and three
+        connectors converging on a disc become one grey smudge there. So
+        below 24pt the connectors are dropped and the discs grow. The
+        check is that 16 and 32 really are different drawings rather than
+        the same one resampled: the grey the connectors are made of
+        covers far less of the small one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["python3", str(ROOT / "scripts/icon.py"), tmp],
+                check=True,
+                capture_output=True,
+            )
+            iconset = Path(tmp) / "AgentDocker.iconset"
+
+            def grey_share(name, size):
+                rows, _ = _read_png(iconset / name)
+                # The connectors and the host are the only greys, and
+                # they are the only thing near this value.
+                grey = sum(
+                    1
+                    for y in range(size)
+                    for x in range(size)
+                    if abs(rows[y][x * 4] - 0x8A) < 24
+                    and abs(rows[y][x * 4 + 1] - 0x93) < 24
+                    and abs(rows[y][x * 4 + 2] - 0xA5) < 24
+                    and rows[y][x * 4 + 3] > 200
+                )
+                return grey / (size * size)
+
+            small = grey_share("icon_16x16.png", 16)
+            large = grey_share("icon_32x32.png", 32)
+            self.assertGreater(large, 0.0, "the connectors are there at 32pt")
+            self.assertLess(
+                small,
+                large / 2,
+                f"16pt drops the connectors: {small:.3f} against {large:.3f}",
+            )
 
     @unittest.skipUnless(sys.platform == "darwin", "iconutil is macOS-only")
     def test_bundle_names_the_app_for_macos(self):

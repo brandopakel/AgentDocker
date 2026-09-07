@@ -1442,7 +1442,17 @@ impl eframe::App for App {
             // The journal grows downward; every other screen is a list
             // the reader scrolls from the top.
             let follow = self.screen == Screen::Journal;
-            egui::ScrollArea::vertical()
+            // Tables can be wider than the window — a project name, a
+            // long branch and a note do not shrink to fit — so they are
+            // reachable sideways rather than cut off at the edge. The
+            // screens that lay themselves out to the width they are
+            // given must not have that: an unbounded width would let
+            // the console's panel grow without limit.
+            let wide = matches!(
+                self.screen,
+                Screen::Agents | Screen::Runtimes | Screen::Leases | Screen::Journal
+            );
+            egui::ScrollArea::new([wide, true])
                 .stick_to_bottom(follow)
                 .show(ui, |ui| match self.screen {
                     Screen::Agents => self.agents_screen(ui),

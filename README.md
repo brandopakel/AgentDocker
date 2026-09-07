@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/agentdocker.png" alt="" width="128" height="128">
+  <img src="docs/images/agentdocker.png" alt="AgentDocker" width="128" height="128">
 </p>
 
 <h1 align="center">AgentDocker</h1>
@@ -11,7 +11,17 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/brandopakel/AgentDocker/actions/workflows/ci.yml"><img src="https://github.com/brandopakel/AgentDocker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/brandopakel/AgentDocker/releases"><img src="https://img.shields.io/github/v/release/brandopakel/AgentDocker?label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-lightgrey" alt="macOS and Linux">
+  <img src="https://img.shields.io/badge/rust-2024-orange" alt="Rust 2024 edition">
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
   <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="#the-docker-analogy">The model</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/PRODUCT-DIRECTION.md">Direction</a> ·
   <a href="https://github.com/brandopakel/AgentDocker/releases">Releases</a>
