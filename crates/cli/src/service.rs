@@ -537,16 +537,12 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             wait_for_daemon(&client).await?;
         }
         DaemonCommand::Reload => {
-            // Not a stop and a start: the running daemon starts its own
-            // replacement and hands it the terminals, so the agents
-            // never lose theirs. Nothing here manages the service,
-            // because the point is that the processes are untouched.
-            match client.call(&Request::Reload).await {
-                Ok(_) => {}
-                Err(err) => bail!("reload failed: {err:#}"),
-            }
-            wait_for_daemon(&client).await?;
-            println!("daemon accepted the reload request");
+            // A refused reload does not start a daemon or imply a completed upgrade.
+            client
+                .with_start_timeout(None)
+                .call(&Request::Reload)
+                .await
+                .context("reload failed")?;
         }
         DaemonCommand::Status => {
             let definition = if macos {
