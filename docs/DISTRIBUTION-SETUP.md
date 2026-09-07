@@ -55,10 +55,38 @@ nobody can open).
 
 ## Apple Developer ID: what it is actually for
 
-**It is not for the icon.** The icon is fixed, in software, and works on
+**It is not for the app icon.** That is fixed, in software, and works on
 any Mac: the app sets its own at runtime, and the bundle carries an
 `.icns`. Nothing about signing was ever involved in that, and this
 document exists partly so nobody concludes otherwise again.
+
+**It *is* for the notification icon, and that one is measured.**
+A notification wears the icon of the bundle that posted it, and every
+way of overriding that is closed — the `UserNotifications` framework
+refuses a spoofed sender, which is why `terminal-notifier` withdrew
+`-sender`, and an `osascript` notification belongs to Script Editor. So
+AgentDocker posts its own, from `AgentDocker.app`, and the daemon runs
+it in a one-shot `--notify` mode.
+
+That path is written and it does not work yet, for one reason:
+
+```
+$ AgentDocker.app/Contents/MacOS/agentdocker-ui --notify AgentDocker test
+notifications are not permitted: Notifications are not allowed for this application (1)
+```
+
+`UNErrorCodeNotificationsNotAllowed`. `UNUserNotificationCenter` will
+not register a bundle without a stable signing identity, and an ad-hoc
+signature has none:
+
+| | signature | notifications |
+|---|---|---|
+| an app whose notifications work | `TeamIdentifier=Q6L2SF6YDW` | register, prompt, deliver |
+| `AgentDocker.app` today | `Signature=adhoc`, `TeamIdentifier=not set` | refused, no prompt |
+
+The daemon therefore falls back to `osascript`, which delivers with the
+wrong icon. The ordering is deliberate: the right icon arrives the day
+the signature does, with nothing to change here.
 
 **It is for other people being able to open the app.** `scripts/bundle-macos.sh`
 signs ad-hoc (`codesign --sign -`). That is a real signature and it is
@@ -75,7 +103,9 @@ thing here: **strangers can run the download.** Concretely it enables
 - submitting it to Apple's notary service and stapling the ticket,
 - therefore a `.dmg` or a Homebrew cask that opens on a first
   double-click rather than through right-click → Open or
-  `xattr -d com.apple.quarantine`.
+  `xattr -d com.apple.quarantine`,
+- **and notifications that carry the AgentDocker mark**, which is the
+  more visible of the two if the only user is you.
 
 **What works without it, today:**
 

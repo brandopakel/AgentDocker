@@ -14,6 +14,10 @@ set -eu
 binary=${1:?usage: bundle-macos.sh <binary> <output-dir> [version]}
 outdir=${2:?usage: bundle-macos.sh <binary> <output-dir> [version]}
 version=${3:-0.1.0}
+# The CLI and daemon travel with the app: its Runtimes and Installation
+# screens shell out to `agentdocker`, and an app installed on its own
+# would find whatever happens to be on PATH, or nothing.
+bindir=$(dirname -- "$binary")
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 app="$outdir/AgentDocker.app"
@@ -25,10 +29,23 @@ iconutil --convert icns --output "$work/AgentDocker.icns" "$work/AgentDocker.ico
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-# Named for the product, not for the crate: this is the name the Dock
-# and the app switcher read.
-cp "$binary" "$app/Contents/MacOS/AgentDocker"
-chmod 0755 "$app/Contents/MacOS/AgentDocker"
+# The executable keeps its own name and the *bundle* carries the
+# product's, through CFBundleName below. Naming the executable
+# `AgentDocker` seemed tidier and was a trap: macOS volumes are
+# case-insensitive by default, so `Contents/MacOS/agentdocker` then
+# resolved to the GUI, and every window button that shells out to the
+# CLI ran the GUI with a CLI argument instead.
+cp "$binary" "$app/Contents/MacOS/agentdocker-ui"
+chmod 0755 "$app/Contents/MacOS/agentdocker-ui"
+for tool in agentdocker agentd; do
+    if [ -f "$bindir/$tool" ]; then
+        cp "$bindir/$tool" "$app/Contents/MacOS/$tool"
+        chmod 0755 "$app/Contents/MacOS/$tool"
+    else
+        echo "bundle-macos.sh: $tool is not beside $binary; the app will" >&2
+        echo "  fall back to whatever is on PATH" >&2
+    fi
+done
 cp "$work/AgentDocker.icns" "$app/Contents/Resources/AgentDocker.icns"
 
 # The four-character type and creator codes. Classic Mac OS metadata
@@ -43,7 +60,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
 	<key>CFBundleName</key><string>AgentDocker</string>
 	<key>CFBundleDisplayName</key><string>AgentDocker</string>
-	<key>CFBundleExecutable</key><string>AgentDocker</string>
+	<key>CFBundleExecutable</key><string>agentdocker-ui</string>
 	<key>CFBundleIdentifier</key><string>dev.agentdocker.desktop</string>
 	<key>CFBundleIconFile</key><string>AgentDocker</string>
 	<key>CFBundlePackageType</key><string>APPL</string>

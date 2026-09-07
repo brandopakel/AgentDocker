@@ -24,6 +24,24 @@ serde.workspace = true
 serde_json.workspace = true
 vt100.workspace = true
 
+# Posting a notification that carries our icon is only possible from
+# inside our own bundle: macOS attributes a notification to the bundle
+# of the process that posts it, and every way of overriding that has
+# been closed. So the app posts, and the daemon asks it to.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = { version = "0.3", features = [
+  "UNNotification",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationSettings",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+  "block2",
+] }
+
 [dev-dependencies]
 libc.workspace = true
 tempfile.workspace = true
