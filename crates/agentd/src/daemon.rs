@@ -91,6 +91,9 @@ const OVERLAP_SCAN: usize = 50_000;
 /// Rows an overlap query reads per hold of the state lock.
 const OVERLAP_PAGE: usize = 2_000;
 
+/// Maximum foreground wait while failed-launch supervision stops its owned group.
+const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
@@ -1212,8 +1215,7 @@ impl Daemon {
                 }
                 let supervision = supervisor::supervise(self.clone(), record.id, spawned);
                 if let Some(error) = failed {
-                    let _ =
-                        tokio::time::timeout(std::time::Duration::from_secs(5), supervision).await;
+                    let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                     return error;
                 }
                 match updated {

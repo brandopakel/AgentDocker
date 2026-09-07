@@ -283,7 +283,7 @@ impl Daemon {
         }
         let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
         if !persisted {
-            if tokio::time::timeout(std::time::Duration::from_secs(5), supervision)
+            if tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision)
                 .await
                 .is_err()
             {
