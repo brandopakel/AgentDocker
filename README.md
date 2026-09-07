@@ -99,7 +99,13 @@ agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
 agentdocker send --to reviewer "done"  # --from too
 ```
 
-An agent you did not start through the daemon (an interactive Claude Code session, say) joins with `agentdocker register --name claude-main --runtime claude-code --pid $$` and leaves with `agentdocker deregister`.
+An agent you did not start through the daemon (an interactive Claude Code session, say) joins with `agentdocker register` and leaves with `agentdocker deregister`. Run it *from inside* the agent — a hook, an MCP server, or the agent's own shell — so that `$$` is the agent's process and not the terminal that launched it:
+
+```sh
+agentdocker register --name claude-main --runtime claude-code --pid $$
+```
+
+From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdocker discover` to see what is running and `agentdocker adopt --all` to bring all of it in.
 
 ## Adapters
 

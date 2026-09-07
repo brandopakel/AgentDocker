@@ -935,7 +935,7 @@ fn tool_definitions() -> Vec<Value> {
             "description": "Everything known about one agent, by id, id prefix, or name.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "agent": { "type": "string" } },
+                "properties": { "agent": { "type": "string" }, "verbose": verbose.clone() },
                 "required": ["agent"],
                 "additionalProperties": false
             }
@@ -1276,6 +1276,26 @@ mod tests {
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
+
+        // Every tool that *reads* `verbose` must advertise it: the
+        // schemas here are `additionalProperties: false`, so a
+        // schema-driven client cannot send an option it was not shown,
+        // and a validator would reject it.
+        for name in [
+            "list_agents",
+            "inspect_agent",
+            "list_leases",
+            "list_channels",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is listed"));
+            assert_eq!(
+                tool["inputSchema"]["properties"]["verbose"]["type"], "boolean",
+                "{name} reads verbose, so it has to offer it"
+            );
+        }
     }
 
     #[tokio::test]
