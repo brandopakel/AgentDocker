@@ -79,8 +79,16 @@ fn main() -> eframe::Result {
         },
         None => (None, None),
     };
+    // Our mark, not egui's. eframe falls back to its own logo when the
+    // viewport has no icon and then calls `setApplicationIconImage` with
+    // it — which overrides the bundle's icon on the *running* Dock tile
+    // while Finder still shows ours. That is why the app looked right
+    // until you opened it.
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
+        .expect("the bundled icon is a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
             .with_title("AgentDocker")
             .with_inner_size([1100.0, 720.0])
             // Small enough to be honest about: below this the agent
@@ -110,4 +118,39 @@ fn main() -> eframe::Result {
 fn usage_error(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    /// The window must carry its own icon, and this is why.
+    ///
+    /// eframe falls back to *its* logo when the viewport has no icon,
+    /// and then calls `setApplicationIconImage` with it. macOS shows the
+    /// bundle's icon for an app that is not running and the process's
+    /// icon for one that is, so the app looked right in Finder and wore
+    /// egui's hexagon in the Dock the moment it opened. Nothing about
+    /// the bundle could have fixed that.
+    #[test]
+    fn the_window_carries_our_own_icon() {
+        let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
+            .expect("the embedded icon is a valid PNG");
+        assert_eq!(icon.width, 256, "big enough for a retina Dock tile");
+        assert_eq!(icon.height, 256);
+        assert_ne!(
+            icon,
+            egui::IconData::default(),
+            "an empty icon is the same as not setting one, and eframe \
+             would fall back to its own"
+        );
+
+        // And it is our mark rather than something else that happens to
+        // be 256 square: the tile is dark and the cube is blue, so the
+        // blue channel leads by a wide margin over the whole image.
+        let (mut red, mut blue) = (0u64, 0u64);
+        for pixel in icon.rgba.as_chunks::<4>().0 {
+            red += u64::from(pixel[0]);
+            blue += u64::from(pixel[2]);
+        }
+        assert!(blue > red * 2, "the mark is blue: {blue} against {red}");
+    }
 }

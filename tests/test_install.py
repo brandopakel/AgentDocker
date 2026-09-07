@@ -152,6 +152,25 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(width, height, "the mark is square")
         self.assertGreaterEqual(width, 512, "large enough for a 1024 icon")
 
+    def test_the_embedded_window_icon_matches_the_pipeline(self):
+        """The app sets its own icon at runtime — it has to, or eframe
+        sets its logo instead — from a PNG compiled into the binary. That
+        copy has to stay the one the iconset is built from, or the Dock
+        and Finder end up showing different marks again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["python3", str(ROOT / "scripts/icon.py"), tmp],
+                check=True,
+                capture_output=True,
+            )
+            fresh = (Path(tmp) / "AgentDocker.iconset/icon_256x256.png").read_bytes()
+            embedded = (ROOT / "crates/ui/src/icon.png").read_bytes()
+            self.assertEqual(
+                embedded,
+                fresh,
+                "crates/ui/src/icon.png is stale; regenerate it from scripts/icon.py",
+            )
+
     def test_icon_renders_every_size_the_iconset_needs(self):
         """The icon has a source rather than a stored file, so the source
         has to actually produce one. A PNG here is checked by its header
