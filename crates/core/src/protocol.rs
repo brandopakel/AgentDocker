@@ -166,6 +166,12 @@ pub enum Request {
         spec: crate::AgentSpec,
         #[serde(default)]
         pid: Option<u32>,
+        /// The multiplexer the *client* can see it is in. A registering
+        /// client runs inside the session it is reporting, so this is
+        /// first-hand — and on macOS it is the only exact answer, since
+        /// the daemon cannot read another process's environment there.
+        #[serde(default)]
+        session: Option<crate::multiplexer::Session>,
     },
     /// Mark an externally managed agent as finished.
     Deregister {

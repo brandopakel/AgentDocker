@@ -684,6 +684,7 @@ mod tests {
                         ..AgentSpec::default()
                     },
                     pid: None,
+                    session: None,
                 })
                 .await;
         }

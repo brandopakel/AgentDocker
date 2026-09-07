@@ -120,7 +120,7 @@ An agent you did not start through the daemon (an interactive Claude Code sessio
 agentdocker register --name claude-main --runtime claude-code --pid $$
 ```
 
-From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdocker discover` to see what is running and `agentdocker adopt --all` to bring all of it in.
+From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdocker discover` to see what is running and `agentdocker adopt --all` to bring all of it in. Either way, if the agent is living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session, that is recorded with it and shown in `ps`, so you can reach it with the tool that already owns its terminal.
 
 ## Adapters
 

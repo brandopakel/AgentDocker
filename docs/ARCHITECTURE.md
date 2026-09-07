@@ -174,7 +174,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restore` brings it back under the same id after a daemon restart |
 | `run_container {spec, build, options?}` | `agent` | host-only; retained image with durable identity/intent; opt-in checkout/scoped endpoint mounts, Podman VM transport, and bridge networking |
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
-| `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
+| `register {spec, pid?, session?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project; `session` is the multiplexer the client can see it is in, read first-hand from its own environment |
 | `deregister {agent}` | `agent` | marks an external agent exited |
 | `discover` | `processes` | running processes of known agent runtimes that no live agent claims by pid, from the daemon's last scan (every five seconds; a healthy scan older than four seconds is redone; failed scans return `unavailable` and retain the previous snapshot) |
 | `runtimes` | `runtimes {runtimes: RuntimeInfo[]}` | the agent tools on this machine — CLI and version, desktop apps, config directory, whether the MCP server and hooks are wired in — with the unregistered running processes of each |
@@ -581,7 +581,13 @@ What the app must not become is a multiplexer: panes, layouts, and tiling are he
 
 #### Terminal multiplexers
 
-We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter, row 25: recognise that a discovered agent is living in a `tmux` pane or a herdr session (from its process ancestry and environment), record that beside its record, show it in `ps` and the desktop app, and let `run --in-pane` place a managed agent in a pane so a human can attach with the tool they already use. That makes AgentDocker composable with whatever owns the terminal instead of competing for it.
+We should not write one. `tmux` exists, herdr exists, and a multiplexer is not the working set. What is worth having is an adapter — row 25 — and its first half is done: an agent living in a `tmux` pane, a `screen` window, a `zellij` session or a herdr session is recognised as such, and that is recorded beside its record, shown in `ps` and `discover`, and returned by `inspect`. That makes AgentDocker composable with whatever owns the terminal instead of competing for it: a person reaches the agent with the tool that already has it.
+
+**How it is known, and why that differs by platform.** A multiplexer tells its children who they are through the environment — `TMUX`/`TMUX_PANE`, `STY`/`WINDOW`, `ZELLIJ_SESSION_NAME`/`ZELLIJ_PANE_ID`, herdr's own — which is exact and names the pane. Reading it is where the platforms part. On Linux `/proc/<pid>/environ` is readable for the caller's own user, so the daemon can look for itself. **On macOS it is not**: `ps -E` returns only the command line for a process that is not the caller, whatever the user, so a daemon that only looked would find nothing on the platform we ship first. The answer is to have it reported first-hand instead — a client registering itself is running *inside* the session, so `register` carries what the client read of its own environment, and the daemon prefers what it can read itself, then what was reported, then ancestry. Ancestry — a `tmux` or `zellij` process between the agent and its shell — is the last resort: true, but it cannot name the pane, so it is recorded as `evidence: ancestry` rather than dressed up as the real thing.
+
+Verified against a real `screen` session on macOS: registering from inside one records `{kind: screen, session: "83350.agentdocker-test", pane: "0", evidence: environment}` and `ps` shows `screen:0`.
+
+**Not done: `run --in-pane`**, which would place a managed agent in a pane so the human can attach with their own tool. It is designed — the daemon would ask `tmux` to create the pane and then adopt the process by the pane's pid, since tmux owns the terminal and we own the coordination — but it is not written, because it cannot be verified without `tmux` installed and shipping an unexercised path is worse than shipping none.
 
 #### Token-lean output
 
@@ -591,7 +597,7 @@ Row 26 therefore makes our own output lean, and the first half is done: MCP tool
 
 #### Derived activity
 
-Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; an agent that has not acted through the daemon for two minutes is idle; an agent changing a file under a lease it holds is working. Row 24 derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
+Recognising a herdr session is row 25, above. Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; an agent that has not acted through the daemon for two minutes is idle; an agent changing a file under a lease it holds is working. Row 24 derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
 
 ### Phase 6 — Windows and federation
 
@@ -633,11 +639,11 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
 | 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
-| 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
+| 25 | 🔄 multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover` ✅; `run --in-pane` is designed but unwritten, because it cannot be verified without tmux installed | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 25 (multiplexer adapters), 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 15, 16, 28, `run --in-pane` (the rest of 25), the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 

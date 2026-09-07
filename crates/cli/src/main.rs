@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agentdocker_core::contest::Direction;
+use agentdocker_core::multiplexer::Session;
 use agentdocker_core::{
     Activity, AgentActivity, AgentRecord, AgentSpec, Contest, ContestId, DiscoveredProcess, HUMAN,
     Lease, LeaseId, LeaseMode, Measure, MessageId, Metric, Request, Response, Standing, VcsState,
@@ -1447,6 +1448,11 @@ async fn main() -> Result<()> {
             let request = Request::Register {
                 spec,
                 pid: args.pid,
+                // Read here rather than by the daemon: this process is
+                // *inside* whatever session it is reporting, which is
+                // first-hand — and on macOS the only way to know, since
+                // a process's environment is not readable from outside.
+                session: agentdocker_host::multiplexer::own(),
             };
             if let Response::Agent { agent } = client.call(&request).await? {
                 println!("{}", agent.id);
@@ -2241,10 +2247,17 @@ fn print_agents(
             .map(|a| format::activity_cell(&a.activity))
             .unwrap_or_else(|| "-".to_owned())
     };
+    let in_session =
+        agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    let session_cell = |session: Option<&Session>| {
+        session
+            .map(Session::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
-            vec![
+            let mut row = vec![
                 a.id.short().to_owned(),
                 a.spec.name.clone(),
                 project_cell(a),
@@ -2265,16 +2278,22 @@ fn print_agents(
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
                 doing(&a.id),
+            ];
+            if in_session {
+                row.push(session_cell(a.session.as_ref()));
+            }
+            row.push(
                 a.pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".to_owned()),
-                format::ago(a.created_at),
-            ]
+            );
+            row.push(format::ago(a.created_at));
+            row
         })
         .collect();
     let first_unadopted = rows.len();
     rows.extend(unadopted.iter().map(|p| {
-        vec![
+        let mut row = vec![
             "-".to_owned(),
             p.default_name(),
             p.project
@@ -2287,20 +2306,26 @@ fn print_agents(
             "-".to_owned(),
             "unadopted".to_owned(),
             "-".to_owned(),
-            p.pid.to_string(),
+        ];
+        if in_session {
+            row.push(session_cell(p.session.as_ref()));
+        }
+        row.push(p.pid.to_string());
+        row.push(
             p.started_at
                 .map(format::ago)
                 .unwrap_or_else(|| "-".to_owned()),
-        ]
+        );
+        row
     }));
-    format::table_dimming(
-        &[
-            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "DOING",
-            "PID", "CREATED",
-        ],
-        &rows,
-        |i| i >= first_unadopted,
-    );
+    let mut headers = vec![
+        "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "DOING",
+    ];
+    if in_session {
+        headers.push("LIVES IN");
+    }
+    headers.extend(["PID", "CREATED"]);
+    format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
 }
 
 /// One row per channel, with how many reviews it carries.
@@ -2444,6 +2469,9 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
 }
 
 fn print_processes(processes: &[DiscoveredProcess]) {
+    // The column only appears when something is in a multiplexer, so the
+    // usual listing stays as narrow as it was.
+    let anywhere = processes.iter().any(|p| p.session.is_some());
     let rows: Vec<Vec<String>> = processes
         .iter()
         .map(|p| {
@@ -2451,7 +2479,7 @@ fn print_processes(processes: &[DiscoveredProcess]) {
             if p.command.chars().count() > 60 {
                 command.push('…');
             }
-            vec![
+            let mut row = vec![
                 p.pid.to_string(),
                 p.runtime.clone(),
                 p.project
@@ -2465,14 +2493,25 @@ fn print_processes(processes: &[DiscoveredProcess]) {
                 p.started_at
                     .map(format::ago)
                     .unwrap_or_else(|| "-".to_owned()),
-                command,
-            ]
+            ];
+            if anywhere {
+                row.push(
+                    p.session
+                        .as_ref()
+                        .map(Session::describe)
+                        .unwrap_or_else(|| "-".to_owned()),
+                );
+            }
+            row.push(command);
+            row
         })
         .collect();
-    format::table(
-        &["PID", "RUNTIME", "PROJECT", "CWD", "STARTED", "COMMAND"],
-        &rows,
-    );
+    let mut headers = vec!["PID", "RUNTIME", "PROJECT", "CWD", "STARTED"];
+    if anywhere {
+        headers.push("LIVES IN");
+    }
+    headers.push("COMMAND");
+    format::table(&headers, &rows);
 }
 
 fn print_leases(leases: &[Lease]) {

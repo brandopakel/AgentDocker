@@ -349,6 +349,7 @@ mod tests {
                         ..AgentSpec::default()
                     },
                     pid: None,
+                    session: None,
                 })
                 .await;
         }
@@ -454,6 +455,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 pid: None,
+                session: None,
             })
             .await;
         let send = |to: &str| Request::Send {

@@ -152,6 +152,11 @@ pub struct DiscoveredProcess {
     pub project: Option<ProjectRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<DateTime<Utc>>,
+    /// The multiplexer this process lives in, where it lives in one:
+    /// `tmux`, `screen`, `zellij`, herdr. A person can attach to it with
+    /// the tool that already owns its terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<crate::multiplexer::Session>,
 }
 
 impl DiscoveredProcess {
@@ -216,6 +221,11 @@ pub struct AgentRecord {
     /// `true` when agentd spawned the process, `false` when an external
     /// process registered itself.
     pub managed: bool,
+    /// The multiplexer this agent lives in, where it lives in one. Set
+    /// when it registers or is adopted; `None` for a managed agent,
+    /// which lives in the daemon's own terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<crate::multiplexer::Session>,
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
@@ -240,6 +250,7 @@ impl AgentRecord {
             id: AgentId::generate(),
             spec,
             status: AgentStatus::Created,
+            session: None,
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,

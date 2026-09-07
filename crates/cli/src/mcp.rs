@@ -170,6 +170,11 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         .call(&Request::Register {
             spec,
             pid: Some(host_pid),
+            // Read here rather than by the daemon: this process is
+            // *inside* whatever session it is reporting, which is
+            // first-hand — and on macOS the only way to know, since
+            // a process's environment is not readable from outside.
+            session: agentdocker_host::multiplexer::own(),
         })
         .await
         .context("failed to register with agentd")?

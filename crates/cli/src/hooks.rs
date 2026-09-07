@@ -558,6 +558,11 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
         .call(Request::Register {
             spec,
             pid: host_pid(),
+            // Read here rather than by the daemon: this process is
+            // *inside* whatever session it is reporting, which is
+            // first-hand — and on macOS the only way to know, since
+            // a process's environment is not readable from outside.
+            session: agentdocker_host::multiplexer::own(),
         })
         .await?
     {

@@ -28,6 +28,8 @@ pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
 
+pub mod multiplexer;
+
 pub mod contest;
 pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
 

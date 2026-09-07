@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
 use tracing::{debug, error, info, warn};
 
-use agentdocker_host::{procinfo, project, vcs};
+use agentdocker_host::{multiplexer, procinfo, project, vcs};
 
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
@@ -815,7 +815,14 @@ impl Daemon {
         if let Some(error) = lock(&self.state).storage_failure() {
             return error;
         }
-        let response = self.handle_healthy(request).await;
+        // Boxed: `handle_healthy` is one match over every request the
+        // protocol has, so the future it returns is as large as the
+        // biggest arm plus everything the match holds live across an
+        // await. Left inline it lands on the caller's stack, and every
+        // caller that awaits a `handle` inside its own async fn pays for
+        // it again — which overflows a thread stack once the protocol is
+        // big enough. On the heap it costs one allocation per request.
+        let response = Box::pin(self.handle_healthy(request)).await;
         lock(&self.state).storage_failure().unwrap_or(response)
     }
 
@@ -899,7 +906,7 @@ impl Daemon {
                 options,
             } => self.run_container(spec, build, options).await,
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
-            Request::Register { spec, pid } => self.register(spec, pid).await,
+            Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
@@ -1182,7 +1189,12 @@ impl Daemon {
         }
     }
 
-    async fn register(&self, spec: AgentSpec, pid: Option<u32>) -> Response {
+    async fn register(
+        &self,
+        spec: AgentSpec,
+        pid: Option<u32>,
+        reported: Option<agentdocker_core::multiplexer::Session>,
+    ) -> Response {
         if pid.is_some_and(|pid| signal_pid(pid).is_none()) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -1198,6 +1210,11 @@ impl Daemon {
         record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;
         record.started_at = Some(Utc::now());
+        // An agent that registered itself was started by somebody, and
+        // that somebody may have been a multiplexer. Knowing which lets
+        // a person reach it with the tool that already owns its
+        // terminal.
+        record.session = pid.and_then(|pid| Self::session_of(pid, reported.clone()));
         let response = lock(&self.state).insert_record(record);
         // The reply is what a session waits for before its first edit, so
         // the checkout is watched by the time it goes out.
@@ -1217,6 +1234,20 @@ impl Daemon {
             }
         }
         response
+    }
+
+    /// Where a process lives, when that is somebody else's terminal.
+    /// Best-effort: reading another process's environment is refused on
+    /// macOS, so a `None` here means "we could not tell", never "it is
+    /// homeless".
+    fn session_of(
+        pid: u32,
+        reported: Option<agentdocker_core::multiplexer::Session>,
+    ) -> Option<agentdocker_core::multiplexer::Session> {
+        let by_pid: BTreeMap<u32, procinfo::Process> = procinfo::processes()
+            .map(|table| table.into_iter().map(|p| (p.pid, p)).collect())
+            .unwrap_or_default();
+        multiplexer::of(pid, &by_pid, reported)
     }
 
     async fn cleanup_isolate(&self, record: &AgentRecord) {
@@ -1526,8 +1557,12 @@ impl Daemon {
     async fn scan(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let mine = std::process::id();
         tokio::task::spawn_blocking(move || {
-            let mut found: Vec<DiscoveredProcess> = procinfo::processes()
-                .map_err(|e| e.to_string())?
+            let table = procinfo::processes().map_err(|e| e.to_string())?;
+            // Ancestry needs the whole table, and only agents are asked
+            // about, so it is built once rather than per candidate.
+            let by_pid: BTreeMap<u32, procinfo::Process> =
+                table.iter().map(|p| (p.pid, p.clone())).collect();
+            let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
                 .filter(|p| p.pid != mine)
                 .filter_map(|p| {
@@ -1541,6 +1576,7 @@ impl Daemon {
                         project: cwd.as_deref().map(project::discover),
                         cwd,
                         started_at: procinfo::start_time(p.pid),
+                        session: multiplexer::of(p.pid, &by_pid, None),
                     })
                 })
                 .collect();
@@ -1595,7 +1631,7 @@ impl Daemon {
             labels: BTreeMap::from([("adopted".to_owned(), "true".to_owned())]),
             ..AgentSpec::default()
         };
-        let response = self.register(spec, Some(pid)).await;
+        let response = self.register(spec, Some(pid), None).await;
         if matches!(response, Response::Agent { .. }) {
             let mut state = lock(&self.state);
             if let Some(index) = state.discovered.processes.iter().position(|p| p.pid == pid) {
@@ -3635,6 +3671,7 @@ mod tests {
             .handle(Request::Register {
                 spec: spec(name),
                 pid,
+                session: None,
             })
             .await
         {
@@ -5182,6 +5219,59 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn an_agent_says_which_multiplexer_it_lives_in_and_the_daemon_keeps_it() {
+        use agentdocker_core::multiplexer::{Evidence, Session};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        // A client registering itself is inside the session it reports,
+        // and on macOS that is the only exact answer: a process's
+        // environment is not readable from outside.
+        let reported = Session {
+            kind: "tmux".to_owned(),
+            session: Some("work".to_owned()),
+            pane: Some("%3".to_owned()),
+            evidence: Evidence::Environment,
+        };
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: spec("in-tmux"),
+                pid: Some(std::process::id()),
+                session: Some(reported.clone()),
+            })
+            .await
+        else {
+            panic!("register failed")
+        };
+        assert_eq!(
+            agent.session.as_ref().map(Session::describe).as_deref(),
+            Some("tmux:%3")
+        );
+        assert_eq!(agent.session, Some(reported));
+
+        // And it survives, because it is part of the record rather than
+        // something re-derived on every listing.
+        let Response::Agent { agent } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("inspect failed")
+        };
+        assert_eq!(agent.session.map(|s| s.kind), Some("tmux".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_process_is_in_no_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // No pid: nothing to look up, and nothing reported.
+        let agent = register(&daemon, "bodiless", None).await;
+        assert_eq!(agent.session, None);
+    }
+
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
         daemon
             .handle(Request::Claim {
@@ -5636,7 +5726,14 @@ mod tests {
     }
 
     async fn register_spec(daemon: &Arc<Daemon>, spec: AgentSpec) -> AgentRecord {
-        match daemon.handle(Request::Register { spec, pid: None }).await {
+        match daemon
+            .handle(Request::Register {
+                spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
@@ -5982,6 +6079,7 @@ mod tests {
             cwd: None,
             project: None,
             started_at: Some(started_at),
+            session: None,
         }
     }
 
@@ -6086,6 +6184,7 @@ mod tests {
                     ..AgentSpec::default()
                 },
                 Some(child.id()),
+                None,
             )
             .await;
         assert!(matches!(response, Response::Agent { .. }), "{response:?}");
@@ -6482,7 +6581,8 @@ mod tests {
                 daemon
                     .handle(Request::Register {
                         spec: spec("invalid"),
-                        pid: Some(pid)
+                        pid: Some(pid),
+                        session: None,
                     })
                     .await,
                 Response::Error {
