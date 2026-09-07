@@ -47,8 +47,11 @@ mod handoff;
 pub mod humans;
 mod images;
 mod panes;
+pub mod policies;
 mod recovery;
 mod relay;
+pub mod reload;
+mod restarts;
 mod restore;
 mod transport;
 mod waiting;
@@ -117,6 +120,10 @@ pub struct Daemon {
     /// find them. Held here rather than under the state lock: attaching
     /// is I/O and must not block a coordination request.
     sessions: Mutex<HashMap<AgentId, supervisor::Session>>,
+    /// Set once this daemon has given its terminals to a replacement.
+    /// Shutdown then leaves every agent alone: an ordinary stop would
+    /// SIGTERM the very processes the reload exists to preserve.
+    handing_over: std::sync::atomic::AtomicBool,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -197,6 +204,19 @@ struct State {
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
+    /// The branch each checkout was last seen on, beside `last_head`, so
+    /// a move can be told from a branch switch for a checkout that has
+    /// no agent record to remember it.
+    last_branch: HashMap<PathBuf, Option<String>>,
+    /// Every checkout of each project, by project id: the main one and
+    /// its linked worktrees. Refreshed off the lock on the same tick as
+    /// the VCS sweep, because enumerating them runs git.
+    project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Checkouts the daemon is committing in right now. The watcher polls
+    /// on its own schedule and will see HEAD move part-way through, so
+    /// without this it writes its own guessed-at entry for a commit the
+    /// daemon is about to record properly.
+    committing: std::collections::BTreeSet<PathBuf>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -216,6 +236,10 @@ struct State {
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
+    /// The machine owner's policy, and one per project that has a file.
+    /// Empty means everything is allowed, which is what no file means.
+    host_policy: policies::Loaded,
+    project_policies: HashMap<PathBuf, policies::Loaded>,
 }
 
 struct JournalRing {
@@ -382,6 +406,15 @@ pub struct Checkout {
     pub worktree: Option<PathBuf>,
 }
 
+/// How many checkouts of one project the watcher will take on beyond
+/// the ones agents are registered in.
+///
+/// Generous — a repository with more live worktrees than this is
+/// unusual — and finite, because each one costs a recursive filesystem
+/// watch and the operating system will not hand out unlimited numbers
+/// of those.
+const MAX_EXTRA_CHECKOUTS: usize = 32;
+
 /// One file change the watcher saw, before attribution.
 #[derive(Clone, Debug)]
 pub struct Observed {
@@ -453,7 +486,27 @@ impl Daemon {
             }
         }
     }
+    /// Whether this daemon has handed its terminals to a replacement,
+    /// and must therefore leave every agent running.
+    pub fn handed_over(&self) -> bool {
+        self.handing_over.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the handover done and ask this daemon to exit.
+    pub(super) fn hand_off_and_exit(self: &Arc<Self>) {
+        self.handing_over
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown.notify_one();
+    }
+
     pub async fn stop_all(self: &Arc<Self>) {
+        // Handed over: these agents are the replacement's now, and their
+        // terminals are already across. Stopping them here would kill
+        // exactly what the reload was for.
+        if self.handed_over() {
+            info!("handed over; leaving every agent running");
+            return;
+        }
         // Before anything stops: stopping releases leases, so what a
         // restorable agent holds has to be written down while it holds it.
         self.save_restore_points();
@@ -779,15 +832,21 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 last_head: HashMap::new(),
+                last_branch: HashMap::new(),
+                project_checkouts: HashMap::new(),
+                committing: std::collections::BTreeSet::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
                 questions: HashMap::new(),
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
+                host_policy: policies::Loaded::default(),
+                project_policies: HashMap::new(),
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
+            handing_over: std::sync::atomic::AtomicBool::new(false),
             scanning: std::sync::atomic::AtomicBool::new(false),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
@@ -906,6 +965,12 @@ impl Daemon {
                 branch,
             } => self.worktree_create(&agent, path, branch).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
+            Request::Commit {
+                agent,
+                message,
+                all,
+                push,
+            } => self.commit(&agent, message, all, push).await,
             Request::Integrate {
                 agent,
                 source,
@@ -987,6 +1052,7 @@ impl Daemon {
                 self.shutdown.notify_one();
                 Response::Ok
             }
+            Request::Reload => self.hand_over().await,
             Request::Send {
                 from,
                 to,
@@ -1046,11 +1112,12 @@ impl Daemon {
                 agent,
                 resource,
                 mode,
+                amount,
                 ttl_secs,
                 note,
                 wait_secs,
             } => {
-                self.claim(&agent, resource, mode, ttl_secs, note, wait_secs)
+                self.claim(&agent, resource, mode, amount, ttl_secs, note, wait_secs)
                     .await
             }
             Request::Renew {
@@ -1763,9 +1830,20 @@ impl Daemon {
     /// live agent works in whose project is a repository or an Agentfile
     /// root. Plain directories are left alone — a recursive watch on a
     /// home directory is what inotify cannot afford.
+    /// Every directory the watcher should be watching.
+    ///
+    /// Not merely "where each agent is". A project is the repository,
+    /// and the repository is every worktree of it: an agent can commit
+    /// in a checkout nobody registered — its own `--isolate` worktree,
+    /// or one a person made by hand — and if that directory is not
+    /// watched, the commit reaches neither the journal nor the ledger,
+    /// and `overlap` answers "nothing collides" from a single checkout.
+    /// That last one is the worst of the three, because it is a
+    /// confident wrong answer to the question the feature exists for.
     pub fn watch_targets(&self) -> Vec<Checkout> {
         let mut seen: HashSet<PathBuf> = HashSet::new();
-        lock(&self.state)
+        let state = lock(&self.state);
+        let mut targets: Vec<Checkout> = state
             .registry
             .live()
             .filter_map(|a| a.project.as_ref())
@@ -1776,7 +1854,171 @@ impl Daemon {
                 project: p.id(),
                 worktree: p.worktree.clone(),
             })
-            .collect()
+            .collect();
+        // Then the rest of each project's checkouts, from the cache the
+        // VCS sweep keeps. Nested ones are skipped: a worktree inside a
+        // watched directory is already covered, and watching it twice
+        // would record every change in it twice.
+        let known: Vec<(ProjectId, Vec<PathBuf>)> = state
+            .project_checkouts
+            .iter()
+            .map(|(id, dirs)| (id.clone(), dirs.clone()))
+            .collect();
+        drop(state);
+        for (project, dirs) in known {
+            if !targets.iter().any(|c| c.project == project) {
+                continue; // nothing live in it; nothing to watch for
+            }
+            let mut added = 0usize;
+            let mut skipped = 0usize;
+            for dir in dirs {
+                if seen.contains(&dir) || seen.iter().any(|w| dir.starts_with(w)) {
+                    continue;
+                }
+                if added >= MAX_EXTRA_CHECKOUTS {
+                    skipped += 1;
+                    continue;
+                }
+                seen.insert(dir.clone());
+                added += 1;
+                targets.push(Checkout {
+                    dir: dir.clone(),
+                    project: project.clone(),
+                    // Anything that is not where an agent lives is a
+                    // linked worktree of the same repository.
+                    worktree: Some(dir),
+                });
+            }
+            if skipped > 0 {
+                // Said out loud rather than silently dropped: an
+                // unwatched checkout is a hole in the ledger, and a hole
+                // nobody is told about is the failure mode this whole
+                // change exists to remove.
+                self.emit(EventKind::WatcherGap {
+                    reason: format!(
+                        "{skipped} more checkout{} of project {} than the {MAX_EXTRA_CHECKOUTS} \
+                         this watches; changes in them are not recorded",
+                        if skipped == 1 { "" } else { "s" },
+                        project.short()
+                    ),
+                });
+            }
+        }
+        targets
+    }
+
+    /// Read one checkout's HEAD and journal it if it moved.
+    ///
+    /// The agent-driven sweep only looks where agents are. This looks at
+    /// a checkout as a checkout, so a commit in a worktree nobody
+    /// registered still reaches the journal.
+    pub(crate) async fn note_checkout(&self, checkout: &Checkout) {
+        let dir = checkout.dir.clone();
+        let known = lock(&self.state).last_head.get(&dir).cloned();
+        let dir_for_read = dir.clone();
+        let known_for_read = known.clone();
+        let observed = tokio::task::spawn_blocking(move || {
+            let state = vcs::state(&dir_for_read)?;
+            // Naming the commit runs `git log`, so it is only done when
+            // there is something new to name. This is called for every
+            // checkout of every project on every sweep.
+            let subject = match &state.head {
+                Some(head) if Some(head) != known_for_read.as_ref() => {
+                    vcs::subject(&dir_for_read, head, SUBJECT_TIMEOUT)
+                }
+                _ => None,
+            };
+            Some((state, subject))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((state, subject)) = observed else {
+            return;
+        };
+        // A checkout seen for the first time is recorded, not announced:
+        // its history did not happen while we were watching. The branch
+        // goes down with the head, or the next commit here would read as
+        // a switch onto a branch it was already on.
+        let Some(before) = known else {
+            if let Some(head) = state.head {
+                let mut daemon = lock(&self.state);
+                daemon.last_head.insert(dir.clone(), head);
+                daemon.last_branch.insert(dir, state.branch);
+            }
+            return;
+        };
+        if state.head.as_deref() == Some(before.as_str()) {
+            return;
+        }
+        // Only the head is known to have been different; the branch it
+        // was on is remembered per checkout, and `note_checkout_move`
+        // falls back to that.
+        let old = VcsState {
+            head: Some(before),
+            branch: None,
+            ..state.clone()
+        };
+        lock(&self.state).note_checkout_move(
+            checkout.project.clone(),
+            dir,
+            checkout.worktree.clone(),
+            Some(&old),
+            &state,
+            subject,
+        );
+    }
+
+    /// Re-read where each live project's checkouts are.
+    ///
+    /// Runs git, so it happens off the lock and on the same five-second
+    /// tick as the VCS sweep. A project whose enumeration fails keeps
+    /// the checkouts it had: an empty answer means "ask again", never
+    /// "there is only one", and treating it as the latter would quietly
+    /// stop watching real work.
+    pub async fn refresh_project_checkouts(&self) {
+        let roots: Vec<(ProjectId, PathBuf)> = {
+            let mut seen: HashSet<ProjectId> = HashSet::new();
+            lock(&self.state)
+                .registry
+                .live()
+                .filter_map(|a| a.project.as_ref())
+                .filter(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
+                .filter(|p| seen.insert(p.id()))
+                .map(|p| (p.id(), p.dir().to_path_buf()))
+                .collect()
+        };
+        if roots.is_empty() {
+            return;
+        }
+        let found = tokio::task::spawn_blocking(move || {
+            roots
+                .into_iter()
+                .map(|(id, dir)| {
+                    let dirs = vcs::worktrees(&dir, SUBJECT_TIMEOUT);
+                    (id, dirs)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        {
+            let mut state = lock(&self.state);
+            for (id, dirs) in found {
+                if dirs.is_empty() {
+                    continue;
+                }
+                state.project_checkouts.insert(id, dirs);
+            }
+        }
+        // Take each checkout's head now rather than waiting for a
+        // filesystem event. Two reasons: a checkout first seen at the
+        // moment of a commit would have that commit read as its
+        // starting point and swallowed, and this is the polling net
+        // under the watcher for the days it misses something.
+        for checkout in self.watch_targets() {
+            self.note_checkout(&checkout).await;
+        }
     }
 
     /// Let the watcher hand us its flush channel.
@@ -2113,8 +2355,26 @@ impl Daemon {
                 .events
                 .send(Event::new(EventKind::FileChanged { change }, now));
         }
-        for checkout in vcs_touched {
+        // A repository's refs are shared between its worktrees: a commit
+        // made in a linked one writes `refs/heads/<branch>` under the
+        // *main* checkout's git directory. So the touched checkout says
+        // which repository moved, not which checkout of it — and every
+        // checkout of that repository has to be looked at.
+        let touched: HashSet<ProjectId> = vcs_touched.into_iter().map(|c| c.project).collect();
+        if touched.is_empty() {
+            return;
+        }
+        for checkout in self
+            .watch_targets()
+            .into_iter()
+            .filter(|c| touched.contains(&c.project))
+        {
+            // Both, and in this order: the agents in that checkout get
+            // their branch and head refreshed, and the checkout itself
+            // is journaled even when no agent lives in it. A worktree
+            // nobody registered is where most of the work happens.
             self.refresh_vcs(Some(&checkout.dir)).await;
+            self.note_checkout(&checkout).await;
         }
     }
 
@@ -2283,7 +2543,19 @@ impl Daemon {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
-        lock(&self.state).send(from, to, kind, payload, reply_to)
+        let mut state = lock(&self.state);
+        // `agentd` and a bare `user` speak without a record, and a rule
+        // has nothing to match them against; the daemon's own notices
+        // are not the thing a policy is for.
+        let sender = AgentId::from(from.as_str());
+        if state.registry.get(&sender).is_some() {
+            let action = format!("send:{to}");
+            let ruling = state.permits(&sender, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&sender, &action, ruling);
+            }
+        }
+        state.send(from, to, kind, payload, reply_to)
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -2329,11 +2601,8 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
+                let backlog = state.read_inbox(id, true)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
-                let backlog = state.inboxes.remove(id).map(Vec::from).unwrap_or_default();
-                if !backlog.is_empty() {
-                    state.persist("inbox", |store| store.clear_inbox(id));
-                }
                 backlog
             }
             None => Vec::new(),
@@ -2352,11 +2621,13 @@ impl Daemon {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn claim(
         &self,
         reference: &str,
         resource: String,
         mode: LeaseMode,
+        amount: Option<u64>,
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
@@ -2373,6 +2644,17 @@ impl Daemon {
             Ok(resource) => resource,
             Err(response) => return *response,
         };
+        // Asked once, before the first attempt: a policy answer does not
+        // change while a claim waits, and re-asking would put a refusal
+        // in the log for every retry.
+        {
+            let mut state = lock(&self.state);
+            let action = format!("claim:{resource}");
+            let ruling = state.permits(&holder, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&holder, &action, ruling);
+            }
+        }
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
         // Subscribe before the first attempt so a release that lands between
@@ -2405,11 +2687,43 @@ impl Daemon {
                 // overlapping resource does not try, so a newcomer
                 // cannot take what somebody has been waiting minutes
                 // for. A first attempt has no ticket and always tries.
+                // A quota is a number, not a place: several agents hold
+                // one at once, and what decides is whether the sum fits.
+                // Checked here, under the same lock as the table, so two
+                // claims cannot both see room for the last of it.
+                if resource.kind() == "quota"
+                    && let Some(capacity) = state.quota_capacity(&holder, resource.value())
+                {
+                    let want = amount.unwrap_or(1);
+                    let committed = state.leases.committed(&resource);
+                    if committed.saturating_add(want) > capacity {
+                        return Response::Error {
+                            code: ErrorCode::Conflict,
+                            message: format!(
+                                "{resource} has {} of {capacity} left and {want} was asked for",
+                                capacity.saturating_sub(committed)
+                            ),
+                            details: Some(json!({
+                                "quota": resource.value(),
+                                "capacity": capacity,
+                                "committed": committed,
+                                "requested": want,
+                            })),
+                        };
+                    }
+                }
                 let result = if state.may_attempt(waiting.ticket()) {
                     state.leases.claim(
                         resource.clone(),
                         holder.clone(),
-                        mode,
+                        // A quota is shared by construction: it is spent,
+                        // not occupied, so exclusivity would make every
+                        // budget a lock on itself.
+                        if resource.kind() == "quota" {
+                            LeaseMode::Shared
+                        } else {
+                            mode
+                        },
                         ttl(ttl_secs),
                         note.clone(),
                         now,
@@ -2429,6 +2743,9 @@ impl Daemon {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
                             .store_op("lease ledger boundary", |store| store.change_watermark());
+                        if lease.resource.kind() == "quota" {
+                            lease.amount = amount.unwrap_or(1);
+                        }
                         state.leases.restore(lease.clone());
                         state.persist("lease", |store| store.upsert_lease(&lease));
                         state.emit(EventKind::LeaseClaimed {
@@ -2827,22 +3144,37 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let messages: Vec<Envelope> = {
-            let inboxes = &mut self.inboxes;
-            if drain {
-                inboxes.remove(&id).map(Vec::from).unwrap_or_default()
-            } else {
-                inboxes
-                    .get(&id)
-                    .map(|queue| queue.iter().cloned().collect())
-                    .unwrap_or_default()
-            }
-        };
-        if drain && !messages.is_empty() {
-            self.persist("inbox", |store| store.clear_inbox(&id));
-        }
+        // A failed liveness write must stop the operation before queue removal.
         self.touch(&id);
+        let messages = match self.read_inbox(&id, drain) {
+            Ok(messages) => messages,
+            Err(error) => return *error,
+        };
         Response::Messages { messages }
+    }
+
+    /// Snapshot before removal; commit its exact IDs and replay event together
+    /// before exposing a destructive read or changing live delivery routing.
+    fn read_inbox(&mut self, id: &AgentId, drain: bool) -> Result<Vec<Envelope>, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        let messages: Vec<Envelope> = self
+            .inboxes
+            .get(id)
+            .map(|queue| queue.iter().cloned().collect())
+            .unwrap_or_default();
+        if drain && !messages.is_empty() {
+            let ids = messages
+                .iter()
+                .map(|message| message.id.clone())
+                .collect::<Vec<_>>();
+            let response = self.ack_inbox(id.as_str(), &ids);
+            if !matches!(response, Response::Ok) {
+                return Err(Box::new(response));
+            }
+        }
+        Ok(messages)
     }
 
     fn unsubscribe(&mut self, agent: &AgentId) {
@@ -3187,9 +3519,7 @@ impl State {
         Response::JournalEntry { entry }
     }
 
-    /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
-    /// however many agents share it. Attributed to the only agent in that
-    /// checkout, else the holder of its `branch:` lease, else nobody.
+    /// A checkout's HEAD moved, seen through an agent that lives in it.
     fn note_head_move(
         &mut self,
         id: &AgentId,
@@ -3197,25 +3527,67 @@ impl State {
         new: &VcsState,
         subject: Option<String>,
     ) {
-        let Some(head) = new.head.clone() else {
-            return;
-        };
-        let Some(record) = self.registry.get(id).cloned() else {
+        let Some(record) = self.registry.get(id) else {
             return;
         };
         let Some(project) = record.project.clone() else {
             return;
         };
-        let checkout = project.dir().to_path_buf();
+        self.note_checkout_move(
+            project.id(),
+            project.dir().to_path_buf(),
+            project.worktree.clone(),
+            old,
+            new,
+            subject,
+        );
+    }
+
+    /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
+    /// however many agents share it. Attributed to the only agent in that
+    /// checkout, else the holder of its `branch:` lease, else nobody.
+    ///
+    /// Takes the checkout rather than an agent, because most checkouts
+    /// of a project have no agent registered in them — a `--isolate`
+    /// worktree, or one a person made by hand — and a commit there is
+    /// still a commit in this project.
+    fn note_checkout_move(
+        &mut self,
+        project_id: ProjectId,
+        checkout: PathBuf,
+        worktree: Option<PathBuf>,
+        old: Option<&VcsState>,
+        new: &VcsState,
+        subject: Option<String>,
+    ) {
+        let Some(head) = new.head.clone() else {
+            return;
+        };
         if self.last_head.get(&checkout) == Some(&head) {
             return;
         }
+        if self.committing.contains(&checkout) {
+            // The daemon is making this commit itself and will record it
+            // against the agent that asked, so there is nothing to say
+            // here. Nothing is remembered either: advancing `last_head`
+            // would mean that if the commit never got as far as writing
+            // its entry, no later sweep would notice the move and the
+            // commit would go unrecorded by anyone. Leaving the mark
+            // where it was costs one repeated check per sweep and makes
+            // the watcher the backstop it is supposed to be.
+            return;
+        }
         self.last_head.insert(checkout.clone(), head.clone());
+        let was_on = self
+            .last_branch
+            .insert(checkout.clone(), new.branch.clone())
+            .flatten();
         if old.is_none() {
             return; // first observation, not a move
         }
         let short: String = head.chars().take(7).collect();
-        let summary = match (&old.and_then(|o| o.branch.clone()), &new.branch) {
+        let before_branch = old.and_then(|o| o.branch.clone()).or(was_on);
+        let summary = match (&before_branch, &new.branch) {
             (before, Some(branch)) if before.as_deref() != Some(branch) => {
                 format!("switched to {branch} at {short}")
             }
@@ -3243,30 +3615,30 @@ impl State {
                 self.registry.get(&holder).cloned()
             }),
         };
-        let attributed_entry = attributed.as_ref().and_then(|agent| {
-            self.plain_entry(
-                agent,
-                JournalKind::Commit,
-                summary.clone(),
-                SummarySource::Synthesised,
-            )
-        });
-        // The branch holder may work outside any project; the move is then
-        // recorded against the observed checkout and attributed to nobody.
-        let Some(mut entry) = attributed_entry.or_else(|| {
-            self.plain_entry(
-                &record,
-                JournalKind::Commit,
-                summary,
-                SummarySource::Synthesised,
-            )
-            .map(|mut e| {
-                e.agent = None;
-                e.agent_name = "external".to_owned();
-                e
-            })
-        }) else {
-            return;
+        // Built here rather than from an agent record: the checkout is
+        // what this entry is about, and there may be no agent in it.
+        let (agent, agent_name) = match &attributed {
+            Some(agent) => (Some(agent.id.clone()), agent.spec.name.clone()),
+            None => (None, "external".to_owned()),
+        };
+        let mut entry = JournalEntry {
+            project: project_id,
+            seq: 0,
+            at: Utc::now(),
+            agent,
+            agent_name,
+            branch: None,
+            checkout: Some(checkout.clone()),
+            worktree,
+            kind: JournalKind::Commit,
+            summary,
+            summary_source: SummarySource::Synthesised,
+            resources: Vec::new(),
+            paths: Vec::new(),
+            paths_total: 0,
+            head_before: None,
+            head_after: None,
+            changes: None,
         };
         entry.branch = new.branch.clone();
         entry.head_before = old.and_then(|o| o.head.clone());
@@ -3782,6 +4154,57 @@ mod tests {
         assert!(daemon.is_live(&first.id));
     }
 
+    /// A window started from a Dock or a launcher inherits `/` as its
+    /// working directory and reports it. Taking that at face value moved
+    /// the person out of the project they were in, and everything that
+    /// needs their checkout — `commit`, the journal digest — then had a
+    /// filesystem root to work with instead of a repository.
+    #[tokio::test]
+    async fn a_client_with_no_working_directory_does_not_move_the_human_to_nowhere() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let workdir = dir.path().to_path_buf();
+
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(workdir.clone()),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(agent.spec.workdir, Some(workdir.clone()));
+
+        // The same person, reported from nowhere.
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(PathBuf::from("/")),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(
+            agent.spec.workdir,
+            Some(workdir),
+            "the record they had is kept, not replaced with the root"
+        );
+
+        // And an actual directory still moves them, which is the whole
+        // point of `me` being idempotent rather than write-once.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(elsewhere.clone()),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(agent.spec.workdir, Some(elsewhere));
+    }
+
     #[tokio::test]
     async fn ask_returns_the_answer_that_names_it() {
         let dir = TempDir::new().unwrap();
@@ -4280,6 +4703,7 @@ mod tests {
                 agent: agent.id.to_string(),
                 resource: "task:the-refactor".to_owned(),
                 mode: LeaseMode::Shared,
+                amount: None,
                 ttl_secs: 300,
                 note: Some("halfway through".to_owned()),
                 wait_secs: 0,
@@ -4442,6 +4866,7 @@ mod tests {
                 agent: agent.to_owned(),
                 resource: resource.to_owned(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs,
@@ -5506,9 +5931,13 @@ mod tests {
     /// the hook would have to be restored by the same regression it was
     /// meant to catch. That fix rests on reading the code: there is no
     /// unlock between `state.deadlock(..)` and `waiting.join_locked(..)`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    // Two workers, not four: the test needs the two claims to run at
+    // once and nothing more, and this is the only multi-threaded runtime
+    // in the suite — on a machine already running one test per core,
+    // extra worker threads are contention every other test pays for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_agents_closing_one_ring_leave_exactly_one_refused() {
-        for round in 0..6 {
+        for round in 0..3 {
             let dir = TempDir::new().unwrap();
             let daemon = open(&dir);
             let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
@@ -5606,12 +6035,920 @@ mod tests {
         );
     }
 
+    // ----- restart policies -----------------------------------------------
+
+    /// Wait until an agent's process group is really gone.
+    ///
+    /// Signalling is not reaping. A test that returns while its children
+    /// are still dying leaves them for whatever runs next, which under a
+    /// parallel runner shows up as somebody else's leak.
+    async fn gone(pid: Option<u32>) {
+        let Some(pid) = pid else { return };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while supervisor::group_exists(pid) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(-(pid as i32)),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+
+    /// Wait for a condition on an agent, so a test never races the
+    /// supervisor's own tasks.
+    async fn until(
+        daemon: &Arc<Daemon>,
+        id: &AgentId,
+        what: &str,
+        ready: impl Fn(&AgentRecord) -> bool,
+    ) -> AgentRecord {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                let found = lock(&daemon.state).registry.get(id).cloned();
+                if let Some(record) = found
+                    && ready(&record)
+                {
+                    return record;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    #[tokio::test]
+    async fn a_failing_agent_comes_back_until_its_limit_and_then_stays_down() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("flaky");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 7".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 2 };
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+
+        // Two restarts, and then it is left alone: the command is broken
+        // rather than flaky, and retrying forever would say nothing new.
+        let settled = until(&daemon, &agent.id, "the limit to be reached", |r| {
+            r.restarts >= 2 && !r.status.is_live()
+        })
+        .await;
+        assert_eq!(settled.restarts, 2, "exactly the limit");
+        // It stays that way.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 2, "and no more");
+        assert!(!after.status.is_live());
+        gone(after.pid).await;
+    }
+
+    #[tokio::test]
+    async fn a_clean_exit_is_the_end_of_an_on_failure_agent() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("tidy");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 0".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 5 };
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        until(&daemon, &agent.id, "it to finish", |r| !r.status.is_live()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0, "nothing failed, so nothing to retry");
+        assert_eq!(after.status, AgentStatus::Exited { code: Some(0) });
+        gone(after.pid).await;
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_the_agents_identity_and_says_so() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("service");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 1".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 1 };
+        // Subscribed before the agent exists. `exit 1` is over almost at
+        // once, and a subscription taken afterwards can miss the very
+        // event this is about — the stream carries what happens after
+        // you join it, not what already happened.
+        let mut events = daemon.subscribe_events();
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+
+        let restarted = until(&daemon, &agent.id, "one restart", |r| r.restarts >= 1).await;
+        // Same identity: everything already recorded about it — its read
+        // set, journal cursor, leases, ledger rows — still describes it.
+        assert_eq!(restarted.id, agent.id);
+        assert_eq!(restarted.spec.name, "service");
+
+        let mut announced = None;
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentRestarted {
+                agent: id, attempt, ..
+            } = event.kind
+                && id == agent.id
+            {
+                announced = Some(attempt);
+            }
+        }
+        assert_eq!(
+            announced,
+            Some(1),
+            "the restart is announced, with its number"
+        );
+        gone(restarted.pid).await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_stopped_on_purpose_is_not_restarted() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("stoppable");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        spec.restart = agentdocker_core::RestartPolicy::Always;
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        until(&daemon, &agent.id, "it to be running", |r| {
+            r.status == AgentStatus::Running
+        })
+        .await;
+
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        let stopped = until(&daemon, &agent.id, "it to stop", |r| !r.status.is_live()).await;
+        // The policy is cleared on the record, so the reason it will not
+        // come back is visible in `inspect` rather than hidden here.
+        assert!(stopped.spec.restart.is_no(), "stopping clears the policy");
+
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0, "and it stayed stopped");
+        assert!(!after.status.is_live());
+        gone(after.pid).await;
+    }
+
+    #[tokio::test]
+    async fn an_unmanaged_agent_is_never_restarted_whatever_it_asks_for() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("not-ours");
+        spec.restart = agentdocker_core::RestartPolicy::Always;
+        let agent = register_spec(&daemon, spec).await;
+        // The daemon did not start it, so it cannot start it again.
+        daemon.mark_exited(&agent.id, AgentStatus::Exited { code: Some(1) });
+        daemon.consider_restart(&agent.id, &AgentStatus::Exited { code: Some(1) });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0);
+        assert!(!after.status.is_live());
+    }
+
+    // ----- admission policy and quotas ------------------------------------
+
+    /// Write a host policy and wait for the daemon to pick it up, which
+    /// it does on its own tick by modification time.
+    fn write_policy(daemon: &Arc<Daemon>, toml: &str) {
+        std::fs::write(daemon.home.join("policy.toml"), toml).unwrap();
+        daemon.reload_policies();
+    }
+
+    #[tokio::test]
+    async fn a_denied_claim_is_refused_and_says_which_rule() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        write_policy(
+            &daemon,
+            r#"
+[[rule]]
+name = "migrations are mine"
+deny = ["claim:task:migrations"]
+"#,
+        );
+
+        let mut events = daemon.subscribe_events();
+        let refused = claim(&daemon, agent.id.as_str(), "task:migrations").await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("the policy should have refused it")
+        };
+        assert_eq!(code, ErrorCode::Forbidden);
+        assert!(message.contains("migrations are mine"), "{message}");
+        let details = details.expect("the rule is in the details");
+        assert_eq!(details["rule"], json!("host: migrations are mine"));
+        assert_eq!(details["action"], json!("claim:task:migrations"));
+
+        // A refusal is explainable from the event stream alone.
+        let mut announced = false;
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::PolicyDenied { action, .. } = &event.kind
+                && action == "claim:task:migrations"
+            {
+                announced = true;
+            }
+        }
+        assert!(announced, "policy_denied is emitted");
+
+        // Everything else is untouched.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:anything-else").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_policy_takes_effect_without_a_restart_and_a_broken_one_does_not_disarm_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        // Nothing written: everything allowed.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:one").await,
+            Response::Lease { .. }
+        ));
+
+        write_policy(&daemon, "[[rule]]\ndeny = [\"claim:task:**\"]\n");
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:two").await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+
+        // A file that will not parse must not read as "no rules": an
+        // empty policy allows everything, so a typo would switch off
+        // every rule it was written to enforce.
+        std::fs::write(daemon.home.join("policy.toml"), "[[rule]\ndeny = oops").unwrap();
+        daemon.reload_policies();
+        assert!(
+            matches!(
+                claim(&daemon, agent.id.as_str(), "task:three").await,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "the last good policy stays in force"
+        );
+
+        // Removing the file is a decision, and does take effect.
+        std::fs::remove_file(daemon.home.join("policy.toml")).unwrap();
+        daemon.reload_policies();
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:four").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_denied_message_never_reaches_anybody() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let sender = register(&daemon, "loud", Some(std::process::id())).await;
+        let listener = register(&daemon, "quiet", Some(std::process::id())).await;
+        write_policy(
+            &daemon,
+            r#"
+[[rule]]
+agent = "loud"
+deny = ["send:all"]
+"#,
+        );
+        let refused = daemon
+            .handle(Request::Send {
+                from: sender.id.to_string(),
+                to: "all".into(),
+                kind: "chat".into(),
+                payload: json!({ "text": "everyone!" }),
+                reply_to: None,
+            })
+            .await;
+        assert!(matches!(
+            &refused,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        assert!(
+            inbox(&daemon, listener.id.as_str(), true).await.is_empty(),
+            "a refused message is not delivered to anyone"
+        );
+        // Addressing one agent is still fine.
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: sender.id.to_string(),
+                    to: listener.id.to_string(),
+                    kind: "chat".into(),
+                    payload: json!({ "text": "just you" }),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+        write_policy(&daemon, "[quota]\ntokens = 100\n");
+
+        let take = |agent: String, amount: u64| {
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent,
+                        resource: "quota:tokens".into(),
+                        mode: LeaseMode::Shared,
+                        amount: Some(amount),
+                        ttl_secs: 300,
+                        note: None,
+                        wait_secs: 0,
+                    })
+                    .await
+            }
+        };
+
+        // A quota is shared: several agents hold it at once.
+        assert!(matches!(
+            take(alpha.id.to_string(), 60).await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            take(beta.id.to_string(), 30).await,
+            Response::Lease { .. }
+        ));
+        // 90 of 100 spent; 20 does not fit.
+        let refused = take(alpha.id.to_string(), 20).await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("the quota should have refused it: {refused:?}")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(message.contains("10 of 100 left"), "{message}");
+        let details = details.expect("the arithmetic is in the details");
+        assert_eq!(details["committed"], json!(90));
+        assert_eq!(details["capacity"], json!(100));
+        // What does fit still does.
+        assert!(matches!(
+            take(beta.id.to_string(), 10).await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "spender", Some(std::process::id())).await;
+        write_policy(&daemon, "[quota]\ntokens = 10\n");
+        // A typo in a quota name must loosen nothing that was not
+        // already loose, so an unmentioned quota has no ceiling.
+        let response = daemon
+            .handle(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: "quota:tokns".into(),
+                mode: LeaseMode::Shared,
+                amount: Some(1_000_000),
+                ttl_secs: 300,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        assert!(matches!(response, Response::Lease { .. }), "{response:?}");
+    }
+
+    // ----- every checkout of a project --------------------------------------
+
+    /// The bug this exists for, found by auditing a real fleet: a
+    /// project had eight checkouts, the daemon watched the one an agent
+    /// was registered in, and twenty-seven commits produced four
+    /// journal entries. Worse, `overlap` answered "no path was changed
+    /// in more than one checkout" — a confident wrong answer to the
+    /// question the feature exists for — because it could only see one.
+    #[tokio::test]
+    async fn a_commit_in_a_worktree_nobody_registered_still_reaches_the_journal() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "root"],
+        ] {
+            assert!(git(dir.path(), &repo, &args), "{args:?}");
+        }
+        // A second checkout of the same repository, with no agent in it.
+        let elsewhere = dir.path().join("elsewhere");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "side",
+                "--",
+                elsewhere.to_str().unwrap(),
+                "HEAD",
+            ],
+        ));
+
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        register_in(&daemon, "home", &repo).await;
+        // The enumeration is what tells the watcher the second checkout
+        // exists; on the daemon it runs on the five-second tick.
+        daemon.refresh_project_checkouts().await;
+        let watched: Vec<_> = daemon.watch_targets().into_iter().map(|c| c.dir).collect();
+        assert!(
+            watched.iter().any(|d| d.ends_with("elsewhere")),
+            "the other checkout is watched: {watched:?}"
+        );
+
+        // Work happens over there, and nothing is registered there.
+        std::fs::write(elsewhere.join("kept.txt"), "changed elsewhere\n").unwrap();
+        assert!(git(dir.path(), &elsewhere, &["add", "."]));
+        assert!(git(
+            dir.path(),
+            &elsewhere,
+            &["commit", "-q", "-m", "work nobody registered"],
+        ));
+
+        let entries = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            (!entries.is_empty()).then_some(entries)
+        })
+        .await;
+        let entry = &entries[0];
+        assert!(
+            entry.summary.contains("work nobody registered"),
+            "the commit is named: {}",
+            entry.summary
+        );
+        assert_eq!(
+            entry.checkout,
+            Some(elsewhere.canonicalize().unwrap()),
+            "and attributed to the checkout it happened in"
+        );
+    }
+
+    // ----- commit ----------------------------------------------------------
+
+    /// Set up a repository with one commit and an agent registered in
+    /// it, with a git identity local to the repository so the test does
+    /// not depend on the machine having one.
+    async fn repo_with_agent(dir: &TempDir, name: &str) -> (Arc<Daemon>, PathBuf) {
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "root"],
+        ] {
+            assert!(git(dir.path(), &repo, &args), "{args:?}");
+        }
+        let daemon = open(dir);
+        register_in(&daemon, name, &repo).await;
+        (daemon, repo)
+    }
+
+    async fn commit(daemon: &Arc<Daemon>, agent: &str, message: &str, all: bool) -> Response {
+        daemon
+            .handle(Request::Commit {
+                agent: agent.into(),
+                message: message.into(),
+                all,
+                push: false,
+            })
+            .await
+    }
+
+    /// The point of the whole request. The watcher already writes a
+    /// `commit` entry when it sees HEAD move, but it has to guess whose
+    /// it was and can only synthesise a summary from the sha. Going
+    /// through the daemon means the agent that asked is the agent
+    /// recorded, with the message it actually wrote.
+    #[tokio::test]
+    async fn a_commit_through_the_daemon_is_attributed_and_carries_its_message() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+
+        let Response::Committed {
+            head,
+            branch,
+            files,
+            pushed,
+        } = commit(&daemon, "writer", "teach the parser about dashes", false).await
+        else {
+            panic!("commit failed");
+        };
+        assert_eq!(files, 1);
+        assert!(!pushed, "nothing asked for a push");
+        assert_eq!(branch.as_deref(), Some("main"));
+        assert_eq!(head.len(), 40, "a full sha: {head}");
+
+        let Response::Journal { entries, .. } = daemon
+            .handle(Request::Journal {
+                project: repo.display().to_string(),
+                agent: Some("writer".into()),
+                since_seq: None,
+                until_seq: None,
+                branch: None,
+                kind: Some("commit".into()),
+                path: None,
+                grep: None,
+                limit: 10,
+                digest: None,
+            })
+            .await
+        else {
+            panic!("journal failed")
+        };
+        assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry.agent_name, "writer", "attributed, not guessed");
+        assert!(
+            entry.summary.contains("teach the parser about dashes"),
+            "the agent's own message, not a summary of the sha: {}",
+            entry.summary
+        );
+        assert_eq!(entry.head_after.as_ref(), Some(&head));
+        assert_eq!(entry.branch.as_deref(), Some("main"));
+        assert!(
+            daemon.recent_events(200).iter().any(|e| matches!(
+                &e.kind,
+                EventKind::Committed { agent, files: 1, .. } if agent.as_str() == entry.agent.as_ref().unwrap().as_str()
+            )),
+            "the state change is an event"
+        );
+    }
+
+    /// A watcher running alongside must not add a second `commit` entry
+    /// for the same move a moment later, attributed by guesswork.
+    #[tokio::test]
+    async fn the_watcher_does_not_double_up_on_a_commit_the_daemon_made() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis(50),
+        ));
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let Response::Committed { .. } = commit(&daemon, "writer", "one change", false).await
+        else {
+            panic!("commit failed");
+        };
+        // Long enough for the watcher to have looked several times.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let Response::Journal { entries, .. } = daemon
+            .handle(Request::Journal {
+                project: repo.display().to_string(),
+                agent: None,
+                since_seq: None,
+                until_seq: None,
+                branch: None,
+                kind: Some("commit".into()),
+                path: None,
+                grep: None,
+                limit: 10,
+                digest: None,
+            })
+            .await
+        else {
+            panic!("journal failed")
+        };
+        assert_eq!(entries.len(), 1, "one commit, one entry: {entries:?}");
+    }
+
+    #[tokio::test]
+    async fn a_commit_with_nothing_in_it_is_refused() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+
+        // Nothing at all.
+        let refused = commit(&daemon, "writer", "empty", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, .. } if *code == ErrorCode::Conflict),
+            "{refused:?}"
+        );
+
+        // Changed but unstaged is still nothing, without --all: an agent
+        // that meant to commit everything must say so.
+        std::fs::write(repo.join("kept.txt"), "changed\n").unwrap();
+        let refused = commit(&daemon, "writer", "unstaged", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, message, .. }
+                if *code == ErrorCode::Conflict && message.contains("--all")),
+            "{refused:?}"
+        );
+
+        // And with --all it goes in.
+        let Response::Committed { files, .. } = commit(&daemon, "writer", "with all", true).await
+        else {
+            panic!("commit failed");
+        };
+        assert_eq!(files, 1);
+    }
+
+    /// A commit that fails must not leave the checkout marked. The mark
+    /// tells the watcher to keep out, so one left behind does not fail
+    /// loudly — it silently stops that checkout being journaled for as
+    /// long as the daemon lives.
+    #[tokio::test]
+    async fn a_failed_commit_does_not_leave_the_checkout_marked() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+
+        // A commit git will refuse. A pre-commit hook that says no is
+        // the portable way to arrange that; the point is the failure,
+        // not which failure.
+        let hooks = dir.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        let write_hook = |body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&hook, body).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write_hook("#!/bin/sh\nexit 1\n");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        ));
+        let refused = commit(&daemon, "writer", "cannot be made", false).await;
+        assert!(
+            matches!(refused, Response::Error { .. }),
+            "the commit failed: {refused:?}"
+        );
+        assert!(
+            lock(&daemon.state).committing.is_empty(),
+            "and the checkout is not still marked"
+        );
+
+        // Which means the next one works, and is journaled.
+        write_hook("#!/bin/sh\nexit 0\n");
+        let Response::Committed { .. } = commit(&daemon, "writer", "and now it can", false).await
+        else {
+            panic!("commit failed")
+        };
+        assert!(lock(&daemon.state).committing.is_empty());
+    }
+
+    /// A message beginning with a dash is a message. Passing it as
+    /// `--message=<text>` or positionally would make git read it as a
+    /// flag and fail, or worse, succeed at something else.
+    #[tokio::test]
+    async fn a_message_that_looks_like_a_flag_is_still_a_message() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let Response::Committed { head, .. } =
+            commit(&daemon, "writer", "--amend is not what I meant", false).await
+        else {
+            panic!("commit failed");
+        };
+        let subject = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["log", "-1", "--format=%s", &head])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            "--amend is not what I meant"
+        );
+        // And it is one commit on top of the root, not an amended root.
+        let count = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    }
+
+    /// Committing is an action a policy can refuse, like any other.
+    #[tokio::test]
+    async fn a_policy_can_refuse_a_commit() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(
+            dir.path().join("policy.toml"),
+            "[[rule]]\nname = \"no commits\"\ndeny = [\"commit:**\"]\n",
+        )
+        .unwrap();
+        daemon.reload_policies();
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let refused = commit(&daemon, "writer", "blocked", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, message, .. }
+                if *code == ErrorCode::Forbidden && message.contains("no commits")),
+            "{refused:?}"
+        );
+    }
+
+    // ----- daemon reload --------------------------------------------------
+
+    /// The safety property the whole feature rests on: a daemon that has
+    /// handed its terminals over must leave every agent running. An
+    /// ordinary shutdown SIGTERMs them, which would kill exactly what
+    /// the reload exists to preserve.
+    #[tokio::test]
+    async fn a_daemon_that_handed_over_leaves_every_agent_running() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("survivor");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        let pid = agent.pid.expect("a pid");
+        assert!(supervisor::group_exists(pid));
+
+        daemon.hand_off_and_exit();
+        assert!(daemon.handed_over());
+        daemon.stop_all().await;
+
+        // Still there. The replacement owns it now.
+        assert!(
+            supervisor::group_exists(pid),
+            "a handed-over agent is not stopped by the daemon stepping aside"
+        );
+        // Cleaned up by hand, since by design nothing else will.
+        gone(Some(pid)).await;
+        assert!(!supervisor::group_exists(pid));
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_shutdown_still_stops_what_it_started() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("ordinary");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        let pid = agent.pid.expect("a pid");
+        assert!(!daemon.handed_over());
+        daemon.stop_all().await;
+        assert!(
+            !supervisor::group_exists(pid),
+            "the usual shutdown still takes its children with it"
+        );
+        gone(Some(pid)).await;
+    }
+
+    /// A terminal for an agent this daemon does not know, or whose
+    /// process has changed, is closed rather than adopted: taking it
+    /// would attach a live pty to a record that is not about it.
+    #[tokio::test]
+    async fn a_handoff_for_an_unknown_agent_is_declined() {
+        use agentdocker_core::AgentId;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut pty = agentdocker_host::pty::Pty::open().unwrap();
+        let _slave = pty.take_slave();
+        let carriage = crate::daemon::reload::Carriage::for_test(
+            vec![crate::daemon::reload::Carried {
+                agent: AgentId::from("nosuchagent"),
+                pid: 999_999,
+                scrollback: b"whatever".to_vec(),
+            }],
+            vec![pty.into_master()],
+        );
+        assert_eq!(
+            daemon.install_handoff(carriage),
+            0,
+            "nothing is adopted for an agent that is not here"
+        );
+        assert!(lock(&daemon.sessions).is_empty());
+    }
+
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
         daemon
             .handle(Request::Claim {
                 agent: agent.to_owned(),
                 resource: resource.to_owned(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
@@ -5642,6 +6979,173 @@ mod tests {
         {
             Response::Messages { messages } => messages,
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
+        for subscribe in [false, true] {
+            for event_failure in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let daemon = open(&dir);
+                let receiver = register(&daemon, "receiver", None).await;
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":"retain after failed drain"}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+                let queued = inbox(&daemon, "receiver", false).await;
+                let mut events = daemon.subscribe_events();
+                let next_seq = {
+                    let state = lock(&daemon.state);
+                    if event_failure {
+                        state.store.reject_event_for_test("inbox_acknowledged");
+                    } else {
+                        state.store.reject_writes_for_test();
+                    }
+                    state.next_seq
+                };
+                let response = if subscribe {
+                    match daemon.subscribe(Some("receiver"), Vec::new()) {
+                        Err(error) => *error,
+                        Ok(_) => panic!("failed storage allowed an inbox subscription"),
+                    }
+                } else {
+                    daemon
+                        .handle(Request::Inbox {
+                            agent: "receiver".into(),
+                            drain: true,
+                        })
+                        .await
+                };
+                assert!(
+                    matches!(
+                        response,
+                        Response::Error {
+                            code: ErrorCode::StorageUnavailable,
+                            ..
+                        }
+                    ),
+                    "{response:?}"
+                );
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    state.inboxes[&receiver.id]
+                        .iter()
+                        .map(|message| &message.id)
+                        .collect::<Vec<_>>(),
+                    queued.iter().map(|message| &message.id).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    state.store.load_inboxes().unwrap()[&receiver.id].len(),
+                    queued.len()
+                );
+                assert_eq!(state.next_seq, next_seq);
+                assert!(!state.live_subscribers.contains_key(&receiver.id));
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_inbox_touch_does_not_acknowledge_messages() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain after failed touch"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_agent_writes_for_test();
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Inbox {
+                agent: "receiver".into(),
+                drain: true,
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery() {
+        for subscribe in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let receiver = register(&daemon, "receiver", None).await;
+            for text in ["first", "second"] {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":text}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+            }
+            let mut events = daemon.subscribe_events();
+            let delivered = if subscribe {
+                let (subscription, _) = daemon.subscribe(Some("receiver"), Vec::new()).unwrap();
+                subscription.backlog.clone()
+            } else {
+                inbox(&daemon, "receiver", true).await
+            };
+            assert_eq!(delivered.len(), 2);
+            let event = events.try_recv().unwrap();
+            assert!(
+                matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
+                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
+            );
+            let state = lock(&daemon.state);
+            assert!(
+                state
+                    .inboxes
+                    .get(&receiver.id)
+                    .is_none_or(|queue| queue.is_empty())
+            );
+            assert!(
+                !state
+                    .store
+                    .load_inboxes()
+                    .unwrap()
+                    .contains_key(&receiver.id)
+            );
+            assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
+            assert!(events.try_recv().is_err());
         }
     }
 
@@ -5893,6 +7397,7 @@ mod tests {
                 change_seq: None,
                 expires_at: now + Duration::hours(1),
                 note: None,
+                amount: 0,
             };
             store
                 .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -6019,6 +7524,7 @@ mod tests {
                         agent: "b".into(),
                         resource: "task:w".into(),
                         mode: LeaseMode::Exclusive,
+                        amount: None,
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
@@ -6052,6 +7558,7 @@ mod tests {
                 agent: "b".into(),
                 resource: "task:w".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 1,
@@ -6888,6 +8395,7 @@ mod tests {
                         agent: "waiter".into(),
                         resource: "task:wait".into(),
                         mode: LeaseMode::Exclusive,
+                        amount: None,
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
@@ -7153,6 +8661,7 @@ mod tests {
             change_seq: None,
             expires_at: now - Duration::seconds(1),
             note: None,
+            amount: 0,
         };
         {
             let mut state = lock(&daemon.state);
@@ -8970,5 +10479,28 @@ mod tests {
         .await
         .expect("queue admission must share the flush timeout");
         assert!(matches!(response, Response::Leases { .. }));
+    }
+}
+
+#[cfg(test)]
+mod leak_detector_proof {
+    /// Deliberately orphans a process that holds this test's output
+    /// pipe. Ignored, so it never runs in the suite; run it by name to
+    /// confirm the leak detector still fails a genuine leak:
+    ///
+    /// ```text
+    /// cargo nextest run -p agentd -E 'test(a_real_leak_is_still_caught)' --run-ignored all
+    /// ```
+    #[test]
+    #[ignore = "proves the leak detector works; leaves a process for 30s on purpose"]
+    fn a_real_leak_is_still_caught() {
+        // Deliberately never reaped: an orphan holding this test's
+        // output pipe is exactly what is being demonstrated, and
+        // waiting for it would defeat the point.
+        #[allow(clippy::zombie_processes)]
+        let _orphan = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
     }
 }

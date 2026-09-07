@@ -88,6 +88,64 @@ pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<St
     (!subject.is_empty()).then(|| subject.chars().take(200).collect())
 }
 
+/// Every checkout of the repository `dir` belongs to: the main one and
+/// each linked worktree, canonical, in the order git lists them.
+///
+/// A project is the repository, not one directory of it — `overlap`
+/// exists precisely to compare what two checkouts of it have changed —
+/// so anything that observes a project has to know where its checkouts
+/// are. `git worktree list --porcelain` is the only authority on that:
+/// the linked ones can be anywhere on the disk, and the daemon has no
+/// other way to find one nobody told it about.
+///
+/// Bounded and best-effort. An empty answer means "ask again later",
+/// never "there is only this one" — a caller that treats it as the
+/// latter would silently stop watching real checkouts.
+pub fn worktrees(dir: &Path, timeout: std::time::Duration) -> Vec<PathBuf> {
+    let Ok(mut child) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["worktree", "list", "--porcelain"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => {
+                let _ = child.wait();
+                return Vec::new();
+            }
+            Ok(None) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Vec::new();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let Some(mut stdout) = child.stdout.take() else {
+        return Vec::new();
+    };
+    let mut out = String::new();
+    if std::io::Read::read_to_string(&mut stdout, &mut out).is_err() {
+        return Vec::new();
+    }
+    out.lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| {
+            let path = PathBuf::from(path);
+            path.canonicalize().unwrap_or(path)
+        })
+        .collect()
+}
+
 /// `(git directory of this checkout, common git directory)`: equal for a
 /// main checkout, distinct for a linked worktree.
 pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {

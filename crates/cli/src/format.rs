@@ -187,6 +187,20 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(" — {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::PolicyDenied {
+            agent,
+            action,
+            rule,
+        } => format!("policy denied    {} {action} ({rule})", agent.short()),
+        EventKind::AgentRestarted {
+            agent,
+            pid,
+            attempt,
+        } => format!(
+            "agent restarted: {} (attempt {attempt}, pid {})",
+            agent.short(),
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_owned())
+        ),
         EventKind::LeaseWaiting {
             resource: key,
             requester,
@@ -238,6 +252,24 @@ pub fn event_line(event: &Event) -> String {
         } => format!("{engine} built {image_id} ({build})"),
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
+        }
+        EventKind::Committed {
+            agent,
+            head,
+            branch,
+            files,
+            pushed,
+        } => {
+            let short: String = head.chars().take(7).collect();
+            format!(
+                "{agent} committed {short}{} ({files} file{}){}",
+                branch
+                    .as_ref()
+                    .map(|b| format!(" on {b}"))
+                    .unwrap_or_default(),
+                if *files == 1 { "" } else { "s" },
+                if *pushed { ", pushed" } else { "" }
+            )
         }
         EventKind::WorktreeCleanup {
             agent,
@@ -475,6 +507,9 @@ pub fn event_line(event: &Event) -> String {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
+        // A newer daemon than this CLI. Saying so beats a blank line,
+        // and beats refusing to print the rest of the stream.
+        EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))
 }

@@ -65,12 +65,20 @@ impl Daemon {
     pub(crate) fn validate_native_launch(&self, expected: &AgentRecord) -> anyhow::Result<()> {
         let mut state = lock(&self.state);
         storage_ready(&state)?;
+        // The statuses a launch may legitimately start from: `created`
+        // for a fresh `run`, and an ended one for a restart or a
+        // restore, which start the same agent again under its own id.
+        // What this rejects is a record that is gone, one whose restore
+        // flag changed under it, and — the case the check exists for —
+        // one that is already `running` or `stopping`, meaning somebody
+        // else started or stopped it while this launch was preparing.
         anyhow::ensure!(
-            state
-                .registry
-                .get(&expected.id)
-                .is_some_and(|record| record.status == AgentStatus::Created
-                    && record.spec.restore == expected.spec.restore),
+            state.registry.get(&expected.id).is_some_and(|record| {
+                matches!(
+                    record.status,
+                    AgentStatus::Created | AgentStatus::Exited { .. } | AgentStatus::Failed { .. }
+                ) && record.spec.restore == expected.spec.restore
+            }),
             "launch was cancelled or its starting identity changed"
         );
         if expected.spec.restore {
@@ -613,6 +621,7 @@ mod tests {
                     ttl_secs: 300,
                     wait_secs: 0,
                     note: None,
+                    amount: None,
                 })
                 .await,
             Response::Lease { .. }
@@ -900,6 +909,7 @@ mod tests {
                     ttl_secs: 300,
                     wait_secs: 0,
                     note: None,
+                    amount: None,
                 })
                 .await,
             Response::Lease { .. }

@@ -46,6 +46,11 @@ pub enum DaemonCommand {
     Stop,
     /// Stop, then start.
     Restart,
+    /// Replace the running daemon with a fresh one, handing it the
+    /// terminals of every running agent. The agents keep running: an
+    /// upgrade this way does not disturb them, and `attach` still works
+    /// afterwards.
+    Reload,
     /// Show whether the service is installed and the daemon answering.
     Status,
 }
@@ -533,6 +538,18 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     .await?;
             }
             wait_for_daemon(&client).await?;
+        }
+        DaemonCommand::Reload => {
+            // Not a stop and a start: the running daemon starts its own
+            // replacement and hands it the terminals, so the agents
+            // never lose theirs. Nothing here manages the service,
+            // because the point is that the processes are untouched.
+            match client.call(&Request::Reload).await {
+                Ok(_) => {}
+                Err(err) => bail!("reload failed: {err:#}"),
+            }
+            wait_for_daemon(&client).await?;
+            println!("reloaded; agents kept running and their terminals moved across");
         }
         DaemonCommand::Status => {
             let definition = if macos {

@@ -47,6 +47,49 @@ pub struct Session {
 }
 
 impl Session {
+    /// Take over a terminal a previous daemon was holding, with what it
+    /// had already printed.
+    ///
+    /// The process on the far end is somebody else's child — this daemon
+    /// never forked it — so nothing here waits on it; liveness watches
+    /// it by pid, as it does an adopted agent. What is rebuilt is the
+    /// reading and typing around a descriptor that is already open.
+    pub fn adopt(master: std::os::fd::OwnedFd, scrollback: Vec<u8>) -> std::io::Result<Self> {
+        let master = Arc::new(master);
+        let (output, _) = broadcast::channel::<Vec<u8>>(256);
+        let (input, keystrokes) = mpsc::channel::<Vec<u8>>(64);
+        let kept = Arc::new(std::sync::Mutex::new(
+            scrollback
+                .into_iter()
+                .collect::<std::collections::VecDeque<u8>>(),
+        ));
+        // The log belonged to the previous daemon's writer task, which is
+        // gone. Output from here on reaches whoever attaches; the log
+        // keeps what it already had.
+        let (tx, mut discard) = mpsc::channel::<String>(256);
+        tokio::spawn(async move { while discard.recv().await.is_some() {} });
+        let reader = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
+        tokio::spawn(pump_terminal(reader, tx, output.clone(), kept.clone()));
+        let writer = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
+        tokio::spawn(type_into_terminal(writer, keystrokes));
+        Ok(Self {
+            output,
+            input,
+            master,
+            scrollback: kept,
+        })
+    }
+
+    /// The bytes this terminal has printed, for handing to a successor.
+    pub fn scrollback(&self) -> Vec<u8> {
+        lock_scrollback(&self.scrollback).iter().copied().collect()
+    }
+
+    /// The terminal itself, so it can be passed to another process.
+    pub fn master(&self) -> Arc<std::os::fd::OwnedFd> {
+        self.master.clone()
+    }
+
     /// Tell the terminal its window changed, so full-screen agents relay
     /// out and get `SIGWINCH`.
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
@@ -88,7 +131,10 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     command
         .args(args)
         .envs(&record.spec.env)
+        .env("AGENTDOCKER_HOME", &daemon.home)
         .env("AGENTDOCKER_SOCKET", &daemon.socket)
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
         .env("AGENTDOCKER_AGENT_ID", record.id.as_str())
         .env("AGENTDOCKER_AGENT_NAME", &record.spec.name)
         .env(
@@ -323,7 +369,10 @@ pub fn supervise(
         // The terminal goes with the agent: anyone attached sees the
         // stream end rather than a room that is no longer there.
         daemon.end_session(&id);
-        daemon.mark_exited(&id, status);
+        daemon.mark_exited(&id, status.clone());
+        // After the exit is recorded, so a reader of the event stream
+        // sees the agent end before it sees it start again.
+        daemon.consider_restart(&id, &status);
     })
 }
 
