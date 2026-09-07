@@ -107,6 +107,7 @@ fn main() -> Result<()> {
                         agent: agent.clone(),
                         resource: format!("path:{}", checkout.join("input.rs").display()),
                         mode: LeaseMode::Exclusive,
+                        amount: None,
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 0,

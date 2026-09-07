@@ -67,14 +67,64 @@ pub struct AgentEntry {
     /// person can reach it with `tmux attach`.
     #[serde(default)]
     pub in_pane: bool,
+    /// When to start it again after it exits: `no` (the default),
+    /// `always`, `on-failure`, or `on-failure:<n>`.
+    #[serde(default)]
+    pub restart: Option<String>,
+    /// Agents that must be running before this one starts. `up` waits
+    /// for each in turn.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
 
+/// The first `depends_on` cycle, as the names round it.
+///
+/// `up` starts agents in order and waits for each dependency, so a cycle
+/// is a wait that can never end. Finding it while the file is being read
+/// turns a hang into a sentence.
+fn dependency_cycle(agents: &IndexMap<String, AgentEntry>) -> Option<Vec<String>> {
+    for start in agents.keys() {
+        let mut path = vec![start.clone()];
+        let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        seen.insert(start);
+        let mut current = start;
+        // Follow one dependency at a time; any cycle is reachable from
+        // one of its own members, so starting at each name finds them all.
+        while let Some(next) = agents
+            .get(current)
+            .and_then(|entry| entry.depends_on.first())
+        {
+            path.push(next.clone());
+            if next == start {
+                return Some(path);
+            }
+            if !seen.insert(next) {
+                break;
+            }
+            current = next;
+        }
+    }
+    None
+}
+
 fn default_runtime() -> String {
     "custom".to_owned()
+}
+
+impl AgentEntry {
+    /// The restart policy this entry asks for. Unreadable text is `no`;
+    /// the file is validated when it is parsed, so by here a bad value
+    /// has already been reported with the name of the agent it is on.
+    pub fn restart_policy(&self) -> agentdocker_core::RestartPolicy {
+        self.restart
+            .as_deref()
+            .and_then(agentdocker_core::RestartPolicy::parse)
+            .unwrap_or_default()
+    }
 }
 
 impl Agentfile {
@@ -87,6 +137,31 @@ impl Agentfile {
             if entry.command.first().is_none_or(String::is_empty) {
                 bail!("agent `{name}` has an empty command");
             }
+            if let Some(restart) = &entry.restart
+                && agentdocker_core::RestartPolicy::parse(restart).is_none()
+            {
+                bail!(
+                    "agent `{name}` has restart = \"{restart}\"; use no, always, on-failure, \
+                     or on-failure:<n>"
+                );
+            }
+            // A dependency that is not in the file can never start, so
+            // `up` would wait for it forever. Say so while the file is
+            // being read, with both names.
+            for needed in &entry.depends_on {
+                if needed == name {
+                    bail!("agent `{name}` depends on itself");
+                }
+                if !file.agents.contains_key(needed) {
+                    bail!("agent `{name}` depends on `{needed}`, which is not in this file");
+                }
+            }
+        }
+        if let Some(cycle) = dependency_cycle(&file.agents) {
+            bail!(
+                "agents depend on each other in a cycle: {}",
+                cycle.join(" → ")
+            );
         }
         Ok(file)
     }
@@ -154,6 +229,8 @@ impl Agentfile {
                     tty: entry.tty,
                     restore: entry.restore,
                     in_pane: entry.in_pane,
+                    restart: entry.restart_policy(),
+                    depends_on: entry.depends_on.clone(),
                 }
             })
             .collect();
@@ -237,5 +314,129 @@ labels = { role = "review" }
         assert!(Agentfile::parse("[agents.a]\ncommand = [\"x\"]\nbogus = 1\n").is_err());
         assert!(Agentfile::parse("[agents.a]\nruntime = \"x\"\n").is_err());
         assert!(Agentfile::parse("").unwrap().agents.is_empty());
+    }
+
+    #[test]
+    fn dependencies_start_before_the_agents_that_need_them() {
+        let file = Agentfile::parse(
+            r#"
+[agents.web]
+command = ["sh", "-c", "serve"]
+depends_on = ["db", "cache"]
+
+[agents.cache]
+command = ["sh", "-c", "cache"]
+depends_on = ["db"]
+
+[agents.db]
+command = ["sh", "-c", "db"]
+"#,
+        )
+        .unwrap();
+        let specs = file.specs(Path::new("/repo"), &[]).unwrap();
+        let ordered: Vec<String> = crate::teams::order(specs)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(ordered, ["db", "cache", "web"]);
+    }
+
+    #[test]
+    fn file_order_survives_where_dependencies_do_not_decide() {
+        let file = Agentfile::parse(
+            r#"
+[agents.zeta]
+command = ["sh", "-c", "z"]
+
+[agents.alpha]
+command = ["sh", "-c", "a"]
+"#,
+        )
+        .unwrap();
+        let specs = file.specs(Path::new("/repo"), &[]).unwrap();
+        let ordered: Vec<String> = crate::teams::order(specs)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        // Not sorted: the order somebody wrote them in is information.
+        assert_eq!(ordered, ["zeta", "alpha"]);
+    }
+
+    #[test]
+    fn a_dependency_that_cannot_be_satisfied_is_refused_when_the_file_is_read() {
+        // `up` starts agents in order and waits for each dependency, so
+        // every one of these would otherwise be a wait that never ends.
+        let missing = Agentfile::parse(
+            r#"
+[agents.web]
+command = ["sh", "-c", "serve"]
+depends_on = ["nowhere"]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("nowhere"), "{missing}");
+        assert!(missing.contains("not in this file"), "{missing}");
+
+        let itself = Agentfile::parse(
+            r#"
+[agents.web]
+command = ["sh", "-c", "serve"]
+depends_on = ["web"]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(itself.contains("depends on itself"), "{itself}");
+
+        let ring = Agentfile::parse(
+            r#"
+[agents.a]
+command = ["sh", "-c", "a"]
+depends_on = ["b"]
+
+[agents.b]
+command = ["sh", "-c", "b"]
+depends_on = ["a"]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(ring.contains("cycle"), "{ring}");
+    }
+
+    #[test]
+    fn a_restart_policy_is_read_from_the_file_and_a_bad_one_is_named() {
+        let file = Agentfile::parse(
+            r#"
+[agents.web]
+command = ["sh", "-c", "serve"]
+restart = "on-failure:5"
+
+[agents.worker]
+command = ["sh", "-c", "work"]
+"#,
+        )
+        .unwrap();
+        let specs = file.specs(Path::new("/repo"), &[]).unwrap();
+        let web = specs.iter().find(|s| s.name == "web").unwrap();
+        assert_eq!(
+            web.restart,
+            agentdocker_core::RestartPolicy::OnFailure { max: 5 }
+        );
+        let worker = specs.iter().find(|s| s.name == "worker").unwrap();
+        assert!(worker.restart.is_no(), "the default is not to restart");
+
+        let bad = Agentfile::parse(
+            r#"
+[agents.web]
+command = ["sh", "-c", "serve"]
+restart = "sometimes"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(bad.contains("web"), "the agent is named: {bad}");
+        assert!(bad.contains("sometimes"), "and so is the value: {bad}");
     }
 }

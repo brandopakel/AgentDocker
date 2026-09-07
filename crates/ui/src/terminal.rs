@@ -13,6 +13,7 @@ use egui::text::LayoutJob;
 use egui::{Color32, FontId, TextFormat};
 
 use crate::client::Client;
+use crate::theme::Palette;
 
 /// Cells wide and tall a terminal starts at, until the view says otherwise.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
@@ -137,11 +138,11 @@ impl Terminal {
     }
 
     /// Draw the screen as it stands.
-    pub fn ui(&self, ui: &mut egui::Ui) {
+    pub fn ui(&self, ui: &mut egui::Ui, palette: &Palette, size: f32) {
         let parser = lock(&self.shared.parser);
         let screen = parser.screen();
         let (rows, cols) = screen.size();
-        let font = FontId::monospace(13.0);
+        let font = FontId::monospace(size);
         for row in 0..rows {
             let mut job = LayoutJob::default();
             let mut text = String::new();
@@ -150,7 +151,7 @@ impl Terminal {
                 let Some(cell) = screen.cell(row, col) else {
                     continue;
                 };
-                let colour = foreground(cell.fgcolor());
+                let colour = foreground(palette, cell.fgcolor());
                 let bold = cell.bold();
                 if style != Some((colour, bold)) && !text.is_empty() {
                     push(&mut job, &text, style, &font);
@@ -196,13 +197,14 @@ fn push(job: &mut LayoutJob, text: &str, style: Option<(Color32, bool)>, font: &
     );
 }
 
-/// A terminal colour as something to draw with. The window has its own
-/// theme, so the default is whatever "normal text" is rather than a
-/// hard-coded white that would vanish on a light background.
-fn foreground(colour: vt100::Color) -> Color32 {
+/// A terminal colour as something to draw with, in the chosen palette.
+///
+/// `Default` is the palette's own text colour rather than a hard-coded
+/// grey: on a light palette a hard-coded one either vanishes or shouts.
+fn foreground(palette: &Palette, colour: vt100::Color) -> Color32 {
     match colour {
-        vt100::Color::Default => Color32::GRAY,
-        vt100::Color::Idx(i) => indexed(i),
+        vt100::Color::Default => palette.text,
+        vt100::Color::Idx(i) => indexed(palette, i),
         vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
     }
 }
@@ -211,9 +213,9 @@ fn foreground(colour: vt100::Color) -> Color32 {
 /// 6×6×6 cube; 232–255 are a greyscale ramp. Folding the last two ranges
 /// into the first sixteen — which is what a modulo does — gives an agent
 /// using the 256-colour palette a set of unrelated hues.
-fn indexed(i: u8) -> Color32 {
+fn indexed(palette: &Palette, i: u8) -> Color32 {
     match i {
-        0..=15 => ANSI[i as usize],
+        0..=15 => palette.ansi[i as usize],
         16..=231 => {
             // The cube's six levels are not evenly spaced: the first step
             // is to 95, and the rest are 40 apart.
@@ -227,26 +229,6 @@ fn indexed(i: u8) -> Color32 {
         }
     }
 }
-
-/// The sixteen the escape codes name.
-const ANSI: [Color32; 16] = [
-    Color32::from_rgb(0x3b, 0x3b, 0x3b),
-    Color32::from_rgb(0xcc, 0x55, 0x55),
-    Color32::from_rgb(0x55, 0xaa, 0x55),
-    Color32::from_rgb(0xbb, 0x99, 0x33),
-    Color32::from_rgb(0x55, 0x88, 0xcc),
-    Color32::from_rgb(0xaa, 0x66, 0xcc),
-    Color32::from_rgb(0x44, 0xaa, 0xaa),
-    Color32::from_rgb(0xbb, 0xbb, 0xbb),
-    Color32::from_rgb(0x66, 0x66, 0x66),
-    Color32::from_rgb(0xff, 0x77, 0x77),
-    Color32::from_rgb(0x77, 0xdd, 0x77),
-    Color32::from_rgb(0xee, 0xcc, 0x55),
-    Color32::from_rgb(0x77, 0xaa, 0xff),
-    Color32::from_rgb(0xcc, 0x88, 0xff),
-    Color32::from_rgb(0x66, 0xdd, 0xdd),
-    Color32::from_rgb(0xff, 0xff, 0xff),
-];
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -502,15 +484,24 @@ mod tests {
         let screen = parser.screen();
         let red = screen.cell(0, 0).unwrap();
         assert_eq!(red.contents(), "r");
-        assert_eq!(foreground(red.fgcolor()), ANSI[1], "index 1 is red");
+        let palette = Palette::named("AgentDocker");
+        assert_eq!(
+            foreground(palette, red.fgcolor()),
+            palette.ansi[1],
+            "index 1 is red"
+        );
         let plain = screen.cell(0, 4).unwrap();
         assert_eq!(
-            foreground(plain.fgcolor()),
-            Color32::GRAY,
-            "default follows the window's own text colour"
+            foreground(palette, plain.fgcolor()),
+            palette.text,
+            "default is the palette's own text colour"
         );
+        // And it moves with the palette, rather than being one grey
+        // that happens to sit on both grounds badly.
+        let light = Palette::named("Basic");
+        assert_eq!(foreground(light, plain.fgcolor()), light.text);
         assert_eq!(
-            foreground(vt100::Color::Rgb(1, 2, 3)),
+            foreground(palette, vt100::Color::Rgb(1, 2, 3)),
             Color32::from_rgb(1, 2, 3)
         );
     }
@@ -518,22 +509,40 @@ mod tests {
     #[test]
     fn the_256_colour_palette_is_not_folded_into_sixteen() {
         // The named sixteen are the table itself.
-        assert_eq!(indexed(0), ANSI[0]);
-        assert_eq!(indexed(15), ANSI[15]);
+        let palette = Palette::named("AgentDocker");
+        assert_eq!(indexed(palette, 0), palette.ansi[0]);
+        assert_eq!(indexed(palette, 15), palette.ansi[15]);
         // The cube: 16 is its black corner, 231 its white one, and the
         // levels step 0, 95, 135, 175, 215, 255.
-        assert_eq!(indexed(16), Color32::from_rgb(0, 0, 0));
-        assert_eq!(indexed(231), Color32::from_rgb(255, 255, 255));
-        assert_eq!(indexed(196), Color32::from_rgb(255, 0, 0), "cube red");
-        assert_eq!(indexed(46), Color32::from_rgb(0, 255, 0), "cube green");
-        assert_eq!(indexed(21), Color32::from_rgb(0, 0, 255), "cube blue");
+        assert_eq!(indexed(palette, 16), Color32::from_rgb(0, 0, 0));
+        assert_eq!(indexed(palette, 231), Color32::from_rgb(255, 255, 255));
+        assert_eq!(
+            indexed(palette, 196),
+            Color32::from_rgb(255, 0, 0),
+            "cube red"
+        );
+        assert_eq!(
+            indexed(palette, 46),
+            Color32::from_rgb(0, 255, 0),
+            "cube green"
+        );
+        assert_eq!(
+            indexed(palette, 21),
+            Color32::from_rgb(0, 0, 255),
+            "cube blue"
+        );
         // The greyscale ramp, which a modulo would have scattered.
-        assert_eq!(indexed(232), Color32::from_rgb(8, 8, 8));
-        assert_eq!(indexed(255), Color32::from_rgb(238, 238, 238));
+        assert_eq!(indexed(palette, 232), Color32::from_rgb(8, 8, 8));
+        assert_eq!(indexed(palette, 255), Color32::from_rgb(238, 238, 238));
         // And the palette is a palette, not sixteen colours repeated:
         // a modulo would have produced exactly sixteen distinct values.
-        let distinct: std::collections::HashSet<_> = (0..=255u8).map(indexed).collect();
+        let distinct: std::collections::HashSet<_> =
+            (0..=255u8).map(|i| indexed(palette, i)).collect();
         assert!(distinct.len() > 240, "only {} distinct", distinct.len());
-        assert_ne!(indexed(17), indexed(1), "17 is not 1 wrapped");
+        assert_ne!(
+            indexed(palette, 17),
+            indexed(palette, 1),
+            "17 is not 1 wrapped"
+        );
     }
 }

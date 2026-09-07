@@ -1,6 +1,33 @@
-# AgentDocker
+<p align="center">
+  <img src="docs/images/agentdocker.png" alt="AgentDocker" width="128" height="128">
+</p>
 
-**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
+<h1 align="center">AgentDocker</h1>
+
+<p align="center">
+  <strong>Local orchestration for AI agents.</strong><br>
+  A native daemon that creates, supervises, organises and connects the agents on your
+  computer, whatever model or vendor is behind them.
+</p>
+
+<p align="center">
+  <a href="https://github.com/brandopakel/AgentDocker/actions/workflows/ci.yml"><img src="https://github.com/brandopakel/AgentDocker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/brandopakel/AgentDocker/releases"><img src="https://img.shields.io/github/v/release/brandopakel/AgentDocker?label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-lightgrey" alt="macOS and Linux">
+  <img src="https://img.shields.io/badge/rust-2024-orange" alt="Rust 2024 edition">
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="#the-docker-analogy">The model</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/PRODUCT-DIRECTION.md">Direction</a> ·
+  <a href="https://github.com/brandopakel/AgentDocker/releases">Releases</a>
+</p>
+
+---
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
@@ -107,6 +134,21 @@ agentdocker stop writer
 # leases, and a note saying what changed while it was down.
 agentdocker run --name keeper --restore -- claude
 
+# Keep a service up. `on-failure` counts and backs off; stopping it on
+# purpose clears the policy, so it stays stopped.
+agentdocker run --name indexer --restart on-failure:3 -- ./index.sh
+agentdocker top      # the fleet, live: who is working, blocked, waiting
+agentdocker daemon reload   # currently unavailable; leaves the daemon and agents running
+
+# And set the rules. `~/.agentdocker/policy.toml` is yours; a project's
+# `.agentdocker/policy.toml` may narrow it and never widen it.
+#   [[rule]]
+#   name = "migrations are mine"
+#   deny = ["claim:path:/repo/migrations/**"]
+#   [quota]
+#   tokens = 500000
+agentdocker claim --as writer quota:tokens --amount 50000 --shared
+
 # Or hand it to tmux, and keep only the coordination. tmux owns the
 # terminal, so you reach it with `tmux attach -t reviewer`; AgentDocker
 # still knows its project, leases, read set and journal cursor.
@@ -114,6 +156,8 @@ agentdocker run --name reviewer --in-pane -- claude
 ```
 
 Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
+
+Supervised native commands also receive the owning daemon's `AGENTDOCKER_HOME`. These settings override conflicting `-e` values on launch and restore; stale container-token settings are removed and client autostart is disabled inside the child.
 
 ```sh
 agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
@@ -325,7 +369,7 @@ Five crates:
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
-- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents by project, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed, plus the questions agents have put to you, a terminal for attaching to an interactive agent, and a console that runs any `agentdocker` command. `agentdocker ui` opens it.
+- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents grouped by project, each project in its own stable colour with a dot on every row and a filter for showing one at a time, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed, plus the questions agents have put to you, a terminal for attaching to an interactive agent, and a console that runs any `agentdocker` command. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
