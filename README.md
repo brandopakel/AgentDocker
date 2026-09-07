@@ -73,7 +73,10 @@ agentdocker discover              # agent processes running outside AgentDocker;
 # 3. Coordinate on a resource. The second claim is refused, and says by whom.
 agentdocker claim --as writer   src/ --note "refactoring the parser"
 agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writer
+agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, in arrival order
 agentdocker leases
+agentdocker waiting     # who is queued for what
+agentdocker activity    # working, idle, or blocked on what, held by whom
 
 # 4. Talk. Messages to an offline agent queue in its inbox.
 agentdocker send --from reviewer --to writer "ping me when src/ is free"
@@ -123,7 +126,7 @@ From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdock
 
 ### Give any MCP-capable agent the tools directly
 
-`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
+`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `activity`, `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
 
 ```sh
 # Claude Code
@@ -322,7 +325,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events, with a terminal and a console; ✅ the human as a first-class agent — `me`, `ask`/`answer`, and a desktop notification when something reaches you; next, deadlock detection; policy and quotas; restart policies and `depends_on`.
+- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events, with a terminal and a console; ✅ the human as a first-class agent — `me`, `ask`/`answer`, and a desktop notification when something reaches you; ✅ a FIFO wait queue with instant deadlock detection, and derived activity that says what a blocked agent is blocked on and who has it; next, policy and quotas; restart policies and `depends_on`.
 - **Phase 5 also brings**: PTY-backed sessions so interactive agents run under `run` and survive a daemon restart, with `attach`; activity derived from the working set (working, idle, or blocked on a named resource held by a named agent); adapters that recognise agents living in `tmux` panes or a [herdr](https://github.com/herdrdev/herdr) session; and token-lean output, because everything an agent reads from us costs it tokens.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 

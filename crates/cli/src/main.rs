@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agentdocker_core::{
-    AgentRecord, AgentSpec, DiscoveredProcess, HUMAN, Lease, LeaseId, LeaseMode, MessageId,
-    Request, Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
+    Activity, AgentActivity, AgentRecord, AgentSpec, DiscoveredProcess, HUMAN, Lease, LeaseId,
+    LeaseMode, MessageId, Request, Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use agentdocker_core::{Change, ProjectRef};
 use anyhow::{Context, Result, bail};
@@ -442,6 +442,21 @@ enum Command {
         /// The answer.
         text: String,
     },
+    /// What each agent is doing: working, idle, or blocked on a named
+    /// resource held by a named agent.
+    Activity {
+        /// Only this agent.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Only agents in this project.
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Include agents that have finished.
+        #[arg(long, short = 'a')]
+        all: bool,
+    },
+    /// Claims waiting for a resource, oldest first.
+    Waiting,
     /// Questions waiting for an answer.
     Questions {
         /// Only the questions put to this agent; `--me` is the shorthand
@@ -1037,7 +1052,21 @@ async fn main() -> Result<()> {
                     unadopted = processes;
                 }
             }
-            print_agents(&agents, &unadopted);
+            // What each one is doing comes from the same daemon in a
+            // second call rather than from the record, because it is
+            // derived: nothing durable says "blocked".
+            let activity = match client
+                .call(&Request::Activity {
+                    agent: None,
+                    project: project.as_deref().map(project_selector),
+                    all,
+                })
+                .await
+            {
+                Ok(Response::Activity { activity }) => activity,
+                _ => Vec::new(),
+            };
+            print_agents(&agents, &unadopted, &activity);
             if !unadopted.is_empty() {
                 eprintln!(
                     "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
@@ -1435,6 +1464,43 @@ async fn main() -> Result<()> {
                 println!("{message}");
             }
         }
+        Command::Activity {
+            agent,
+            project,
+            all,
+        } => {
+            let request = Request::Activity {
+                agent,
+                project: project.as_deref().map(project_selector),
+                all,
+            };
+            if let Response::Activity { activity } = client.call(&request).await? {
+                print_activity(&client, &activity).await;
+            }
+        }
+        Command::Waiting => {
+            if let Response::Waiting { waiting } = client.call(&Request::Waiting).await? {
+                if waiting.is_empty() {
+                    println!("nobody is waiting for a resource");
+                } else {
+                    let names = agent_names(&client).await;
+                    let rows: Vec<Vec<String>> = waiting
+                        .iter()
+                        .enumerate()
+                        .map(|(place, w)| {
+                            vec![
+                                (place + 1).to_string(),
+                                named(&names, &w.agent),
+                                format::resource(&w.resource),
+                                w.mode.to_string(),
+                                format::ago(w.since),
+                            ]
+                        })
+                        .collect();
+                    format::table(&["#", "AGENT", "RESOURCE", "MODE", "WAITING"], &rows);
+                }
+            }
+        }
         Command::Questions { agent, me } => {
             let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if let Response::Questions { questions } =
@@ -1806,9 +1872,70 @@ fn project_cell(agent: &AgentRecord) -> String {
     }
 }
 
+/// What each agent is doing, blocked ones first, with the reason spelled
+/// out: a blocked agent is blocked on a named resource held by a named
+/// agent, which is the whole point of deriving this rather than guessing.
+async fn print_activity(client: &Client, activity: &[AgentActivity]) {
+    if activity.is_empty() {
+        println!("no agents");
+        return;
+    }
+    let names = agent_names(client).await;
+    let rows: Vec<Vec<String>> = activity
+        .iter()
+        .map(|a| {
+            let (detail, since) = match &a.activity {
+                Activity::Blocked {
+                    resource,
+                    held_by,
+                    since,
+                } => (
+                    format!(
+                        "{} held by {}",
+                        format::resource(resource),
+                        if held_by.is_empty() {
+                            "nobody yet".to_owned()
+                        } else {
+                            held_by
+                                .iter()
+                                .map(|h| named(&names, h))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ),
+                    Some(*since),
+                ),
+                Activity::Working { since } | Activity::Idle { since } => {
+                    (String::new(), Some(*since))
+                }
+                Activity::Starting | Activity::Finished => (String::new(), None),
+            };
+            vec![
+                a.agent.short().to_owned(),
+                a.name.clone(),
+                a.activity.label().to_owned(),
+                detail,
+                since.map(format::ago).unwrap_or_else(|| "-".to_owned()),
+            ]
+        })
+        .collect();
+    format::table(&["AGENT ID", "NAME", "DOING", "DETAIL", "SINCE"], &rows);
+}
+
 /// Agents, then — dimmed — running agent processes nobody registered,
 /// shown under the name `adopt` would give them.
-fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
+fn print_agents(
+    agents: &[AgentRecord],
+    unadopted: &[DiscoveredProcess],
+    activity: &[AgentActivity],
+) {
+    let doing = |id: &agentdocker_core::AgentId| {
+        activity
+            .iter()
+            .find(|a| a.agent == *id)
+            .map(|a| format::activity_cell(&a.activity))
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
@@ -1832,6 +1959,7 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
+                doing(&a.id),
                 a.pid
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".to_owned()),
@@ -1853,6 +1981,7 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
             p.runtime.clone(),
             "-".to_owned(),
             "unadopted".to_owned(),
+            "-".to_owned(),
             p.pid.to_string(),
             p.started_at
                 .map(format::ago)
@@ -1861,8 +1990,8 @@ fn print_agents(agents: &[AgentRecord], unadopted: &[DiscoveredProcess]) {
     }));
     format::table_dimming(
         &[
-            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "PID",
-            "CREATED",
+            "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "DOING",
+            "PID", "CREATED",
         ],
         &rows,
         |i| i >= first_unadopted,

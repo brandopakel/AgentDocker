@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
 use agentdocker_core::{
-    AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease, MessageId, ProjectRef,
-    Question, Request, Response, RuntimeInfo,
+    Activity, AgentActivity, AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease,
+    MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
 };
 use chrono::Utc;
 use egui::{Color32, RichText};
@@ -75,6 +75,7 @@ enum Cmd {
     Runtimes,
     Discovered,
     Journal(String),
+    Activity,
     /// Register the person at the keyboard, so agents can address them.
     Me,
     Questions,
@@ -95,6 +96,7 @@ enum Msg {
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Vec<JournalEntry>),
+    Activity(Vec<AgentActivity>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
@@ -134,6 +136,9 @@ pub struct App {
     /// does not disturb another half-written answer.
     questions: Vec<Question>,
     answers: BTreeMap<MessageId, String>,
+    /// What each agent is doing, keyed by id. Derived by the daemon, so
+    /// it is read rather than computed here.
+    activity: BTreeMap<String, Activity>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
@@ -155,6 +160,7 @@ impl App {
             Cmd::Discovered,
             Cmd::Runtimes,
             Cmd::Questions,
+            Cmd::Activity,
         ] {
             let _ = cmd_tx.send(cmd);
         }
@@ -182,6 +188,7 @@ impl App {
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
+            activity: BTreeMap::new(),
         }
     }
 
@@ -212,6 +219,7 @@ impl App {
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
+            activity: BTreeMap::new(),
         }
     }
 
@@ -231,6 +239,12 @@ impl App {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
                         self.journal = entries;
                     }
+                }
+                Msg::Activity(activity) => {
+                    self.activity = activity
+                        .into_iter()
+                        .map(|a| (a.agent.to_string(), a.activity))
+                        .collect();
                 }
                 Msg::Questions(questions) => {
                     // Forget drafts for questions nobody is waiting on any
@@ -266,6 +280,7 @@ impl App {
                             Cmd::Discovered,
                             Cmd::Runtimes,
                             Cmd::Questions,
+                            Cmd::Activity,
                         ] {
                             self.send(cmd);
                         }
@@ -287,7 +302,13 @@ impl App {
         // worker. Coming back re-reads everything anyway.
         if self.connected.is_ok() && self.last_refresh.elapsed() >= REFRESH {
             self.last_refresh = Instant::now();
-            for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Questions] {
+            for cmd in [
+                Cmd::Agents,
+                Cmd::Leases,
+                Cmd::Discovered,
+                Cmd::Questions,
+                Cmd::Activity,
+            ] {
                 self.send(cmd);
             }
         }
@@ -390,16 +411,47 @@ impl App {
             ui.heading(project);
             egui::Grid::new(format!("agents-{project}"))
                 .striped(true)
-                .num_columns(7)
+                .num_columns(8)
                 .show(ui, |ui| {
-                    for header in ["NAME", "RUNTIME", "STATUS", "BRANCH", "LEASES", "SEEN", ""] {
+                    for header in [
+                        "NAME", "RUNTIME", "DOING", "BRANCH", "LEASES", "SEEN", "", "",
+                    ] {
                         ui.label(RichText::new(header).strong());
                     }
                     ui.end_row();
                     for agent in agents {
                         ui.label(&agent.spec.name);
                         ui.label(&agent.spec.runtime);
-                        ui.label(agent.status.to_string());
+                        // What it is doing, not merely that its process
+                        // exists: blocked agents say what by.
+                        match self.activity.get(agent.id.as_str()) {
+                            Some(Activity::Blocked {
+                                resource, held_by, ..
+                            }) => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "blocked on {resource}{}",
+                                        held_by
+                                            .first()
+                                            .map(|h| format!(" ({})", self.name_of(h.as_str())))
+                                            .unwrap_or_default()
+                                    ))
+                                    .color(Color32::from_rgb(200, 140, 60)),
+                                )
+                                .on_hover_text("Waiting for a lease another agent holds.");
+                            }
+                            Some(Activity::Working { .. }) => {
+                                ui.label(
+                                    RichText::new("working").color(Color32::from_rgb(60, 170, 90)),
+                                );
+                            }
+                            Some(other) => {
+                                ui.label(RichText::new(other.label()).weak());
+                            }
+                            None => {
+                                ui.label(RichText::new(agent.status.to_string()).weak());
+                            }
+                        }
                         ui.label(
                             agent
                                 .vcs
@@ -1050,6 +1102,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Agent { .. } => None,
             _ => None,
         },
+        Cmd::Activity => match client.call(&Request::Activity {
+            agent: None,
+            project: None,
+            all: false,
+        })? {
+            Response::Activity { activity } => Some(Msg::Activity(activity)),
+            _ => None,
+        },
         Cmd::Questions => match client.call(&Request::Questions {
             agent: Some(agentdocker_core::HUMAN.to_owned()),
         })? {
@@ -1273,8 +1333,9 @@ mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 7);
+        assert_eq!(received.len(), 8);
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Activity)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));

@@ -49,6 +49,7 @@ mod recovery;
 mod relay;
 mod restore;
 mod transport;
+mod waiting;
 mod working;
 mod worktrees;
 
@@ -203,6 +204,10 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Claims waiting for a resource, in arrival order. Connection-scoped
+    /// and never persisted: a restart drops every waiting client, which
+    /// reconnects and takes a new place.
+    waiting: agentdocker_core::WaitQueue,
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
@@ -298,6 +303,26 @@ fn same_process(pid: u32, recorded: Option<DateTime<Utc>>) -> bool {
 
 /// Wait until a lease overlapping `resource` is released or expires, or the
 /// deadline passes. `true` means a retry is worthwhile.
+/// A cycle as a sentence: `a → task:x (b) → task:y (a)`.
+fn describe(cycle: &[agentdocker_core::Blocked]) -> String {
+    cycle
+        .iter()
+        .map(|step| {
+            format!(
+                "{} waits for {} held by {}",
+                step.agent.short(),
+                step.resource,
+                step.held_by.short()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Sleep until something happens that could change this waiter's answer:
+/// an overlapping lease clearing, or a waiter ahead of it leaving the
+/// queue. The second matters as much as the first — the head of a queue
+/// giving up makes the next one next, and nothing else would say so.
 async fn wait_for_release(
     events: &mut broadcast::Receiver<Event>,
     resource: &ResourceKey,
@@ -311,6 +336,9 @@ async fn wait_for_release(
                 {
                     return true;
                 }
+                EventKind::LeaseWaitEnded {
+                    resource: freed, ..
+                } if freed.overlaps(resource) => return true,
                 _ => {}
             },
             // Events were dropped; a retry costs nothing.
@@ -723,6 +751,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions: HashMap::new(),
+                waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
             }),
             shutdown: Notify::new(),
@@ -927,6 +956,12 @@ impl Daemon {
                 text,
             } => self.answer(from, message, text).await,
             Request::Questions { agent } => self.questions(agent),
+            Request::Activity {
+                agent,
+                project,
+                all,
+            } => self.activity(agent, project, all).await,
+            Request::Waiting => self.waiting(),
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
             Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
@@ -1942,6 +1977,13 @@ impl Daemon {
                 continue;
             };
             change.seq = seq;
+            // The strongest "working" signal there is: a file changed
+            // under a lease this agent holds. Recording it keeps derived
+            // activity honest for a runtime with no hooks at all.
+            if let Attribution::Agent { agent, .. } = &change.by {
+                let agent = agent.clone();
+                state.registry.touch(&agent, now);
+            }
             state.warn_readers(&change, physical.as_deref());
             // A second checkout on this path means two agents are in the
             // same work: give them a room.
@@ -2217,6 +2259,12 @@ impl Daemon {
         // a failed attempt and the wait is not missed.
         let mut events = self.subscribe_events();
         let mut reported_conflict = false;
+        // The place in the queue, taken on the first conflict and given
+        // up however this ends — including by the client disappearing,
+        // which drops this future and with it the guard. A cancelled
+        // claim left at the head of a queue would starve everyone
+        // behind it.
+        let mut waiting = waiting::Waiting::new(self, holder.clone(), resource.clone());
         loop {
             let (message, held_by) = {
                 let mut state = lock(&self.state);
@@ -2233,14 +2281,30 @@ impl Daemon {
                 state.touch(&holder);
                 let now = Utc::now();
                 state.expire_leases_at(now);
-                let result = state.leases.claim(
-                    resource.clone(),
-                    holder.clone(),
-                    mode,
-                    ttl(ttl_secs),
-                    note.clone(),
-                    now,
-                );
+                // Fairness: a waiter with somebody ahead of it on an
+                // overlapping resource does not try, so a newcomer
+                // cannot take what somebody has been waiting minutes
+                // for. A first attempt has no ticket and always tries.
+                let result = if state.may_attempt(waiting.ticket()) {
+                    state.leases.claim(
+                        resource.clone(),
+                        holder.clone(),
+                        mode,
+                        ttl(ttl_secs),
+                        note.clone(),
+                        now,
+                    )
+                } else {
+                    Err(LeaseError::Conflict {
+                        resource: resource.clone(),
+                        held_by: state
+                            .leases
+                            .holders_of(&resource)
+                            .into_iter()
+                            .cloned()
+                            .collect(),
+                    })
+                };
                 let (message, held_by) = match result {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
@@ -2250,6 +2314,8 @@ impl Daemon {
                         state.emit(EventKind::LeaseClaimed {
                             lease: lease.clone(),
                         });
+                        drop(state);
+                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
                     Ok(Claimed::Renewed(lease)) => {
@@ -2257,6 +2323,8 @@ impl Daemon {
                         state.emit(EventKind::LeaseRenewed {
                             lease: lease.clone(),
                         });
+                        drop(state);
+                        waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
                     Err(err) => {
@@ -2277,9 +2345,39 @@ impl Daemon {
                         held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
                     });
                 }
+                // Before agreeing to wait: would waiting close a cycle?
+                // If it would, nobody in it could ever proceed, and the
+                // newcomer is always the victim — deterministic, and it
+                // needs no priorities.
+                if wait_secs > 0
+                    && waiting.ticket().is_none()
+                    && let Some(cycle) = state.deadlock(&holder, &resource)
+                {
+                    warn!(agent = %holder.short(), %resource, "claim would deadlock");
+                    state.emit(EventKind::LeaseDeadlock {
+                        cycle: cycle.clone(),
+                    });
+                    return Response::Error {
+                        code: ErrorCode::Deadlock,
+                        message: format!(
+                            "waiting for {resource} would deadlock: {}",
+                            describe(&cycle)
+                        ),
+                        details: Some(json!({ "cycle": cycle, "held_by": held_by })),
+                    };
+                }
                 (message, held_by)
             };
-            if wait_secs == 0 || !wait_for_release(&mut events, &resource, deadline).await {
+            if wait_secs == 0 {
+                return Response::Error {
+                    code: ErrorCode::Conflict,
+                    message,
+                    details: Some(json!({ "held_by": held_by })),
+                };
+            }
+            waiting.join(mode);
+            if !wait_for_release(&mut events, &resource, deadline).await {
+                waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
                     code: ErrorCode::Conflict,
                     message,
@@ -3483,6 +3581,7 @@ impl Drop for Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentdocker_core::Activity;
     use tempfile::TempDir;
 
     fn open(dir: &TempDir) -> Arc<Daemon> {
@@ -4169,6 +4268,308 @@ mod tests {
             panic!("unexpected {response:?}")
         };
         assert_eq!(text, "at once");
+    }
+
+    // ----- the wait queue, deadlock, and derived activity ----------------
+
+    async fn activity_of(daemon: &Arc<Daemon>, agent: &str) -> Activity {
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: Some(agent.to_owned()),
+                project: None,
+                all: true,
+            })
+            .await
+        else {
+            panic!("activity did not answer with activity")
+        };
+        activity.into_iter().next().expect("one agent").activity
+    }
+
+    async fn claim_waiting(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        resource: &str,
+        wait_secs: u64,
+    ) -> Response {
+        daemon
+            .handle(Request::Claim {
+                agent: agent.to_owned(),
+                resource: resource.to_owned(),
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 60,
+                note: None,
+                wait_secs,
+            })
+            .await
+    }
+
+    /// Wait until the queue is this deep, so a test never races the tasks
+    /// it started.
+    async fn queued(daemon: &Arc<Daemon>, want: usize) -> Vec<agentdocker_core::Waiter> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let Response::Waiting { waiting } = daemon.handle(Request::Waiting).await else {
+                    panic!("waiting did not answer with waiters")
+                };
+                if waiting.len() == want {
+                    return waiting;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the queue reached the expected depth")
+    }
+
+    async fn release(daemon: &Arc<Daemon>, agent: &str, lease: LeaseId) {
+        daemon
+            .handle(Request::Release {
+                agent: agent.to_owned(),
+                lease,
+                summary: None,
+                summary_source: agentdocker_core::SummarySource::Explicit,
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn the_agent_that_waited_longest_gets_the_lease() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        let first = register(&daemon, "first", Some(std::process::id())).await;
+        let second = register(&daemon, "second", Some(std::process::id())).await;
+
+        let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
+            panic!("the first claim should succeed")
+        };
+
+        let first_claim = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "first", "task:contested", 10).await })
+        };
+        // Queued before the second one arrives, so the arrival order
+        // under test is the one intended rather than whichever task the
+        // runtime happened to poll first.
+        let queue = queued(&daemon, 1).await;
+        assert_eq!(queue[0].agent, first.id);
+
+        let second_claim = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "second", "task:contested", 10).await },
+            )
+        };
+        let queue = queued(&daemon, 2).await;
+        assert_eq!(queue[1].agent, second.id, "and behind the first");
+
+        release(&daemon, holder.id.as_str(), lease.id).await;
+
+        let won = tokio::time::timeout(std::time::Duration::from_secs(5), first_claim)
+            .await
+            .expect("the first waiter finished")
+            .unwrap();
+        let Response::Lease { lease: won } = won else {
+            panic!("the older waiter should have won: {won:?}")
+        };
+        assert_eq!(won.holder, first.id, "not whoever raced fastest");
+        second_claim.abort();
+    }
+
+    #[tokio::test]
+    async fn a_waiter_that_goes_away_does_not_hold_the_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        register(&daemon, "leaver", Some(std::process::id())).await;
+        let stayer = register(&daemon, "stayer", Some(std::process::id())).await;
+
+        let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
+            panic!("the first claim should succeed")
+        };
+        let leaving = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "leaver", "task:contested", 30).await },
+            )
+        };
+        queued(&daemon, 1).await;
+        let staying = {
+            let daemon = daemon.clone();
+            tokio::spawn(
+                async move { claim_waiting(&daemon, "stayer", "task:contested", 30).await },
+            )
+        };
+        queued(&daemon, 2).await;
+
+        // The client at the head of the queue disconnects: its future is
+        // dropped, which must give up its place rather than starve the
+        // one behind it.
+        leaving.abort();
+        queued(&daemon, 1).await;
+        release(&daemon, holder.id.as_str(), lease.id).await;
+
+        let won = tokio::time::timeout(std::time::Duration::from_secs(5), staying)
+            .await
+            .expect("the remaining waiter finished")
+            .unwrap();
+        let Response::Lease { lease: won } = won else {
+            panic!("the waiter behind it should have won: {won:?}")
+        };
+        assert_eq!(won.holder, stayer.id);
+    }
+
+    #[tokio::test]
+    async fn a_claim_that_would_close_a_ring_is_refused_with_the_ring() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+
+        // alpha holds x, beta holds y.
+        assert!(matches!(
+            claim(&daemon, "alpha", "task:x").await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            claim(&daemon, "beta", "task:y").await,
+            Response::Lease { .. }
+        ));
+        // alpha waits for y.
+        let alpha_waits = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "alpha", "task:y", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        // beta asking for x closes the ring, so it is refused at once
+        // rather than after both TTLs.
+        let refused = claim_waiting(&daemon, "beta", "task:x", 30).await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("beta should have been refused")
+        };
+        assert_eq!(code, ErrorCode::Deadlock);
+        assert!(message.contains("deadlock"), "{message}");
+        let cycle = details.expect("a cycle").get("cycle").cloned().unwrap();
+        let cycle: Vec<agentdocker_core::Blocked> = serde_json::from_value(cycle).unwrap();
+        assert_eq!(cycle.len(), 2, "beta → alpha → beta: {cycle:?}");
+        assert_eq!(cycle[0].agent, beta.id);
+        assert_eq!(cycle[0].held_by, alpha.id);
+        assert_eq!(cycle[1].agent, alpha.id);
+        assert_eq!(cycle[1].held_by, beta.id);
+        // And the refusal changed nothing: alpha is still waiting.
+        assert_eq!(queued(&daemon, 1).await.len(), 1);
+        alpha_waits.abort();
+    }
+
+    #[tokio::test]
+    async fn plain_contention_still_waits_rather_than_being_called_a_deadlock() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "holder", Some(std::process::id())).await;
+        register(&daemon, "waiter", Some(std::process::id())).await;
+        assert!(matches!(
+            claim(&daemon, "holder", "task:x").await,
+            Response::Lease { .. }
+        ));
+        // The holder wants nothing, so there is no cycle: the waiter
+        // waits and then reports an ordinary conflict.
+        let response = claim_waiting(&daemon, "waiter", "task:x", 1).await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_says_what_an_agent_is_blocked_on_and_who_has_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let holder = register(&daemon, "holder", Some(std::process::id())).await;
+        let waiter = register(&daemon, "waiter", Some(std::process::id())).await;
+
+        // Both have just acted through the daemon, so both are working.
+        assert!(matches!(
+            activity_of(&daemon, "holder").await,
+            Activity::Working { .. }
+        ));
+
+        assert!(matches!(
+            claim(&daemon, "holder", "task:the-work").await,
+            Response::Lease { .. }
+        ));
+        let blocked = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "waiter", "task:the-work", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        let activity = activity_of(&daemon, waiter.id.as_str()).await;
+        let Activity::Blocked {
+            resource, held_by, ..
+        } = activity
+        else {
+            panic!("the waiter should be blocked: {activity:?}")
+        };
+        assert_eq!(resource.as_str(), "task:the-work", "on a named resource");
+        assert_eq!(held_by, vec![holder.id.clone()], "held by a named agent");
+
+        // Blocked sorts first, because it is the one somebody has to do
+        // something about.
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: None,
+                project: None,
+                all: false,
+            })
+            .await
+        else {
+            panic!("activity did not answer with activity")
+        };
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity[0].agent, waiter.id);
+        assert_eq!(activity[0].activity.label(), "blocked");
+
+        blocked.abort();
+    }
+
+    #[tokio::test]
+    async fn a_quiet_agent_is_idle_and_a_finished_one_is_finished() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let quiet = register(&daemon, "quiet", Some(std::process::id())).await;
+        // Backdate its last contact past the activity window.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&quiet.id).unwrap();
+            record.last_seen = Utc::now() - Duration::hours(1);
+        }
+        assert!(matches!(
+            activity_of(&daemon, quiet.id.as_str()).await,
+            Activity::Idle { .. }
+        ));
+
+        daemon
+            .handle(Request::Deregister {
+                agent: quiet.id.to_string(),
+            })
+            .await;
+        assert_eq!(
+            activity_of(&daemon, quiet.id.as_str()).await,
+            Activity::Finished
+        );
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

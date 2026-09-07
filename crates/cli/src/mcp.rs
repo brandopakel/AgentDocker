@@ -440,6 +440,15 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
+            "activity" => {
+                let args: ActivityArgs = parse(arguments)?;
+                self.forward(Request::Activity {
+                    agent: None,
+                    project: args.project.as_deref().map(crate::project_selector),
+                    all: args.all,
+                })
+                .await
+            }
             "claim" => {
                 let args: ClaimArgs = parse(arguments)?;
                 let response = self
@@ -635,6 +644,14 @@ struct AnswerArgs {
 struct OpenQuestionsArgs {
     #[serde(default = "default_true")]
     mine: bool,
+}
+
+#[derive(Deserialize)]
+struct ActivityArgs {
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    all: bool,
 }
 
 #[derive(Deserialize)]
@@ -1080,6 +1097,18 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "activity",
+            "description": "What every agent is doing: working, idle, starting, or blocked on a named resource held by named agents. Derived from the working set, so `blocked` says what by — read it before assuming another agent is stuck or gone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only agents in this project; an id prefix or an absolute path inside it." },
+                    "all": { "type": "boolean", "default": false, "description": "Include agents that have finished." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "claim",
             "description": format!("Take a time-limited lease on a resource so no other agent works on it at the same time. {resource_doc} On conflict returns claimed=false and who holds it — do not proceed; message the holder or wait."),
             "inputSchema": {
@@ -1371,6 +1400,7 @@ mod tests {
                 "ask_human",
                 "answer_question",
                 "open_questions",
+                "activity",
                 "claim",
                 "renew",
                 "release",

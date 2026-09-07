@@ -216,7 +216,9 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout)` | sends a `question` message and holds the connection until an answer names it; timeout defaults to 300 s and is clamped to 1–86,400 |
 | `answer {from?, message, text}` | `sent` | reply to a waiting question by its id; who to reply to comes from the question, not the caller; `from` defaults to `user` |
 | `questions {agent?}` | `questions {questions: Question[]}` | what is still waiting, newest first; `agent` narrows to the ones put to that agent |
-| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
+| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease`, `error(conflict)` or `error(deadlock)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) queues in arrival order and retries when it is this waiter's turn; a wait that would close a cycle is refused at once with `details.cycle` |
+| `activity {agent?, project?, all?}` | `activity {activity: AgentActivity[]}` | what each agent is doing — `starting`, `working`, `blocked {resource, held_by, since}`, `idle`, `finished` — blocked first; derived from the wait queue and last contact, never from terminal output |
+| `waiting` | `waiting {waiting: Waiter[]}` | the claim queue, oldest first |
 | `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
 | `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
 | `release_all {agent, summary?, summary_source?}` | `leases` | every lease the agent holds; the reply lists them |
@@ -245,7 +247,7 @@ Two **modes**: `exclusive` conflicts with any lease on an overlapping resource h
 
 **Conflicts are informative.** A refused claim returns every blocking lease including its holder, mode, expiry, and note, and emits a `lease_conflict` event. Agents are expected to read the note, message the holder, or wait.
 
-**Waiting.** `claim` with `wait_secs > 0` subscribes to the event stream *before* its first attempt, and on conflict waits for a `lease_released` or `lease_expired` event on an overlapping resource (or the deadline) before trying again. One `lease_conflict` event is emitted per request no matter how long it waits. Closing a waiting connection cancels its request; liveness is checked under the state lock before every acquisition. Claim and renew expiration effects are persisted and announced using the same timestamp as the core operation. Waiters are not queued: when a lease clears, every waiter retries and the lease table decides, so two agents waiting on the same resource race. FIFO fairness is an open question below.
+**Waiting.** `claim` with `wait_secs > 0` subscribes to the event stream *before* its first attempt, and on conflict takes a place in the wait queue and sleeps until an overlapping lease clears, a waiter ahead of it leaves, or the deadline passes. One `lease_conflict` event is emitted per request no matter how long it waits. Waiters are served in arrival order — a waiter attempts only when no older waiter wants something overlapping that would exclude it — so a newcomer cannot starve one already waiting; two shared waiters do not block each other. Closing a waiting connection cancels its request and gives up its place, so a vanished client never holds the head of a queue. A wait that would close a cycle is refused immediately with `error(deadlock)`. Liveness is checked under the state lock before every acquisition. Claim and renew expiration effects are persisted and announced using the same timestamp as the core operation.
 
 ## Messaging
 
@@ -312,7 +314,7 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 ### Phase 1 — adapters & persistence *(done)*
 
-[Persistence](#persistence), [`agentdocker mcp`](#agentdocker-mcp-cratesclisrcmcprs), [`agentdocker hook`](#agentdocker-hook-cratesclisrchooksrs), [`Agentfile.toml`](#agentfiletoml-and-agentdocker-up--down-cratesclisrcagentfilers-teamsrs), and `claim --wait` all exist. Two things the original design called for are deliberately deferred: a FIFO wait queue (today's waiters race when a lease clears; see [Wait queue and deadlock detection](#wait-queue-and-deadlock-detection), which needs the queue anyway) and a daemon-side notion of a team (the Agentfile is a client convenience; `list {labels?}` arrives with project filtering in Phase 2 so `ps --team` can be sugar over labels).
+[Persistence](#persistence), [`agentdocker mcp`](#agentdocker-mcp-cratesclisrcmcprs), [`agentdocker hook`](#agentdocker-hook-cratesclisrchooksrs), [`Agentfile.toml`](#agentfiletoml-and-agentdocker-up--down-cratesclisrcagentfilers-teamsrs), and `claim --wait` all exist. A FIFO wait queue now exists (see [Wait queue, deadlock detection, and what an agent is doing](#wait-queue-deadlock-detection-and-what-an-agent-is-doing)). One thing the original design called for is still deliberately deferred: a daemon-side notion of a team (the Agentfile is a client convenience; `list {labels?}` arrives with project filtering in Phase 2 so `ps --team` can be sugar over labels).
 
 ### Phase 2 — native install & projects
 
@@ -494,12 +496,13 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 
 `agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs any `agentdocker` command and shows what it said, because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so they arrive whether or not the window is open. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
 
-#### Wait queue and deadlock detection
+#### Wait queue, deadlock detection, and what an agent is doing *(done)*
 
-`claim --wait` today is a retry loop inside the claim handler: on conflict the request waits for a release or expiry event on an overlapping resource and tries again, and when several requests wait on one resource they race. This item makes waiting a daemon-level fact and derives two things from it.
+`claim --wait` used to be a retry loop and nothing more: on a conflict the request slept until an overlapping lease cleared, then raced every other sleeper for it. Making waiting a recorded fact fixes that and gives two more things for free, which is why rows 13 and 24 landed together.
 
-- **FIFO queue.** Core `WaitQueue` (pure) records waiting requests per resource in arrival order; when a lease clears, only the oldest waiter on an overlapping resource may take it, so a newcomer cannot starve someone already waiting. `lease_waiting {resource, requester, position}` is emitted when a request starts waiting and `lease_wait_timeout {resource, requester}` when it gives up (the response stays `error(conflict)` with the blocking leases, as now). Waiters remain connection-scoped and are never persisted: a daemon restart drops every waiting client, which reconnects and re-queues.
-- **Deadlock detection.** Waiters form a graph: an edge from each waiter to every holder of a blocking lease. Core `WaitGraph` (pure, tested) maintains it and, on every new wait, searches for a cycle through the requester. If one exists the claim is refused immediately with `ErrorCode::Deadlock` and `details.cycle` listing the agents and resources, and `lease_deadlock {cycle}` is emitted; the newcomer is always the victim, which is deterministic and needs no priorities. TTLs already bound how long a deadlock can last; detection makes it instant and explains it. Priority-based victim selection stays an open question.
+- **FIFO queue.** `agentdocker_core::WaitQueue` (pure, no clock) records waiting requests in arrival order, with one order across the whole table rather than one per resource, so overlapping keys queue together. A waiter attempts a claim only when no *older* waiter wants something that overlaps and would exclude it; a newcomer therefore cannot take what somebody has been waiting minutes for. Two shared waiters do not block each other, so a queue of readers is not serialised by its own fairness rule. `lease_waiting {resource, requester, position}` is emitted on joining and `lease_wait_ended {resource, requester, outcome}` on leaving — `claimed`, `timeout`, `cancelled`, or `deadlock`. (The original design named only `lease_wait_timeout`; one event covering every way a wait ends says strictly more and is what waiters wake on.) A place is given up by an RAII guard, so a client that simply disconnects releases its place rather than starving the queue behind it: the request's future is dropped, and the guard with it. Waiters are connection-scoped and never persisted; a daemon restart drops every waiting client, which reconnects and takes a new place.
+- **Deadlock detection.** `wait::deadlock` is a pure depth-first search over two slices the daemon already keeps — who holds what, and who waits for what — so there is no separate graph to keep in step with the lease table. Before a claim agrees to wait, it asks whether waiting would close a cycle; if it would, the claim is refused at once with `ErrorCode::Deadlock`, `details.cycle` naming every agent and resource in the ring, and a `lease_deadlock {cycle}` event. The newcomer is always the victim: deterministic, and it needs no priorities. TTLs already bounded how long a deadlock could last; detection makes it instant and explains it. Priority-based victim selection stays an open question.
+- **Derived activity.** An agent in the wait queue is blocked **on a named resource held by named agents** — the thing a multiplexer can only guess at from terminal output. `activity {agent?, project?, all?}` answers `activity {activity: AgentActivity[]}`, where each is `starting`, `working`, `blocked {resource, held_by, since}`, `idle` or `finished`, blocked ones first because those are what somebody has to act on. Working means the agent acted through the daemon within two minutes: hooks report every tool run, the MCP server every call, and a file changing under a lease the agent holds now touches it too, so a runtime with no hooks at all is still read honestly. `agentdocker activity` prints it, `ps` carries it as a `DOING` column, `waiting` lists the queue itself, MCP exposes `activity`, and the app shows it beside each agent instead of repeating the process status.
 
 #### The human as an agent *(done)*
 
@@ -573,7 +576,7 @@ Row 26 therefore makes our own output lean, and the first half is done: MCP tool
 
 #### Derived activity
 
-Herdr marks every pane working, blocked, or idle. That is the right question and we can answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; an agent whose last ledger row is old is idle; an agent changing files is working. Row 24 derives that from the working set instead of guessing at terminal output, and it is what the desktop app should show beside each agent.
+Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; an agent that has not acted through the daemon for two minutes is idle; an agent changing a file under a lease it holds is working. Row 24 derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
 
 ### Phase 6 — Windows and federation
 
@@ -601,7 +604,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 10 | 🔄 `run --isolate` ✅, `worktree-diff` ✅, `overlap` ✅; `commit` (an agent committing its worktree through the daemon, so the act is journaled and attributed) is not built | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
-| 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
+| 13 | ✅ FIFO wait queue with RAII places, pure deadlock search over the lease and wait tables, `error(deadlock)` with the cycle, `waiting` | 5 | — |
 | 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
@@ -614,12 +617,12 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
 | 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
 | 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
-| 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
+| 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 25, 22 (contests, which need 14's human arbiter), 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -627,21 +630,20 @@ Listed here so the wire-protocol table above stays a description of what exists.
 
 | Request | Response | Phase |
 |---|---|---|
-| `claim {…}` | adds `error(deadlock)` | 5 |
 | `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
 | `diff {agent, stat?}` | `diff` | 4 |
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 
-Shipped events include `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. `Timeout` is shipped (`ask`); `Deadlock` follows with row 13.
+`lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Planned events: `policy_denied`. Error codes `Timeout` (`ask`) and `Deadlock` (`claim --wait`) are both shipped.
 
 ## Open questions
 
 - Should topic messages ever queue? Durable subscriptions solve it, but require the daemon to know about an agent's interests when it is offline. The `project:` destination removes the most common reason to want this.
-- Priority vs. fairness for contested leases: waiters race today, and Phase 5 makes them FIFO. Whether labels or policy should ever let a claim jump the queue, and whether deadlock victims should be chosen by priority, is deferred until there is usage to look at.
+- Priority vs. fairness for contested leases: waiters are FIFO. Whether labels or policy should ever let a claim jump the queue, and whether deadlock victims should be chosen by priority rather than always being the newcomer, is deferred until there is usage to look at.
 - Whether `from` should be verified for *unsandboxed* agents too. Per-agent tokens (Phase 4) settle it for sandboxed runtimes, where it matters; requiring them from local shells and hooks would cost ergonomics for little, so they stay optional until there is a reason.
 - Read-set capacity and eviction: 5,000 marks per agent is a guess; measure a long Claude Code session before tuning.
 

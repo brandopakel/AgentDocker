@@ -299,6 +299,20 @@ pub enum Request {
         #[serde(default)]
         agent: Option<String>,
     },
+    /// What each agent is doing: working, idle, blocked on a named
+    /// resource held by named agents, starting, or finished. Derived
+    /// from the working set, never from terminal output.
+    Activity {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        /// Include agents that have finished.
+        #[serde(default)]
+        all: bool,
+    },
+    /// Who is waiting for what, oldest first.
+    Waiting,
 
     Claim {
         agent: String,
@@ -554,6 +568,10 @@ pub enum ErrorCode {
     /// The caller waited as long as it asked to and the thing it waited
     /// for did not happen. Nothing failed; nobody answered yet.
     Timeout,
+    /// Waiting for this would close a cycle: every agent in it is
+    /// waiting for something another member holds, so none could ever
+    /// proceed. `details.cycle` says who and what.
+    Deadlock,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -665,6 +683,12 @@ pub enum Response {
     },
     Questions {
         questions: Vec<crate::Question>,
+    },
+    Activity {
+        activity: Vec<crate::AgentActivity>,
+    },
+    Waiting {
+        waiting: Vec<crate::Waiter>,
     },
     Lease {
         lease: Lease,

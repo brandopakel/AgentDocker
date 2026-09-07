@@ -17,7 +17,7 @@ pub mod registry;
 
 pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, VcsState};
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
-pub use event::{Event, EventKind};
+pub use event::{Event, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use message::{
@@ -27,6 +27,9 @@ pub use project::{ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
+
+pub mod wait;
+pub use wait::{Activity, AgentActivity, Blocked, WaitQueue, Waiter};
 
 pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
