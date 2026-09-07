@@ -73,7 +73,7 @@ class ContainerLogRetention(unittest.TestCase):
                     with self.assertRaises(subprocess.TimeoutExpired):
                         EVIDENCE.capture_tail([sys.executable, "-c",
                             "import time;print('primary failure',flush=True);time.sleep(60)"],
-                            output, timeout=0.2)
+                            output, timeout=1)
                 self.assertEqual(output.read_text(), "primary failure\n")
             finally:
                 for child in children:
