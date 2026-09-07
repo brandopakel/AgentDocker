@@ -1,6 +1,6 @@
 # Native desktop distribution
 
-The product name is **agentdocker**. macOS uses an application bundle with the technical `.app` extension hidden in Finder; its window, bundle display name and disk image say agentdocker. Linux ships the same native window with a desktop launcher and icon. The window connects to the per-user daemon over a Unix socket. No browser or local HTTP server is involved.
+The product name is **agentdocker**. Its window, bundle display name and disk image say agentdocker. macOS uses a technical `.app` bundle extension; Finder normally hides it according to the user's display preferences. Packaging does not write FinderInfo to force hiding: that invalidates strict code-signature verification. Linux ships the same native window with a desktop launcher and icon. The window connects to the per-user daemon over a Unix socket. No browser or local HTTP server is involved.
 
 ## Build and verify a local preview
 

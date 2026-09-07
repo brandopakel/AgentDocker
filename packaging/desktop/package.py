@@ -170,6 +170,11 @@ def macos(args, stage, info):
         archive.unlink()
         zip_app(app, archive)
         info["notarized"] = True
+    # Validate the final distributed bytes, after all bundle operations and
+    # resource-preserving archive creation. This catches forbidden FinderInfo.
+    with tempfile.TemporaryDirectory(prefix="ad-package-check-") as scratch:
+        run("/usr/bin/ditto", "-x", "-k", archive, scratch)
+        run("/usr/bin/codesign", "--verify", "--deep", "--strict", Path(scratch) / app.name)
     if args.dmg:
         with tempfile.TemporaryDirectory(prefix="ad-dmg-", dir=stage) as scratch:
             image_root = Path(scratch)

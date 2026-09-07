@@ -134,15 +134,48 @@ impl Daemon {
                 let status = AgentStatus::Failed {
                     reason: format!("could not be restored: {error:#}"),
                 };
-                if let Some(record) = state.registry.set_status(&id, status.clone(), Utc::now()) {
-                    state.persist("agent", |store| store.upsert_agent(&record));
+                if let Some(mut record) = state.registry.get(&id).cloned() {
+                    record.status = status.clone();
+                    record.finished_at = Some(Utc::now());
+                    record.last_seen = Utc::now();
+                    let mut event = Event::new(
+                        EventKind::AgentExited {
+                            agent: id.clone(),
+                            status: status.clone(),
+                        },
+                        Utc::now(),
+                    );
+                    event.seq = state.next_seq;
+                    if state
+                        .store_op("restore failure", |store| {
+                            store.agent_transition(&record, &event)
+                        })
+                        .is_none()
+                    {
+                        break;
+                    }
+                    *state
+                        .registry
+                        .get_mut(&id)
+                        .expect("restore identity retained") = record;
+                    state.next_seq += 1;
+                    let _ = state.events.send(event);
                 }
-                state.store_op("restore_point", |store| {
-                    store.delete_document("restore_point", id.as_str())
-                });
+                if state
+                    .store_op("restore_point", |store| {
+                        store.delete_document("restore_point", id.as_str())
+                    })
+                    .is_none()
+                {
+                    break;
+                }
+                let protected = state.leases.clone();
                 let released = state.leases.release_all(&id);
                 state.finish_release(&id, released, None, SummarySource::Explicit);
-                state.emit(EventKind::AgentExited { agent: id, status });
+                if state.storage_error.is_some() {
+                    state.leases = protected;
+                    break;
+                }
             }
         }
     }
@@ -257,13 +290,13 @@ impl Daemon {
                     store.finish_restore(&running, &event)
                 });
             }
-            // The owned PID is retained in memory for shutdown even if SQLite
-            // cannot record it. No successful restore is published on failure.
-            *state
-                .registry
-                .get_mut(&id)
-                .expect("restore identity retained") = running;
             if state.storage_error.is_none() && !cancelled {
+                // The supervisor owns the child/PID on every path. Expose the
+                // Running record only alongside its committed restore event.
+                *state
+                    .registry
+                    .get_mut(&id)
+                    .expect("restore identity retained") = running;
                 state.next_seq += 1;
                 let _ = state.events.send(event);
                 state.send(
@@ -283,7 +316,7 @@ impl Daemon {
         }
         let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
         if !persisted {
-            if tokio::time::timeout(std::time::Duration::from_secs(5), supervision)
+            if tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision)
                 .await
                 .is_err()
             {
@@ -670,6 +703,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_prelaunch_cleanup_preserves_memory_and_durable_protection() {
+        for statement in [
+            "CREATE TRIGGER fail BEFORE INSERT ON agents WHEN json_extract(NEW.json, '$.status.state') = 'failed' BEGIN SELECT RAISE(ABORT, 'status fault'); END;",
+            "CREATE TRIGGER fail BEFORE DELETE ON documents WHEN OLD.kind = 'restore_point' BEGIN SELECT RAISE(ABORT, 'point fault'); END;",
+            "CREATE TRIGGER fail BEFORE DELETE ON leases BEGIN SELECT RAISE(ABORT, 'release fault'); END;",
+            "CREATE TRIGGER fail BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'agent_exited' BEGIN SELECT RAISE(ABORT, 'exit event fault'); END;",
+        ] {
+            let (_dir, daemon, record, marker) = saved().await;
+            {
+                let mut state = lock(&daemon.state);
+                let current = state.registry.get_mut(&record.id).unwrap();
+                current.spec.command = vec!["/agentdocker-missing-fixture-executable".into()];
+                let current = current.clone();
+                state.store.upsert_agent(&current).unwrap();
+            }
+            let connection = rusqlite::Connection::open(daemon.home.join("state.db")).unwrap();
+            connection.execute_batch(statement).unwrap();
+            daemon.restore_agents().await;
+            let state = lock(&daemon.state);
+            assert!(state.storage_error.is_some(), "{statement}");
+            assert_eq!(state.leases.by_holder(&record.id).len(), 1, "{statement}");
+            assert_eq!(state.store.load_leases().unwrap().len(), 1, "{statement}");
+            assert_eq!(
+                state.registry.get(&record.id).unwrap().status,
+                state.store.load_agents().unwrap()[0].status
+            );
+            assert!(!marker.exists());
+            assert!(state.supervised.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn failed_restore_completion_kills_and_reaps_the_owned_group() {
         let (_dir, daemon, record, _marker) = saved().await;
         lock(&daemon.state)
@@ -679,8 +744,13 @@ mod tests {
         let state = lock(&daemon.state);
         assert!(state.storage_error.is_some());
         assert!(state.supervised.is_empty(), "failed launch must be reaped");
-        let pid = state.registry.get(&record.id).unwrap().pid.unwrap();
-        assert!(!supervisor::group_exists(pid));
+        let current = state.registry.get(&record.id).unwrap();
+        assert_eq!(current.status, AgentStatus::Created);
+        assert!(
+            current.pid.is_none(),
+            "uncommitted Running identity stays private to supervision"
+        );
+        assert_eq!(state.leases.by_holder(&record.id).len(), 1);
         assert!(
             state
                 .store
