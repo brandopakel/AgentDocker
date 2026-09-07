@@ -151,6 +151,42 @@ pub fn activity_cell(activity: &Activity) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::ContestOpened {
+            contest,
+            task,
+            measure,
+            entrants,
+        } => format!(
+            "contest opened   {contest} on {task}, ranked by {measure} ({} entrant(s))",
+            entrants.len()
+        ),
+        EventKind::ContestEntered { contest, agent } => {
+            format!("contest entered  {contest} by {}", agent.short())
+        }
+        EventKind::ContestSubmitted {
+            contest,
+            agent,
+            score,
+            ..
+        } => format!(
+            "contest entry    {contest}: {} scored {score}",
+            agent.short()
+        ),
+        EventKind::ContestClosed {
+            contest,
+            winner,
+            resolution,
+        } => format!(
+            "contest closed   {contest}{}{}",
+            winner
+                .as_ref()
+                .map(|w| format!(": {} wins", w.short()))
+                .unwrap_or_else(|| " with no winner".to_owned()),
+            resolution
+                .as_ref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
         EventKind::LeaseWaiting {
             resource: key,
             requester,

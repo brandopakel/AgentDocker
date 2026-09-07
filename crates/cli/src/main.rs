@@ -13,9 +13,11 @@ mod teams;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use agentdocker_core::contest::Direction;
 use agentdocker_core::{
-    Activity, AgentActivity, AgentRecord, AgentSpec, DiscoveredProcess, HUMAN, Lease, LeaseId,
-    LeaseMode, MessageId, Request, Response, VcsState, protocol::DEFAULT_LEASE_TTL_SECS,
+    Activity, AgentActivity, AgentRecord, AgentSpec, Contest, ContestId, DiscoveredProcess, HUMAN,
+    Lease, LeaseId, LeaseMode, Measure, MessageId, Metric, Request, Response, Standing, VcsState,
+    protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use agentdocker_core::{Change, ProjectRef};
 use anyhow::{Context, Result, bail};
@@ -457,6 +459,20 @@ enum Command {
     },
     /// Claims waiting for a resource, oldest first.
     Waiting,
+    /// Contests: several agents attempt one task, ranked by a measure
+    /// declared before any of them starts.
+    Contest(ContestArgs),
+    /// List contests in a project.
+    Contests {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Only contests this agent is in.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Include closed ones.
+        #[arg(long, short = 'a')]
+        all: bool,
+    },
     /// Questions waiting for an answer.
     Questions {
         /// Only the questions put to this agent; `--me` is the shorthand
@@ -743,6 +759,75 @@ struct SendArgs {
     /// Raw JSON payload instead of text.
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
+}
+
+#[derive(Args)]
+struct ContestArgs {
+    #[command(subcommand)]
+    command: ContestCommand,
+}
+
+#[derive(Subcommand)]
+enum ContestCommand {
+    /// Announce a task and fix the measure that ranks the attempts.
+    Open {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        /// What everyone is attempting.
+        task: String,
+        /// What is compared: `seconds` (how long each entry's own
+        /// validation took, as the daemon timed it — nobody reports it)
+        /// or any other name, which entrants report themselves.
+        #[arg(long, default_value = "seconds")]
+        measure: String,
+        /// More is better, rather than less.
+        #[arg(long)]
+        higher_is_better: bool,
+        /// Differences smaller than this are ties for review to settle.
+        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        noise: f64,
+        /// Other entrants; more may join while it is open.
+        #[arg(long)]
+        entrant: Vec<String>,
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Do not open a channel for the entrants.
+        #[arg(long)]
+        no_channel: bool,
+    },
+    /// Join an open contest.
+    Enter {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+    },
+    /// Submit an attempt: the validation that says it works, and — for a
+    /// reported measure — the number it scored.
+    Submit {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+        /// A passing validation of your own, from `agentdocker validate`.
+        validation: String,
+        /// The score, for a contest ranked by a reported measure. A
+        /// measure can legitimately be negative — a delta, a margin —
+        /// so a leading minus is a number here, not another flag.
+        #[arg(long, allow_negative_numbers = true)]
+        score: Option<f64>,
+    },
+    /// Show where a contest stands.
+    Show { contest: String },
+    /// Declare the answer. Without `--winner` the ranking decides, which
+    /// it can only do when the metric actually separated the entries.
+    Close {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        contest: String,
+        #[arg(long)]
+        winner: Option<String>,
+        #[arg(long)]
+        resolution: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -1501,6 +1586,27 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Contest(args) => contest(&client, args.command).await?,
+        Command::Contests {
+            project,
+            agent,
+            all,
+        } => {
+            let request = Request::Contests {
+                project: project.as_deref().map(project_selector),
+                agent,
+                all,
+            };
+            if let Response::Contests { contests } = client.call(&request).await? {
+                if contests.is_empty() {
+                    println!("no contests; open one with `agentdocker contest open`");
+                } else {
+                    for contest in &contests {
+                        println!("{}", contest.line());
+                    }
+                }
+            }
+        }
         Command::Questions { agent, me } => {
             let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if let Response::Questions { questions } =
@@ -1869,6 +1975,180 @@ fn project_cell(agent: &AgentRecord) -> String {
                     .unwrap_or_default()
             ),
         },
+    }
+}
+
+/// The contest verbs. All of them answer with where the contest stands,
+/// because that is the only question anyone has about one.
+async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
+    let request = match command {
+        ContestCommand::Open {
+            agent,
+            task,
+            measure,
+            higher_is_better,
+            noise,
+            entrant,
+            project,
+            no_channel,
+        } => Request::ContestOpen {
+            agent,
+            project: project.as_deref().map(project_selector),
+            task,
+            metric: Metric {
+                // `seconds` is the one the daemon takes itself, so it is
+                // the default: a number nobody can inflate.
+                measure: match measure.as_str() {
+                    "seconds" | "validation_seconds" => Measure::ValidationSeconds,
+                    name => Measure::Reported {
+                        name: name.to_owned(),
+                    },
+                },
+                direction: if higher_is_better {
+                    Direction::Higher
+                } else {
+                    Direction::Lower
+                },
+                noise,
+            },
+            entrants: entrant,
+            channel: !no_channel,
+        },
+        ContestCommand::Enter { agent, contest } => Request::ContestEnter {
+            agent,
+            contest: ContestId::from(contest),
+        },
+        ContestCommand::Submit {
+            agent,
+            contest,
+            validation,
+            score,
+        } => Request::ContestSubmit {
+            agent,
+            contest: ContestId::from(contest),
+            validation,
+            score,
+        },
+        ContestCommand::Show { contest } => {
+            let request = Request::Contests {
+                project: None,
+                agent: None,
+                all: true,
+            };
+            let Response::Contests { contests } = client.call(&request).await? else {
+                return Ok(());
+            };
+            match contests.iter().find(|c| c.id.as_str() == contest) {
+                Some(found) => print_contest(client, found, &found.standing()).await,
+                None => bail!("no contest {contest}"),
+            }
+            return Ok(());
+        }
+        ContestCommand::Close {
+            agent,
+            contest,
+            winner,
+            resolution,
+        } => Request::ContestClose {
+            agent,
+            contest: ContestId::from(contest),
+            winner,
+            resolution,
+        },
+    };
+    if let Response::Contest { contest, standing } = client.call(&request).await? {
+        print_contest(client, &contest, &standing).await;
+    }
+    Ok(())
+}
+
+/// A contest as a table of attempts, best first, with where it stands.
+async fn print_contest(client: &Client, contest: &Contest, standing: &Standing) {
+    let names = agent_names(client).await;
+    println!("{}  {}", contest.id, contest.task);
+    println!(
+        "ranked by {} ({}), ties within {}{}",
+        contest.metric.measure.name(),
+        match contest.metric.direction {
+            Direction::Lower => "lower is better",
+            Direction::Higher => "higher is better",
+        },
+        contest.metric.noise,
+        if contest.metric.measure.measured() {
+            " — measured by the daemon, not reported"
+        } else {
+            " — reported by entrants, so review is the check"
+        }
+    );
+    if let Some(channel) = &contest.channel {
+        println!("channel: {channel}");
+    }
+    let ranked = contest.ranked();
+    if ranked.is_empty() {
+        println!(
+            "\nno passing entries yet from {} entrant(s)",
+            contest.entrants.len()
+        );
+    } else {
+        println!();
+        let rows: Vec<Vec<String>> = ranked
+            .iter()
+            .enumerate()
+            .map(|(place, entry)| {
+                vec![
+                    (place + 1).to_string(),
+                    named(&names, &entry.agent),
+                    format!("{}", entry.score),
+                    entry
+                        .head
+                        .as_deref()
+                        .unwrap_or("-")
+                        .chars()
+                        .take(7)
+                        .collect(),
+                    entry.validation.clone(),
+                    format::ago(entry.submitted_at),
+                ]
+            })
+            .collect();
+        format::table(
+            &["#", "AGENT", "SCORE", "HEAD", "EVIDENCE", "SUBMITTED"],
+            &rows,
+        );
+    }
+    println!();
+    match standing {
+        Standing::Open { entrants, entries } => {
+            println!("{entries} of {entrants} entrant(s) have submitted");
+        }
+        Standing::Leader {
+            agent,
+            score,
+            margin: Some(margin),
+        } => println!(
+            "{} leads with {score}, {margin} clear of the next",
+            named(&names, agent)
+        ),
+        Standing::Leader { agent, score, .. } => {
+            println!("{} is the only entry: {score}", named(&names, agent));
+        }
+        Standing::Tied { agents, score } => println!(
+            "tied at {score}, inside the noise floor: {}. The metric has said all it can — \
+             review them in the channel and close with an explicit winner.",
+            agents
+                .iter()
+                .map(|a| named(&names, a))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+        Standing::Settled { winner, resolution } => println!(
+            "settled: {} wins{}",
+            named(&names, winner),
+            resolution
+                .as_ref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
     }
 }
 

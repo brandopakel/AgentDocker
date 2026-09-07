@@ -42,6 +42,7 @@ use crate::supervisor;
 mod access;
 mod channels;
 mod containers;
+mod contests;
 mod handoff;
 pub mod humans;
 mod images;
@@ -962,6 +963,32 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
+            Request::ContestOpen {
+                agent,
+                project,
+                task,
+                metric,
+                entrants,
+                channel,
+            } => self.contest_open(&agent, project, task, metric, entrants, channel),
+            Request::ContestEnter { agent, contest } => self.contest_enter(&agent, &contest),
+            Request::ContestSubmit {
+                agent,
+                contest,
+                validation,
+                score,
+            } => self.contest_submit(&agent, &contest, &validation, score),
+            Request::Contests {
+                project,
+                agent,
+                all,
+            } => self.contests(project, agent, all),
+            Request::ContestClose {
+                agent,
+                contest,
+                winner,
+                resolution,
+            } => self.contest_close(&agent, &contest, winner, resolution),
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
             Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
@@ -3587,6 +3614,7 @@ impl Drop for Subscription {
 mod tests {
     use super::*;
     use agentdocker_core::Activity;
+    use agentdocker_core::contest::{Contest, Measure, Metric, Standing};
     use tempfile::TempDir;
 
     fn open(dir: &TempDir) -> Arc<Daemon> {
@@ -4625,6 +4653,411 @@ mod tests {
         assert!(saw_deadlock, "the cycle itself is announced");
         assert!(saw_ended, "and so is the wait ending on it");
         alpha_waits.abort();
+    }
+
+    // ----- contests -------------------------------------------------------
+
+    /// A registered agent in its own checkout, which is what a contest
+    /// entrant is.
+    async fn entrant(daemon: &Arc<Daemon>, root: &Path, name: &str) -> AgentRecord {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("work.txt"), name).unwrap();
+        let mut spec = spec(name);
+        spec.workdir = Some(dir);
+        register_spec(daemon, spec).await
+    }
+
+    /// Run a validation for this agent and return its id.
+    async fn validate(daemon: &Arc<Daemon>, agent: &str, command: &str) -> Response {
+        daemon
+            .handle(Request::Validate {
+                agent: agent.to_owned(),
+                command: vec!["sh".into(), "-c".into(), command.to_owned()],
+                timeout_secs: 30,
+            })
+            .await
+    }
+
+    async fn validation_id(daemon: &Arc<Daemon>, agent: &str, command: &str) -> String {
+        match validate(daemon, agent, command).await {
+            Response::Validation { validation, .. } => validation.id,
+            other => panic!("validate failed: {other:?}"),
+        }
+    }
+
+    async fn open_contest(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        measure: Measure,
+        noise: f64,
+        entrants: Vec<String>,
+    ) -> Contest {
+        let response = daemon
+            .handle(Request::ContestOpen {
+                agent: agent.to_owned(),
+                project: None,
+                task: "make it faster".to_owned(),
+                metric: Metric {
+                    measure,
+                    direction: agentdocker_core::contest::Direction::Lower,
+                    noise,
+                },
+                entrants,
+                channel: true,
+            })
+            .await;
+        match response {
+            Response::Contest { contest, .. } => contest,
+            other => panic!("contest_open failed: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_entry_needs_a_passing_validation_of_its_own() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            0.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+
+        // A failing run is not evidence of anything.
+        let failed = validation_id(&daemon, alpha.id.as_str(), "exit 1").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: failed,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    message,
+                    ..
+                } if message.contains("did not pass")
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Nor is somebody else's passing run.
+        let borrowed = validation_id(&daemon, beta.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: borrowed,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Its own passing run is.
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: mine.clone(),
+                score: Some(7.0),
+            })
+            .await
+        else {
+            panic!("a passing validation of its own should be accepted")
+        };
+        assert_eq!(contest.entries.len(), 1);
+        assert_eq!(contest.entries[0].validation, mine);
+        assert_eq!(contest.entries[0].score, 7.0);
+    }
+
+    #[tokio::test]
+    async fn a_measured_contest_ignores_what_the_entrant_says_the_score_was() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                validation: mine,
+                // A flattering claim, which must be ignored: the daemon
+                // timed the run itself.
+                score: Some(-999.0),
+            })
+            .await
+        else {
+            panic!("submit failed")
+        };
+        let score = contest.entries[0].score;
+        assert!(
+            (0.0..30.0).contains(&score),
+            "the daemon's own timing, not the claim: {score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reported_contest_needs_a_number() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            0.0,
+            vec![],
+        )
+        .await;
+        let mine = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id,
+                validation: mine,
+                score: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    message,
+                    ..
+                } if message.contains("allocations")
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tie_cannot_be_closed_by_the_metric_and_a_clear_win_can() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            // A generous noise floor, so two close numbers tie.
+            5.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+
+        for (agent, score) in [(&alpha, 100.0), (&beta, 102.0)] {
+            let evidence = validation_id(&daemon, agent.id.as_str(), "true").await;
+            daemon
+                .handle(Request::ContestSubmit {
+                    agent: agent.id.to_string(),
+                    contest: contest.id.clone(),
+                    validation: evidence,
+                    score: Some(score),
+                })
+                .await;
+        }
+
+        // Two apart with a floor of five: the metric has said all it can.
+        let refused = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    message,
+                    ..
+                } if message.contains("noise floor")
+            ),
+            "unexpected {refused:?}"
+        );
+
+        // Review is the tie-break, so an explicit winner settles it.
+        let Response::Contest { contest, standing } = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: Some(beta.id.to_string()),
+                resolution: Some("clearer, and the numbers were a tie".to_owned()),
+            })
+            .await
+        else {
+            panic!("an explicit winner should settle it")
+        };
+        assert_eq!(contest.winner, Some(beta.id.clone()));
+        assert!(!contest.is_open());
+        assert!(matches!(standing, Standing::Settled { .. }));
+
+        // And a closed contest takes nothing more.
+        let evidence = validation_id(&daemon, alpha.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: alpha.id.to_string(),
+                contest: contest.id,
+                validation: evidence,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(&response, Response::Error { .. }),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clear_winner_needs_no_arbiter_and_a_stranger_cannot_enter_by_submitting() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let stranger = entrant(&daemon, &root, "stranger").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::Reported {
+                name: "allocations".to_owned(),
+            },
+            1.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+        // A channel came with it, because a tie has to be argued
+        // somewhere and asking for a room afterwards looks like a
+        // rematch.
+        assert!(contest.channel.is_some());
+
+        for (agent, score) in [(&alpha, 100.0), (&beta, 40.0)] {
+            let evidence = validation_id(&daemon, agent.id.as_str(), "true").await;
+            daemon
+                .handle(Request::ContestSubmit {
+                    agent: agent.id.to_string(),
+                    contest: contest.id.clone(),
+                    validation: evidence,
+                    score: Some(score),
+                })
+                .await;
+        }
+
+        // Somebody who never entered cannot submit.
+        let evidence = validation_id(&daemon, stranger.id.as_str(), "true").await;
+        let response = daemon
+            .handle(Request::ContestSubmit {
+                agent: stranger.id.to_string(),
+                contest: contest.id.clone(),
+                validation: evidence,
+                score: Some(1.0),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        // Sixty apart with a floor of one: no arbiter needed.
+        let Response::Contest { contest, standing } = daemon
+            .handle(Request::ContestClose {
+                agent: alpha.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await
+        else {
+            panic!("a clear win should close on the ranking")
+        };
+        assert_eq!(contest.winner, Some(beta.id.clone()));
+        assert!(matches!(standing, Standing::Settled { winner, .. } if winner == beta.id));
+    }
+
+    #[tokio::test]
+    async fn entering_admits_a_latecomer_to_the_contests_channel() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let latecomer = entrant(&daemon, &root, "latecomer").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+        let channel = contest.channel.clone().expect("a room");
+
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestEnter {
+                agent: latecomer.id.to_string(),
+                contest: contest.id,
+            })
+            .await
+        else {
+            panic!("entering failed")
+        };
+        assert!(contest.has(&latecomer.id));
+        let room = lock(&daemon.state)
+            .channels
+            .get(&channel)
+            .cloned()
+            .expect("the channel is still there");
+        assert!(
+            room.has(&latecomer.id),
+            "and the latecomer can argue its own case"
+        );
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

@@ -440,6 +440,33 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
+            "contests" => {
+                let args: ContestsArgs = parse(arguments)?;
+                self.forward(Request::Contests {
+                    project: None,
+                    agent: Some(me),
+                    all: args.all,
+                })
+                .await
+            }
+            "enter_contest" => {
+                let args: EnterContestArgs = parse(arguments)?;
+                self.forward(Request::ContestEnter {
+                    agent: me,
+                    contest: agentdocker_core::ContestId::from(args.contest),
+                })
+                .await
+            }
+            "submit_entry" => {
+                let args: SubmitEntryArgs = parse(arguments)?;
+                self.forward(Request::ContestSubmit {
+                    agent: me,
+                    contest: agentdocker_core::ContestId::from(args.contest),
+                    validation: args.validation,
+                    score: args.score,
+                })
+                .await
+            }
             "activity" => {
                 let args: ActivityArgs = parse(arguments)?;
                 self.forward(Request::Activity {
@@ -644,6 +671,25 @@ struct AnswerArgs {
 struct OpenQuestionsArgs {
     #[serde(default = "default_true")]
     mine: bool,
+}
+
+#[derive(Deserialize)]
+struct ContestsArgs {
+    #[serde(default)]
+    all: bool,
+}
+
+#[derive(Deserialize)]
+struct EnterContestArgs {
+    contest: String,
+}
+
+#[derive(Deserialize)]
+struct SubmitEntryArgs {
+    contest: String,
+    validation: String,
+    #[serde(default)]
+    score: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -1097,6 +1143,41 @@ fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "contests",
+            "description": "Contests you are in: a task several agents attempt, ranked by a measure fixed before any of them started. Read it to see what you are competing on and where you stand.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "all": { "type": "boolean", "default": false, "description": "Include closed contests." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "enter_contest",
+            "description": "Join an open contest. Work in your own worktree; nothing you submit counts until `validate` passes on it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "contest": { "type": "string" } },
+                "required": ["contest"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "submit_entry",
+            "description": "Submit your attempt at a contest: the id of a passing `validate` run of your own, and — only when the contest is ranked by a reported measure — the number you scored. A failing or borrowed validation is refused. Resubmitting replaces your earlier entry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "contest": { "type": "string" },
+                    "validation": { "type": "string", "description": "From `validate`; must be yours and must have passed." },
+                    "score": { "type": "number", "description": "Only for a reported measure; a `seconds` contest is timed by the daemon." }
+                },
+                "required": ["contest", "validation"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "activity",
             "description": "What every agent is doing: working, idle, starting, or blocked on a named resource held by named agents. Derived from the working set, so `blocked` says what by — read it before assuming another agent is stuck or gone.",
             "inputSchema": {
@@ -1400,6 +1481,9 @@ mod tests {
                 "ask_human",
                 "answer_question",
                 "open_questions",
+                "contests",
+                "enter_contest",
+                "submit_entry",
                 "activity",
                 "claim",
                 "renew",

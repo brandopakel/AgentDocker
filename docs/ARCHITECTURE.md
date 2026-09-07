@@ -219,6 +219,11 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease`, `error(conflict)` or `error(deadlock)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) queues in arrival order and retries when it is this waiter's turn; a wait that would close a cycle is refused at once with `details.cycle` |
 | `activity {agent?, project?, all?}` | `activity {activity: AgentActivity[]}` | what each agent is doing — `starting`, `working`, `blocked {resource, held_by, since}`, `idle`, `finished` — blocked first; derived from the wait queue and last contact, never from terminal output |
 | `waiting` | `waiting {waiting: Waiter[]}` | the claim queue, oldest first |
+| `contest_open {agent, project?, task, metric, entrants?, channel?}` | `contest {contest, standing}` | announces a task and fixes the measure; opens a channel for the entrants unless told not to |
+| `contest_enter {agent, contest}` | `contest {contest, standing}` | join an open contest; a latecomer is admitted to its channel too |
+| `contest_submit {agent, contest, validation, score?}` | `contest {contest, standing}` | the validation must be the submitter's own and must have passed; a `validation_seconds` contest ignores `score` and uses the daemon's own timing |
+| `contests {project?, agent?, all?}` | `contests {contests: Contest[]}` | newest first; open ones unless `all` |
+| `contest_close {agent, contest, winner?, resolution?}` | `contest {contest, standing}` | without `winner` the ranking decides, and refuses with `conflict` when the entries are inside the noise floor |
 | `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
 | `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
 | `release_all {agent, summary?, summary_source?}` | `leases` | every lease the agent holds; the reply lists them |
@@ -276,7 +281,17 @@ A channel is a message destination, `channel:<id>`. Unlike a topic it has a memb
 
 A channel closes when the work is final (`channel_close`, with a resolution that goes in the journal) or when its last live member leaves, which closes it as "everyone left". Closed channels stay readable until `channel_prune` forgets them, a fortnight by default.
 
-Contests (roadmap row 22) build on this: several agents attempt one task in their own worktrees, correctness gates on `validate` evidence bound to content fingerprints, a metric declared before anyone starts ranks what passes, and anything inside the noise floor is a tie that channel review settles.
+## Contests
+
+Several agents attempt one task, and the evidence decides. A channel is what happens when two agents collide by accident; a contest is the deliberate version, and it is the answer to "should they race, or should they review?" — they do both, in that order.
+
+**Correctness gates first.** An entry is a *passing `validate` run of the entrant's own*, in the checkout it is submitting. A failing run is refused with the reason (`it timed out`, `the code changed while it ran`, `it exited 1`), and so is somebody else's passing run: the evidence has to name the submitting agent. So "best" can never mean "fastest to produce something broken", and never "quickest to borrow a green result".
+
+**The measure is fixed before anyone starts.** `contest_open` records it and nothing changes it, so nobody picks the flattering number after seeing the results. Where the daemon can take the measurement itself it does: `validation_seconds` is how long the entry's own validation ran, as the daemon timed it, and a score reported alongside it is ignored — there is a test that submits `-999` and gets the real duration. Anything else is a `reported` measure with a name everyone uses, which the daemon cannot check and review can. `agentdocker contest show` says which kind it is, because one score is evidence and the other is a claim.
+
+**A margin inside the noise floor is not a win.** Also declared up front. Everything within it is a tie, and closing a tied contest on the ranking is refused: the metric has said all it can, so the channel settles it and the closer names the winner explicitly. A contest opens its channel at the same time it opens, because a tie has to be argued somewhere and asking for a room after the numbers are in looks like a loser asking for a rematch. Entrants who join later are admitted to it, so a latecomer can argue its own case.
+
+`contest_open {agent, project?, task, metric, entrants?, channel?}`, `contest_enter`, `contest_submit {validation, score?}`, `contests {project?, agent?, all?}` and `contest_close {winner?, resolution?}` are the protocol; `agentdocker contest open|enter|submit|show|close` and `agentdocker contests` are the CLI; MCP exposes `contests`, `enter_contest` and `submit_entry`. Every step is announced (`contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`), the channel is told where things stand after each entry, and the result goes in the project journal, because a contest result is a decision somebody will want to read back.
 
 ## Events
 
@@ -613,7 +628,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
-| 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
+| 22 | ✅ contests: passing, provenance-matched `validate` evidence as the entry; a measure fixed before anyone starts, taken by the daemon where it can be; a declared noise floor, inside which the ranking refuses to decide and channel review settles it | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
 | 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
 | 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
@@ -622,7 +637,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 25, 22 (contests, which need 14's human arbiter), 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 25 (multiplexer adapters), 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -636,7 +651,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 
-Shipped events include `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 `lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Planned events: `policy_denied`. Error codes `Timeout` (`ask`) and `Deadlock` (`claim --wait`) are both shipped.
 

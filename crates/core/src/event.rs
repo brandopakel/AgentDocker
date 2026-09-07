@@ -162,6 +162,36 @@ pub enum EventKind {
         agent: AgentId,
         pid: Option<u32>,
     },
+    /// A task several agents will attempt, with the measure that ranks
+    /// them fixed before any of them starts.
+    ContestOpened {
+        contest: crate::ContestId,
+        task: String,
+        measure: String,
+        entrants: Vec<AgentId>,
+    },
+    ContestEntered {
+        contest: crate::ContestId,
+        agent: AgentId,
+    },
+    /// An attempt with passing evidence behind it.
+    ContestSubmitted {
+        contest: crate::ContestId,
+        agent: AgentId,
+        validation: String,
+        /// Rendered, because `EventKind` is comparable and a float is
+        /// not. The number itself lives in the contest record, which is
+        /// where anyone ranking things reads it.
+        score: String,
+    },
+    /// The answer, and whether the metric settled it or a person did.
+    ContestClosed {
+        contest: crate::ContestId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        winner: Option<AgentId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<String>,
+    },
     /// A claim could not be satisfied and took a place in the queue.
     /// `position` is how many waiters are ahead of it on an overlapping
     /// resource; zero means it is next.

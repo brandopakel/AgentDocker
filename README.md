@@ -126,7 +126,7 @@ From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdock
 
 ### Give any MCP-capable agent the tools directly
 
-`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `activity`, `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
+`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `activity`, `contests` (with `enter_contest` and `submit_entry`), `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
 
 ```sh
 # Claude Code
@@ -243,6 +243,13 @@ The daemon already knows which checkout changed which path, so the second checko
 agentdocker channels                                  # the rooms in this project, who is in them, how the reviews stand
 agentdocker channel open --as writer "settle the parser" --with reviewer   # or open one deliberately
 agentdocker send --from writer --to channel:<id> "I'm taking src/parser.rs"  # a group message: members only
+
+# Or set them against each other deliberately. The measure is fixed before
+# anyone starts, only passing validations of your own are ranked, and a
+# margin inside the noise floor is a tie for the channel to settle.
+agentdocker contest open --as lead "make the parser faster" --noise 0.05 --entrant writer --entrant reviewer
+agentdocker contest submit --as writer <contest> <validation>   # from `agentdocker validate`
+agentdocker contest show <contest>
 agentdocker review-request --as writer <id> --note "the lexer is untouched"
 agentdocker review --as reviewer <id> --changes "handle the empty input"   # blocks until you say otherwise
 agentdocker review --as reviewer <id> --approve "good now"

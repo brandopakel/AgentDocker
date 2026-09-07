@@ -28,6 +28,9 @@ pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
 
+pub mod contest;
+pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
+
 pub mod wait;
 pub use wait::{Activity, AgentActivity, Blocked, WaitQueue, Waiter};
 
