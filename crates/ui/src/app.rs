@@ -319,6 +319,14 @@ impl App {
                             self.setup_health = Some(value)
                         }
                         Ok(value) if value.get("plans").is_some() => {
+                            if let Some(count) = value["skipped_receipts"]
+                                .as_u64()
+                                .filter(|count| *count > 0)
+                            {
+                                self.status = format!(
+                                    "{count} saved setup receipt(s) could not be read; the files were preserved"
+                                );
+                            }
                             self.setup_history =
                                 value["plans"].as_array().cloned().unwrap_or_default();
                         }

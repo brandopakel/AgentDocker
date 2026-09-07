@@ -23,7 +23,7 @@ Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), 
 
 All files are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
 
-A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly.
+A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly. Unreadable or incompatible receipts are preserved and counted while healthy plans remain visible.
 
 ## What a connection check proves
 

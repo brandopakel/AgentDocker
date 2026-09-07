@@ -51,6 +51,7 @@ impl Plan {
     }
 }
 
+/// Read bounded UTF-8 configuration without hanging on a special file.
 fn read_config(path: &Path) -> Result<Option<String>> {
     let mut file = match std::fs::OpenOptions::new()
         .read(true)
@@ -79,6 +80,7 @@ fn read_config(path: &Path) -> Result<Option<String>> {
     ))
 }
 
+/// Plan edits from injectable provider roots, without changing their files.
 fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
     let inventory = runtimes::inventory(roots, "agentdocker");
     let targets: Vec<&RuntimeInfo> = if names.is_empty() {
@@ -173,6 +175,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Prepare private receipt storage beneath the selected AgentDocker home.
 fn directory(home: &Path) -> Result<PathBuf> {
     dirs::secure_state_dir(home)?;
     let directory = home.join("setup");
@@ -180,6 +183,7 @@ fn directory(home: &Path) -> Result<PathBuf> {
     Ok(directory)
 }
 
+/// Restrict receipt selection to canonical UUID filenames.
 fn receipt(directory: &Path, id: &str) -> Result<PathBuf> {
     ensure!(
         uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id),
@@ -188,6 +192,7 @@ fn receipt(directory: &Path, id: &str) -> Result<PathBuf> {
     Ok(directory.join(format!("{id}.json")))
 }
 
+/// Atomically sync the complete recovery receipt before configuration writes.
 fn save(directory: &Path, plan: &Plan) -> Result<()> {
     let path = receipt(directory, &plan.id)?;
     if path.symlink_metadata().is_ok() {
@@ -207,6 +212,7 @@ fn save(directory: &Path, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
+/// Load a private receipt with explicit format and size validation.
 fn load(directory: &Path, id: &str) -> Result<Plan> {
     let file = dirs::private_file(&receipt(directory, id)?, false, false)?;
     ensure!(
@@ -221,6 +227,7 @@ fn load(directory: &Path, id: &str) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Accept only the original physical target and its recorded before/after bytes.
 fn check(change: &Change) -> Result<Option<String>> {
     ensure!(
         project::try_canonical(&change.path)? == change.target,
@@ -236,6 +243,7 @@ fn check(change: &Change) -> Result<Option<String>> {
     Ok(current)
 }
 
+/// Apply or undo a saved plan, allowing mixed states only during recovery.
 fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     let allowed = if undo {
         ["prepared", "applying", "applied", "undoing", "undone"].as_slice()
@@ -305,6 +313,50 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     save(directory, plan)
 }
 
+/// List healthy receipts even when an interrupted write, manual edit or
+/// incompatible receipt makes another entry unreadable. Never remove evidence.
+fn list_plans(directory: &Path) -> Result<Value> {
+    let mut skipped = 0usize;
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        match entry {
+            Ok(entry) => paths.push(entry),
+            Err(_) => skipped += 1,
+        }
+    }
+    paths.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
+    });
+    let mut plans = Vec::new();
+    for entry in paths {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let loaded = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .context("invalid setup receipt filename")
+            .and_then(|id| load(directory, id));
+        match loaded {
+            Ok(plan) => {
+                plans.push(plan.view());
+                if plans.len() == 100 {
+                    break;
+                }
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok(json!({"plans":plans, "limit":100, "skipped_receipts":skipped}))
+}
+
+/// One mutually exclusive guided setup operation.
 pub enum Action<'a> {
     Preview,
     Apply(&'a str),
@@ -314,6 +366,7 @@ pub enum Action<'a> {
     Show(&'a str),
 }
 
+/// Dispatch a guided operation and print only its redacted public description.
 pub async fn run(
     socket: Option<PathBuf>,
     names: &[String],
@@ -350,34 +403,7 @@ pub async fn run(
             if let Some(id) = show_id {
                 load(&directory, id)?.view()
             } else {
-                let mut paths =
-                    std::fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
-                paths.sort_by_key(|entry| {
-                    std::cmp::Reverse(
-                        entry
-                            .metadata()
-                            .and_then(|metadata| metadata.modified())
-                            .ok(),
-                    )
-                });
-                let mut plans = Vec::new();
-                for path in paths {
-                    let path = path.path();
-                    if path
-                        .extension()
-                        .is_some_and(|extension| extension == "json")
-                    {
-                        let id = path
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                            .context("invalid setup receipt filename")?;
-                        plans.push(load(&directory, id)?.view());
-                        if plans.len() == 100 {
-                            break;
-                        }
-                    }
-                }
-                json!({"plans": plans, "limit": 100})
+                list_plans(&directory)?
             }
         }
     } else if health {
@@ -617,6 +643,27 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         std::os::unix::fs::symlink(&alternate, receipt(&directory, &id).unwrap()).unwrap();
         assert!(load(&directory, &id).is_err());
+    }
+
+    #[test]
+    fn damaged_receipts_do_not_hide_healthy_saved_plans() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prepared = plan(tmp.path(), &["claude-code"]);
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &prepared).unwrap();
+        let malformed = receipt(&directory, &uuid::Uuid::new_v4().to_string()).unwrap();
+        std::fs::write(&malformed, "partial json").unwrap();
+        let incompatible = receipt(&directory, &uuid::Uuid::new_v4().to_string()).unwrap();
+        let mut future = serde_json::to_value(&prepared).unwrap();
+        future["format"] = json!(999);
+        std::fs::write(&incompatible, future.to_string()).unwrap();
+        let invalid_name = directory.join("not-a-plan-id.json");
+        std::fs::write(&invalid_name, "{}").unwrap();
+        let listed = list_plans(&directory).unwrap();
+        assert_eq!(listed["plans"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["plans"][0]["id"], prepared.id);
+        assert_eq!(listed["skipped_receipts"], 3);
+        assert!(malformed.exists() && incompatible.exists() && invalid_name.exists());
     }
 
     #[test]
