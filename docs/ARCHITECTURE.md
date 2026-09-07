@@ -208,6 +208,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `overlap {project, since_seq?, agent?}` | `overlap {overlaps: Overlap[]}` | paths changed in more than one physical checkout of the project, from the newest 50,000 ledger rows: per path, each checkout with the agents attributed there, the count, the last change and its HEAD; with `agent`, only overlaps involving its checkout, and an empty `project` means its own |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
+| `reload` | `ok` | starts a replacement, hands it every terminal over `SCM_RIGHTS`, and exits without stopping any agent; the agents keep running and stay attachable |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
@@ -569,7 +570,7 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
 
-What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with `agentd`, so `attach` afterwards has nothing to reconnect to.
+A restart of the daemon itself used to end the terminal — the agent's process survived, having its own process group, but the master descriptor died with `agentd`. `agentdocker daemon reload` now carries the descriptors across to a replacement, so a planned upgrade leaves both the process and its terminal alone; see row 28 below. An unplanned death still loses the terminal, and `run --restore` is what brings the agent back from that.
 
 **What herdr does about this, and what it means for us.** Worth knowing precisely, because the answer is less magical than the marketing suggests, and it sets our own target. Their server owns the terminals, so sessions survive client detach, sleep, and network loss — the same property we now have. When the *server itself* restarts, their own documentation is explicit that running processes are not preserved: "Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes." What is restored is structure — workspaces, tabs, panes, cwd, layout, focus — and panes "come back as new shells in their saved directories", optionally replaying recent screen contents, optionally letting an agent resume its own conversation if it reported a session reference. Only a *planned* upgrade preserves processes, behind an experimental `--handoff` flag: the old server duplicates its pty master descriptors and passes them to the new one over a private Unix socket with `SCM_RIGHTS`, so, in their words, it "does not move the child processes. It moves ownership of the terminals those processes are already attached to."
 
@@ -585,7 +586,19 @@ What the agent is told arrives as a `restored` message, so it reaches the agent 
 
 What is still not restored is the terminal. A `--tty` agent comes back with a new one and an empty scrollback; the old master descriptor died with the old daemon. That is row 28.
 
-Row 28 is the **descriptor handoff**: `agentdocker daemon reload` passing pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade does not disturb a running agent. The same mechanism herdr uses, for the same reason, and worth having once upgrades are frequent enough to notice.
+Row 28, the **descriptor handoff**, is done. `agentdocker daemon reload` replaces the daemon without disturbing a single agent.
+
+A managed agent survives a restart on its own — it has its own process group and is reparented when its parent goes. Its *terminal* does not: a pty master is a descriptor, and a descriptor dies with the process holding it, so `attach` afterwards had nothing to reconnect to. `SCM_RIGHTS` is the fix and the only one: a Unix socket can carry an open descriptor to another process, and the receiver gets one referring to the *same* open file — the same pty, with the same agent still on the far end. Nothing is reopened, so nothing is lost.
+
+So a reload moves the descriptors rather than the processes. The daemon binds a private socket beside its own, starts the replacement pointed at it, sends every session's master with the scrollback alongside, and **exits without stopping anything**. That last part is the whole risk of the feature: an ordinary shutdown SIGTERMs every managed agent, and doing it here would kill what the reload exists to preserve, so a `handed_over` flag makes shutdown leave them alone and there is a test that says so.
+
+The order is forced by the lock. The replacement takes the terminals **before** trying for the daemon lock, because the daemon being replaced still holds it and only lets go once the descriptors are across; a replacement that reached for the lock first would find it held, exit, and leave the handoff waiting for a connection that never came. Having taken them it waits up to ten seconds for the lock, which its predecessor drops moments later.
+
+What the new daemon inherits is a terminal, not a child. It never forked those processes, so it cannot wait on them: they are watched by pid the way an adopted agent is, and stopped by signal. That is the honest shape of it, and it is what herdr's own documentation says about the same mechanism — it does not move the processes, it moves ownership of the terminals they are already attached to.
+
+A terminal for an agent this daemon does not know, or whose pid has changed, is closed rather than adopted: attaching a live pty to a record that is not about it would be worse than losing it. A handoff that fails entirely is not fatal either — the agents are still running, and what is lost is the ability to attach, which is exactly what the old daemon's exit would have cost anyway.
+
+Verified end to end: a `--tty` agent, a reload, and then `attach` reaching the same shell — same pid before and after, and the shell echoing back a command typed after the reload.
 
 This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
 
@@ -659,13 +672,13 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 22 | ✅ contests: passing, provenance-matched `validate` evidence as the entry; a measure fixed before anyone starts, taken by the daemon where it can be; a declared noise floor, inside which the ranking refuses to decide and channel review settles it | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
 | 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
-| 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
+| 28 | ✅ `daemon reload`: pty masters passed to a replacement over a private socket with `SCM_RIGHTS`, taken before the lock, with the outgoing daemon leaving every agent running | 5 | 23 |
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | ✅ multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover`; `run --in-pane` starts an agent in a new tmux session and registers what tmux started, so the human attaches with the tool that owns the terminal | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 28, the `commit` half of 10, 20, and 17.
+Order from here: the `commit` half of 10, the rtk view of 26, 20, and 17.
 
 ### Planned protocol and event additions
 

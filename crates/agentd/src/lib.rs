@@ -9,7 +9,7 @@
 //! binary beside the CLI — one `cargo install agentdocker` gets both. The
 //! binary is [`main`] and nothing else.
 
-mod daemon;
+pub mod daemon;
 mod server;
 mod store;
 mod supervisor;
@@ -23,7 +23,7 @@ use agentdocker_core::{EventKind, paths};
 use agentdocker_host::lock;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::daemon::Daemon;
@@ -42,6 +42,12 @@ pub struct Args {
     /// Unix socket to listen on (default: <home>/agentd.sock).
     #[arg(long, env = "AGENTDOCKER_SOCKET")]
     socket: Option<PathBuf>,
+
+    /// Take over the terminals a daemon being replaced is holding, from
+    /// this private socket. Set by `agentdocker daemon reload`; not
+    /// something to run by hand.
+    #[arg(long, hide = true)]
+    receive_handoff: Option<PathBuf>,
 }
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
@@ -73,12 +79,37 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let Some(_lock) = lock::try_exclusive(&lock_path)? else {
+    // The terminals come across *before* the lock, and this order is
+    // forced: the daemon being replaced still holds the lock while it
+    // sends them, and only lets go once they are across. A replacement
+    // that took the lock first would find it held and exit, and the
+    // handoff would wait for a connection that never came.
+    let carried = match &args.receive_handoff {
+        Some(socket) => match daemon::reload::collect(socket) {
+            Ok(carried) => Some(carried),
+            Err(error) => {
+                // Not fatal. The agents are still running; what is lost
+                // is the ability to attach to them, which is what the
+                // old daemon's exit would have cost anyway.
+                warn!(%error, "could not take the previous daemon's terminals");
+                None
+            }
+        },
+        None => None,
+    };
+    // Waiting, not failing, when a handoff is on the way: the daemon
+    // being replaced drops the lock as it exits, moments from now.
+    let Some(_lock) = acquire_lock(&lock_path, carried.is_some()).await? else {
         info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
         return Ok(());
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
+    // Installed before anything is served: an `attach` must never arrive
+    // between the socket opening and the terminals existing.
+    if let Some(carried) = carried {
+        daemon.install_handoff(carried);
+    }
     daemon.reload_policies();
     daemon.notify_desktop();
     // Before the reaper: an agent that was running is still marked live,
@@ -141,6 +172,34 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&daemon.socket);
     let _ = std::fs::remove_file(&restricted);
     result
+}
+
+/// Take the daemon's lock, waiting a little when a handoff is on the
+/// way because the daemon being replaced is about to let go of it.
+async fn acquire_lock(
+    path: &std::path::Path,
+    replacing: bool,
+) -> anyhow::Result<Option<lock::Lock>> {
+    if let Some(held) = lock::try_exclusive(path)? {
+        return Ok(Some(held));
+    }
+    if !replacing {
+        return Ok(None);
+    }
+    // Long enough for the predecessor to finish exiting, short enough
+    // that a stuck one is reported rather than waited on forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some(held) = lock::try_exclusive(path)? {
+            return Ok(Some(held));
+        }
+    }
+    anyhow::bail!(
+        "took the terminals but the daemon being replaced still holds {}; \
+         it is still running and the agents are unharmed",
+        path.display()
+    )
 }
 
 async fn shutdown_signal() {

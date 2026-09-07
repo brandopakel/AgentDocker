@@ -50,6 +50,7 @@ mod panes;
 pub mod policies;
 mod recovery;
 mod relay;
+pub mod reload;
 mod restarts;
 mod restore;
 mod transport;
@@ -116,6 +117,10 @@ pub struct Daemon {
     /// find them. Held here rather than under the state lock: attaching
     /// is I/O and must not block a coordination request.
     sessions: Mutex<HashMap<AgentId, supervisor::Session>>,
+    /// Set once this daemon has given its terminals to a replacement.
+    /// Shutdown then leaves every agent alone: an ordinary stop would
+    /// SIGTERM the very processes the reload exists to preserve.
+    handing_over: std::sync::atomic::AtomicBool,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -456,7 +461,27 @@ impl Daemon {
             }
         }
     }
+    /// Whether this daemon has handed its terminals to a replacement,
+    /// and must therefore leave every agent running.
+    pub fn handed_over(&self) -> bool {
+        self.handing_over.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the handover done and ask this daemon to exit.
+    pub(super) fn hand_off_and_exit(self: &Arc<Self>) {
+        self.handing_over
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown.notify_one();
+    }
+
     pub async fn stop_all(self: &Arc<Self>) {
+        // Handed over: these agents are the replacement's now, and their
+        // terminals are already across. Stopping them here would kill
+        // exactly what the reload was for.
+        if self.handed_over() {
+            info!("handed over; leaving every agent running");
+            return;
+        }
         // Before anything stops: stopping releases leases, so what a
         // restorable agent holds has to be written down while it holds it.
         self.save_restore_points();
@@ -766,6 +791,7 @@ impl Daemon {
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
+            handing_over: std::sync::atomic::AtomicBool::new(false),
             scanning: std::sync::atomic::AtomicBool::new(false),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
@@ -965,6 +991,7 @@ impl Daemon {
                 self.shutdown.notify_one();
                 Response::Ok
             }
+            Request::Reload => self.hand_over().await,
             Request::Send {
                 from,
                 to,
@@ -5636,6 +5663,25 @@ mod tests {
 
     // ----- restart policies -----------------------------------------------
 
+    /// Wait until an agent's process group is really gone.
+    ///
+    /// Signalling is not reaping. A test that returns while its children
+    /// are still dying leaves them for whatever runs next, which under a
+    /// parallel runner shows up as somebody else's leak.
+    async fn gone(pid: Option<u32>) {
+        let Some(pid) = pid else { return };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while supervisor::group_exists(pid) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(-(pid as i32)),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+
     /// Wait for a condition on an agent, so a test never races the
     /// supervisor's own tasks.
     async fn until(
@@ -5687,6 +5733,7 @@ mod tests {
             .unwrap();
         assert_eq!(after.restarts, 2, "and no more");
         assert!(!after.status.is_live());
+        gone(after.pid).await;
     }
 
     #[tokio::test]
@@ -5709,6 +5756,7 @@ mod tests {
             .unwrap();
         assert_eq!(after.restarts, 0, "nothing failed, so nothing to retry");
         assert_eq!(after.status, AgentStatus::Exited { code: Some(0) });
+        gone(after.pid).await;
     }
 
     #[tokio::test]
@@ -5745,6 +5793,7 @@ mod tests {
             Some(1),
             "the restart is announced, with its number"
         );
+        gone(restarted.pid).await;
     }
 
     #[tokio::test]
@@ -5786,6 +5835,7 @@ mod tests {
             .unwrap();
         assert_eq!(after.restarts, 0, "and it stayed stopped");
         assert!(!after.status.is_live());
+        gone(after.pid).await;
     }
 
     #[tokio::test]
@@ -6035,6 +6085,93 @@ deny = ["send:all"]
             })
             .await;
         assert!(matches!(response, Response::Lease { .. }), "{response:?}");
+    }
+
+    // ----- daemon reload --------------------------------------------------
+
+    /// The safety property the whole feature rests on: a daemon that has
+    /// handed its terminals over must leave every agent running. An
+    /// ordinary shutdown SIGTERMs them, which would kill exactly what
+    /// the reload exists to preserve.
+    #[tokio::test]
+    async fn a_daemon_that_handed_over_leaves_every_agent_running() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("survivor");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        let pid = agent.pid.expect("a pid");
+        assert!(supervisor::group_exists(pid));
+
+        daemon.hand_off_and_exit();
+        assert!(daemon.handed_over());
+        daemon.stop_all().await;
+
+        // Still there. The replacement owns it now.
+        assert!(
+            supervisor::group_exists(pid),
+            "a handed-over agent is not stopped by the daemon stepping aside"
+        );
+        // Cleaned up by hand, since by design nothing else will.
+        gone(Some(pid)).await;
+        assert!(!supervisor::group_exists(pid));
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_shutdown_still_stops_what_it_started() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("ordinary");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        let pid = agent.pid.expect("a pid");
+        assert!(!daemon.handed_over());
+        daemon.stop_all().await;
+        assert!(
+            !supervisor::group_exists(pid),
+            "the usual shutdown still takes its children with it"
+        );
+        gone(Some(pid)).await;
+    }
+
+    /// A terminal for an agent this daemon does not know, or whose
+    /// process has changed, is closed rather than adopted: taking it
+    /// would attach a live pty to a record that is not about it.
+    #[tokio::test]
+    async fn a_handoff_for_an_unknown_agent_is_declined() {
+        use agentdocker_core::AgentId;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut pty = agentdocker_host::pty::Pty::open().unwrap();
+        let _slave = pty.take_slave();
+        let carriage = crate::daemon::reload::Carriage::for_test(
+            vec![crate::daemon::reload::Carried {
+                agent: AgentId::from("nosuchagent"),
+                pid: 999_999,
+                scrollback: b"whatever".to_vec(),
+            }],
+            vec![pty.into_master()],
+        );
+        assert_eq!(
+            daemon.install_handoff(carriage),
+            0,
+            "nothing is adopted for an agent that is not here"
+        );
+        assert!(lock(&daemon.sessions).is_empty());
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

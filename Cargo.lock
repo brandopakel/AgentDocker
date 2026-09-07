@@ -203,6 +203,7 @@ dependencies = [
  "criterion",
  "ignore",
  "libc",
+ "nix",
  "serde_json",
  "sha2",
  "shlex",
@@ -2431,6 +2432,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
