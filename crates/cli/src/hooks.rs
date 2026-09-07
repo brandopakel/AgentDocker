@@ -389,6 +389,7 @@ pub async fn claude_code<B: Backend>(
                     agent: me.id.to_string(),
                     resource: format!("path:{}", path.display()),
                     mode: LeaseMode::Exclusive,
+                    amount: None,
                     ttl_secs: opts.ttl,
                     note: Some(format!("editing in Claude Code session {}", me.spec.name)),
                     wait_secs: 0,

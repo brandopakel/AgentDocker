@@ -156,6 +156,30 @@ pub struct Lease {
     /// Free text for humans and other agents: what the holder is doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// How much of a `quota:` resource this lease takes. Zero for every
+    /// other kind, which is what makes a quota's arithmetic ignore them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub amount: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl LeaseTable {
+    /// How much of a quota is currently spoken for, across every live
+    /// holder of it.
+    ///
+    /// Exact rather than overlapping: a quota is a name and a number,
+    /// not a path, so `quota:tokens` and `quota:tokens/backend` are two
+    /// budgets rather than one containing the other.
+    pub fn committed(&self, resource: &ResourceKey) -> u64 {
+        self.all()
+            .into_iter()
+            .filter(|lease| lease.resource == *resource)
+            .map(|lease| lease.amount)
+            .sum()
+    }
 }
 
 impl Lease {
@@ -272,6 +296,7 @@ impl LeaseTable {
             change_seq: None,
             expires_at: now + ttl,
             note,
+            amount: 0,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
         Ok(Claimed::New(lease))
@@ -772,6 +797,7 @@ mod tests {
             change_seq: None,
             expires_at: now + ttl(),
             note: None,
+            amount: 0,
         });
         assert!(
             t.claim(

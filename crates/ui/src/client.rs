@@ -112,7 +112,17 @@ impl Client {
             if reader.read_line(&mut buffer)? == 0 {
                 return Ok(());
             }
-            match serde_json::from_str::<Response>(&buffer)? {
+            // A frame this build cannot read is skipped, not fatal.
+            // `EventKind::Unknown` already absorbs an unfamiliar event
+            // kind; this covers the rest of the same problem — a newer
+            // daemon answering with a response variant that did not
+            // exist when this window was built. Losing one line is a
+            // gap in what is shown; losing the stream makes the app
+            // report a working daemon as disconnected.
+            let Ok(response) = serde_json::from_str::<Response>(&buffer) else {
+                continue;
+            };
+            match response {
                 Response::EventsReady => on_ready(),
                 Response::Event { event } => {
                     if !on(event) {

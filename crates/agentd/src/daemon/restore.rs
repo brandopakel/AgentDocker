@@ -65,12 +65,22 @@ impl Daemon {
     pub(crate) fn validate_native_launch(&self, expected: &AgentRecord) -> anyhow::Result<()> {
         let mut state = lock(&self.state);
         storage_ready(&state)?;
+        // The statuses a launch may legitimately start from: `created`
+        // for a fresh `run`, and an ended one for a restart or a
+        // restore, which start the same agent again under its own id.
+        // What this rejects is a record that is gone, one whose restore
+        // flag changed under it, and — the case the check exists for —
+        // one that is already `running` or `stopping`, meaning somebody
+        // else started or stopped it while this launch was preparing.
         anyhow::ensure!(
-            state
-                .registry
-                .get(&expected.id)
-                .is_some_and(|record| record.status == AgentStatus::Created
-                    && record.spec.restore == expected.spec.restore),
+            state.registry.get(&expected.id).is_some_and(|record| {
+                matches!(
+                    record.status,
+                    AgentStatus::Created | AgentStatus::Exited { .. } | AgentStatus::Failed { .. }
+                ) && record.spec.restore == expected.spec.restore
+                    && record.spec.restart == expected.spec.restart
+                    && record.restarts == expected.restarts
+            }),
             "launch was cancelled or its starting identity changed"
         );
         if expected.spec.restore {
@@ -257,9 +267,9 @@ impl Daemon {
                 "restoration cancelled by explicit stop"
             );
         }
-        let spawned = supervisor::spawn(self, &record).await?;
+        let mut spawned = supervisor::spawn(self, &record).await?;
         let pid = spawned.pid;
-        let process_started_at = procinfo::start_time(pid);
+        let process_started_at = Some(spawned.process_started_at);
         if let Some(session) = spawned.session.clone() {
             lock(&self.sessions).insert(id.clone(), session);
         }
@@ -309,21 +319,29 @@ impl Daemon {
             }
             !cancelled && state.storage_error.is_none()
         };
-        if !persisted {
+        let activation_error = if persisted {
+            spawned.activate("restored").await.err()
+        } else {
+            None
+        };
+        if !persisted || activation_error.is_some() {
             // Kill through the child we own; the supervisor reaps the leader
             // and waits for descendants before releasing any protection.
             spawned.control.send_replace(Some(true));
         }
         let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
-        if !persisted {
+        if !persisted || activation_error.is_some() {
             if tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision)
                 .await
                 .is_err()
             {
                 warn!(agent = %id.short(), "restore cleanup still supervised; protection retained");
             }
-            // Timed-out supervision remains alive and owns the child/group.
-            // The caller must not release protection without confirmed exit.
+            // The supervisor records exit and releases protection only after
+            // confirmed cleanup; a timeout retains that responsibility.
+            if let Some(error) = activation_error {
+                warn!(agent = %id.short(), %error, "restored command could not execute");
+            }
             return Ok(());
         }
         info!(agent = %id.short(), name = %record.spec.name, pid, "restored");
@@ -613,6 +631,7 @@ mod tests {
                     ttl_secs: 300,
                     wait_secs: 0,
                     note: None,
+                    amount: None,
                 })
                 .await,
             Response::Lease { .. }
@@ -650,7 +669,11 @@ mod tests {
             .handle(Request::Run {
                 spec: AgentSpec {
                     name: "failed-initial-launch".into(),
-                    command: vec!["sh".into(), "-c".into(), "exec sleep 30".into()],
+                    command: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "printf executed > must-not-execute; exec sleep 30".into(),
+                    ],
                     workdir: Some(dir.path().to_path_buf()),
                     ..Default::default()
                 },
@@ -666,7 +689,13 @@ mod tests {
         let state = lock(&daemon.state);
         assert!(state.supervised.is_empty());
         let record = state.registry.all().next().unwrap();
-        assert!(!supervisor::group_exists(record.pid.unwrap()));
+        assert_eq!(record.status, AgentStatus::Created);
+        assert!(record.pid.is_none());
+        assert_eq!(
+            state.store.load_agents().unwrap()[0].status,
+            AgentStatus::Created
+        );
+        assert!(!dir.path().join("must-not-execute").exists());
     }
 
     #[tokio::test]
@@ -736,7 +765,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_restore_completion_kills_and_reaps_the_owned_group() {
-        let (_dir, daemon, record, _marker) = saved().await;
+        let (_dir, daemon, record, marker) = saved().await;
         lock(&daemon.state)
             .store
             .reject_event_for_test("agent_restored");
@@ -744,6 +773,10 @@ mod tests {
         let state = lock(&daemon.state);
         assert!(state.storage_error.is_some());
         assert!(state.supervised.is_empty(), "failed launch must be reaped");
+        assert!(
+            !marker.exists(),
+            "failed completion cannot execute the command"
+        );
         let current = state.registry.get(&record.id).unwrap();
         assert_eq!(current.status, AgentStatus::Created);
         assert!(
@@ -763,6 +796,82 @@ mod tests {
             1,
             "failed storage retains durable protection"
         );
+    }
+
+    #[tokio::test]
+    async fn native_exit_faults_retain_the_record_leases_channel_and_journal() {
+        use agentdocker_core::channel::{Channel, ChannelId, ChannelSubject};
+        for fault in [
+            "CREATE TRIGGER fail BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'agent_exited' BEGIN SELECT RAISE(ABORT, 'exit event'); END;",
+            "CREATE TRIGGER fail BEFORE DELETE ON leases BEGIN SELECT RAISE(ABORT, 'lease delete'); END;",
+            "CREATE TRIGGER fail BEFORE INSERT ON documents WHEN NEW.kind = 'channel' AND json_extract(NEW.json, '$.closed_at') IS NOT NULL BEGIN SELECT RAISE(ABORT, 'channel close'); END;",
+            "CREATE TRIGGER fail BEFORE INSERT ON journal BEGIN SELECT RAISE(ABORT, 'journal'); END;",
+        ] {
+            let (_dir, daemon, record, _marker) = saved().await;
+            daemon.restore_agents().await;
+            let channel = Channel {
+                id: ChannelId::from("exit-fixture"),
+                project: record.project.as_ref().unwrap().id(),
+                subject: ChannelSubject::Task {
+                    task: "exit fixture".into(),
+                },
+                members: vec![record.id.clone()],
+                opened_by: None,
+                opened_at: Utc::now(),
+                reviews: Vec::new(),
+                closed_at: None,
+                resolution: None,
+            };
+            let journal_before = {
+                let mut state = lock(&daemon.state);
+                state
+                    .store
+                    .put_document("channel", channel.id.as_str(), &channel)
+                    .unwrap();
+                state.channels.insert(channel.id.clone(), channel.clone());
+                state.store.max_journal_seq(&channel.project).unwrap()
+            };
+            let connection = rusqlite::Connection::open(daemon.home.join("state.db")).unwrap();
+            connection.execute_batch(fault).unwrap();
+            let response = daemon
+                .handle(Request::Stop {
+                    agent: record.id.to_string(),
+                    force: true,
+                })
+                .await;
+            assert!(matches!(response, Response::Agent { .. }), "{response:?}");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !lock(&daemon.state).supervised.is_empty() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "owned fixture did not exit"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let state = lock(&daemon.state);
+            assert!(
+                state.storage_error.is_some(),
+                "fault was not reached: {fault}"
+            );
+            let current = state.registry.get(&record.id).unwrap();
+            assert_eq!(current.status, AgentStatus::Stopping);
+            assert_eq!(state.store.load_agents().unwrap()[0].status, current.status);
+            assert_eq!(state.leases.by_holder(&record.id).len(), 1);
+            assert_eq!(state.store.load_leases().unwrap().len(), 1);
+            assert_eq!(state.channels.get(&channel.id).unwrap(), &channel);
+            assert_eq!(
+                state
+                    .store
+                    .document::<Channel>("channel", channel.id.as_str())
+                    .unwrap(),
+                Some(channel.clone())
+            );
+            assert_eq!(
+                state.store.max_journal_seq(&channel.project).unwrap(),
+                journal_before
+            );
+            assert!(!supervisor::group_exists(current.pid.unwrap()));
+        }
     }
 
     #[tokio::test]
@@ -900,6 +1009,7 @@ mod tests {
                     ttl_secs: 300,
                     wait_secs: 0,
                     note: None,
+                    amount: None,
                 })
                 .await,
             Response::Lease { .. }

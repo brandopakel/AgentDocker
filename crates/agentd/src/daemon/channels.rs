@@ -206,39 +206,26 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// An agent finished: it leaves its channels, and a channel nobody is
-    /// left in closes itself.
-    pub(super) fn leave_channels(&mut self, agent: &AgentId) {
-        let touched: Vec<ChannelId> = self
-            .channels
-            .values()
-            .filter(|c| c.is_open() && c.has(agent))
-            .map(|c| c.id.clone())
-            .collect();
+    /// Stage channel closure alongside the exiting agent's transaction.
+    pub(super) fn closing_channels(&self, agent: &AgentId, now: DateTime<Utc>) -> Vec<Channel> {
         let live: HashSet<AgentId> = self.registry.live().map(|a| a.id.clone()).collect();
-        for id in touched {
-            let Some(channel) = self.channels.get_mut(&id) else {
-                continue;
-            };
-            let empty = !channel
-                .members
-                .iter()
-                .any(|m| m != agent && live.contains(m));
-            if empty {
-                channel.closed_at = Some(Utc::now());
+        self.channels
+            .values()
+            .filter(|channel| {
+                channel.is_open()
+                    && channel.has(agent)
+                    && !channel
+                        .members
+                        .iter()
+                        .any(|member| member != agent && live.contains(member))
+            })
+            .cloned()
+            .map(|mut channel| {
+                channel.closed_at = Some(now);
                 channel.resolution = Some("everyone left".to_owned());
-            }
-            let channel = channel.clone();
-            self.persist("channel", |store| {
-                store.put_document("channel", channel.id.as_str(), &channel)
-            });
-            if empty {
-                self.emit(EventKind::ChannelClosed {
-                    channel: id,
-                    resolution: channel.resolution.clone(),
-                });
-            }
-        }
+                channel
+            })
+            .collect()
     }
 
     fn find_channel(&self, reference: &str) -> Option<&Channel> {

@@ -46,6 +46,8 @@ pub enum DaemonCommand {
     Stop,
     /// Stop, then start.
     Restart,
+    /// Request live replacement (currently unavailable; leaves agents running).
+    Reload,
     /// Show whether the service is installed and the daemon answering.
     Status,
 }
@@ -533,6 +535,14 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     .await?;
             }
             wait_for_daemon(&client).await?;
+        }
+        DaemonCommand::Reload => {
+            // A refused reload does not start a daemon or imply a completed upgrade.
+            client
+                .with_start_timeout(None)
+                .call(&Request::Reload)
+                .await
+                .context("reload failed")?;
         }
         DaemonCommand::Status => {
             let definition = if macos {

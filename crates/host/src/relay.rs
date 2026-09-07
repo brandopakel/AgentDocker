@@ -78,7 +78,7 @@ pub fn prepare(record: &mut AgentRecord) -> Result<(), TransportError> {
     fs::write(context.path().join("relay.py"), include_str!("relay.py")).map_err(storage_error)?;
     fs::write(context.path().join("Containerfile"),concat!(
         "FROM docker.io/library/python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a\n",
-        "COPY relay.py /relay.py\nRUN mkdir -p /run/agentdocker && chmod 1777 /run/agentdocker\n",
+        "COPY relay.py /relay.py\nRUN chmod 0444 /relay.py && mkdir -p /run/agentdocker && chmod 1777 /run/agentdocker\n",
         "ENTRYPOINT [\"python3\",\"-u\",\"/relay.py\"]\n")).map_err(storage_error)?;
     let build = engine::build(
         ImageBuildSpec {

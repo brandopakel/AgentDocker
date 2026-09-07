@@ -19,6 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// fail open and must not stall the editor.
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
     /// How long to wait for a daemon this client starts; `None` never
