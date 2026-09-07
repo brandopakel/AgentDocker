@@ -682,15 +682,41 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_host_read_retains_partial_input_and_its_byte_budget() {
+        async fn cancel_after_reading(reader: &mut Reader, bytes: usize) {
+            use std::future::{Future, poll_fn};
+            use std::task::Poll;
+
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                poll_fn(|cx| {
+                    // Drop the read future whenever it yields, as a streaming
+                    // select does. Keep polling until the requested bytes have
+                    // arrived; elapsed time does not establish read progress.
+                    let polled = {
+                        let mut line = std::pin::pin!(reader.next_line());
+                        line.as_mut().poll(cx)
+                    };
+                    assert!(
+                        polled.is_pending(),
+                        "unterminated frame completed: {polled:?}"
+                    );
+                    assert!(reader.pending.len() <= bytes);
+                    if reader.pending.len() == bytes {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }),
+            )
+            .await
+            .expect("reader made no progress to the cancellation boundary");
+        }
+
         let (mut client, server) = UnixStream::pair().unwrap();
         let (read, _write) = server.into_split();
         let mut reader = Reader::new(read);
         client.write_all(b"{\"op\":").await.unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), reader.next_line())
-                .await
-                .is_err()
-        );
+        cancel_after_reading(&mut reader, b"{\"op\":".len()).await;
         client.write_all(b"\"ping\"}\r\n").await.unwrap();
         assert_eq!(
             reader.next_line().await.unwrap().unwrap(),
@@ -698,14 +724,13 @@ mod tests {
         );
 
         let sending = tokio::spawn(async move {
-            let _ = client.write_all(&vec![b' '; HOST_REQUEST_BYTES]).await;
+            for chunk in vec![b' '; HOST_REQUEST_BYTES].chunks(32 * 1024) {
+                client.write_all(chunk).await.unwrap();
+                tokio::task::yield_now().await;
+            }
             client
         });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), reader.next_line())
-                .await
-                .is_err()
-        );
+        cancel_after_reading(&mut reader, HOST_REQUEST_BYTES).await;
         let mut client = tokio::time::timeout(Duration::from_secs(2), sending)
             .await
             .expect("the frame writer must finish before checking cancellation")
