@@ -164,8 +164,10 @@ mod windows_tests {
     fn timeout_terminates_the_owned_descendant_and_output_is_bounded() {
         let temporary = tempfile::tempdir().unwrap();
         let marker = temporary.path().join("descendant.pid");
+        let phase = temporary.path().join("phase");
         let script = format!(
-            "$p = Start-Process -FilePath '{}' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep 30' -PassThru -NoNewWindow; Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep 30",
+            "Set-Content -LiteralPath '{}' -Value entered; $ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep 30' -PassThru -NoNewWindow; Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep 30",
+            phase.display().to_string().replace('\'', "''"),
             powershell().replace('\'', "''"),
             marker.display().to_string().replace('\'', "''")
         );
@@ -177,9 +179,17 @@ mod windows_tests {
             script,
         ];
         let result = run(temporary.path(), &argv, Duration::from_secs(5));
-        assert!(result.err().unwrap().to_string().contains("timed out"));
+        match result {
+            Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
+            Ok(output) => panic!("fixture exited before its deadline: {}", output.text),
+        }
         let pid: u32 = std::fs::read_to_string(&marker)
-            .expect("descendant started before timeout")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "descendant marker unavailable: {error}; PowerShell phase={:?}",
+                    std::fs::read_to_string(&phase)
+                )
+            })
             .trim()
             .parse()
             .unwrap();

@@ -767,7 +767,8 @@ mod tests {
     #[test]
     fn filters_match_followed_entries_like_the_query_would() {
         let mut e = entry(JournalKind::Note, "Parser is next", SummarySource::Explicit);
-        e.checkout = Some(PathBuf::from("/repo"));
+        let checkout = PathBuf::from(if cfg!(windows) { r"C:\repo" } else { "/repo" });
+        e.checkout = Some(checkout.clone());
         let f = |f: &dyn Fn(&mut JournalFilter)| {
             let mut filter = JournalFilter::default();
             f(&mut filter);
@@ -794,7 +795,7 @@ mod tests {
         assert!(f(&|x| x.path = Some("src/b.rs".into())).matches(&e));
         assert!(!f(&|x| x.path = Some("docs".into())).matches(&e));
         assert!(
-            f(&|x| x.path = Some("/repo/src/a.rs".into())).matches(&e),
+            f(&|x| x.path = Some(checkout.join("src/a.rs"))).matches(&e),
             "absolute, under the entry's checkout"
         );
         assert!(!f(&|x| x.path = Some("/elsewhere/src/a.rs".into())).matches(&e));
