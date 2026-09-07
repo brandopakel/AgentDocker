@@ -17,8 +17,7 @@ reviews:
     enabled: true
     drafts: false
     base_branches:
-      - main
-      - "feat/.*"   # stacked PRs are based on the previous feature branch
+      - ".*"      # Review every stacked base, including fix/test/docs branches.
   path_filters:
     - "!target/**"
     - "!Cargo.lock"
