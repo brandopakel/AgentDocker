@@ -182,15 +182,17 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
 /// Recognize an explicit AgentDocker MCP launch, not mentions in unrelated args.
 /// Recognize the bare launch and the runtime argument written by setup. Other
 /// argument forms and wrappers remain unverified without executing the command.
-pub fn mcp_command_matches(command: Option<&str>, args: &[&str], marker: &str) -> bool {
+pub fn mcp_command_matches(
+    command: Option<&str>,
+    args: &[&str],
+    marker: &str,
+    runtime: &str,
+) -> bool {
     command
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str())
         == Some(marker)
-        && matches!(args, ["mcp"] | ["mcp", "--runtime", _])
-        && args
-            .get(2)
-            .is_none_or(|runtime| !runtime.is_empty() && !runtime.starts_with('-'))
+        && (args == ["mcp"] || args == ["mcp", "--runtime", runtime])
 }
 
 /// Whether the runtime's MCP configuration registers AgentDocker.
@@ -225,7 +227,7 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
                             .is_some_and(|args| args.iter().all(|arg| arg.is_string()))
                             && server.get("disabled").and_then(|v| v.as_bool()) != Some(true)
                             && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
-                            && mcp_command_matches(command, &args, marker)
+                            && mcp_command_matches(command, &args, marker, spec.name)
                     })
                 });
             if wired {
@@ -262,7 +264,7 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
                                 .and_then(|v| v.as_array())
                                 .is_some_and(|args| args.iter().all(|arg| arg.is_str()))
                                 && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
-                                && mcp_command_matches(command, &args, marker)
+                                && mcp_command_matches(command, &args, marker, spec.name)
                         })
                     })
                 });
