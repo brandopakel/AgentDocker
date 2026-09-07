@@ -78,8 +78,8 @@ app was not the cause. Treat build storage as part of T12 cleanup evidence.
 `verify.sh` and `build_native.py` now run a read-only storage preflight before
 compilation. It checks the Cargo-reported active target directory, registered
 worktrees' default targets and fuzz targets. Defaults require 20 GiB free locally
-(5 GiB on CI), limit the current target to 20 GiB, and limit their aggregate to
-128 GiB. Override the positive GiB limits with `AGENTDOCKER_BUILD_MIN_FREE_GIB`,
+(5 GiB on CI), limit the current target to 12 GiB, and limit their aggregate to
+40 GiB. Override the positive GiB limits with `AGENTDOCKER_BUILD_MIN_FREE_GIB`,
 `AGENTDOCKER_BUILD_MAX_CURRENT_GIB` and `AGENTDOCKER_BUILD_MAX_TOTAL_GIB` for the
 machine's capacity. A preflight is not a filesystem quota or a reservation;
 concurrent tools can still consume space. Nonstandard targets belonging to other

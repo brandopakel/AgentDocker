@@ -6,129 +6,29 @@
   "privacy": "Only selected source identities, counts and digests are published. Credentials, user paths, provider transcripts and screenshots are excluded.",
   "campaigns": [
     {
-      "campaign": "ad-late-reaper-full-check",
+      "campaign": "ad-access-event-full-check",
       "command": "bash scripts/verify.sh check",
       "source": {
-        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
         "dirty": false,
-        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
       },
       "source_after": {
-        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
         "dirty": false,
-        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
       },
       "source_unchanged": true,
       "exit": 0,
-      "elapsed_seconds": 306.36,
+      "elapsed_seconds": 495.8,
       "rust_summary": [
-        "521",
-        "521",
+        "498",
+        "498",
         "",
         "4"
       ],
-      "python_count": 29,
-      "private_raw_log_sha256": "8d2bde45f75ea19a19a81f45c59fec2bedaff308710ea7969b091d1d1d3a92ee"
-    },
-    {
-      "campaign": "ad-desktop-review-fixed-full-check",
-      "command": "bash scripts/verify.sh check",
-      "source": {
-        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
-        "dirty": false,
-        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
-      },
-      "source_after": {
-        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
-        "dirty": false,
-        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
-      },
-      "source_unchanged": true,
-      "exit": 0,
-      "elapsed_seconds": 182.63,
-      "rust_summary": [
-        "531",
-        "531",
-        "",
-        "4"
-      ],
-      "python_count": 30,
-      "private_raw_log_sha256": "dd6a303d9423410d39ca27b7e44b9dd732850379a96740a57de046477087ddbf"
-    },
-    {
-      "campaign": "ad-lease-review-fixed-full-check",
-      "command": "bash scripts/verify.sh check",
-      "source": {
-        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
-        "dirty": false,
-        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
-      },
-      "source_after": {
-        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
-        "dirty": false,
-        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
-      },
-      "source_unchanged": true,
-      "exit": 0,
-      "elapsed_seconds": 77.07,
-      "rust_summary": [
-        "528",
-        "528",
-        "",
-        "4"
-      ],
-      "python_count": 30,
-      "private_raw_log_sha256": "09f35b4c2f739c058a5d7aad583173772ff5e625c8dfa27ea05307b11990afed"
-    },
-    {
-      "campaign": "ad-maintenance-full-check",
-      "command": "bash scripts/verify.sh check",
-      "source": {
-        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
-        "dirty": false,
-        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
-      },
-      "source_after": {
-        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
-        "dirty": false,
-        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
-      },
-      "source_unchanged": true,
-      "exit": 0,
-      "elapsed_seconds": 232.15,
-      "rust_summary": [
-        "539",
-        "539",
-        "",
-        "4"
-      ],
-      "python_count": 31,
-      "private_raw_log_sha256": "d0e08f80e36685147941c7dc4fa004575d2cfd318694a8d5cc68e15dcccb37ab"
-    },
-    {
-      "campaign": "ad-storage-full-check",
-      "command": "bash scripts/verify.sh check",
-      "source": {
-        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
-        "dirty": false,
-        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
-      },
-      "source_after": {
-        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
-        "dirty": false,
-        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
-      },
-      "source_unchanged": true,
-      "exit": 1,
-      "elapsed_seconds": 122.62,
-      "rust_summary": [
-        "521",
-        "521",
-        "",
-        "4"
-      ],
-      "python_count": 31,
-      "private_raw_log_sha256": "5603e85a9d01b7797fd186438b1ecb2f5ce65abb6b0363be26786cda32fdb32f"
+      "python_count": 22,
+      "private_raw_log_sha256": "6f8a4857d76b7d93da8cb9496f0c339a95dbf63039f0dead18a5d1f9788ba0ea"
     },
     {
       "campaign": "ad-benchmark-campaign-check",
@@ -154,6 +54,106 @@
       ],
       "python_count": 29,
       "private_raw_log_sha256": "d435b0164b586d8a85a82a611db964f551b99293614742aed2d9e89323d0a75c"
+    },
+    {
+      "campaign": "ad-delivery-followups-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "fd3784fb1a129f5e7ec49dc9415e4ac92757da92",
+        "content_sha256": "3001f51946be39a31e8c64881091b8604f4e8a9ca74b9a7566c0e2ec9283e368",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "fd3784fb1a129f5e7ec49dc9415e4ac92757da92",
+        "content_sha256": "3001f51946be39a31e8c64881091b8604f4e8a9ca74b9a7566c0e2ec9283e368",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 477.53,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 28,
+      "private_raw_log_sha256": "bac85afcfd29870fa6996efad2a7f08fa62fbab2645db56d55e073bb1e9c428e"
+    },
+    {
+      "campaign": "ad-desktop-benchmark-integrated-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+        "content_sha256": "45d9e7c0c2b85f3afc70d03dd04be8c5b20f8d954fd5a75d533f30e919a81318",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+        "content_sha256": "45d9e7c0c2b85f3afc70d03dd04be8c5b20f8d954fd5a75d533f30e919a81318",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 317.3,
+      "rust_summary": [
+        "530",
+        "530",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "2876d0b3006ee6c8f290878636827546f5da2e10717f85422e780f2ea465664c"
+    },
+    {
+      "campaign": "ad-desktop-inventory-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "09dacb6b455770fc67419a48124eaf4332fcbc84",
+        "content_sha256": "18d4af8c3a4a57d4e38a200451119ed35ca828d2e5402ee511ccad6be9cabbb6",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "09dacb6b455770fc67419a48124eaf4332fcbc84",
+        "content_sha256": "18d4af8c3a4a57d4e38a200451119ed35ca828d2e5402ee511ccad6be9cabbb6",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 383.23,
+      "rust_summary": [
+        "530",
+        "530",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "fa144ebc121b32ca383c3d5f31c485b3f062e5964214ccfb80de6927daf500b4"
+    },
+    {
+      "campaign": "ad-desktop-review-fixed-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
+        "dirty": false,
+        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
+      },
+      "source_after": {
+        "commit": "7946d8720a18c788638c0c0a66bec7b4c32d2ce7",
+        "dirty": false,
+        "content_sha256": "7533680add650d748d24a781e484293c4435f327a8fe227fbe6dcb488e0fd86a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 182.63,
+      "rust_summary": [
+        "531",
+        "531",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "dd6a303d9423410d39ca27b7e44b9dd732850379a96740a57de046477087ddbf"
     },
     {
       "campaign": "ad-expanded-fuzz-full-check",
@@ -206,21 +206,71 @@
       "private_raw_log_sha256": "99a7598fc69933582865068e602bbdd774adf090800f8454cc646651fe7a3b03"
     },
     {
-      "campaign": "ad-access-event-full-check",
+      "campaign": "ad-health-attribution-final-check",
       "command": "bash scripts/verify.sh check",
       "source": {
-        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
-        "dirty": false,
-        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
+        "commit": "76eef4ed5809cf9e2089d0312b6d7c9dd95cbbeb",
+        "content_sha256": "5fe4129921fc2b8527560989120b574d24d748d93ad6616c619171bc88920057",
+        "dirty": false
       },
       "source_after": {
-        "commit": "2d67d4f25642d63533dfd65318c5f8bbada25ab7",
-        "dirty": false,
-        "content_sha256": "6c96217766ac7386693e2d3e1118bacf8ee3271104968a86a34c3b6b44d37dc7"
+        "commit": "76eef4ed5809cf9e2089d0312b6d7c9dd95cbbeb",
+        "content_sha256": "5fe4129921fc2b8527560989120b574d24d748d93ad6616c619171bc88920057",
+        "dirty": false
       },
       "source_unchanged": true,
       "exit": 0,
-      "elapsed_seconds": 495.8,
+      "elapsed_seconds": 569.05,
+      "rust_summary": [
+        "497",
+        "497",
+        "",
+        "3"
+      ],
+      "python_count": 22,
+      "private_raw_log_sha256": "05468cd96c5dc0705559931b43e71aad30cd1b179439f29fdf886ff9e2972f14"
+    },
+    {
+      "campaign": "ad-late-reaper-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "dirty": false,
+        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+      },
+      "source_after": {
+        "commit": "5a3bd0c2bdf87e8424bf8e21c2231189fe51e5e5",
+        "dirty": false,
+        "content_sha256": "3f1d26dc32659a83b6a7685ae55a6c14852d10277dcf6a8a19ccaa9215b8505a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 306.36,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "8d2bde45f75ea19a19a81f45c59fec2bedaff308710ea7969b091d1d1d3a92ee"
+    },
+    {
+      "campaign": "ad-launch-review-final-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "f48af55b14e02037fe500976582b7f2bdd0f96de",
+        "content_sha256": "cafe002baeeb817ef0345ccc6c293a9cabc80596d07f774608cad449917e1509",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "f48af55b14e02037fe500976582b7f2bdd0f96de",
+        "content_sha256": "cafe002baeeb817ef0345ccc6c293a9cabc80596d07f774608cad449917e1509",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 422.62,
       "rust_summary": [
         "498",
         "498",
@@ -228,7 +278,282 @@
         "4"
       ],
       "python_count": 22,
-      "private_raw_log_sha256": "6f8a4857d76b7d93da8cb9496f0c339a95dbf63039f0dead18a5d1f9788ba0ea"
+      "private_raw_log_sha256": "83d6c943dc6de6640fdaccd76fb264eb49cce489baa0c6647cf5399ff4995c2b"
+    },
+    {
+      "campaign": "ad-lease-durability-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "0d99546aaf8721e8462e38346d298107dd1e774e",
+        "content_sha256": "cde3d77113a39889db6c7345d4e29a62fc46f4525575d776c6491ca3e68bc58f",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "0d99546aaf8721e8462e38346d298107dd1e774e",
+        "content_sha256": "cde3d77113a39889db6c7345d4e29a62fc46f4525575d776c6491ca3e68bc58f",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 518.47,
+      "rust_summary": [
+        "528",
+        "528",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "3bff1c49fea391f91b8c3e0a1bc492b4362c4c6a575110a39b23f6b59aad4910"
+    },
+    {
+      "campaign": "ad-lease-review-fixed-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
+        "dirty": false,
+        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
+      },
+      "source_after": {
+        "commit": "0f89e4ad02706805b5e28a9969f20e4a3af8ceae",
+        "dirty": false,
+        "content_sha256": "7d115db05d5f671af21738eed76838f3486c1ac86a7a789df806053d2b87b35a"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 77.07,
+      "rust_summary": [
+        "528",
+        "528",
+        "",
+        "4"
+      ],
+      "python_count": 30,
+      "private_raw_log_sha256": "09f35b4c2f739c058a5d7aad583173772ff5e625c8dfa27ea05307b11990afed"
+    },
+    {
+      "campaign": "ad-maintenance-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "dirty": false,
+        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
+      },
+      "source_after": {
+        "commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "dirty": false,
+        "content_sha256": "05dc7810e376aff68126767aa616147ccd344c4e2774b5c4272c1fdfc113a67b"
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 232.15,
+      "rust_summary": [
+        "539",
+        "539",
+        "",
+        "4"
+      ],
+      "python_count": 31,
+      "private_raw_log_sha256": "d0e08f80e36685147941c7dc4fa004575d2cfd318694a8d5cc68e15dcccb37ab"
+    },
+    {
+      "campaign": "ad-policy-integrated-pinned-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "9f37ed5bfebbf73cf4380a7050d033a1d8778b38",
+        "content_sha256": "fa89d0e15b3b3d780ad7039b3194245289c4e23eccb60b01e4bf85b72bed30c8",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "9f37ed5bfebbf73cf4380a7050d033a1d8778b38",
+        "content_sha256": "fa89d0e15b3b3d780ad7039b3194245289c4e23eccb60b01e4bf85b72bed30c8",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 453.64,
+      "rust_summary": [
+        "499",
+        "499",
+        "",
+        "4"
+      ],
+      "python_count": 22,
+      "private_raw_log_sha256": "284215b9f265b12d1154a2898d672dd7d018f5e62d7c254a45bdaaa22ef9be14"
+    },
+    {
+      "campaign": "ad-relay-umask-fixed-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7304c6956402eb235266f0c2bc09a0c8648bc6b1",
+        "content_sha256": "576d599a8111312e8c42e280231492ed0c4721aa6c8a74210835f5ce56749791",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "7304c6956402eb235266f0c2bc09a0c8648bc6b1",
+        "content_sha256": "576d599a8111312e8c42e280231492ed0c4721aa6c8a74210835f5ce56749791",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 420.13,
+      "rust_summary": [
+        "489",
+        "489",
+        "",
+        "3"
+      ],
+      "python_count": 24,
+      "private_raw_log_sha256": "94480a9ecafeb4bce1c575b433a6204da125854e1a5cfcd58d317591749fe72a"
+    },
+    {
+      "campaign": "ad-review-startup-allowance-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "a4bc8c5dc04e1fccbf64e6c1e041444971ef2f91",
+        "content_sha256": "f75b0d519da733c3607f66d31f3c8b4a010d5a39e19305b60c54ecc410cfab5f",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "a4bc8c5dc04e1fccbf64e6c1e041444971ef2f91",
+        "content_sha256": "f75b0d519da733c3607f66d31f3c8b4a010d5a39e19305b60c54ecc410cfab5f",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 314.83,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 29,
+      "private_raw_log_sha256": "e3de0d3d88979cdb803191dd28069af20166d436770c01cf09c84ba66deaee79"
+    },
+    {
+      "campaign": "ad-run-policy-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7e151505d9012606939d8da61ab6c8e444131800",
+        "content_sha256": "2119710c6be12ecc3cb3ed2d92cab4bd87d928dd93214887b76791fdb978f4b1",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "7e151505d9012606939d8da61ab6c8e444131800",
+        "content_sha256": "2119710c6be12ecc3cb3ed2d92cab4bd87d928dd93214887b76791fdb978f4b1",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 516.85,
+      "rust_summary": [
+        "505",
+        "505",
+        "",
+        "4"
+      ],
+      "python_count": 22,
+      "private_raw_log_sha256": "f34e554fe7eecce9fb3697a045b68a26e89db9a0c6cbbea75f528e55bd6225a8"
+    },
+    {
+      "campaign": "ad-socket-outcomes-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "7ab32a117a059e11ddbe4109637fb14cb290b4dc",
+        "content_sha256": "1fe8d3758bc40f4f2ac530855bc770257b4bcbd4d3485e8b1995e5d79816f9d7",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "7ab32a117a059e11ddbe4109637fb14cb290b4dc",
+        "content_sha256": "1fe8d3758bc40f4f2ac530855bc770257b4bcbd4d3485e8b1995e5d79816f9d7",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 461.56,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 28,
+      "private_raw_log_sha256": "029344beb246de7bb7c39d7ee56791c4a76ce1659c5905690bef341afac0ba53"
+    },
+    {
+      "campaign": "ad-socket-outcomes-integrated-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "1410d1b4825b23f707f4b76f4ac98a38c74047bf",
+        "content_sha256": "c05559d32de70fad95b4f59703f15d0242797c45ecb803a1fb5de7f1bec39670",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "1410d1b4825b23f707f4b76f4ac98a38c74047bf",
+        "content_sha256": "c05559d32de70fad95b4f59703f15d0242797c45ecb803a1fb5de7f1bec39670",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 423.4,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 28,
+      "private_raw_log_sha256": "5adedcf0d920e9b02c613d24d6756a7d5925a3c439020fd71e466edc5fd1d224"
+    },
+    {
+      "campaign": "ad-storage-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
+        "dirty": false,
+        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
+      },
+      "source_after": {
+        "commit": "01e5e8fefb80ac810dd112db7b19b58a06fee8a1",
+        "dirty": false,
+        "content_sha256": "24282e44b2a7d346dd78be073ded268196361763c93f2a0ecacde5e3769ed597"
+      },
+      "source_unchanged": true,
+      "exit": 1,
+      "elapsed_seconds": 122.62,
+      "rust_summary": [
+        "521",
+        "521",
+        "",
+        "4"
+      ],
+      "python_count": 31,
+      "private_raw_log_sha256": "5603e85a9d01b7797fd186438b1ecb2f5ce65abb6b0363be26786cda32fdb32f"
+    },
+    {
+      "campaign": "ad-windows-policy-followup-full-check",
+      "command": "bash scripts/verify.sh check",
+      "source": {
+        "commit": "6361dcc3c7ee487aecec90e98efcfd9d685592c3",
+        "content_sha256": "6a21be8e4c2da121dbc2c1bc83b3e8770e3a294a9ca79eefc586b1530ca8a6bf",
+        "dirty": false
+      },
+      "source_after": {
+        "commit": "6361dcc3c7ee487aecec90e98efcfd9d685592c3",
+        "content_sha256": "6a21be8e4c2da121dbc2c1bc83b3e8770e3a294a9ca79eefc586b1530ca8a6bf",
+        "dirty": false
+      },
+      "source_unchanged": true,
+      "exit": 0,
+      "elapsed_seconds": 452.95,
+      "rust_summary": [
+        "520",
+        "520",
+        "",
+        "4"
+      ],
+      "python_count": 28,
+      "private_raw_log_sha256": "7076d17ced11203d1e4b8d11ba081142fe5d7b5eafedaa8e290758bd92373c44"
     }
   ],
   "failures": [
