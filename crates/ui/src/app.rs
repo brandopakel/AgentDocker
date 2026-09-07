@@ -3,7 +3,7 @@
 //! both hand results to the UI thread through a channel and ask for a
 //! repaint, so the window never blocks on the socket.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -19,8 +19,6 @@ use egui::{Color32, RichText};
 use crate::client::Client;
 use crate::terminal::{Status, Terminal};
 
-/// Events kept for the feed.
-const EVENT_HISTORY: usize = 500;
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
@@ -39,11 +37,10 @@ enum Screen {
     Runtimes,
     Journal,
     Leases,
-    Events,
 }
 
 impl Screen {
-    const ALL: [Screen; 8] = [
+    const ALL: [Screen; 7] = [
         Screen::Agents,
         Screen::Questions,
         Screen::Terminal,
@@ -51,7 +48,6 @@ impl Screen {
         Screen::Runtimes,
         Screen::Journal,
         Screen::Leases,
-        Screen::Events,
     ];
 
     fn title(self) -> &'static str {
@@ -63,7 +59,6 @@ impl Screen {
             Screen::Runtimes => "Runtimes",
             Screen::Journal => "Journal",
             Screen::Leases => "Leases",
-            Screen::Events => "Events",
         }
     }
 }
@@ -118,7 +113,6 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
-    events: VecDeque<Event>,
     connected: Result<(), String>,
     /// The highest event sequence taken, so a reconnect's replay is not
     /// shown or acted on twice. Live-only events carry `0` and always pass.
@@ -177,7 +171,6 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
-            events: VecDeque::new(),
             connected: Err("connecting…".to_owned()),
             last_seq: 0,
             status: String::new(),
@@ -209,7 +202,6 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
-            events: VecDeque::new(),
             connected: Ok(()),
             last_seq: 0,
             status: String::new(),
@@ -368,10 +360,6 @@ impl App {
             }
             _ => {}
         }
-        self.events.push_front(event);
-        while self.events.len() > EVENT_HISTORY {
-            self.events.pop_back();
-        }
     }
 
     /// The projects agents work in: (id, name), by name.
@@ -444,7 +432,9 @@ impl App {
         let mut stop: Option<String> = None;
         let mut attach: Option<String> = None;
         if groups.is_empty() {
-            ui.label("No live agents. Start one with `agentdocker run`, or adopt one below.");
+            ui.label(
+                RichText::new("No live agents. Adopt one below, or `agentdocker run`.").weak(),
+            );
         }
         // One grid for every project rather than one each, so the columns
         // line up down the whole screen. Separate grids size themselves
@@ -601,7 +591,7 @@ impl App {
         ui.separator();
         ui.heading("Running, not registered");
         if self.discovered.is_empty() {
-            ui.label("Nothing found. The daemon scans every five seconds for Claude Code, Codex, Gemini CLI and other known agents.");
+            ui.label(RichText::new("Nothing found.").weak());
         } else {
             let mut adopt: Option<u32> = None;
             let mut adopt_all = false;
@@ -743,11 +733,6 @@ impl App {
     /// a cost. The question and the answer box sit together: reading it
     /// and replying to it should not be two places.
     fn questions_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            "Questions agents have put to you. Each one has an agent waiting on the answer; \
-             unanswered, it gives up when its time runs out.",
-        );
-        ui.add_space(6.0);
         if self.questions.is_empty() {
             ui.label(RichText::new("Nothing is waiting on you.").weak());
             return;
@@ -808,10 +793,6 @@ impl App {
 
     /// Any command the CLI has, run from the window.
     fn console_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            "Every `agentdocker` command, run here. The command line is the whole surface, so this \
-             is the whole surface.",
-        );
         let mut run = false;
         ui.horizontal(|ui| {
             ui.label("agentdocker");
@@ -838,16 +819,19 @@ impl App {
             self.send(Cmd::Console(line));
         }
         ui.separator();
-        egui::ScrollArea::both().show(ui, |ui| {
-            ui.add(
-                egui::Label::new(egui::RichText::new(&self.console_output).monospace())
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-        });
+        // Output arrives at the bottom, so follow it there.
+        egui::ScrollArea::both()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&self.console_output).monospace())
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
+            });
     }
 
     fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label("The agent tools on this machine, and whether agentdocker is wired into each.");
+        ui.label(RichText::new("Agent tools on this machine.").weak());
         let mut setup: Option<String> = None;
         let mut sorted: Vec<&RuntimeInfo> = self.runtimes.iter().collect();
         sorted.sort_by_key(|r| !r.installed());
@@ -952,7 +936,7 @@ impl App {
         ui.separator();
         let now = Utc::now();
         if self.journal.is_empty() {
-            ui.label("Nothing in the journal yet. Releases, notes, commits, arrivals and handoffs land here.");
+            ui.label(RichText::new("Nothing in the journal yet.").weak());
         }
         for entry in &self.journal {
             ui.horizontal(|ui| {
@@ -999,24 +983,6 @@ impl App {
                 }
             });
     }
-
-    fn events_screen(&mut self, ui: &mut egui::Ui) {
-        if self.events.is_empty() {
-            ui.label("Waiting for events.");
-        }
-        for event in &self.events {
-            ui.horizontal(|ui| {
-                ui.monospace(
-                    event
-                        .at
-                        .with_timezone(&chrono::Local)
-                        .format("%H:%M:%S")
-                        .to_string(),
-                );
-                ui.label(summary(&event.kind));
-            });
-        }
-    }
 }
 
 impl eframe::App for App {
@@ -1026,7 +992,7 @@ impl eframe::App for App {
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("agentdocker");
+                ui.heading("AgentDocker");
                 ui.separator();
                 match &self.connected {
                     Ok(()) => {
@@ -1082,7 +1048,6 @@ impl eframe::App for App {
                         format!("Questions ({})", self.questions.len())
                     }
                     Screen::Leases => format!("Leases ({})", self.leases.len()),
-                    Screen::Events => format!("Events ({})", self.events.len()),
                     other => other.title().to_owned(),
                 };
                 if ui.selectable_label(self.screen == screen, label).clicked() {
@@ -1097,16 +1062,20 @@ impl eframe::App for App {
                 self.terminal_screen(ui);
                 return;
             }
-            egui::ScrollArea::vertical().show(ui, |ui| match self.screen {
-                Screen::Agents => self.agents_screen(ui),
-                Screen::Questions => self.questions_screen(ui),
-                Screen::Console => self.console_screen(ui),
-                Screen::Terminal => {}
-                Screen::Runtimes => self.runtimes_screen(ui),
-                Screen::Journal => self.journal_screen(ui),
-                Screen::Leases => self.leases_screen(ui),
-                Screen::Events => self.events_screen(ui),
-            });
+            // The journal grows downward; every other screen is a list
+            // the reader scrolls from the top.
+            let follow = self.screen == Screen::Journal;
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(follow)
+                .show(ui, |ui| match self.screen {
+                    Screen::Agents => self.agents_screen(ui),
+                    Screen::Questions => self.questions_screen(ui),
+                    Screen::Console => self.console_screen(ui),
+                    Screen::Terminal => {}
+                    Screen::Runtimes => self.runtimes_screen(ui),
+                    Screen::Journal => self.journal_screen(ui),
+                    Screen::Leases => self.leases_screen(ui),
+                });
         });
     }
 }
@@ -1117,73 +1086,6 @@ fn span(secs: i64) -> String {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m", s / 60),
         s => format!("{}h", s / 3600),
-    }
-}
-
-/// One line for an event, from its tag and the few fields worth reading.
-fn summary(kind: &EventKind) -> String {
-    match kind {
-        EventKind::JournalAppended { entry } => format!("journal: {}", entry.line()),
-        EventKind::AgentCreated { name, .. } => format!("agent created: {name}"),
-        EventKind::AgentExited { agent, status } => {
-            format!("agent exited: {} ({status})", agent.short())
-        }
-        EventKind::AgentDiscovered { pid, runtime, .. } => {
-            format!("agent found: {runtime} pid {pid}")
-        }
-        EventKind::AgentVanished {
-            pid,
-            runtime,
-            adopted,
-            ..
-        } => format!(
-            "agent {}: {runtime} pid {pid}",
-            if *adopted { "adopted" } else { "gone" }
-        ),
-        EventKind::LeaseClaimed { lease } => {
-            format!(
-                "lease claimed: {} by {}",
-                lease.resource.as_str(),
-                lease.holder.short()
-            )
-        }
-        EventKind::LeaseReleased { lease } => {
-            format!(
-                "lease released: {} by {}",
-                lease.resource.as_str(),
-                lease.holder.short()
-            )
-        }
-        EventKind::LeaseExpired { lease } => format!("lease expired: {}", lease.resource.as_str()),
-        EventKind::LeaseConflict {
-            resource,
-            requester,
-            ..
-        } => format!(
-            "lease conflict: {} wanted by {}",
-            resource.as_str(),
-            requester.short()
-        ),
-        EventKind::MessageSent { from, to, kind, .. } => {
-            format!(
-                "message: {} → {to} [{kind}]",
-                from.chars().take(12).collect::<String>()
-            )
-        }
-        other => {
-            let value = serde_json::to_value(other).unwrap_or_default();
-            let tag = value
-                .get("event")
-                .and_then(|t| t.as_str())
-                .unwrap_or("event")
-                .replace('_', " ");
-            let mut rest = value;
-            if let Some(object) = rest.as_object_mut() {
-                object.remove("event");
-            }
-            let detail: String = rest.to_string().chars().take(120).collect();
-            format!("{tag}: {detail}")
-        }
     }
 }
 
@@ -1515,29 +1417,42 @@ mod tests {
             event.seq = seq;
             event
         };
-        let (tx, _rx) = channel::<Cmd>();
+        let (tx, requests) = channel::<Cmd>();
         let (_mtx, mrx) = channel::<Msg>();
         let mut app = App::bare(tx, mrx);
         app.on_event(stopping(1));
         app.on_event(stopping(2));
-        assert_eq!(app.events.len(), 2);
-        // A reconnect replays what was already taken.
+        assert_eq!(app.last_seq, 2);
+        let asked = requests.try_iter().count();
+        assert!(asked > 0, "an agent event refreshes the agent list");
+
+        // A reconnect replays what was already taken. Acting on those
+        // again would refetch everything for nothing.
         app.on_event(stopping(1));
         app.on_event(stopping(2));
-        assert_eq!(app.events.len(), 2, "replayed events are not taken twice");
+        assert_eq!(app.last_seq, 2, "replayed events are not taken twice");
+        assert_eq!(
+            requests.try_iter().count(),
+            0,
+            "and nothing is asked of the daemon for them"
+        );
+
         app.on_event(stopping(3));
-        assert_eq!(app.events.len(), 3, "and newer ones still are");
+        assert_eq!(app.last_seq, 3, "and newer ones still are");
+        assert!(requests.try_iter().count() > 0);
+
         // Live-only events carry no sequence and always count.
         let mut live = Event::new(
-            EventKind::WatcherGap {
-                reason: "overflow".into(),
+            EventKind::AgentRemoved {
+                agent: AgentId::from("a2"),
             },
             Utc::now(),
         );
         live.seq = 0;
         app.on_event(live.clone());
         app.on_event(live);
-        assert_eq!(app.events.len(), 5);
+        assert_eq!(app.last_seq, 3, "a live event does not move the cursor");
+        assert!(requests.try_iter().count() >= 2, "and each one is acted on");
     }
 
     #[test]
@@ -1560,21 +1475,9 @@ mod tests {
     }
 
     #[test]
-    fn spans_and_summaries_read_well() {
+    fn spans_read_well() {
         assert_eq!(span(45), "45s");
         assert_eq!(span(180), "3m");
         assert_eq!(span(7200), "2h");
-        let found = EventKind::AgentDiscovered {
-            pid: 42,
-            started_at: None,
-            runtime: "codex".into(),
-            project: None,
-            cwd: None,
-        };
-        assert_eq!(summary(&found), "agent found: codex pid 42");
-        let other = EventKind::DaemonStopping {
-            reason: "signal".into(),
-        };
-        assert_eq!(summary(&other), "daemon stopping: {\"reason\":\"signal\"}");
     }
 }
