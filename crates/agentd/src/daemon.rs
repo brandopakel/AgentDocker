@@ -1675,8 +1675,11 @@ impl Daemon {
         })
         .await;
         let mut runtimes = match inventory {
-            Ok(runtimes) => runtimes,
-            Err(err) => return Response::error(ErrorCode::Internal, err.to_string()),
+            Ok(Ok(runtimes)) => runtimes,
+            Ok(Err(err)) => return Response::error(ErrorCode::Unavailable, err.to_string()),
+            Err(_) => {
+                return Response::error(ErrorCode::Unavailable, "runtime inventory worker failed");
+            }
         };
         let processes = match self.discover().await {
             Response::Processes { processes } => processes,

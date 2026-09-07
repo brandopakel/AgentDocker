@@ -346,6 +346,8 @@ mod tests {
             codex_home: None,
             path: vec![home.join("bin")],
             app_dirs: vec![],
+            install_dirs: vec![],
+            desktop_dirs: vec![],
             versions: false,
         };
         std::fs::create_dir_all(home.join("bin")).unwrap();
