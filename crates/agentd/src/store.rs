@@ -654,14 +654,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn clear_inbox(&self, agent: &AgentId) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM inbox WHERE agent = ?1",
-            params![agent.as_str()],
-        )?;
-        Ok(())
-    }
-
     pub fn load_inboxes(&self) -> Result<HashMap<AgentId, VecDeque<Envelope>>> {
         let mut stmt = self
             .conn
@@ -1299,8 +1291,21 @@ mod tests {
             .collect();
         assert_eq!(texts, vec!["2", "3", "4"]);
 
-        store.clear_inbox(&agent).unwrap();
+        let ids = inboxes[&agent]
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        let mut event = Event::new(
+            EventKind::InboxAcknowledged {
+                agent: agent.clone(),
+                messages: ids.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = 1;
+        store.ack_inbox(&agent, &ids, &event).unwrap();
         assert!(store.load_inboxes().unwrap().is_empty());
+        assert_eq!(store.recent_events(1).unwrap()[0], event);
     }
 
     #[test]
