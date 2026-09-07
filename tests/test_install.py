@@ -247,6 +247,7 @@ class InstallerTests(unittest.TestCase):
             for key in ["<string>AgentDocker</string>", "<string>9.9.9</string>"]:
                 self.assertIn(key, plist)
             self.assertTrue((app / "Contents/MacOS/AgentDocker").exists())
+            self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
             self.assertTrue((app / "Contents/Resources/AgentDocker.icns").exists())
 
     def test_formula_requires_real_hashes_for_every_target(self):
