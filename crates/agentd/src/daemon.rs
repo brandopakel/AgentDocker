@@ -6727,6 +6727,56 @@ deny = ["send:all"]
         assert_eq!(files, 1);
     }
 
+    /// A commit that fails must not leave the checkout marked. The mark
+    /// tells the watcher to keep out, so one left behind does not fail
+    /// loudly — it silently stops that checkout being journaled for as
+    /// long as the daemon lives.
+    #[tokio::test]
+    async fn a_failed_commit_does_not_leave_the_checkout_marked() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+
+        // A commit git will refuse. A pre-commit hook that says no is
+        // the portable way to arrange that; the point is the failure,
+        // not which failure.
+        let hooks = dir.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        let write_hook = |body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&hook, body).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write_hook("#!/bin/sh\nexit 1\n");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        ));
+        let refused = commit(&daemon, "writer", "cannot be made", false).await;
+        assert!(
+            matches!(refused, Response::Error { .. }),
+            "the commit failed: {refused:?}"
+        );
+        assert!(
+            lock(&daemon.state).committing.is_empty(),
+            "and the checkout is not still marked"
+        );
+
+        // Which means the next one works, and is journaled.
+        write_hook("#!/bin/sh\nexit 0\n");
+        let Response::Committed { .. } = commit(&daemon, "writer", "and now it can", false).await
+        else {
+            panic!("commit failed")
+        };
+        assert!(lock(&daemon.state).committing.is_empty());
+    }
+
     /// A message beginning with a dash is a message. Passing it as
     /// `--message=<text>` or positionally would make git read it as a
     /// flag and fail, or worse, succeed at something else.

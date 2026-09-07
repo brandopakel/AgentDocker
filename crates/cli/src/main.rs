@@ -1099,10 +1099,15 @@ async fn main() -> Result<()> {
                 pushed,
             } = response
             {
-                let short: String = head.chars().take(7).collect();
+                // The id on stdout and nothing else, like every other
+                // command that makes something: `head=$(agentdocker
+                // commit -m …)` has to give a usable sha. What it did
+                // goes to stderr, where a person still sees it and a
+                // pipeline does not.
+                println!("{head}");
                 let where_ = branch.unwrap_or_else(|| "a detached HEAD".to_owned());
-                println!(
-                    "{short} on {where_}, {files} file{}{}",
+                eprintln!(
+                    "on {where_}, {files} file{}{}",
                     if files == 1 { "" } else { "s" },
                     if pushed { ", pushed" } else { "" }
                 );

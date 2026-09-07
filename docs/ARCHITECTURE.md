@@ -169,7 +169,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 |---|---|---|
 | `worktree_create {agent, path, branch}` | `worktree {path, branch}` | host-only; new linked checkout at HEAD |
 | `worktree_diff {agent}` | `diff {text}` | host-only tracked diff |
-| `commit {agent, message, all?, push?}` | `committed {head, branch?, files, pushed}` | host-only; commits the agent's checkout and journals it against that agent. `all` stages tracked modifications first; `push` pushes afterwards. Nothing is written into the commit itself — the git author is unchanged and no trailer is added |
+| `commit {agent, message, all?, push?}` | `committed {head, branch?, files, pushed}` | host-only; commits the agent's checkout and journals it against that agent. `all` stages tracked modifications first; `push` pushes afterwards, and a push that fails answers `error(unavailable)` with the commit's sha, since the commit was made. Nothing is written into the commit itself — the git author is unchanged and no trailer is added |
 | `integrate {agent, source, validation, apply?}` | `integration {source_head, applied, clean, text}` | validated source; apply leaves merge uncommitted and target lease held |
 | `grant_access {agent, container_root, ttl_secs?}` | `access {grant, token, socket, expires_at}` | host-only; TTL 1–86400 seconds, default 3600; CLI writes token privately and prints grant ID |
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
