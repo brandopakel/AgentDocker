@@ -154,7 +154,7 @@ impl Daemon {
                     }
                 };
                 let activation_failed = if persisted {
-                    spawned.activate().await.is_err()
+                    spawned.activate("restarted").await.is_err()
                 } else {
                     false
                 };

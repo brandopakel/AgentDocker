@@ -320,7 +320,7 @@ impl Daemon {
             !cancelled && state.storage_error.is_none()
         };
         let activation_error = if persisted {
-            spawned.activate().await.err()
+            spawned.activate("restored").await.err()
         } else {
             None
         };

@@ -1283,7 +1283,7 @@ impl Daemon {
                 };
                 let failed = lock(&self.state).storage_failure();
                 let activation_error = if failed.is_none() && updated.is_some() {
-                    spawned.activate().await.err()
+                    spawned.activate("launched").await.err()
                 } else {
                     None
                 };

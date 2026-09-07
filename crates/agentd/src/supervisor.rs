@@ -216,8 +216,11 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
 impl Spawned {
     /// The durable identity and event must already be committed. Dropping an
     /// unactivated Spawned closes its gate; the command never executes.
-    pub async fn activate(&mut self) -> anyhow::Result<()> {
-        let result = self.activate_inner().await;
+    pub async fn activate(&mut self, action: &str) -> anyhow::Result<()> {
+        let result = self
+            .activate_inner()
+            .await
+            .with_context(|| format!("command could not be {action}"));
         if let Err(error) = &result {
             self.launch_error = Some(format!("{error:#}"));
         }

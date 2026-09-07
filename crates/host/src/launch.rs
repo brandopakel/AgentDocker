@@ -21,11 +21,14 @@ pub struct Pending {
 /// An executed child remains owned even if an async activation is cancelled.
 pub struct OwnedChild {
     child: Child,
+    reaped: bool,
 }
 
 impl OwnedChild {
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        let status = self.child.try_wait()?;
+        self.reaped |= status.is_some();
+        Ok(status)
     }
 
     pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
@@ -39,9 +42,9 @@ impl OwnedChild {
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            // This child has not been reaped, so its PID cannot name somebody
-            // else. Native launches establish a dedicated group before gating.
+        if !self.reaped {
+            // Kill the group before reaping, including an already-exited leader.
+            // The unreaped PID cannot name somebody else. Native launches establish a dedicated group before gating.
             // SAFETY: kill only reads its scalar arguments.
             unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
             let _ = self.child.kill();
@@ -87,7 +90,10 @@ pub fn prepare(mut command: Command) -> io::Result<Pending> {
     std::thread::Builder::new()
         .name("agent-launch".into())
         .spawn(move || {
-            let launched = command.spawn().map(|child| OwnedChild { child });
+            let launched = command.spawn().map(|child| OwnedChild {
+                child,
+                reaped: false,
+            });
             // Close the parent's copy of the child's gate even on exec error.
             drop(command);
             // Failed send drops OwnedChild, killing/reaping a cancelled launch.
@@ -240,6 +246,7 @@ mod tests {
             .process_group(0);
         let mut parent = OwnedChild {
             child: parent.spawn().unwrap(),
+            reaped: false,
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         let pid = loop {
@@ -259,8 +266,66 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
         parent.child.kill().unwrap();
-        parent.child.wait().unwrap();
+        while parent.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         wait_gone(pid);
         assert!(!dir.path().join("executed").exists());
+    }
+
+    #[test]
+    fn cancelled_activation_kills_descendants_even_if_the_leader_already_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("descendant");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 & printf '%s' $! > \"$1\"; exit 0",
+                "fixture",
+            ])
+            .arg(&marker)
+            .process_group(0);
+        let pending = prepare(command).unwrap();
+        let pid = pending.pid;
+        let child = pending.activate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // Observe exit without reaping: cancellation must still own the
+            // group when the worker's result is dropped before supervision.
+            // SAFETY: waitid writes a valid siginfo_t; WNOWAIT retains this
+            // owned child's PID and WNOHANG keeps the fixture deadline bounded.
+            let exited = unsafe {
+                let mut status: libc::siginfo_t = std::mem::zeroed();
+                assert_eq!(
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as _,
+                        &mut status,
+                        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG
+                    ),
+                    0
+                );
+                status.si_signo != 0
+            };
+            if exited {
+                break;
+            }
+            assert!(Instant::now() < deadline, "fixture leader did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let descendant: u32 = std::fs::read_to_string(marker).unwrap().parse().unwrap();
+        drop(child);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while crate::procinfo::start_time(descendant).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let leaked = crate::procinfo::start_time(descendant).is_some();
+        // Cleanup before assertions preserves the original failing fixture.
+        if leaked {
+            unsafe { libc::kill(descendant as i32, libc::SIGKILL) };
+            wait_gone(descendant);
+        }
+        assert!(!leaked, "cancelled launch left its descendant running");
     }
 }
