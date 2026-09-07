@@ -56,6 +56,7 @@ def daemon_metadata(executable, target, version, runner):
 
 
 def build(target, schema_runner=()):
+    subprocess.run(["python3", str(ROOT / "scripts/build_storage.py")], check=True, stdout=subprocess.DEVNULL)
     rustc = subprocess.check_output(["rustc", "-Vv"], text=True)
     host = next(line.removeprefix("host: ") for line in rustc.splitlines() if line.startswith("host: "))
     target = target or host

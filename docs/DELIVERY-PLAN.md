@@ -81,3 +81,14 @@ Execute [LOCAL-TRIAL.md](LOCAL-TRIAL.md) in order. Every Stage 2 row below requi
 ## Exit criteria
 
 A feature is complete only when its invariant, relevant UI/adapter behavior, docs, tests and final-head review agree. Release readiness additionally requires the integrated candidate to pass the applicable crosswalk, actual supported-platform trials and final artifact verification. Keep unsupported platforms/channels and unresolved failures explicit. Do not turn an unavailable certificate, machine, review quota or missing test into a completed checkbox.
+
+
+### Disk-pressure incident and build retention
+
+The local review accumulated roughly 220 GiB of temporary Cargo output and left
+only 3 GiB free. Cleanup recovered 185 GiB while preserving source, credentials,
+reports and release binaries. Build storage preflight and disabled development
+incremental compilation address recurrence; one local campaign and at most two
+retained debug caches are now required. T12 records disk use and cleanup as well
+as process cleanup. The active main checkout belongs to another session and was
+preserved. See the testing standard for scope and configurable limits.

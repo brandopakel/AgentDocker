@@ -58,3 +58,33 @@ Native graphical failures record connection state, inventory count, whether the 
 Socket load reports connect/write/read/decode failures by operation and retains a bounded fixture-daemon log tail. All agents register before workers start; failure to create a worker cancels already-created waiting workers. Criterion stores each campaign's samples in a fresh `artifacts/criterion.*` directory, alongside source manifests, so cached baseline metadata without its samples cannot become an implicit comparison. The original 100-client Linux failure remains open until the labeled failure is reproduced and explained.
 
 Managed workspace and relay campaigns use a private `0077` umask. This reproduced a helper-image defect: copied relay source retained root-owned `0600`, preventing the workspace UID from reading it. The image recipe now explicitly makes its embedded source readable (`0444`); host fixtures and credentials remain private. The original recipe failed with permission denied and the corrected recipe reported readiness in a real Podman VM before the fix was applied. Both engine CI relay jobs must pass on the final source.
+
+
+## Development disk budget
+
+The September 7 local campaign exhausted disk space by retaining debug outputs
+in 31 isolated worktrees. About 187 GiB of allocated regenerable caches were
+removed; source, credentials and reports were preserved. The installed desktop
+app was not the cause. Treat build storage as part of T12 cleanup evidence.
+
+`verify.sh` and `build_native.py` now run a read-only storage preflight before
+compilation. It checks the Cargo-reported active target directory, registered
+worktrees' default targets and fuzz targets. Defaults require 20 GiB free locally
+(5 GiB on CI), limit the current target to 20 GiB, and limit their aggregate to
+128 GiB. Override the positive GiB limits with `AGENTDOCKER_BUILD_MIN_FREE_GIB`,
+`AGENTDOCKER_BUILD_MAX_CURRENT_GIB` and `AGENTDOCKER_BUILD_MAX_TOTAL_GIB` for the
+machine's capacity. A preflight is not a filesystem quota or a reservation;
+concurrent tools can still consume space. Nonstandard targets belonging to other
+worktrees are outside this inventory.
+
+Keep only one local build campaign active and at most two debug caches. Retain
+JUnit, coverage, benchmark manifests/results and failure logs before clearing
+inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html).
+`cargo clean --profile dev` removes generated development output; inspect
+`--dry-run` first. Do not clean an active build/test directory, running binaries,
+or another session's cache. Each worktree keeps its own target directory.
+Workspace development builds disable incremental compilation, while keeping
+full debug information and unchanged release/benchmark optimization. Direct
+Cargo commands do not invoke the storage preflight; run
+`python3 scripts/build_storage.py` first. This bounds the campaign workflow,
+not all disk use by arbitrary programs.
