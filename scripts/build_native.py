@@ -41,16 +41,27 @@ def build(target):
     host = next(line.removeprefix("host: ") for line in rustc.splitlines() if line.startswith("host: "))
     target = target or host
     before = inputs()
-    argv = ["cargo", "build", "--locked", "--release", "-p", "agentdocker", "-p", "agentdocker-ui", "--bins"]
+    argv = ["cargo", "build", "--locked", "--release", "-p", "agentdocker", "-p", "agentdocker-ui", "--bins", "--message-format=json-render-diagnostics"]
     if target != host:
         argv += ["--target", target]
-    subprocess.run(argv, cwd=ROOT, check=True)
+    # Cargo reports the actual artifact paths, including target-dir overrides.
+    output = subprocess.check_output(argv, cwd=ROOT, text=True)
+    executables = {}
+    for line in output.splitlines():
+        message = json.loads(line)
+        if message.get("reason") == "compiler-artifact" and message.get("executable"):
+            name = message["target"]["name"]
+            if name in BINARIES:
+                executables[name] = Path(message["executable"])
+    if set(executables) != set(BINARIES) or len({path.parent for path in executables.values()}) != 1:
+        raise RuntimeError("Cargo did not report all three desktop executables in one directory")
     if inputs() != before:
         raise RuntimeError("source changed during the native build; no provenance manifest written")
-    directory = ROOT / "target" / (target if target != host else "") / "release"
+    directory = executables["agentdocker"].parent
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     result = {
         "format": 1, **before, "target": target, "version": version, "rustc": rustc,
+        "binary_directory": str(directory),
         "binary_sha256": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in BINARIES},
     }
     (directory / "native-build.json").write_text(json.dumps(result, indent=2) + "\n")
