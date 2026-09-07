@@ -21,6 +21,9 @@ case "${1:-check}" in
     ;;
   bench)
     mkdir -p artifacts
+    # Criterion cache metadata alone is not a valid comparison baseline. Keep
+    # each campaign's complete samples with its source manifest and artifacts.
+    export CRITERION_HOME="$(mktemp -d "$PWD/artifacts/criterion.XXXXXX")"
     python3 scripts/benchmark_manifest.py > artifacts/benchmark-manifest.json
     cargo bench --locked -p agentdocker-core --bench leases -- --noplot 2>&1 | tee artifacts/criterion-leases.txt
     cargo bench --locked -p agentdocker-host --bench fingerprint -- --noplot 2>&1 | tee artifacts/criterion-fingerprint.txt

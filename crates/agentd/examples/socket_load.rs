@@ -2,7 +2,7 @@
 use agentdocker_core::{AgentSpec, LeaseMode, Request, Response};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -15,14 +15,27 @@ impl Drop for DaemonChild {
     }
 }
 fn request(socket: &Path, request: &Request) -> Result<Response> {
-    let mut stream = UnixStream::connect(socket)?;
+    let operation = match request {
+        Request::Ping => "ping",
+        Request::Register { .. } => "register",
+        Request::Claim { .. } => "claim",
+        Request::Release { .. } => "release",
+        _ => "request",
+    };
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("{operation}: connect to fixture daemon"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, request)?;
-    stream.write_all(b"\n")?;
+    serde_json::to_writer(&mut stream, request)
+        .with_context(|| format!("{operation}: write request"))?;
+    stream
+        .write_all(b"\n")
+        .with_context(|| format!("{operation}: finish request"))?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
-    Ok(serde_json::from_str(&line)?)
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .with_context(|| format!("{operation}: read response"))?;
+    serde_json::from_str(&line).with_context(|| format!("{operation}: decode response"))
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
@@ -73,13 +86,11 @@ fn main() -> Result<()> {
         anyhow::ensure!(Instant::now() < deadline, "daemon startup timeout");
         std::thread::sleep(Duration::from_millis(20));
     }
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(clients + 1));
-    let mut workers = Vec::new();
+    // Register the entire fixture before starting any waiting worker.
+    let mut registered = Vec::with_capacity(clients);
     for n in 0..clients {
         let socket = socket.clone();
         let checkout = checkout.clone();
-        let barrier = barrier.clone();
-        // Register before launching workers so a failed registration cannot strand a barrier.
         let agent = match request(
             &socket,
             &Request::Register {
@@ -95,70 +106,102 @@ fn main() -> Result<()> {
             Response::Agent { agent } => agent.id.to_string(),
             other => bail!("registration: {other:?}"),
         };
-        workers.push(std::thread::spawn(move || -> Result<(Vec<f64>, usize)> {
-            barrier.wait();
-            let mut samples = Vec::new();
-            let mut conflicts = 0;
-            for _ in 0..iterations {
-                let started = Instant::now();
-                let reply = request(
-                    &socket,
-                    &Request::Claim {
-                        agent: agent.clone(),
-                        resource: format!("path:{}", checkout.join("input.rs").display()),
-                        mode: LeaseMode::Exclusive,
-                        amount: None,
-                        ttl_secs: 60,
-                        note: None,
-                        wait_secs: 0,
-                    },
-                )?;
-                match reply {
-                    Response::Lease { lease } => {
-                        let reply = request(
-                            &socket,
-                            &Request::Release {
-                                summary: None,
-                                summary_source: agentdocker_core::SummarySource::Explicit,
-                                agent: agent.clone(),
-                                lease: lease.id,
-                            },
-                        )?;
-                        anyhow::ensure!(
-                            matches!(reply, Response::Lease { .. }),
-                            "release: {reply:?}"
-                        );
-                    }
-                    Response::Error {
-                        code: agentdocker_core::ErrorCode::Conflict,
-                        ..
-                    } => conflicts += 1,
-                    other => bail!("claim: {other:?}"),
-                }
-                samples.push(started.elapsed().as_secs_f64() * 1e9);
-            }
-            Ok((samples, conflicts))
-        }));
+        registered.push(agent);
     }
-    let start = Instant::now();
-    barrier.wait();
-    let mut samples = Vec::new();
-    let mut conflicts = 0;
-    let mut error = None;
-    for worker in workers {
-        match worker.join() {
-            Ok(Ok((mut values, count))) => {
-                samples.append(&mut values);
-                conflicts += count;
-            }
-            Ok(Err(e)) => error = Some(e),
-            Err(_) => error = Some(anyhow::anyhow!("load worker panicked")),
+    let (mut samples, conflicts, elapsed) = std::thread::scope(|scope| -> Result<_> {
+        let mut workers = Vec::new();
+        // Dropping these senders cancels workers if creating a later thread fails.
+        let mut starts = Vec::new();
+        for agent in registered {
+            let socket = socket.clone();
+            let checkout = checkout.clone();
+            let (start, ready) = std::sync::mpsc::channel();
+            starts.push(start);
+            workers.push(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<(Vec<f64>, usize)> {
+                        ready.recv().context("workload start cancelled")?;
+                        let mut samples = Vec::new();
+                        let mut conflicts = 0;
+                        for _ in 0..iterations {
+                            let started = Instant::now();
+                            let reply = request(
+                                &socket,
+                                &Request::Claim {
+                                    agent: agent.clone(),
+                                    resource: format!(
+                                        "path:{}",
+                                        checkout.join("input.rs").display()
+                                    ),
+                                    mode: LeaseMode::Exclusive,
+                                    amount: None,
+                                    ttl_secs: 60,
+                                    note: None,
+                                    wait_secs: 0,
+                                },
+                            )?;
+                            match reply {
+                                Response::Lease { lease } => {
+                                    let reply = request(
+                                        &socket,
+                                        &Request::Release {
+                                            summary: None,
+                                            summary_source:
+                                                agentdocker_core::SummarySource::Explicit,
+                                            agent: agent.clone(),
+                                            lease: lease.id,
+                                        },
+                                    )?;
+                                    anyhow::ensure!(
+                                        matches!(reply, Response::Lease { .. }),
+                                        "release: {reply:?}"
+                                    );
+                                }
+                                Response::Error {
+                                    code: agentdocker_core::ErrorCode::Conflict,
+                                    ..
+                                } => conflicts += 1,
+                                other => bail!("claim: {other:?}"),
+                            }
+                            samples.push(started.elapsed().as_secs_f64() * 1e9);
+                        }
+                        Ok((samples, conflicts))
+                    })
+                    .context("create load worker")?,
+            );
         }
-    }
-    if let Some(error) = error {
-        return Err(error);
-    }
-    let elapsed = start.elapsed().as_secs_f64();
+        let start = Instant::now();
+        for ready in starts {
+            ready.send(()).context("start load worker")?;
+        }
+        let mut samples = Vec::new();
+        let mut conflicts = 0;
+        let mut error = None;
+        for worker in workers {
+            match worker.join() {
+                Ok(Ok((mut values, count))) => {
+                    samples.append(&mut values);
+                    conflicts += count;
+                }
+                Ok(Err(e)) => {
+                    error.get_or_insert(e);
+                }
+                Err(_) => {
+                    error.get_or_insert(anyhow::anyhow!("load worker panicked"));
+                }
+            }
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok((samples, conflicts, start.elapsed().as_secs_f64()))
+    })
+    .with_context(|| {
+        format!(
+            "{clients}-client workload failed; fixture daemon log: {}",
+            log_tail(&tmp.path().join("daemon.log"))
+        )
+    })?;
     samples.sort_by(f64::total_cmp);
     let percentile = |p: f64| samples[((samples.len() - 1) as f64 * p).ceil() as usize];
     let name = format!("socket_claim_release/{clients}_clients/{iterations}_iterations");
@@ -176,4 +219,15 @@ fn main() -> Result<()> {
         samples.len()
     );
     Ok(())
+}
+
+fn log_tail(path: &Path) -> String {
+    let read = (|| -> std::io::Result<_> {
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(file.metadata()?.len().saturating_sub(8192)))?;
+        let mut bytes = Vec::new();
+        file.take(8192).read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    })();
+    read.unwrap_or_else(|error| format!("unavailable: {error}"))
 }
