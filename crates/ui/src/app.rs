@@ -1635,11 +1635,6 @@ impl eframe::App for App {
                     Screen::Runtimes => self.runtimes_screen(ui),
                     Screen::Journal => self.journal_screen(ui),
                     Screen::Leases => self.leases_screen(ui),
-                    Screen::Desktop => {
-                        if let Some(args) = self.desktop.show(ui) {
-                            self.send(Cmd::Desktop(args));
-                        }
-                    }
                     Screen::Settings => self.settings_screen(ui),
                     Screen::Desktop => {
                         if let Some(args) = self.desktop.show(ui) {
