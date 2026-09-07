@@ -121,6 +121,29 @@ fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
     )
     .unwrap();
     assert_eq!(claimed["type"], "lease", "{claimed}");
+    // Wait for the initial write to reach the ledger, so an old/debounced
+    // observation cannot satisfy the restoration assertion after restart.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let before_restart = loop {
+        let changes = rpc(&socket, json!({"op":"changes", "project":work})).unwrap();
+        let entries = changes["changes"].as_array().unwrap();
+        if entries.iter().any(|entry| {
+            entry["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("first-edit"))
+        }) {
+            break entries
+                .iter()
+                .filter_map(|entry| entry["seq"].as_u64())
+                .max()
+                .unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "initial edit did not reach the ledger: {changes}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     daemon.stop();
     std::fs::write(work.join("first-edit"), "while-down").unwrap();
     // Legacy modes are migrated when the same installation is reopened.
@@ -133,12 +156,19 @@ fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
     daemon = RunningDaemon::start(&home, &socket);
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        let changes = rpc(&socket, json!({"op":"changes", "project":work, "agent":id})).unwrap();
+        let changes = rpc(
+            &socket,
+            json!({"op":"changes", "project":work, "agent":id, "since_seq":before_restart}),
+        )
+        .unwrap();
         let observed = changes["changes"].as_array().is_some_and(|entries| {
             entries.iter().any(|entry| {
-                entry["path"]
-                    .as_str()
-                    .is_some_and(|p| p.ends_with("first-edit"))
+                entry["seq"]
+                    .as_u64()
+                    .is_some_and(|seq| seq > before_restart)
+                    && entry["path"]
+                        .as_str()
+                        .is_some_and(|p| p.ends_with("first-edit"))
             })
         });
         let content = std::fs::read_to_string(work.join("first-edit")).unwrap();

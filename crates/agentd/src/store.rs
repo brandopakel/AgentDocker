@@ -191,6 +191,15 @@ impl Store {
         Ok(())
     }
 
+    /// Publish a lifecycle status and its replay evidence atomically.
+    pub fn agent_transition(&self, record: &AgentRecord, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(record)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn finish_restore(&self, record: &AgentRecord, event: &Event) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.upsert_agent(record)?;
