@@ -13,6 +13,7 @@ use agentdocker_core::{
     Activity, AgentActivity, AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease,
     MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
 };
+use anyhow::Context;
 use chrono::Utc;
 use egui::{Color32, RichText};
 
@@ -1701,7 +1702,12 @@ fn span(secs: i64) -> String {
 
 // ----- threads ---------------------------------------------------------------
 
-fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: egui::Context) {
+fn spawn_worker(
+    client: Arc<Client>,
+    rx: Receiver<Cmd>,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         while let Ok(cmd) = rx.recv() {
             if let Cmd::Desktop(args) = cmd {
@@ -1714,6 +1720,10 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
                 continue;
             }
             let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_) | Cmd::Desktop(_));
+            let answer = match &cmd {
+                Cmd::Answer(id, _) => Some(id.clone()),
+                _ => None,
+            };
             let outcome = run(&client, cmd);
             let disconnected = outcome.as_ref().err().is_some_and(|error| {
                 talks_to_daemon && error.downcast_ref::<RemoteError>().is_none()
@@ -1721,7 +1731,14 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
             let msg = match outcome {
                 Ok(Some(msg)) => msg,
                 Ok(None) => continue,
-                Err(err) => failure_message(err, talks_to_daemon),
+                Err(err) => {
+                    if let Some(id) = answer {
+                        // Keep the draft and release its in-flight state even
+                        // when the transport failed before any daemon reply.
+                        let _ = tx.send(Msg::Answered(id, Err(format!("{err:#}"))));
+                    }
+                    failure_message(err, talks_to_daemon)
+                }
             };
             let _ = tx.send(msg);
             if !disconnected && talks_to_daemon {
@@ -1729,14 +1746,14 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
             }
             ctx.request_repaint();
         }
-    });
+    })
 }
 
 fn failure_message(error: anyhow::Error, talks_to_daemon: bool) -> Msg {
     if talks_to_daemon && error.downcast_ref::<RemoteError>().is_none() {
-        Msg::Disconnected(error.to_string())
+        Msg::Disconnected(format!("{error:#}"))
     } else {
-        Msg::Status(error.to_string())
+        Msg::Status(format!("{error:#}"))
     }
 }
 
@@ -1802,28 +1819,25 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Questions { questions } => Some(Msg::Questions(questions)),
             _ => None,
         },
-        Cmd::Answer(message, text) => Some(Msg::Answered(
-            message.clone(),
-            client
-                .call(&Request::Answer {
-                    from: None,
-                    message,
-                    text,
-                })
-                .map(|_| ())
-                .map_err(|err| err.to_string()),
-        )),
+        Cmd::Answer(message, text) => {
+            client.call(&Request::Answer {
+                from: None,
+                message: message.clone(),
+                text,
+            })?;
+            Some(Msg::Answered(message, Ok(())))
+        }
         Cmd::Adopt(pid) => Some(
-            match client.call(&Request::Adopt {
-                pid,
-                name: None,
-                runtime: None,
-            }) {
-                Ok(Response::Agent { agent }) => {
-                    Msg::Status(format!("adopted {}", agent.spec.name))
-                }
-                Ok(_) => Msg::Status(format!("adopted pid {pid}")),
-                Err(err) => Msg::Status(format!("pid {pid}: {err}")),
+            match client
+                .call(&Request::Adopt {
+                    pid,
+                    name: None,
+                    runtime: None,
+                })
+                .with_context(|| format!("pid {pid}"))?
+            {
+                Response::Agent { agent } => Msg::Status(format!("adopted {}", agent.spec.name)),
+                _ => Msg::Status(format!("adopted pid {pid}")),
             },
         ),
         Cmd::AdoptAll => {
@@ -1832,31 +1846,32 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             let mut adopted = 0;
             for process in processes {
-                if client
+                client
                     .call(&Request::Adopt {
                         pid: process.pid,
                         name: None,
                         runtime: None,
                     })
-                    .is_ok()
-                {
-                    adopted += 1;
-                }
+                    .with_context(|| {
+                        format!(
+                            "adopted {adopted} process(es); failed at pid {}",
+                            process.pid
+                        )
+                    })?;
+                adopted += 1;
             }
             Some(Msg::Status(format!("adopted {adopted} process(es)")))
         }
-        Cmd::Stop(agent) => Some(
-            match client.call(&Request::Stop {
+        Cmd::Stop(agent) => {
+            client.call(&Request::Stop {
                 agent: agent.clone(),
                 force: false,
-            }) {
-                Ok(_) => Msg::Status(format!(
-                    "stopping {}",
-                    agent.chars().take(12).collect::<String>()
-                )),
-                Err(err) => Msg::Status(err.to_string()),
-            },
-        ),
+            })?;
+            Some(Msg::Status(format!(
+                "stopping {}",
+                agent.chars().take(12).collect::<String>()
+            )))
+        }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::Console(line) => Some(Msg::Console(console(&line))),
@@ -2012,6 +2027,197 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn command_with_replies(
+        cmd: Cmd,
+        replies: Vec<(serde_json::Value, Option<serde_json::Value>)>,
+    ) -> Vec<Msg> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            for (expected, reply) in replies {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "missing expected fixture request"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fixture accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                for (key, value) in expected.as_object().unwrap() {
+                    assert_eq!(request[key], *value);
+                }
+                if let Some(reply) = reply {
+                    serde_json::to_writer(reader.get_mut(), &reply).unwrap();
+                    reader.get_mut().write_all(b"\n").unwrap();
+                }
+            }
+        });
+        let (commands, requests) = channel();
+        let (messages, results) = channel();
+        let worker = spawn_worker(
+            Arc::new(Client::isolated(socket)),
+            requests,
+            messages,
+            egui::Context::default(),
+        );
+        commands.send(cmd).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+        server.join().unwrap();
+        results.try_iter().collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_answer_preserves_draft_and_reports_a_working_connection() {
+        use serde_json::json;
+        let id = MessageId::from("fixture-question".to_owned());
+        let replies = command_with_replies(
+            Cmd::Answer(id.clone(), "draft".into()),
+            vec![(
+                json!({"op":"answer", "message":id, "text":"draft"}),
+                Some(json!({"type":"error", "code":"not_found", "message":"question expired"})),
+            )],
+        );
+        assert!(
+            replies
+                .iter()
+                .any(|message| matches!(message, Msg::Connected))
+        );
+        assert!(
+            !replies
+                .iter()
+                .any(|message| matches!(message, Msg::Disconnected(_)))
+        );
+        let (commands, _requests) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        for message in replies {
+            messages.send(message).unwrap();
+        }
+        app.drain();
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.connected.is_ok());
+        assert!(app.status.contains("question expired"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bulk_adoption_preserves_partial_progress_and_distinguishes_remote_failure() {
+        use serde_json::json;
+        for reply in [
+            None,
+            Some(json!({"type":"error", "code":"not_found", "message":"process exited"})),
+        ] {
+            let transport_failed = reply.is_none();
+            let messages = command_with_replies(
+                Cmd::AdoptAll,
+                vec![
+                    (
+                        json!({"op":"discover"}),
+                        Some(json!({"type":"processes", "processes": [
+                            {"pid":101,"ppid":1,"runtime":"codex","command":"fixture"},
+                            {"pid":102,"ppid":1,"runtime":"codex","command":"fixture"},
+                            {"pid":103,"ppid":1,"runtime":"codex","command":"fixture"}
+                        ]})),
+                    ),
+                    (json!({"op":"adopt", "pid":101}), Some(json!({"type":"ok"}))),
+                    (json!({"op":"adopt", "pid":102}), reply),
+                ],
+            );
+            assert_eq!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message, Msg::Disconnected(_))),
+                transport_failed
+            );
+            assert_eq!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message, Msg::Connected)),
+                !transport_failed
+            );
+            assert!(messages.iter().any(|message| match message {
+                Msg::Status(text) | Msg::Disconnected(text) =>
+                    text.contains("adopted 1 process(es); failed at pid 102"),
+                _ => false,
+            }));
+        }
+    }
+
+    fn disconnected_command(cmd: Cmd) -> Vec<Msg> {
+        let temp = tempfile::tempdir().unwrap();
+        let client = Arc::new(Client::isolated(temp.path().join("missing.sock")));
+        let (commands, requests) = channel();
+        let (messages, results) = channel();
+        let worker = spawn_worker(client, requests, messages, egui::Context::default());
+        commands.send(cmd).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+        let messages: Vec<_> = results.try_iter().collect();
+        assert!(
+            messages.iter().any(|m| matches!(m, Msg::Disconnected(_))),
+            "failed command must report disconnection"
+        );
+        assert!(
+            !messages.iter().any(|m| matches!(m, Msg::Connected)),
+            "failed command must not report connectivity"
+        );
+        messages
+    }
+
+    #[test]
+    fn failed_answer_reports_transport_failure_and_keeps_the_draft() {
+        let id = MessageId::from("owned-question".to_owned());
+        let result = disconnected_command(Cmd::Answer(id.clone(), "draft answer".into()));
+        let (commands, _) = channel();
+        let (messages, results) = channel();
+        let mut app = App::bare(commands, results);
+        app.answers.insert(id.clone(), "draft answer".into());
+        app.sending.insert(id.clone());
+        for message in result {
+            messages.send(message).unwrap();
+        }
+        app.drain();
+        assert_eq!(app.answers[&id], "draft answer");
+        assert!(!app.sending.contains(&id));
+        assert!(app.connected.is_err());
+    }
+
+    #[test]
+    fn failed_adoption_reports_transport_failure() {
+        disconnected_command(Cmd::Adopt(123));
+    }
+
+    #[test]
+    fn failed_stop_reports_transport_failure() {
+        disconnected_command(Cmd::Stop("owned-fixture".into()));
+    }
 
     #[test]
     fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
