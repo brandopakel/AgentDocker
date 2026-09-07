@@ -24,9 +24,14 @@ def allocated(path):
     if shutil.which("du"):
         return int(subprocess.check_output(["du", "-sk", str(path)], text=True).split()[0]) * 1024
     total, seen = 0, set()
-    for directory, _, files in os.walk(path, followlinks=False):
-        for name in files:
-            metadata = (Path(directory) / name).lstat()
+    def walk_error(error):
+        raise error
+
+    for directory, directories, files in os.walk(path, followlinks=False, onerror=walk_error):
+        # Include the root and directory entries, including untraversed symlinks.
+        # A visited child directory appears again as a root: count its inode once.
+        for entry in [Path(directory), *(Path(directory) / name for name in directories + files)]:
+            metadata = entry.lstat()
             identity = (metadata.st_dev, metadata.st_ino)
             if identity not in seen:
                 seen.add(identity)

@@ -183,7 +183,11 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
             "mcp",
             Some(&path),
             Status::Unverified,
-            "Configuration has an invalid MCP registration container; preserved",
+            if !value.is_object() {
+                "Configuration root is not an object; preserved"
+            } else {
+                "Configuration has an invalid MCP registration container; preserved"
+            },
         )];
     }
     let servers = value[key].as_object();
@@ -419,6 +423,14 @@ mod tests {
                 );
                 let checks = inspect(spec, &roots, "agentdocker");
                 assert_eq!(checks[0].status, Status::Unverified, "{raw}");
+                assert_eq!(
+                    checks[0].detail,
+                    if raw == "[]" {
+                        "Configuration root is not an object; preserved"
+                    } else {
+                        "Configuration has an invalid MCP registration container; preserved"
+                    }
+                );
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
             }
         }
