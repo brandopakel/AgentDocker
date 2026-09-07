@@ -263,7 +263,7 @@ fn absent(err: &std::io::Error) -> bool {
 /// The `agentd` beside this binary, else on `PATH`, detached with its
 /// output on the daemon log.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
-    let exe = std::env::current_exe()
+    let exe = agentdocker_host::procinfo::executable_path()
         .ok()
         .and_then(|me| {
             me.parent()

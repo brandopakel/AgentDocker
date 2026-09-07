@@ -129,7 +129,7 @@ impl Layout {
         if let Some(socket) = socket {
             validate_service_socket(socket)?;
         }
-        let agentd = std::env::current_exe()
+        let agentd = agentdocker_host::procinfo::executable_path()
             .ok()
             .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
             .filter(|sibling| sibling.is_file())

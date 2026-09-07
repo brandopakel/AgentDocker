@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub const LOCK_FORMAT: u32 = 1;
 
 pub fn pin_current_executable() -> io::Result<Option<lock::Lock>> {
-    pin_executable(&std::env::current_exe()?)
+    pin_executable(&crate::procinfo::executable_path()?)
 }
 
 /// Locate only our versioned layout. An ordinary checkout/package is unpinned.
@@ -57,6 +57,64 @@ fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[ignore = "owned subprocess invoked by launch_alias_pins_loaded_release_after_activation"]
+    fn loaded_release_fixture() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::current_dir().unwrap();
+        let versions = root.join(".local/share/agentdocker/desktop/versions");
+        let expected = versions.join("a".repeat(64)).join("payload/agentd");
+        assert_eq!(crate::procinfo::executable_path().unwrap(), expected);
+        let pin = pin_current_executable()
+            .unwrap()
+            .expect("loaded release is pinned");
+        symlink(
+            versions.join("b".repeat(64)).join("payload"),
+            root.join("next"),
+        )
+        .unwrap();
+        std::fs::rename(root.join("next"), root.join("current")).unwrap();
+        assert_eq!(crate::procinfo::executable_path().unwrap(), expected);
+        // Looking up the loaded release after activation must still pin A.
+        let second_pin = pin_current_executable().unwrap().unwrap();
+        let path = pin_path(versions.parent().unwrap(), &"a".repeat(64)).unwrap();
+        assert!(lock::try_exclusive(&path).unwrap().is_none());
+        drop(pin);
+        assert!(lock::try_exclusive(&path).unwrap().is_none());
+        drop(second_pin);
+        assert!(lock::try_exclusive(&path).unwrap().is_some());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn launch_alias_pins_loaded_release_after_activation() {
+        use std::os::unix::fs::symlink;
+        let (temp, _root, executable) = fixture();
+        let root = temp.path().canonicalize().unwrap();
+        let loaded = executable.with_file_name("agentd");
+        std::fs::copy(crate::procinfo::executable_path().unwrap(), &loaded).unwrap();
+        let versions = loaded.parent().unwrap().parent().unwrap().parent().unwrap();
+        let replacement = versions.join("b".repeat(64)).join("payload");
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::write(replacement.join("agentd"), "replacement generation").unwrap();
+        symlink(loaded.parent().unwrap(), root.join("current")).unwrap();
+        symlink(root.join("current/agentd"), root.join("launch")).unwrap();
+        let output = crate::command::run(
+            &root,
+            &[
+                root.join("launch").to_str().unwrap().into(),
+                "--exact".into(),
+                "installation::tests::loaded_release_fixture".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(output.success, "{}", output.text);
+    }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();

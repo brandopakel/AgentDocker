@@ -22,7 +22,7 @@ const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Use the managed command link for provider setup so registrations survive
 /// activation of another release. Refuse setup from an obsolete running copy.
 pub fn setup_executable() -> Result<PathBuf> {
-    stable_executable(&std::env::current_exe()?)
+    stable_executable(&agentdocker_host::procinfo::executable_path()?)
 }
 
 fn stable_executable(executable: &Path) -> Result<PathBuf> {

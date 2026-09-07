@@ -52,7 +52,7 @@ impl Panel {
             ui.label("Application bundle or extracted desktop package");
             let mut changed = ui.text_edit_singleline(&mut self.source).changed();
             if ui.button("Use this application").clicked() {
-                match std::env::current_exe().ok().and_then(|exe| {
+                match agentdocker_host::procinfo::executable_path().ok().and_then(|exe| {
                     exe.parent()?.parent().map(|parent| {
                         if cfg!(target_os = "macos") { parent.parent().unwrap_or(parent) } else { parent }.to_owned()
                     })

@@ -89,7 +89,11 @@ Prune keeps the active and rollback versions, plus `--keep` additional inactive
 versions, newest first. It also keeps every running release and legacy releases
 that lack lifetime locking. New CLI, daemon and window processes hold shared
 version locks; cleanup requires an exclusive lock and rechecks payload hashes
-before deletion. A process losing the startup/removal race exits before normal
+before deletion. On macOS, the kernel's loaded executable path selects the pin,
+so changing a launcher symlink cannot move a running process to another release's
+lock. Matching CLI/daemon/window siblings use that same loaded path, and
+`agentdocker ui` prefers its matching sibling over a separately installed app.
+A process losing the startup/removal race exits before normal
 operation. Pin files and activation records remain; retention does not delete
 unknown or modified payloads. Cleanup is explicit, not scheduled.
 
