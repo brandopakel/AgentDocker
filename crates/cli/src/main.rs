@@ -1380,20 +1380,9 @@ async fn main() -> Result<()> {
         }
         Command::Attach { agent } => attach::run(&client, &agent).await?,
         Command::Ui => {
-            let app = std::env::current_exe()
-                .ok()
-                .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
-                .filter(|sibling| sibling.is_file())
-                .or_else(|| {
-                    std::env::var_os("PATH").and_then(|path| {
-                        std::env::split_paths(&path)
-                            .map(|dir| dir.join("agentdocker-ui"))
-                            .find(|candidate| candidate.is_file())
-                    })
-                })
-                .context(
-                    "agentdocker-ui is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
-                )?;
+            let app = desktop_app().context(
+                "the desktop app is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
+            )?;
             let mut child = std::process::Command::new(&app);
             // The app reads AGENTDOCKER_SOCKET; pass on whatever this
             // invocation was pointed at so both talk to one daemon.
@@ -2452,6 +2441,49 @@ fn named(names: &BTreeMap<String, String>, id: &agentdocker_core::AgentId) -> St
 }
 
 /// One row per known runtime; installed ones first.
+/// Where the desktop app is, preferring the bundle.
+///
+/// On macOS the same binary is called two different things depending on
+/// how it is started: run the file directly and the Dock, the app
+/// switcher and the menu bar all read `agentdocker-ui`, because a bare
+/// executable has no name but its own; run the copy inside
+/// `AgentDocker.app` and they read AgentDocker and draw its icon,
+/// because the bundle around it carries both. So the bundle is looked
+/// for first, and its inner executable is what gets started — `open`
+/// would work too, but it cannot pass the socket through.
+fn desktop_app() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundles = [
+            "Applications/AgentDocker.app",
+            "../Applications/AgentDocker.app",
+        ];
+        let roots = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(std::iter::once(PathBuf::from("/")));
+        for root in roots {
+            for bundle in bundles {
+                let inner = root.join(bundle).join("Contents/MacOS/AgentDocker");
+                if inner.is_file() {
+                    return Some(inner);
+                }
+            }
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
+        .filter(|sibling| sibling.is_file())
+        .or_else(|| {
+            std::env::var_os("PATH").and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("agentdocker-ui"))
+                    .find(|candidate| candidate.is_file())
+            })
+        })
+}
+
 fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
     let mut sorted: Vec<&agentdocker_core::RuntimeInfo> = runtimes.iter().collect();
     sorted.sort_by_key(|r| !r.installed());

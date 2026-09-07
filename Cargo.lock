@@ -223,6 +223,7 @@ dependencies = [
  "eframe",
  "egui",
  "libc",
+ "serde",
  "serde_json",
  "tempfile",
  "vt100",

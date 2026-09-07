@@ -3,6 +3,7 @@
 AgentDocker runs native agents directly on the user's computer. Docker and Podman are optional execution adapters. The desktop product targets macOS, Linux and Windows; the current host implementation supports macOS and Linux.
 
 - [Getting started, adapters and working sets](../README.md)
+- [Using AgentDocker: the app, the console, every command, tutorials](GUIDE.md)
 - [Product direction and current delivery order](PRODUCT-DIRECTION.md)
 - [Engineering audit, feature coverage and known blockers](AUDIT-2026-09-06.md)
 - [Local native trial and acceptance plan](LOCAL-TRIAL.md)

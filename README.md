@@ -1,6 +1,23 @@
-# AgentDocker
+<p align="center">
+  <img src="docs/images/agentdocker.png" alt="" width="128" height="128">
+</p>
 
-**Local orchestration for AI agents.** A native daemon that creates, supervises, organises, and connects agents on your computer, whatever model or vendor is behind them.
+<h1 align="center">AgentDocker</h1>
+
+<p align="center">
+  <strong>Local orchestration for AI agents.</strong><br>
+  A native daemon that creates, supervises, organises and connects the agents on your
+  computer, whatever model or vendor is behind them.
+</p>
+
+<p align="center">
+  <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/PRODUCT-DIRECTION.md">Direction</a> ·
+  <a href="https://github.com/brandopakel/AgentDocker/releases">Releases</a>
+</p>
+
+---
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 

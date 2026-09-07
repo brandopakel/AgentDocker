@@ -28,6 +28,11 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 /// give the worker thread back.
 const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// One accent, used for the selected thing and nothing else. Taken from
+/// the blue the project palette starts at, so the window has one blue
+/// rather than two that nearly match.
+const ACCENT: Color32 = Color32::from_rgb(0x2F, 0x6F, 0xED);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Agents,
@@ -37,10 +42,11 @@ enum Screen {
     Runtimes,
     Journal,
     Leases,
+    Settings,
 }
 
 impl Screen {
-    const ALL: [Screen; 7] = [
+    const ALL: [Screen; 8] = [
         Screen::Agents,
         Screen::Questions,
         Screen::Terminal,
@@ -48,6 +54,7 @@ impl Screen {
         Screen::Runtimes,
         Screen::Journal,
         Screen::Leases,
+        Screen::Settings,
     ];
 
     fn title(self) -> &'static str {
@@ -59,6 +66,7 @@ impl Screen {
             Screen::Runtimes => "Runtimes",
             Screen::Journal => "Journal",
             Screen::Leases => "Leases",
+            Screen::Settings => "Settings",
         }
     }
 }
@@ -125,6 +133,18 @@ pub struct App {
     terminal: Option<Terminal>,
     console_input: String,
     console_output: String,
+    /// What has been typed here before, oldest first, and where the up
+    /// arrow currently is in it. `None` is the live line.
+    console_history: Vec<String>,
+    console_recall: Option<usize>,
+    console_focused: bool,
+    /// What the reader has chosen about how this looks, and where it is
+    /// kept between runs.
+    settings: crate::theme::Settings,
+    home: std::path::PathBuf,
+    /// Applied once per change rather than every frame: setting fonts
+    /// rebuilds egui's atlas, which is not something to do at 60Hz.
+    applied: Option<crate::theme::Settings>,
     /// Questions put to the human, and what is being typed in reply to
     /// each. The draft is keyed by message id so answering one question
     /// does not disturb another half-written answer.
@@ -144,6 +164,10 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let client = Arc::new(Client::from_env());
+        // The same directory the daemon uses, so a throwaway
+        // AGENTDOCKER_HOME gets its own appearance too rather than
+        // rewriting the one the real window uses.
+        let home = agentdocker_host::dirs::home();
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (msg_tx, msg_rx) = channel::<Msg>();
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
@@ -181,6 +205,12 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_history: Vec::new(),
+            console_recall: None,
+            console_focused: false,
+            settings: crate::theme::Settings::load(&home),
+            home,
+            applied: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -212,6 +242,12 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_history: Vec::new(),
+            console_recall: None,
+            console_focused: false,
+            settings: crate::theme::Settings::default(),
+            home: std::path::PathBuf::new(),
+            applied: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -289,7 +325,11 @@ impl App {
                 Msg::Disconnected(reason) => self.connected = Err(reason),
                 Msg::Status(text) => self.status = text,
                 Msg::Console(text) => {
-                    self.console_output = text;
+                    // Appended, not replaced: a terminal keeps what it
+                    // said, and the command that produced this is
+                    // already above it.
+                    self.console_output.push_str(text.trim_end());
+                    self.console_output.push('\n');
                     self.screen = Screen::Console;
                 }
             }
@@ -406,6 +446,19 @@ impl App {
         }
     }
 
+    /// Runtimes with no way to tell the daemon what their agents are
+    /// doing, by the name an agent registers under.
+    fn unwired(&self) -> std::collections::BTreeSet<String> {
+        self.runtimes
+            .iter()
+            .filter(|r| {
+                r.mcp == agentdocker_core::Wiring::Missing
+                    || r.hooks == agentdocker_core::Wiring::Missing
+            })
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
     fn name_of(&self, id: &str) -> String {
         self.agents
             .iter()
@@ -418,6 +471,7 @@ impl App {
 
     fn agents_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
+        let unwired = self.unwired();
         // Grouped by project id, not by name: two checkouts of one
         // repository share a name, and the id is what actually says they
         // are the same work.
@@ -524,7 +578,15 @@ impl App {
                             crate::projects::dot(ui, project_id);
                             ui.label(&agent.spec.name);
                         });
-                        ui.label(&agent.spec.runtime);
+                        if agent.spec.runtime == "human" {
+                            ui.label(RichText::new("you").italics()).on_hover_text(
+                                "The person at this keyboard, registered like any other \
+                                     agent so the others can put questions to you and hold \
+                                     leases against you.",
+                            );
+                        } else {
+                            ui.label(&agent.spec.runtime);
+                        }
                         // What it is doing, not merely that its process
                         // exists: blocked agents say what by.
                         match self.activity.get(agent.id.as_str()) {
@@ -549,7 +611,17 @@ impl App {
                                 );
                             }
                             Some(other) => {
-                                ui.label(RichText::new(other.label()).weak());
+                                let label = ui.label(RichText::new(other.label()).weak());
+                                // "idle" is a real answer, and it is
+                                // also what an unwired runtime always
+                                // says. Which one this is belongs on
+                                // the cell, not in a paragraph under
+                                // the table.
+                                if unwired.contains(&agent.spec.runtime) {
+                                    label.on_hover_text(
+                                        "Not wired up, so it reports nothing — Runtimes.",
+                                    );
+                                }
                             }
                             None => {
                                 ui.label(RichText::new(agent.status.to_string()).weak());
@@ -639,6 +711,8 @@ impl App {
 
     /// An agent's terminal, or the list of agents that have one.
     fn terminal_screen(&mut self, ui: &mut egui::Ui) {
+        let palette = self.settings.palette();
+        let size = self.settings.terminal_size;
         // A 13pt monospace cell, near enough: the agent lays itself out to
         // whatever size we report, so a pixel here or there is harmless.
         const CELL: (f32, f32) = (7.8, 16.0);
@@ -714,10 +788,19 @@ impl App {
         if wheel.abs() >= 1.0 {
             terminal.scroll((wheel / CELL.1).round() as i32);
         }
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            terminal.ui(ui);
-        });
+        // On the palette's own ground, so the agent's terminal and the
+        // console are visibly the same surface.
+        egui::Frame::new()
+            .fill(palette.ground)
+            .inner_margin(egui::Margin::same(6))
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    terminal.ui(ui, palette, size);
+                });
+            });
         if detach {
             self.terminal = None;
         }
@@ -795,42 +878,120 @@ impl App {
     }
 
     /// Any command the CLI has, run from the window.
+    ///
+    /// Not a shell, and not a second system terminal — the machine has
+    /// one of those and being another is somebody else's job. What it
+    /// takes from the terminal is the feel: the same monospace on the
+    /// same dark ground, a prompt that stays at the foot of a
+    /// transcript, the last commands on the up arrow, and output that
+    /// accumulates instead of a box that is replaced.
     fn console_screen(&mut self, ui: &mut egui::Ui) {
         let mut run = false;
-        ui.horizontal(|ui| {
-            ui.label("agentdocker");
-            let entry = ui.add(
-                egui::TextEdit::singleline(&mut self.console_input)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("ps --all   ·   journal --new   ·   channels   ·   runtimes"),
-            );
-            if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                run = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Run").clicked() {
-                run = true;
-            }
-            if ui.button("Clear").clicked() {
-                self.console_output.clear();
-            }
-        });
+        let palette = self.settings.palette();
+        let font = egui::FontId::monospace(self.settings.terminal_size);
+        egui::Frame::new()
+            .fill(palette.ground)
+            .inner_margin(egui::Margin::same(10))
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                ui.spacing_mut().item_spacing.y = 2.0;
+                // Laid out from the bottom, so the prompt sits on the
+                // floor of the panel the way a shell's does and the
+                // transcript grows down towards it.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("agentdocker")
+                                .font(font.clone())
+                                .color(palette.accent),
+                        );
+                        let entry = ui.add(
+                            egui::TextEdit::singleline(&mut self.console_input)
+                                .font(font.clone())
+                                .text_color(palette.text)
+                                // No box around it: the prompt is part of
+                                // the transcript, not a field on top of it.
+                                .frame(egui::Frame::NONE)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(
+                                    RichText::new("ps --all   ·   journal --new   ·   runtimes")
+                                        .font(font.clone())
+                                        .color(palette.dim()),
+                                ),
+                        );
+                        // A console nobody has clicked into is a console
+                        // that ignores what is typed at it.
+                        if !self.console_focused {
+                            entry.request_focus();
+                            self.console_focused = true;
+                        }
+                        if entry.has_focus() {
+                            let (up, down) = ui.input(|i| {
+                                (
+                                    i.key_pressed(egui::Key::ArrowUp),
+                                    i.key_pressed(egui::Key::ArrowDown),
+                                )
+                            });
+                            if up || down {
+                                self.recall(up);
+                            }
+                        }
+                        if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            run = true;
+                            self.console_focused = false;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    // The transcript reads downwards inside the room left over.
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        egui::ScrollArea::both()
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(self.console_output.trim_end())
+                                            .font(font.clone())
+                                            .color(palette.text),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            });
+                    });
+                });
+            });
         if run && !self.console_input.trim().is_empty() {
-            let line = self.console_input.clone();
-            self.console_output = format!("$ agentdocker {line}\n");
+            let line = self.console_input.trim().to_owned();
+            self.console_output
+                .push_str(&format!("agentdocker {line}\n"));
+            if self.console_history.last() != Some(&line) {
+                self.console_history.push(line.clone());
+            }
+            self.console_recall = None;
+            self.console_input.clear();
             self.send(Cmd::Console(line));
         }
-        ui.separator();
-        // Output arrives at the bottom, so follow it there.
-        egui::ScrollArea::both()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&self.console_output).monospace())
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                );
-            });
+    }
+
+    /// Step back and forward through what has been typed, as a shell does.
+    fn recall(&mut self, back: bool) {
+        if self.console_history.is_empty() {
+            return;
+        }
+        let last = self.console_history.len() - 1;
+        self.console_recall = match (self.console_recall, back) {
+            (None, true) => Some(last),
+            (Some(0), true) => Some(0),
+            (Some(at), true) => Some(at - 1),
+            (Some(at), false) if at >= last => None,
+            (Some(at), false) => Some(at + 1),
+            (None, false) => None,
+        };
+        self.console_input = match self.console_recall {
+            Some(at) => self.console_history[at].clone(),
+            None => String::new(),
+        };
     }
 
     fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
@@ -950,6 +1111,129 @@ impl App {
         }
     }
 
+    /// Put the chosen sizes and spacing into the context, and only when
+    /// they have changed: setting text styles rebuilds the font atlas,
+    /// which is not a thing to do on every frame.
+    fn apply_settings(&mut self, ctx: &egui::Context) {
+        if self.applied.as_ref() == Some(&self.settings) {
+            return;
+        }
+        let text = self.settings.text_size;
+        let mono = self.settings.terminal_size;
+        let roomy = self.settings.roomy;
+        // A light terminal palette inside a dark window is two products
+        // in one frame, so the palette decides the window as well.
+        ctx.set_theme(if self.settings.palette().is_light() {
+            egui::ThemePreference::Light
+        } else {
+            egui::ThemePreference::Dark
+        });
+        // Both themes, so a viewer switching light/dark keeps the sizes.
+        ctx.all_styles_mut(|style| {
+            use egui::{FontFamily, FontId, TextStyle};
+            style.text_styles = [
+                (TextStyle::Small, FontId::proportional(text - 2.0)),
+                (TextStyle::Body, FontId::proportional(text)),
+                (TextStyle::Button, FontId::proportional(text)),
+                (TextStyle::Heading, FontId::proportional(text + 4.0)),
+                (
+                    TextStyle::Monospace,
+                    FontId::new(mono, FontFamily::Monospace),
+                ),
+            ]
+            .into();
+            // Docker Desktop's tables breathe; ours were tight enough to
+            // read as a spreadsheet. This is the whole difference.
+            let room = if roomy { 10.0 } else { 5.0 };
+            style.spacing.item_spacing = egui::vec2(10.0, room);
+            style.spacing.button_padding = egui::vec2(8.0, room);
+            style.visuals.selection.bg_fill = ACCENT;
+            style.visuals.widgets.hovered.corner_radius = 5.into();
+            style.visuals.widgets.active.corner_radius = 5.into();
+            style.visuals.widgets.inactive.corner_radius = 5.into();
+        });
+        self.applied = Some(self.settings.clone());
+    }
+
+    /// What the window looks like.
+    fn settings_screen(&mut self, ui: &mut egui::Ui) {
+        let before = self.settings.clone();
+        let palette = self.settings.palette();
+        egui::Grid::new("appearance")
+            .num_columns(2)
+            .spacing([16.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(RichText::new("Palette").strong());
+                egui::ComboBox::from_id_salt("palette")
+                    .selected_text(self.settings.palette.clone())
+                    .show_ui(ui, |ui| {
+                        for choice in crate::theme::PALETTES {
+                            ui.selectable_value(
+                                &mut self.settings.palette,
+                                choice.name.to_owned(),
+                                choice.name,
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                ui.label(RichText::new("Terminal size").strong());
+                ui.add(
+                    egui::Slider::new(&mut self.settings.terminal_size, 9.0..=24.0)
+                        .fixed_decimals(0),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("Text size").strong());
+                ui.add(
+                    egui::Slider::new(&mut self.settings.text_size, 10.0..=24.0).fixed_decimals(0),
+                );
+                ui.end_row();
+
+                ui.label(RichText::new("Roomy rows").strong());
+                ui.checkbox(&mut self.settings.roomy, "");
+                ui.end_row();
+            });
+
+        // The palette on the palette's own ground, because a swatch on
+        // the window's ground says nothing about what it will look like.
+        ui.add_space(12.0);
+        egui::Frame::new()
+            .fill(palette.ground)
+            .inner_margin(egui::Margin::same(10))
+            .corner_radius(6)
+            .show(ui, |ui| {
+                let font = egui::FontId::monospace(self.settings.terminal_size);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("agentdocker")
+                            .font(font.clone())
+                            .color(palette.accent),
+                    );
+                    ui.label(
+                        RichText::new("ps --all")
+                            .font(font.clone())
+                            .color(palette.text),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for colour in palette.ansi {
+                        ui.label(RichText::new("██").font(font.clone()).color(colour));
+                    }
+                });
+            });
+
+        ui.add_space(12.0);
+        if ui.button("Reset").clicked() {
+            self.settings = crate::theme::Settings::default();
+        }
+        if self.settings != before {
+            self.settings = std::mem::take(&mut self.settings).clamped();
+            self.settings.save(&self.home);
+        }
+    }
+
     fn leases_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         if self.leases.is_empty() {
@@ -992,72 +1276,144 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain();
         ui.ctx().request_repaint_after(Duration::from_millis(500));
+        self.apply_settings(ui.ctx());
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("AgentDocker");
-                ui.separator();
-                match &self.connected {
-                    Ok(()) => {
-                        let green = Color32::from_rgb(60, 170, 90);
-                        crate::projects::bullet(ui, green);
-                        ui.label(RichText::new("connected").color(green));
-                        ui.label(RichText::new(&self.socket).color(Color32::GRAY));
-                    }
-                    Err(reason) => {
-                        let red = Color32::from_rgb(200, 80, 60);
-                        crate::projects::bullet(ui, red);
-                        ui.label(RichText::new("disconnected").color(red));
-                        ui.label(RichText::new(reason).color(Color32::GRAY));
-                    }
-                }
-                // One project at a time, when a fleet is too much at
-                // once. Placed here rather than per screen because it
-                // means the same thing on all of them.
-                let projects = self.projects();
-                if projects.len() > 1 {
+        // The sidebar and the title bar sit on their own ground, the
+        // way every desktop control panel worth copying does: the list
+        // of places is not the same surface as the place you are in.
+        let sidebar = {
+            let dark = ui.visuals().dark_mode;
+            let base = ui.visuals().window_fill;
+            let shift = if dark { -8 } else { 10 };
+            Color32::from_rgb(
+                base.r().saturating_add_signed(shift),
+                base.g().saturating_add_signed(shift),
+                base.b().saturating_add_signed(shift),
+            )
+        };
+        egui::Panel::top("top")
+            .frame(
+                egui::Frame::new()
+                    .fill(sidebar)
+                    .inner_margin(egui::Margin::symmetric(10, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("AgentDocker");
                     ui.separator();
-                    let showing = self
-                        .focus
-                        .as_ref()
-                        .and_then(|id| projects.iter().find(|(pid, _)| pid == id))
-                        .map(|(_, name)| name.clone())
-                        .unwrap_or_else(|| "All projects".to_owned());
-                    egui::ComboBox::from_id_salt("project-focus")
-                        .selected_text(showing)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.focus, None, "All projects");
-                            for (id, name) in &projects {
-                                let label = RichText::new(name).color(crate::projects::colour(id));
-                                ui.selectable_value(&mut self.focus, Some(id.clone()), label);
-                            }
-                        });
-                }
-                if !self.status.is_empty() {
-                    ui.separator();
-                    ui.label(&self.status);
+                    match &self.connected {
+                        Ok(()) => {
+                            let green = Color32::from_rgb(60, 170, 90);
+                            crate::projects::bullet(ui, green);
+                            ui.label(RichText::new("connected").color(green));
+                            ui.label(RichText::new(&self.socket).color(Color32::GRAY));
+                        }
+                        Err(reason) => {
+                            let red = Color32::from_rgb(200, 80, 60);
+                            crate::projects::bullet(ui, red);
+                            ui.label(RichText::new("disconnected").color(red));
+                            ui.label(RichText::new(reason).color(Color32::GRAY));
+                        }
+                    }
+                    // One project at a time, when a fleet is too much at
+                    // once. Placed here rather than per screen because it
+                    // means the same thing on all of them.
+                    let projects = self.projects();
+                    if projects.len() > 1 {
+                        ui.separator();
+                        let showing = self
+                            .focus
+                            .as_ref()
+                            .and_then(|id| projects.iter().find(|(pid, _)| pid == id))
+                            .map(|(_, name)| name.clone())
+                            .unwrap_or_else(|| "All projects".to_owned());
+                        egui::ComboBox::from_id_salt("project-focus")
+                            .selected_text(showing)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.focus, None, "All projects");
+                                for (id, name) in &projects {
+                                    let label =
+                                        RichText::new(name).color(crate::projects::colour(id));
+                                    ui.selectable_value(&mut self.focus, Some(id.clone()), label);
+                                }
+                            });
+                    }
+                    if !self.status.is_empty() {
+                        ui.separator();
+                        ui.label(&self.status);
+                    }
+                });
+            });
+        egui::Panel::left("nav")
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(sidebar)
+                    .inner_margin(egui::Margin::symmetric(8, 10)),
+            )
+            .show(ui, |ui| {
+                ui.set_min_width(150.0);
+                for screen in Screen::ALL {
+                    // The count belongs beside the name, not inside it:
+                    // "Questions" is the place, "3" is what is in it.
+                    let count = match screen {
+                        Screen::Agents => {
+                            Some(self.agents.iter().filter(|a| a.status.is_live()).count())
+                        }
+                        Screen::Questions if !self.questions.is_empty() => {
+                            Some(self.questions.len())
+                        }
+                        Screen::Leases => Some(self.leases.len()),
+                        _ => None,
+                    };
+                    let selected = self.screen == screen;
+                    // Drawn rather than assembled from widgets: the row
+                    // is the target, the name is left and the count is
+                    // right, and no built-in gives all three at once.
+                    let (rect, entry) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 28.0),
+                        egui::Sense::click(),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        let visuals = ui.visuals();
+                        if selected {
+                            ui.painter().rect_filled(rect, 6.0, ACCENT);
+                        } else if entry.hovered() {
+                            ui.painter()
+                                .rect_filled(rect, 6.0, visuals.widgets.hovered.bg_fill);
+                        }
+                        let ink = if selected {
+                            Color32::WHITE
+                        } else {
+                            visuals.text_color()
+                        };
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        ui.painter().text(
+                            rect.left_center() + egui::vec2(10.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            screen.title(),
+                            font.clone(),
+                            ink,
+                        );
+                        if let Some(n) = count {
+                            ui.painter().text(
+                                rect.right_center() - egui::vec2(10.0, 0.0),
+                                egui::Align2::RIGHT_CENTER,
+                                n,
+                                font,
+                                if selected {
+                                    ink
+                                } else {
+                                    visuals.weak_text_color()
+                                },
+                            );
+                        }
+                    }
+                    if entry.clicked() {
+                        self.screen = screen;
+                    }
                 }
             });
-        });
-        egui::Panel::left("nav").resizable(false).show(ui, |ui| {
-            ui.add_space(6.0);
-            for screen in Screen::ALL {
-                let label = match screen {
-                    Screen::Agents => format!(
-                        "Agents ({})",
-                        self.agents.iter().filter(|a| a.status.is_live()).count()
-                    ),
-                    Screen::Questions if !self.questions.is_empty() => {
-                        format!("Questions ({})", self.questions.len())
-                    }
-                    Screen::Leases => format!("Leases ({})", self.leases.len()),
-                    other => other.title().to_owned(),
-                };
-                if ui.selectable_label(self.screen == screen, label).clicked() {
-                    self.screen = screen;
-                }
-            }
-        });
         egui::CentralPanel::default().show(ui, |ui| {
             // The terminal draws its own scroll region and wants every
             // keystroke, so it is not inside the shared scroll area.
@@ -1078,6 +1434,7 @@ impl eframe::App for App {
                     Screen::Runtimes => self.runtimes_screen(ui),
                     Screen::Journal => self.journal_screen(ui),
                     Screen::Leases => self.leases_screen(ui),
+                    Screen::Settings => self.settings_screen(ui),
                 });
         });
     }
