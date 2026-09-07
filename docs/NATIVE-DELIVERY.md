@@ -20,9 +20,9 @@ These changes do not provide a preserved terminal across daemon replacement, ven
 
 ## Delivery work still required
 
-1. Current Mac application packaging, verified install/update/rollback, signing/notarization, and Linux desktop packages with graphical acceptance.
-2. Guided setup preview/apply/undo, per-tool capabilities and connection diagnostics; broader installation paths and distinct desktop-host identities.
-3. Fresh Claude Code hooks and Codex MCP provider round trips, followed by versioned adapter trials; no bulk adoption of active user work.
+1. Complete final review and platform acceptance of the current packaging/installer stack; public signing/notarization, download/update feed and Linux distribution packages remain.
+2. Expand per-tool capabilities, executable health checks, broader installation paths and distinct desktop-host identities beyond the implemented guided preview/apply/undo flow.
+3. Extend the [completed bounded Claude Code hooks and Codex MCP trials](INTEGRATION-ACCEPTANCE.md) across supported versions and longer sessions; no bulk adoption of active user work.
 4. Windows IPC, access control, process/terminal/service/path adapters, installers and native Windows CI/runtime acceptance.
 5. Sustained-use restart/dependency/retention and planned-upgrade behavior, then longer controlled soaks and the independent second-Mac trial. Federation remains a later delivery.
 
@@ -30,4 +30,4 @@ The development Mac currently has no Developer ID Application signing identity i
 
 ## Desktop and onboarding follow-up
 
-[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. Automatic installation/update/rollback, signed public release, Windows parity and sustained upgrade crash boundaries still require implementation and acceptance.
+[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. A per-user desktop installer now implements explicit local-package activation and compatible rollback, with native Installation controls and stable setup command paths. Its isolated acceptance is tracked separately from public release. Signed public distribution, a download/update feed, uninstall/retention controls, Windows parity and sustained upgrade crash boundaries remain.

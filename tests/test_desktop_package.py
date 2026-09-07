@@ -29,7 +29,7 @@ class DesktopPackaging(unittest.TestCase):
             path.chmod(0o755)
         self.manifest = {"format": 1, "version": "0.1.0", "source_commit": "a" * 40,
                          "source_tree": "b" * 40, "source_input_sha256": "c" * 64,
-                         "source_dirty": False, "target": "x86_64-unknown-linux-gnu",
+                         "source_dirty": False, "state_schema": 8, "target": "x86_64-unknown-linux-gnu",
                          "binary_sha256": {name: PACKAGE.sha256(self.binaries / name) for name in PACKAGE.BINARIES}}
         self.save_manifest()
         self.args = PACKAGE.parser().parse_args(["--binary-dir", str(self.binaries), "--output", str(self.output),
@@ -49,6 +49,9 @@ class DesktopPackaging(unittest.TestCase):
             self.assertIn("agentdocker-desktop/share/metainfo/dev.agentdocker.desktop.metainfo.xml", names)
             for name in PACKAGE.BINARIES:
                 self.assertEqual(bundle.extractfile("agentdocker-desktop/bin/" + name).read(), (self.binaries / name).read_bytes())
+            metadata = json.load(bundle.extractfile("agentdocker-desktop/build.json"))
+            self.assertEqual(metadata["binary_sha256"], self.manifest["binary_sha256"])
+            self.assertEqual(metadata["state_schema"], self.manifest["state_schema"])
         self.assertEqual(result["artifacts"][archive.name], PACKAGE.sha256(archive))
 
     def test_changed_binary_never_publishes(self):
@@ -56,6 +59,15 @@ class DesktopPackaging(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed after"):
             PACKAGE.package(self.args)
         self.assertFalse(self.output.exists())
+
+    def test_schema_is_taken_from_the_binary_build_and_required(self):
+        self.manifest["state_schema"] = 9
+        self.save_manifest()
+        self.assertEqual(PACKAGE.package(self.args)["state_schema"], 9)
+        del self.manifest["state_schema"]
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "state schema"):
+            PACKAGE.validate_inputs(self.args)
 
     def test_wrong_architecture_never_publishes_even_with_matching_checksum(self):
         self.manifest["target"] = self.args.target = "aarch64-unknown-linux-gnu"

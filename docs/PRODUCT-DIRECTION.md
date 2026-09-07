@@ -28,8 +28,8 @@ These are implementation statements, not a claim that every path is hardened or 
 
 | Platform/channel | Current availability | Remaining delivery |
 |---|---|---|
-| macOS arm64/Intel | v0.1.0 archives contain CLI, daemon and GUI executables; local universal app preview has been built and launched on Apple Silicon | Repository-owned bundle/DMG packaging, signing/notarization, upgrade/rollback and Intel runtime trials |
-| Linux x86-64/ARM64 | Released CLI/daemon archives; GUI builds from source and is included in Ubuntu build/test CI | Desktop packages, desktop inventory, graphical runtime/notification/service trials across target distributions |
+| macOS arm64/Intel | Native bundle/DMG packaging and explicit per-user installation/activation/rollback implemented in the review stack; Apple Silicon and Rosetta graphical trials recorded | Public Developer ID signing/notarization, release publication, Intel hardware and longer upgrade trials |
+| Linux | Native desktop archive/launcher and x86-64 Xvfb/Mesa graphical CI; per-user installer implemented with CI acceptance in the review stack | Distribution packages, ARM64 graphical trials, and target-distribution acceptance |
 | Windows | Product scope only; current binaries depend on Unix APIs | Named pipes/access controls, process identity and termination, ConPTY, service/session lifecycle, paths, installer and Windows CI |
 | GitHub and shell installer | [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), four archives and checksums; `install.sh` selects a target | Publish a newer verified release after trial blockers are fixed |
 | Homebrew | Generated formula is a v0.1.0 release asset | Maintained tap/formula and a GUI cask; do not advertise a default `brew install agentdocker` yet |

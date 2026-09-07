@@ -54,6 +54,8 @@ def validate_inputs(args):
         manifest = json.loads((directory / "native-build.json").read_text())
         if manifest.get("format") != 1 or manifest.get("source_commit") != args.source or manifest.get("version") != args.version:
             raise ValueError("build provenance does not match the requested source/version")
+        if type(manifest.get("state_schema")) is not int or manifest["state_schema"] < 1:
+            raise ValueError("build provenance lacks the daemon state schema; rebuild the binaries")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")
         expected_target = args.target
@@ -70,6 +72,8 @@ def validate_inputs(args):
                 raise ValueError(f"binary changed after its verified build: {name}")
     if len({m.get("source_input_sha256") for m in manifests}) != 1:
         raise ValueError("universal binaries were built from different source inputs")
+    if len({m["state_schema"] for m in manifests}) != 1:
+        raise ValueError("universal binaries have different state schemas")
     return manifests[0]
 
 
@@ -77,7 +81,7 @@ def metadata(args):
     return {
         "format": 1, "product": "agentdocker", "version": args.version,
         "source_commit": args.source, "target": args.target,
-        "state_schema": 8, "display_name": "agentdocker",
+        "display_name": "agentdocker",
         "signing": "developer-id" if args.identity and args.identity != "-" else "local-preview",
         "notarized": False,
     }
@@ -170,6 +174,11 @@ def macos(args, stage, info):
         archive.unlink()
         zip_app(app, archive)
         info["notarized"] = True
+    # Validate the final distributed bytes, after all bundle operations and
+    # resource-preserving archive creation. This catches forbidden FinderInfo.
+    with tempfile.TemporaryDirectory(prefix="ad-package-check-") as scratch:
+        run("/usr/bin/ditto", "-x", "-k", archive, scratch)
+        run("/usr/bin/codesign", "--verify", "--deep", "--strict", Path(scratch) / app.name)
     if args.dmg:
         with tempfile.TemporaryDirectory(prefix="ad-dmg-", dir=stage) as scratch:
             image_root = Path(scratch)
@@ -198,6 +207,7 @@ def linux(args, stage, info):
     shutil.copyfile(ROOT / "packaging/linux/agentdocker.desktop", share / "applications/agentdocker.desktop")
     shutil.copyfile(ROOT / "packaging/linux/dev.agentdocker.desktop.metainfo.xml", share / "metainfo/dev.agentdocker.desktop.metainfo.xml")
     shutil.copyfile(ROOT / "packaging/desktop/agentdocker.svg", share / "icons/hicolor/scalable/apps/agentdocker.svg")
+    info["binary_sha256"] = {name: sha256(app / "bin" / name) for name in BINARIES}
     (app / "build.json").write_text(json.dumps(info, indent=2) + "\n")
     archive = stage / f"agentdocker-desktop-{args.target}.tar.gz"
     with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as target:
@@ -214,7 +224,7 @@ def package(args):
     with tempfile.TemporaryDirectory(prefix=".agentdocker-package-", dir=args.output.parent) as scratch:
         stage = Path(scratch)
         info = metadata(args)
-        info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty"]})
+        info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty", "state_schema"]})
         build = macos if "apple-darwin" in args.target else linux
         app, archive, binaries = build(args, stage, info)
         info["binary_sha256"] = {name: sha256(binaries / name) for name in BINARIES}
