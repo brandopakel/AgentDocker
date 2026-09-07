@@ -112,40 +112,72 @@ fn compress(rtk: &std::path::Path, text: &str) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("rtk would not start: {e}"))?;
-    // Written on a thread: a large log can fill the pipe buffer, and
-    // writing it all before reading anything back would deadlock
-    // against a child that is doing the same thing in reverse.
+    // All three pipes get their own thread, and this is not
+    // over-engineering: a pipe holds about 64 KiB, so any two of
+    // "write the whole log", "read the whole answer" and "read the
+    // whole complaint" done in sequence can wedge against a child
+    // doing one of the others. Which one deadlocks depends on whether
+    // the compressor reads before it writes, and that is the
+    // compressor's business, not ours.
     let mut stdin = child.stdin.take().ok_or("rtk has no stdin")?;
+    let mut stdout = child.stdout.take().ok_or("rtk has no stdout")?;
+    let mut stderr = child.stderr.take().ok_or("rtk has no stderr")?;
     let owned = text.to_owned();
     let writer = std::thread::spawn(move || stdin.write_all(owned.as_bytes()));
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+    });
+    let complaints = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr, &mut out);
+        out
+    });
 
     let started = std::time::Instant::now();
-    let output = loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break child.wait_with_output(),
+            Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(e) => return Err(format!("rtk could not be waited on: {e}")),
         }
         if started.elapsed() >= TIMEOUT {
+            // Killing it is what unblocks the three threads, so they are
+            // joined after, not before.
             let _ = child.kill();
             let _ = child.wait();
             let _ = writer.join();
+            let _ = reader.join();
+            let _ = complaints.join();
             return Err(format!("rtk did not finish within {}s", TIMEOUT.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let _ = writer.join();
-    let output = output.map_err(|e| format!("rtk failed: {e}"))?;
-    if !output.status.success() {
-        let said = String::from_utf8_lossy(&output.stderr);
+    // The whole log has to have gone in. A compressor that stopped
+    // reading part-way through produced a view of part of a log, and
+    // showing that as the log's compressed view would be a quiet lie
+    // about evidence.
+    match writer.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(format!("rtk stopped reading the log: {e}")),
+        Err(_) => return Err("the thread feeding rtk panicked".to_owned()),
+    }
+    let said = complaints.join().unwrap_or_default();
+    if !status.success() {
+        let said = String::from_utf8_lossy(&said);
         let said = said.trim();
         return Err(if said.is_empty() {
-            format!("rtk exited {}", output.status)
+            format!("rtk exited {}", status)
         } else {
             format!("rtk: {said}")
         });
     }
-    let compressed = String::from_utf8_lossy(&output.stdout).into_owned();
+    let out = match reader.join() {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("rtk output could not be read: {e}")),
+        Err(_) => return Err("the thread reading rtk panicked".to_owned()),
+    };
+    let compressed = String::from_utf8_lossy(&out).into_owned();
     if compressed.trim().is_empty() {
         return Err("rtk returned nothing".to_owned());
     }
@@ -218,6 +250,51 @@ mod tests {
             "all of it arrived: {:?}",
             view.text()
         );
+    }
+
+    /// And the other direction, which the test above does not reach:
+    /// `wc` reads all of its input before writing a word, so it can
+    /// never wedge us. A compressor that writes a large answer *first*
+    /// can — its output pipe fills, it blocks, and it never gets round
+    /// to reading the log we are blocked trying to give it. Draining
+    /// stdout on its own thread is what makes this finish.
+    #[test]
+    fn a_compressor_that_answers_before_it_reads_does_not_deadlock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rtk = fake(
+            &dir,
+            "rtk",
+            // Well past a pipe's capacity, written before stdin is
+            // touched at all.
+            "yes 'compressed line' | head -40000; cat >/dev/null",
+        );
+        let original = "y".repeat(1_000_000);
+        let started = std::time::Instant::now();
+        let view = view_with(Some(rtk), &original);
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "it finished rather than timing out: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(view, View::Compressed { .. }),
+            "and it is the compressor's answer, not the log back again"
+        );
+        assert!(view.text().lines().count() > 30_000, "all of the answer");
+    }
+
+    /// A compressor that stops reading part-way through has produced a
+    /// view of part of a log. Showing that as the log's compressed view
+    /// would be a quiet lie about evidence, so it falls back instead.
+    #[test]
+    fn a_compressor_that_stops_reading_early_is_not_trusted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rtk = fake(&dir, "rtk", "head -c 100 >/dev/null; echo 'a summary'");
+        let original = "z".repeat(1_000_000);
+        let view = view_with(Some(rtk), &original);
+        assert_eq!(view.text(), original, "the whole log, not the summary");
+        let note = view.note().unwrap();
+        assert!(note.contains("stopped reading"), "{note}");
     }
 
     /// A compressor that fails is not a reason to withhold somebody's

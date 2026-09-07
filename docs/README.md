@@ -15,3 +15,5 @@ AgentDocker runs native agents directly on the user's computer. Docker and Podma
 - [Real-engine verification](../tests/containers/README.md)
 
 Historical phase numbers are dependency sequence numbers, not GitHub PR numbers. The product-direction page defines upcoming priorities; command-specific `--help` describes the installed binary.
+
+Native delivery follow-ups: [desktop packaging](DESKTOP-DISTRIBUTION.md), [guided setup and health checks](GUIDED-SETUP.md), and the [implementation/acceptance tracker](NATIVE-DELIVERY.md).

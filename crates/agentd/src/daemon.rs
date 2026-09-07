@@ -2601,11 +2601,8 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
+                let backlog = state.read_inbox(id, true)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
-                let backlog = state.inboxes.remove(id).map(Vec::from).unwrap_or_default();
-                if !backlog.is_empty() {
-                    state.persist("inbox", |store| store.clear_inbox(id));
-                }
                 backlog
             }
             None => Vec::new(),
@@ -3147,22 +3144,37 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let messages: Vec<Envelope> = {
-            let inboxes = &mut self.inboxes;
-            if drain {
-                inboxes.remove(&id).map(Vec::from).unwrap_or_default()
-            } else {
-                inboxes
-                    .get(&id)
-                    .map(|queue| queue.iter().cloned().collect())
-                    .unwrap_or_default()
-            }
-        };
-        if drain && !messages.is_empty() {
-            self.persist("inbox", |store| store.clear_inbox(&id));
-        }
+        // A failed liveness write must stop the operation before queue removal.
         self.touch(&id);
+        let messages = match self.read_inbox(&id, drain) {
+            Ok(messages) => messages,
+            Err(error) => return *error,
+        };
         Response::Messages { messages }
+    }
+
+    /// Snapshot before removal; commit its exact IDs and replay event together
+    /// before exposing a destructive read or changing live delivery routing.
+    fn read_inbox(&mut self, id: &AgentId, drain: bool) -> Result<Vec<Envelope>, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        let messages: Vec<Envelope> = self
+            .inboxes
+            .get(id)
+            .map(|queue| queue.iter().cloned().collect())
+            .unwrap_or_default();
+        if drain && !messages.is_empty() {
+            let ids = messages
+                .iter()
+                .map(|message| message.id.clone())
+                .collect::<Vec<_>>();
+            let response = self.ack_inbox(id.as_str(), &ids);
+            if !matches!(response, Response::Ok) {
+                return Err(Box::new(response));
+            }
+        }
+        Ok(messages)
     }
 
     fn unsubscribe(&mut self, agent: &AgentId) {
@@ -3554,17 +3566,22 @@ impl State {
         if self.last_head.get(&checkout) == Some(&head) {
             return;
         }
+        if self.committing.contains(&checkout) {
+            // The daemon is making this commit itself and will record it
+            // against the agent that asked, so there is nothing to say
+            // here. Nothing is remembered either: advancing `last_head`
+            // would mean that if the commit never got as far as writing
+            // its entry, no later sweep would notice the move and the
+            // commit would go unrecorded by anyone. Leaving the mark
+            // where it was costs one repeated check per sweep and makes
+            // the watcher the backstop it is supposed to be.
+            return;
+        }
         self.last_head.insert(checkout.clone(), head.clone());
         let was_on = self
             .last_branch
             .insert(checkout.clone(), new.branch.clone())
             .flatten();
-        if self.committing.contains(&checkout) {
-            // The daemon is making this commit itself and will record it
-            // against the agent that asked. `last_head` is updated above,
-            // so the move is not noticed twice either.
-            return;
-        }
         if old.is_none() {
             return; // first observation, not a move
         }
@@ -6727,6 +6744,56 @@ deny = ["send:all"]
         assert_eq!(files, 1);
     }
 
+    /// A commit that fails must not leave the checkout marked. The mark
+    /// tells the watcher to keep out, so one left behind does not fail
+    /// loudly — it silently stops that checkout being journaled for as
+    /// long as the daemon lives.
+    #[tokio::test]
+    async fn a_failed_commit_does_not_leave_the_checkout_marked() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+
+        // A commit git will refuse. A pre-commit hook that says no is
+        // the portable way to arrange that; the point is the failure,
+        // not which failure.
+        let hooks = dir.path().join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        let write_hook = |body: &str| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&hook, body).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write_hook("#!/bin/sh\nexit 1\n");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        ));
+        let refused = commit(&daemon, "writer", "cannot be made", false).await;
+        assert!(
+            matches!(refused, Response::Error { .. }),
+            "the commit failed: {refused:?}"
+        );
+        assert!(
+            lock(&daemon.state).committing.is_empty(),
+            "and the checkout is not still marked"
+        );
+
+        // Which means the next one works, and is journaled.
+        write_hook("#!/bin/sh\nexit 0\n");
+        let Response::Committed { .. } = commit(&daemon, "writer", "and now it can", false).await
+        else {
+            panic!("commit failed")
+        };
+        assert!(lock(&daemon.state).committing.is_empty());
+    }
+
     /// A message beginning with a dash is a message. Passing it as
     /// `--message=<text>` or positionally would make git read it as a
     /// flag and fail, or worse, succeed at something else.
@@ -6912,6 +6979,173 @@ deny = ["send:all"]
         {
             Response::Messages { messages } => messages,
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
+        for subscribe in [false, true] {
+            for event_failure in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let daemon = open(&dir);
+                let receiver = register(&daemon, "receiver", None).await;
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":"retain after failed drain"}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+                let queued = inbox(&daemon, "receiver", false).await;
+                let mut events = daemon.subscribe_events();
+                let next_seq = {
+                    let state = lock(&daemon.state);
+                    if event_failure {
+                        state.store.reject_event_for_test("inbox_acknowledged");
+                    } else {
+                        state.store.reject_writes_for_test();
+                    }
+                    state.next_seq
+                };
+                let response = if subscribe {
+                    match daemon.subscribe(Some("receiver"), Vec::new()) {
+                        Err(error) => *error,
+                        Ok(_) => panic!("failed storage allowed an inbox subscription"),
+                    }
+                } else {
+                    daemon
+                        .handle(Request::Inbox {
+                            agent: "receiver".into(),
+                            drain: true,
+                        })
+                        .await
+                };
+                assert!(
+                    matches!(
+                        response,
+                        Response::Error {
+                            code: ErrorCode::StorageUnavailable,
+                            ..
+                        }
+                    ),
+                    "{response:?}"
+                );
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    state.inboxes[&receiver.id]
+                        .iter()
+                        .map(|message| &message.id)
+                        .collect::<Vec<_>>(),
+                    queued.iter().map(|message| &message.id).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    state.store.load_inboxes().unwrap()[&receiver.id].len(),
+                    queued.len()
+                );
+                assert_eq!(state.next_seq, next_seq);
+                assert!(!state.live_subscribers.contains_key(&receiver.id));
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_inbox_touch_does_not_acknowledge_messages() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain after failed touch"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_agent_writes_for_test();
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Inbox {
+                agent: "receiver".into(),
+                drain: true,
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery() {
+        for subscribe in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let receiver = register(&daemon, "receiver", None).await;
+            for text in ["first", "second"] {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":text}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+            }
+            let mut events = daemon.subscribe_events();
+            let delivered = if subscribe {
+                let (subscription, _) = daemon.subscribe(Some("receiver"), Vec::new()).unwrap();
+                subscription.backlog.clone()
+            } else {
+                inbox(&daemon, "receiver", true).await
+            };
+            assert_eq!(delivered.len(), 2);
+            let event = events.try_recv().unwrap();
+            assert!(
+                matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
+                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
+            );
+            let state = lock(&daemon.state);
+            assert!(
+                state
+                    .inboxes
+                    .get(&receiver.id)
+                    .is_none_or(|queue| queue.is_empty())
+            );
+            assert!(
+                !state
+                    .store
+                    .load_inboxes()
+                    .unwrap()
+                    .contains_key(&receiver.id)
+            );
+            assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
+            assert!(events.try_recv().is_err());
         }
     }
 

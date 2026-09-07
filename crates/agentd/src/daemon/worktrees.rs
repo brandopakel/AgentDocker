@@ -22,6 +22,26 @@ fn failure(e: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Invalid, e.to_string())
 }
 
+/// Holds a checkout marked as "the daemon is committing here" for as
+/// long as it lives, and lets go however the commit ends.
+struct Committing<'a> {
+    daemon: &'a Daemon,
+    root: PathBuf,
+}
+
+impl<'a> Committing<'a> {
+    fn mark(daemon: &'a Daemon, root: PathBuf) -> Self {
+        lock(&daemon.state).committing.insert(root.clone());
+        Self { daemon, root }
+    }
+}
+
+impl Drop for Committing<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.state).committing.remove(&self.root);
+    }
+}
+
 /// The subject of a commit message: what a journal line can carry.
 fn first_line(message: &str) -> &str {
     message.lines().next().unwrap_or("").trim()
@@ -300,7 +320,14 @@ impl Daemon {
         // From here the watcher must keep its hands off this checkout:
         // it polls on its own schedule and would otherwise see HEAD move
         // and write its own guessed-at entry for this very commit.
-        lock(&self.state).committing.insert(root.clone());
+        //
+        // A guard, not a pair of matching calls. Every way out of this
+        // function from here — a failed commit, a failed rev-parse, a
+        // future early return somebody adds, an unwind — has to clear
+        // the mark, and a mark left behind does not fail loudly: it
+        // silently stops that checkout being journaled for as long as
+        // the daemon lives.
+        let _committing = Committing::mark(self, root.clone());
 
         let mut args = vec!["commit".into()];
         if all {
@@ -324,10 +351,7 @@ impl Daemon {
         };
         let head = match head {
             Ok(head) => head,
-            Err(reason) => {
-                lock(&self.state).committing.remove(&root);
-                return failure(reason);
-            }
+            Err(reason) => return failure(reason),
         };
         let branch = match git(
             root.clone(),
@@ -376,7 +400,6 @@ impl Daemon {
                 state.append_journal(entry);
             }
             state.last_head.insert(root.clone(), head.clone());
-            state.committing.remove(&root);
             state.emit(EventKind::Committed {
                 agent: agent.clone(),
                 head: head.clone(),
@@ -386,8 +409,12 @@ impl Daemon {
             });
         }
         if let Some(reason) = trouble {
+            // Not Internal: the commit was made and the state is
+            // sound. What failed is a remote we do not control, which
+            // is exactly what Unavailable is for — and the difference
+            // matters to a caller deciding whether to retry.
             return Response::error(
-                ErrorCode::Internal,
+                ErrorCode::Unavailable,
                 format!("committed {head}, but the push failed: {reason}"),
             );
         }
