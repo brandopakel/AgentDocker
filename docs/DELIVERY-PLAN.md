@@ -11,6 +11,46 @@ Updated September 7, 2026. This is the active delivery plan requested by the use
 - Change protocol, errors, CLI/MCP/hooks/GUI behavior and architecture documentation together. Leases protect cooperative participants; do not describe them as an OS sandbox.
 - Preserve private state, credentials, receipts and raw provider evidence. Bencher credentials/configuration stay outside both the repository and GitHub. Test only owned fixtures and fresh provider sessions until the installation gates pass.
 
+## Lightweight native operation and storage cleanup
+
+The user's September 7 requirements make local storage and memory efficiency
+release gates. agentdocker runs natively without mandatory engines, SDKs or a
+browser server. Source and sanitized test/benchmark evidence belong in GitHub;
+compiled intermediates and disposable trials are pruned after their evidence is
+published. Credentials, private agent state and personal documents stay private.
+
+The immediate audit includes the remaining macOS System Data and the reported
+10 GB Documents category. Measure actual directories and distinguish build
+caches, duplicate packages, temporary checkouts, test/engine state, logs,
+application support, personal files and OS-managed data. Categorization alone
+does not authorize deleting a file. Remove confirmed regenerable or owned
+disposable output, preserve active processes and user work, and record allocated
+bytes plus actual free space before/after. Do not merely transfer the same
+accumulation into another local folder. Retain the report in GitHub and only
+small necessary private evidence locally.
+
+Add these checks to the existing T04/T10/T11/T12 and L12/L14/L15 matrices:
+
+- Installed/compressed bytes per platform. The current three-binary Mac preview
+  at `9b08d82` occupies 36 MiB, with 49 MiB for app plus archive. This is a local
+  preview with an unresolved running-release pin defect, not release acceptance.
+  Start with a 100 MiB per-architecture payload ceiling and measure universal
+  artifacts separately; lower budgets when platform evidence permits.
+- Idle and loaded daemon/window RSS, CPU, thread and descriptor counts at
+  1/10/100 owned agents. Repeat sustained runs, identify leaks and unbounded
+  growth, and set measured platform budgets. The cache incident proves a
+  development-storage problem; a runtime RAM leak has not been established.
+- Limits, retention and recovery for logs, SQLite/event/journal/watcher records,
+  snapshots, temporary checkouts, package staging and rollback copies. Cleanup
+  must preserve active references and user work and recover space after failures.
+- Upload exact-source sanitized results and failure evidence to the repository
+  or GitHub Actions artifacts, confirm publication, then prune local generated
+  outputs. Preserve the current small package only while acceptance needs it.
+  Prefer CI for broad platform matrices; one local campaign runs at a time.
+
+This audit and cleanup precedes further heavy local testing. Correctness, real
+integrations, GUI, full platform parity and live-upgrade work continue afterward.
+
 ## Delivery sequence
 
 | Step | Work and completion condition | Current state |
@@ -95,3 +135,24 @@ legacy/service retention, payload identity checks and running-release lifetime
 locks. Focused tests cover removal scope, resumability and lock contention.
 L12 still requires packaged real-process acceptance and final-source platform
 checks; download/update distribution and safe live daemon transfer remain open.
+
+### Disk-pressure incident and build retention
+
+The local review accumulated roughly 220 GiB of temporary Cargo output and left
+only 3 GiB free. Cleanup recovered 185 GiB while preserving source, credentials,
+reports and release binaries. Build storage preflight and disabled development
+incremental compilation address recurrence; one local campaign and at most two
+retained debug caches are now required. T12 records disk use and cleanup as well
+as process cleanup. The active main checkout belongs to another session and was
+preserved. See the testing standard for scope and configurable limits.
+
+
+Storage audit checkpoint: the first temporary-cache pass recovered 185.21 GiB;
+once the main checkout's tests finished, idle debug output recovered another
+79.43 GiB under its existing Cargo lock. After byte-verifying the sanitized
+22-campaign report on GitHub, completed temporary build outputs recovered a
+further 20.39 GiB. The measured cleanup sum is **285.03 GiB**. Source changes,
+private credentials, reports and running release binaries were preserved.
+Project documentation totals **1.6 MiB**, not 10 GB. Other projects' raw recovery
+databases, personal files and application state require separate retention
+review; Apple storage-category labels alone are not deletion evidence.
