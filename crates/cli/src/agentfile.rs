@@ -59,6 +59,10 @@ pub struct AgentEntry {
     /// runtime works under `up` and `attach` can reach it.
     #[serde(default)]
     pub tty: bool,
+    /// Bring the agent back when `agentd` restarts, under the same
+    /// identity and in the same directory.
+    #[serde(default)]
+    pub restore: bool,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -144,6 +148,7 @@ impl Agentfile {
                     labels,
                     isolate: entry.isolate,
                     tty: entry.tty,
+                    restore: entry.restore,
                 }
             })
             .collect();

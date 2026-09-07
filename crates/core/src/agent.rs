@@ -85,6 +85,12 @@ pub struct AgentSpec {
     /// it. Output still lands in the log.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tty: bool,
+    /// A restarted daemon relaunches this agent under the same identity,
+    /// so the read set, journal cursor, checkpoints and leases it already
+    /// has still describe it. Opt-in: starting `agentd` should not spawn
+    /// processes nobody asked it to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore: bool,
 }
 
 /// Which branch and commit an agent's checkout is on, as last observed —

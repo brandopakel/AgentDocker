@@ -97,6 +97,11 @@ agentdocker release --as writer --all --summary "rewrote the tokenizer"   # your
 agentdocker events
 agentdocker logs -f writer
 agentdocker stop writer
+
+# An agent that should outlive a daemon restart says so, and comes back
+# under its own id — with its read set, journal cursor, checkpoints and
+# leases, and a note saying what changed while it was down.
+agentdocker run --name keeper --restore -- claude
 ```
 
 Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:

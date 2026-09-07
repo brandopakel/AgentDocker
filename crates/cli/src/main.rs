@@ -569,6 +569,11 @@ struct RunArgs {
     /// Give the agent a terminal rather than pipes, so an interactive agent works and `attach` can reach it.
     #[arg(long, short = 't')]
     tty: bool,
+    /// Bring this agent back when `agentd` restarts, under the same
+    /// identity, so its read set, journal cursor, checkpoints and leases
+    /// still describe it.
+    #[arg(long)]
+    restore: bool,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -1278,6 +1283,7 @@ async fn main() -> Result<()> {
                 labels: parse_pairs(&args.labels)?,
                 isolate: args.isolate,
                 tty: args.tty,
+                restore: args.restore,
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1315,6 +1321,7 @@ async fn main() -> Result<()> {
                 labels: parse_pairs(&args.labels)?,
                 isolate: false,
                 tty: false,
+                restore: false,
             };
             let request = Request::Register {
                 spec,

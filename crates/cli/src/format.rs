@@ -142,6 +142,16 @@ pub fn question_line(question: &Question) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::AgentRestored { agent, pid, stale } => format!(
+            "agent restored: {} (pid {}){}",
+            agent.short(),
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_owned()),
+            if *stale > 0 {
+                format!(", {stale} path(s) changed while it was down")
+            } else {
+                String::new()
+            }
+        ),
         EventKind::ContainerUpdated { agent } => format!("{agent} container state updated"),
         EventKind::ImageBuilt {
             build,

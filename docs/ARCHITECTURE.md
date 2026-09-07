@@ -171,7 +171,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ping` | `pong` | version, uptime, restricted endpoint while serving |
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
-| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
+| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restore` brings it back under the same id after a daemon restart |
 | `run_container {spec, build, options?}` | `agent` | host-only; retained image with durable identity/intent; opt-in checkout/scoped endpoint mounts, Podman VM transport, and bridge networking |
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
@@ -537,7 +537,15 @@ What is **not** done is persistence across a restart of the daemon itself. The a
 
 So the target splits in two, and the second half is where we are better placed than they are.
 
-Row 27 is the **snapshot restore**: `agentd` already persists every `AgentRecord`, and a managed agent's record already carries its command, working directory, environment and `tty`, so a restarted daemon can bring back the agents that were running, in the right directories. Where herdr can only offer a fresh shell and, at best, an agent resuming its own conversation, we can hand a relaunched agent the working set it actually needs: the checkpoint it last saved, the read set that says what it had looked at and whether any of it has changed since, the journal since its cursor, and the leases it held. That is the same feature done with evidence rather than with a directory name, and it costs us little because all of it is already stored.
+Row 27, the **snapshot restore**, is done. `run --restore` (or `restore = true` in an `Agentfile.toml`) marks a managed agent as one to bring back; opt-in, because starting a daemon should never spawn processes nobody asked it to, and `agentdocker ps` starts the daemon. On startup, before the liveness sweep can retire anything, such an agent is relaunched **under its own id**. That is the whole of it: the read set, the journal cursor, the checkpoints, the ledger attribution and the leases are all keyed by the agent id, so restoring the identity restores the working set with it rather than handing out a fresh shell in the right directory.
+
+Which records qualify does not depend on how the last daemon ended. A clean shutdown stops its agents, so their records read `exited`; a crash writes nothing, so they still read `running`. Either way the process is gone and the agent asked to come back. An agent whose process group is somehow still alive is left alone rather than started twice, and an agent stopped on purpose is not restored — `stop` clears the flag on the record, so the reason it will not come back is visible in `inspect` rather than hidden in the daemon.
+
+Leases need one extra step, because releasing them when an agent stops is correct: once nothing is working on a resource, the resource is free. So the daemon writes a **restore point** for each restorable agent immediately before its own shutdown stops them — the resources they hold, with the mode and note of each — and puts them back on restore, as new leases with fresh expiries. After a crash there is no restore point and none is needed: nothing released anything, so the lease table is still the truth. A restore point older than twelve hours is ignored, because a daemon that has been down for half a day is not resuming a session, and re-taking a stale lease would be claiming a resource for work nobody is doing.
+
+What the agent is told arrives as a `restored` message, so it reaches the agent by whatever route its runtime already reads — the inbox, a hook's injected context, `wait_for_messages`. It carries the checkpoint it last saved and the next steps it recorded, how many observations its read set holds and **which of those paths changed while it was down**, the leases it holds and which of them had to be put back, and where its journal reading had got to. That is the difference from restoring a multiplexer's layout: a restored agent resumes with evidence, not with a directory name. Every restore is announced as `agent_restored`, carrying how many paths went stale.
+
+What is still not restored is the terminal. A `--tty` agent comes back with a new one and an empty scrollback; the old master descriptor died with the old daemon. That is row 28.
 
 Row 28 is the **descriptor handoff**: `agentdocker daemon reload` passing pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade does not disturb a running agent. The same mechanism herdr uses, for the same reason, and worth having once upgrades are frequent enough to notice.
 
@@ -604,14 +612,14 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
-| 27 | snapshot restore: a restarted daemon brings back the agents that were running, in their directories, each handed its checkpoint, read set, journal cursor and held leases rather than a bare shell | 5 | 23 |
+| 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
 | 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
 | 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 27, 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -626,7 +634,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 
-Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. `Timeout` is shipped (`ask`); `Deadlock` follows with row 13.
 
