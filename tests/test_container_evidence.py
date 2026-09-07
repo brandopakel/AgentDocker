@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import time
+import threading
 import subprocess
 from unittest.mock import patch
 
@@ -62,9 +63,14 @@ class ContainerLogRetention(unittest.TestCase):
     def test_post_kill_reap_is_bounded_and_preserves_diagnostic_tail(self):
         real_wait = subprocess.Popen.wait
         children = []
+        reaped = threading.Event()
         def stuck_wait(child, timeout=None):
+            if timeout is None:
+                status = real_wait(child)
+                reaped.set()
+                return status
             children.append(child)
-            self.assertIsNotNone(timeout, "reaping after kill must have a deadline")
+            self.assertEqual(timeout, 0.5, "post-kill reap must use the 500 ms bound")
             raise subprocess.TimeoutExpired(child.args, timeout)
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "stuck-reap.log"
@@ -75,6 +81,7 @@ class ContainerLogRetention(unittest.TestCase):
                             "import time;print('primary failure',flush=True);time.sleep(60)"],
                             output, timeout=1)
                 self.assertEqual(output.read_text(), "primary failure\n")
+                self.assertTrue(reaped.wait(2), "a background owner must reap after the bounded wait fails")
             finally:
                 for child in children:
                     real_wait(child, timeout=2)
