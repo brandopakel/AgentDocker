@@ -1196,6 +1196,22 @@ impl App {
                 health["daemon"].as_str().unwrap_or("unknown")
             ));
             ui.label("Configuration detection does not prove that a provider has used its connection. Start a fresh session after setup.");
+            for runtime in health["runtimes"].as_array().into_iter().flatten() {
+                let name = runtime["name"].as_str().unwrap_or("Runtime");
+                for check in runtime["checks"].as_array().into_iter().flatten() {
+                    if check["status"] == "unsupported" {
+                        continue;
+                    }
+                    let channel = check["channel"].as_str().unwrap_or("connection");
+                    ui.label(format!(
+                        "{name} · {channel}: {}",
+                        check["detail"].as_str().unwrap_or("unknown")
+                    ));
+                    if let Some(executable) = check["executable"].as_str() {
+                        ui.small(executable);
+                    }
+                }
+            }
         }
         let Some(plan) = self.setup_plan.clone() else {
             return;

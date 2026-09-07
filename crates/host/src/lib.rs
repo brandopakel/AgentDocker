@@ -18,6 +18,12 @@ pub mod engine;
 pub mod runtimes;
 
 pub mod dirs;
+// Passing an open descriptor to another process is `SCM_RIGHTS` over a
+// Unix socket, and Windows has no equivalent — it duplicates handles
+// into a named target process instead, which is a different mechanism
+// with a different security model. `daemon reload` is Unix-only until
+// that is built, so the module is too.
+#[cfg(unix)]
 pub mod handoff;
 pub mod multiplexer;
 pub mod notify;

@@ -208,6 +208,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "process-wrap",
+ "serde",
  "serde_json",
  "sha2",
  "shlex",
