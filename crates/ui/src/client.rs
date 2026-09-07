@@ -153,7 +153,7 @@ impl Client {
                 self.socket.display()
             );
         }
-        let lock_path = paths::daemon_lock(&home, &self.socket);
+        let lock_path = paths::daemon_lock(&self.home, &self.socket);
         if let Some(parent) = lock_path.parent() {
             if parent == paths::socket_dir(&self.home) && parent != self.home {
                 dirs::ensure_private_dir(parent)?;
