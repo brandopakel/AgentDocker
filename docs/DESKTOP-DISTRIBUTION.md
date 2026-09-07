@@ -7,9 +7,10 @@ The product name is **agentdocker**. Its window, bundle display name and disk im
 The build tools require Rust, Python 3.11+, and Xcode command-line tools on macOS. End users do not need Rust or Python to open the packaged app. These commands produce a **local preview**, not a signed public release:
 
 ```sh
-python3 scripts/build_native.py
+native_build=$(python3 scripts/build_native.py)
+native_binary_dir=$(printf '%s' "$native_build" | python3 -c 'import json,sys; print(json.load(sys.stdin)["binary_directory"])')
 python3 packaging/desktop/package.py \
-  --binary-dir target/release --output artifacts/desktop \
+  --binary-dir "$native_binary_dir" --output artifacts/desktop \
   --version 0.1.0 --source "$(git rev-parse HEAD)" \
   --target aarch64-apple-darwin --dmg
 python3 scripts/desktop_smoke.py \
