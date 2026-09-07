@@ -48,11 +48,16 @@ impl<'a> Waiting<'a> {
     }
 
     /// Take a place, announcing where in the queue it landed.
-    pub(super) fn join(&mut self, mode: LeaseMode) {
+    ///
+    /// Takes the lock the caller already holds. The deadlock check and
+    /// this join have to happen without letting go of it: the daemon
+    /// serves each connection on its own task, so two claims that both
+    /// looked before either joined would each see no cycle and both wait
+    /// out their deadlines instead of one being refused.
+    pub(super) fn join_locked(&mut self, state: &mut State, mode: LeaseMode) {
         if self.ticket.is_some() {
             return;
         }
-        let mut state = lock(&self.daemon.state);
         let ticket = state.waiting.join(
             self.requester.clone(),
             self.resource.clone(),
@@ -65,6 +70,17 @@ impl<'a> Waiting<'a> {
             resource: self.resource.clone(),
             requester: self.requester.clone(),
             position,
+        });
+    }
+
+    /// Say that a wait ended without one ever having begun — the
+    /// deadlock refusal, which never joins the queue but is still a wait
+    /// that ended, and whose outcome subscribers are told to expect.
+    pub(super) fn never_started(&self, state: &mut State, outcome: WaitOutcome) {
+        state.emit(EventKind::LeaseWaitEnded {
+            resource: self.resource.clone(),
+            requester: self.requester.clone(),
+            outcome,
         });
     }
 

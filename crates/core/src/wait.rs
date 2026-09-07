@@ -87,25 +87,34 @@ impl WaitQueue {
         let Some(mine) = self.waiters.iter().find(|w| w.ticket == ticket) else {
             return false;
         };
-        !self.waiters.iter().any(|other| {
-            other.ticket < mine.ticket
-                && other.resource.overlaps(&mine.resource)
-                && (other.mode == LeaseMode::Exclusive || mine.mode == LeaseMode::Exclusive)
-        })
+        !self
+            .waiters
+            .iter()
+            .any(|other| other.ticket < mine.ticket && self.blocks(other, mine))
     }
 
-    /// How many waiters are ahead of this one on an overlapping
-    /// resource. Zero means it is next; `None` means it is not queued.
+    /// How many waiters are ahead of this one *and in its way*. Zero
+    /// means it is next; `None` means it is not queued.
+    ///
+    /// The same exclusion rule as [`Self::is_next`], and it has to be:
+    /// this number is published as `lease_waiting.position` and shown as
+    /// a queue place, so a shared waiter that may proceed at once must
+    /// not be told it is second.
     pub fn position(&self, ticket: Ticket) -> Option<usize> {
         let mine = self.waiters.iter().find(|w| w.ticket == ticket)?;
         Some(
             self.waiters
                 .iter()
-                .filter(|other| {
-                    other.ticket < mine.ticket && other.resource.overlaps(&mine.resource)
-                })
+                .filter(|other| other.ticket < mine.ticket && self.blocks(other, mine))
                 .count(),
         )
+    }
+
+    /// Whether `other` stands in `mine`'s way: it wants something that
+    /// overlaps, and at least one of them wants it exclusively.
+    fn blocks(&self, other: &Waiter, mine: &Waiter) -> bool {
+        other.resource.overlaps(&mine.resource)
+            && (other.mode == LeaseMode::Exclusive || mine.mode == LeaseMode::Exclusive)
     }
 
     /// What this agent is waiting for, if anything. An agent waits for
@@ -326,9 +335,13 @@ mod tests {
             queue.is_next(second),
             "two shared waiters can be satisfied together"
         );
-        // A writer behind them still waits.
+        // And the number published as its queue place has to agree: a
+        // waiter that may proceed at once must not be shown as second.
+        assert_eq!(queue.position(second), Some(0));
+        // A writer behind them still waits, behind both of them.
         let writer = queue.join(agent("c"), key("task:x"), LeaseMode::Exclusive, now());
         assert!(!queue.is_next(writer));
+        assert_eq!(queue.position(writer), Some(2));
     }
 
     #[test]

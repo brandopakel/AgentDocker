@@ -2349,22 +2349,28 @@ impl Daemon {
                 // If it would, nobody in it could ever proceed, and the
                 // newcomer is always the victim — deterministic, and it
                 // needs no priorities.
-                if wait_secs > 0
-                    && waiting.ticket().is_none()
-                    && let Some(cycle) = state.deadlock(&holder, &resource)
-                {
-                    warn!(agent = %holder.short(), %resource, "claim would deadlock");
-                    state.emit(EventKind::LeaseDeadlock {
-                        cycle: cycle.clone(),
-                    });
-                    return Response::Error {
-                        code: ErrorCode::Deadlock,
-                        message: format!(
-                            "waiting for {resource} would deadlock: {}",
-                            describe(&cycle)
-                        ),
-                        details: Some(json!({ "cycle": cycle, "held_by": held_by })),
-                    };
+                if wait_secs > 0 && waiting.ticket().is_none() {
+                    if let Some(cycle) = state.deadlock(&holder, &resource) {
+                        warn!(agent = %holder.short(), %resource, "claim would deadlock");
+                        state.emit(EventKind::LeaseDeadlock {
+                            cycle: cycle.clone(),
+                        });
+                        // A wait that never began still ended, and its
+                        // outcome is one subscribers are told to expect.
+                        waiting.never_started(&mut state, agentdocker_core::WaitOutcome::Deadlock);
+                        return Response::Error {
+                            code: ErrorCode::Deadlock,
+                            message: format!(
+                                "waiting for {resource} would deadlock: {}",
+                                describe(&cycle)
+                            ),
+                            details: Some(json!({ "cycle": cycle, "held_by": held_by })),
+                        };
+                    }
+                    // Joined under the same lock the check ran under.
+                    // Letting go in between would let two claims each
+                    // see no cycle and then both create one.
+                    waiting.join_locked(&mut state, mode);
                 }
                 (message, held_by)
             };
@@ -2375,7 +2381,6 @@ impl Daemon {
                     details: Some(json!({ "held_by": held_by })),
                 };
             }
-            waiting.join(mode);
             if !wait_for_release(&mut events, &resource, deadline).await {
                 waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
@@ -4570,6 +4575,56 @@ mod tests {
             activity_of(&daemon, quiet.id.as_str()).await,
             Activity::Finished
         );
+    }
+
+    #[tokio::test]
+    async fn a_deadlock_refusal_says_the_wait_ended() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "alpha", Some(std::process::id())).await;
+        register(&daemon, "beta", Some(std::process::id())).await;
+        assert!(matches!(
+            claim(&daemon, "alpha", "task:x").await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            claim(&daemon, "beta", "task:y").await,
+            Response::Lease { .. }
+        ));
+        let alpha_waits = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { claim_waiting(&daemon, "alpha", "task:y", 30).await })
+        };
+        queued(&daemon, 1).await;
+
+        let mut events = daemon.subscribe_events();
+        let refused = claim_waiting(&daemon, "beta", "task:x", 30).await;
+        assert!(matches!(
+            &refused,
+            Response::Error {
+                code: ErrorCode::Deadlock,
+                ..
+            }
+        ));
+
+        // A wait that never began still ended, and `lease_wait_ended` is
+        // the event subscribers are told to expect for every outcome —
+        // including the one that was refused before it could queue.
+        let mut saw_deadlock = false;
+        let mut saw_ended = false;
+        while let Ok(event) = events.try_recv() {
+            match event.kind {
+                EventKind::LeaseDeadlock { .. } => saw_deadlock = true,
+                EventKind::LeaseWaitEnded {
+                    outcome: agentdocker_core::WaitOutcome::Deadlock,
+                    ..
+                } => saw_ended = true,
+                _ => {}
+            }
+        }
+        assert!(saw_deadlock, "the cycle itself is announced");
+        assert!(saw_ended, "and so is the wait ending on it");
+        alpha_waits.abort();
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
