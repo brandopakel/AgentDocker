@@ -56,14 +56,18 @@ def capture_tail(command, output_path, *, limit=2 * 1024 * 1024, timeout=30):
     finally:
         # A timed-out/failed read can leave an SSH helper holding the pipe.
         # Kill before reaping the leader, while its group identity is reserved.
-        if process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-        process.stdout.close()
-    Path(output_path).write_bytes(tail)
+        try:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                # A kernel-stalled child can survive SIGKILL until I/O returns.
+                # Report that cleanup failure rather than hanging diagnostics.
+                process.wait(timeout=0.5)
+        finally:
+            process.stdout.close()
+            Path(output_path).write_bytes(tail)
     return {"exit": process.returncode, "timed_out": timed_out,
             "bytes_read": total, "bytes_retained": len(tail), "truncated": total > limit}
 

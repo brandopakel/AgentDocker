@@ -6,6 +6,8 @@ import os
 import sys
 import tempfile
 import time
+import subprocess
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "container_evidence", Path(__file__).parent / "containers/evidence.py")
@@ -56,6 +58,26 @@ class ContainerLogRetention(unittest.TestCase):
             pid = int(output.read_bytes())
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
+
+    def test_post_kill_reap_is_bounded_and_preserves_diagnostic_tail(self):
+        real_wait = subprocess.Popen.wait
+        children = []
+        def stuck_wait(child, timeout=None):
+            children.append(child)
+            self.assertIsNotNone(timeout, "reaping after kill must have a deadline")
+            raise subprocess.TimeoutExpired(child.args, timeout)
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "stuck-reap.log"
+            try:
+                with patch.object(subprocess.Popen, "wait", stuck_wait):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        EVIDENCE.capture_tail([sys.executable, "-c",
+                            "import time;print('primary failure',flush=True);time.sleep(60)"],
+                            output, timeout=0.2)
+                self.assertEqual(output.read_text(), "primary failure\n")
+            finally:
+                for child in children:
+                    real_wait(child, timeout=2)
 
     def test_logs_are_retained_beside_result(self):
         with tempfile.TemporaryDirectory() as folder:
