@@ -23,7 +23,7 @@ use agentdocker_core::{EventKind, paths};
 use agentdocker_host::lock;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::daemon::Daemon;
