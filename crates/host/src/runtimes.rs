@@ -180,13 +180,17 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
 }
 
 /// Recognize an explicit AgentDocker MCP launch, not mentions in unrelated args.
-/// Wrappers whose behavior cannot be established remain unverified.
+/// Recognize the bare launch and the runtime argument written by setup. Other
+/// argument forms and wrappers remain unverified without executing the command.
 pub fn mcp_command_matches(command: Option<&str>, args: &[&str], marker: &str) -> bool {
     command
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str())
         == Some(marker)
-        && args.first() == Some(&"mcp")
+        && matches!(args, ["mcp"] | ["mcp", "--runtime", _])
+        && args
+            .get(2)
+            .is_none_or(|runtime| !runtime.is_empty() && !runtime.starts_with('-'))
 }
 
 /// Whether the runtime's MCP configuration registers AgentDocker.

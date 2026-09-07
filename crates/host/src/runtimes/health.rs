@@ -374,6 +374,41 @@ mod tests {
     }
 
     #[test]
+    fn mcp_arguments_must_match_a_supported_direct_launch() {
+        let (_temporary, roots) = machine();
+        let runtime = spec("gemini-cli");
+        for args in [
+            json!(["mcp", "--unexpected"]),
+            json!(["mcp", "--help"]),
+            json!(["mcp", "--runtime"]),
+            json!(["mcp", "--runtime", "--unexpected"]),
+            json!(["mcp", "--runtime", "gemini-cli", "extra"]),
+        ] {
+            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            assert_eq!(
+                mcp(runtime, &roots, "agentdocker")[0].status,
+                Status::Unverified
+            );
+            assert_eq!(
+                super::super::mcp_wiring(runtime, &roots, "agentdocker"),
+                agentdocker_core::runtime::Wiring::Missing
+            );
+        }
+        // The generated setup registration carries its provider runtime.
+        for args in [json!(["mcp"]), json!(["mcp", "--runtime", "gemini-cli"])] {
+            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            assert_eq!(
+                mcp(runtime, &roots, "agentdocker")[0].status,
+                Status::ExecutableMissing
+            );
+            assert_eq!(
+                super::super::mcp_wiring(runtime, &roots, "agentdocker"),
+                agentdocker_core::runtime::Wiring::Wired
+            );
+        }
+    }
+
+    #[test]
     fn codex_override_and_invalid_configuration_do_not_expose_config_values() {
         let (_temporary, mut roots) = machine();
         roots.codex_home = Some(roots.home.join("codex-custom"));
