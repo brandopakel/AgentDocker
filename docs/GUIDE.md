@@ -151,6 +151,34 @@ and handoffs, oldest at the top, newest at the bottom, following itself
 as entries arrive. Pick the project from the menu. Same thing as
 `agentdocker journal`.
 
+**What is in it, and what is not.** One line per *event worth
+remembering*: a commit, a branch switch, an agent arriving or leaving, a
+note somebody wrote, a release, a handoff, a review. It is not a log of
+edits — those are in the ledger (`agentdocker changes`, `blame`), which
+records every file the watcher saw change. An hour of editing produces
+ledger rows and no journal entries until something is committed.
+
+**How it stays current.** The daemon writes each entry to SQLite as it
+happens and publishes it on the event stream. The app appends live from
+that stream, and re-reads the newest 200 entries whenever it opens,
+reconnects, or you switch projects — so closing the app loses nothing.
+The daemon holds the journal, not the app; it is still being written
+while no window is open.
+
+**Which directories it watches.** Every checkout of the project, not
+only the one an agent registered in: the main checkout plus each linked
+worktree, up to 32 of them per project. This matters more than it
+sounds. A repository's refs are shared, so a commit in a worktree writes
+into the main checkout's `.git`, and a daemon watching one directory
+sees the write without ever looking at the checkout it came from. That
+is how a fleet can commit twenty-seven times and have four of them
+recorded — and how `overlap` can answer "nothing collides" while looking
+at a single checkout.
+
+A checkout the daemon has just learned about has its position recorded
+silently the first time: its history did not happen while anything was
+watching, and announcing it would be inventing a timeline.
+
 ### Leases
 
 Every lease held right now, across projects: the resource, who holds it,
@@ -486,6 +514,9 @@ Newest first. Only what changes how the product is used.
   daemon, so the journal entry names it and carries its message.
 - `logs --compress` and `validation <id> --compress` — an rtk view of a
   retained log, where rtk is installed. The log itself is untouched.
+- The watcher covers every checkout of a project, not only the one an
+  agent registered in. Commits in a worktree nobody registered now reach
+  the journal and the ledger, and `overlap` compares real checkouts.
 - Agents are grouped and coloured by project throughout the app.
 - A Settings screen: terminal palette, text sizes, and row density,
   applied to the console and the agent terminal alike and remembered

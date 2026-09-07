@@ -28,6 +28,11 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 /// give the worker thread back.
 const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The terminal's frame inset. Named because the grid is sized against
+/// it: a screen that measures the room it has, then draws inside a
+/// border it forgot to subtract, is a screen that overflows.
+const TERMINAL_MARGIN: i8 = 6;
+
 /// One accent, used for the selected thing and nothing else. Taken from
 /// the blue the project palette starts at, so the window has one blue
 /// rather than two that nearly match.
@@ -713,9 +718,18 @@ impl App {
     fn terminal_screen(&mut self, ui: &mut egui::Ui) {
         let palette = self.settings.palette();
         let size = self.settings.terminal_size;
-        // A 13pt monospace cell, near enough: the agent lays itself out to
-        // whatever size we report, so a pixel here or there is harmless.
-        const CELL: (f32, f32) = (7.8, 16.0);
+        // Measured, not assumed. This was a constant for a 13pt cell,
+        // which was true until the font size became something the
+        // reader chooses: at 20pt the real cell is half again as wide,
+        // so a grid computed from the constant is half again too wide
+        // and the agent lays itself out past the edge of the window.
+        let font = egui::FontId::monospace(size);
+        // Ten of them and divide: one glyph's laid-out width carries a
+        // rounding error that a whole row of cells multiplies up.
+        let ruler =
+            ui.painter()
+                .layout_no_wrap("MMMMMMMMMM".to_owned(), font.clone(), Color32::WHITE);
+        let cell = (ruler.rect.width() / 10.0, ruler.rect.height());
         let Some(terminal) = &mut self.terminal else {
             let attachable: Vec<&AgentRecord> = self
                 .agents
@@ -770,10 +784,14 @@ impl App {
         });
         ui.separator();
 
-        let space = ui.available_size();
+        // The room inside the frame, not the room the frame is given:
+        // its margin comes off both axes before the grid is worked out,
+        // or the last column and the last row land under the border.
+        let inset = TERMINAL_MARGIN as f32 * 2.0;
+        let space = (ui.available_size() - egui::vec2(inset, inset)).max(egui::Vec2::ZERO);
         terminal.resize(
-            (space.x / CELL.0) as u16,
-            ((space.y / CELL.1) as u16).saturating_sub(1),
+            (space.x / cell.0).floor().max(1.0) as u16,
+            (space.y / cell.1).floor().max(1.0) as u16,
         );
         // Everything typed while this screen is up goes to the agent, and
         // the wheel moves through the history the parser kept rather than
@@ -786,13 +804,13 @@ impl App {
             }
         }
         if wheel.abs() >= 1.0 {
-            terminal.scroll((wheel / CELL.1).round() as i32);
+            terminal.scroll((wheel / cell.1).round() as i32);
         }
         // On the palette's own ground, so the agent's terminal and the
         // console are visibly the same surface.
         egui::Frame::new()
             .fill(palette.ground)
-            .inner_margin(egui::Margin::same(6))
+            .inner_margin(egui::Margin::same(TERMINAL_MARGIN))
             .corner_radius(6)
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
@@ -1440,6 +1458,30 @@ impl eframe::App for App {
     }
 }
 
+/// Where the person running this window is working, if that can be
+/// said at all.
+///
+/// `me` follows the person to wherever they are, which is right when
+/// the window is started from a shell inside a checkout and wrong when
+/// it is started any other way. An app opened from the Dock or the app
+/// switcher inherits `/` as its working directory, and reporting that
+/// moves the human's record out of whatever project they were in and
+/// into the filesystem root — where `commit`, `journal` and everything
+/// else that needs a checkout then has nothing to work with.
+///
+/// So: a directory is only reported when it could plausibly be work.
+/// `None` leaves the record alone, which is the right answer when we
+/// have nothing to say rather than a reason to say `/`.
+fn launched_in() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    // The filesystem root: a Dock launch, not a choice.
+    cwd.parent()?;
+    if std::env::var_os("HOME").is_some_and(|home| cwd == std::path::Path::new(&home)) {
+        return None; // the home directory: a launcher's default, not a choice
+    }
+    Some(cwd)
+}
+
 /// "45s", "3m", "2h".
 fn span(secs: i64) -> String {
     match secs {
@@ -1513,7 +1555,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             _ => None,
         },
         Cmd::Me => match client.call(&Request::Me {
-            workdir: std::env::current_dir().ok(),
+            workdir: launched_in(),
         })? {
             Response::Agent { .. } => None,
             _ => None,

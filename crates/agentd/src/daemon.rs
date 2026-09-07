@@ -204,6 +204,14 @@ struct State {
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
+    /// The branch each checkout was last seen on, beside `last_head`, so
+    /// a move can be told from a branch switch for a checkout that has
+    /// no agent record to remember it.
+    last_branch: HashMap<PathBuf, Option<String>>,
+    /// Every checkout of each project, by project id: the main one and
+    /// its linked worktrees. Refreshed off the lock on the same tick as
+    /// the VCS sweep, because enumerating them runs git.
+    project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
@@ -397,6 +405,15 @@ pub struct Checkout {
     /// `Some(dir)` when this checkout is a linked worktree.
     pub worktree: Option<PathBuf>,
 }
+
+/// How many checkouts of one project the watcher will take on beyond
+/// the ones agents are registered in.
+///
+/// Generous — a repository with more live worktrees than this is
+/// unusual — and finite, because each one costs a recursive filesystem
+/// watch and the operating system will not hand out unlimited numbers
+/// of those.
+const MAX_EXTRA_CHECKOUTS: usize = 32;
 
 /// One file change the watcher saw, before attribution.
 #[derive(Clone, Debug)]
@@ -815,6 +832,8 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 last_head: HashMap::new(),
+                last_branch: HashMap::new(),
+                project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 journal_cursors: HashMap::new(),
                 channels,
@@ -1811,9 +1830,20 @@ impl Daemon {
     /// live agent works in whose project is a repository or an Agentfile
     /// root. Plain directories are left alone — a recursive watch on a
     /// home directory is what inotify cannot afford.
+    /// Every directory the watcher should be watching.
+    ///
+    /// Not merely "where each agent is". A project is the repository,
+    /// and the repository is every worktree of it: an agent can commit
+    /// in a checkout nobody registered — its own `--isolate` worktree,
+    /// or one a person made by hand — and if that directory is not
+    /// watched, the commit reaches neither the journal nor the ledger,
+    /// and `overlap` answers "nothing collides" from a single checkout.
+    /// That last one is the worst of the three, because it is a
+    /// confident wrong answer to the question the feature exists for.
     pub fn watch_targets(&self) -> Vec<Checkout> {
         let mut seen: HashSet<PathBuf> = HashSet::new();
-        lock(&self.state)
+        let state = lock(&self.state);
+        let mut targets: Vec<Checkout> = state
             .registry
             .live()
             .filter_map(|a| a.project.as_ref())
@@ -1824,7 +1854,171 @@ impl Daemon {
                 project: p.id(),
                 worktree: p.worktree.clone(),
             })
-            .collect()
+            .collect();
+        // Then the rest of each project's checkouts, from the cache the
+        // VCS sweep keeps. Nested ones are skipped: a worktree inside a
+        // watched directory is already covered, and watching it twice
+        // would record every change in it twice.
+        let known: Vec<(ProjectId, Vec<PathBuf>)> = state
+            .project_checkouts
+            .iter()
+            .map(|(id, dirs)| (id.clone(), dirs.clone()))
+            .collect();
+        drop(state);
+        for (project, dirs) in known {
+            if !targets.iter().any(|c| c.project == project) {
+                continue; // nothing live in it; nothing to watch for
+            }
+            let mut added = 0usize;
+            let mut skipped = 0usize;
+            for dir in dirs {
+                if seen.contains(&dir) || seen.iter().any(|w| dir.starts_with(w)) {
+                    continue;
+                }
+                if added >= MAX_EXTRA_CHECKOUTS {
+                    skipped += 1;
+                    continue;
+                }
+                seen.insert(dir.clone());
+                added += 1;
+                targets.push(Checkout {
+                    dir: dir.clone(),
+                    project: project.clone(),
+                    // Anything that is not where an agent lives is a
+                    // linked worktree of the same repository.
+                    worktree: Some(dir),
+                });
+            }
+            if skipped > 0 {
+                // Said out loud rather than silently dropped: an
+                // unwatched checkout is a hole in the ledger, and a hole
+                // nobody is told about is the failure mode this whole
+                // change exists to remove.
+                self.emit(EventKind::WatcherGap {
+                    reason: format!(
+                        "{skipped} more checkout{} of project {} than the {MAX_EXTRA_CHECKOUTS} \
+                         this watches; changes in them are not recorded",
+                        if skipped == 1 { "" } else { "s" },
+                        project.short()
+                    ),
+                });
+            }
+        }
+        targets
+    }
+
+    /// Read one checkout's HEAD and journal it if it moved.
+    ///
+    /// The agent-driven sweep only looks where agents are. This looks at
+    /// a checkout as a checkout, so a commit in a worktree nobody
+    /// registered still reaches the journal.
+    pub(crate) async fn note_checkout(&self, checkout: &Checkout) {
+        let dir = checkout.dir.clone();
+        let known = lock(&self.state).last_head.get(&dir).cloned();
+        let dir_for_read = dir.clone();
+        let known_for_read = known.clone();
+        let observed = tokio::task::spawn_blocking(move || {
+            let state = vcs::state(&dir_for_read)?;
+            // Naming the commit runs `git log`, so it is only done when
+            // there is something new to name. This is called for every
+            // checkout of every project on every sweep.
+            let subject = match &state.head {
+                Some(head) if Some(head) != known_for_read.as_ref() => {
+                    vcs::subject(&dir_for_read, head, SUBJECT_TIMEOUT)
+                }
+                _ => None,
+            };
+            Some((state, subject))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some((state, subject)) = observed else {
+            return;
+        };
+        // A checkout seen for the first time is recorded, not announced:
+        // its history did not happen while we were watching. The branch
+        // goes down with the head, or the next commit here would read as
+        // a switch onto a branch it was already on.
+        let Some(before) = known else {
+            if let Some(head) = state.head {
+                let mut daemon = lock(&self.state);
+                daemon.last_head.insert(dir.clone(), head);
+                daemon.last_branch.insert(dir, state.branch);
+            }
+            return;
+        };
+        if state.head.as_deref() == Some(before.as_str()) {
+            return;
+        }
+        // Only the head is known to have been different; the branch it
+        // was on is remembered per checkout, and `note_checkout_move`
+        // falls back to that.
+        let old = VcsState {
+            head: Some(before),
+            branch: None,
+            ..state.clone()
+        };
+        lock(&self.state).note_checkout_move(
+            checkout.project.clone(),
+            dir,
+            checkout.worktree.clone(),
+            Some(&old),
+            &state,
+            subject,
+        );
+    }
+
+    /// Re-read where each live project's checkouts are.
+    ///
+    /// Runs git, so it happens off the lock and on the same five-second
+    /// tick as the VCS sweep. A project whose enumeration fails keeps
+    /// the checkouts it had: an empty answer means "ask again", never
+    /// "there is only one", and treating it as the latter would quietly
+    /// stop watching real work.
+    pub async fn refresh_project_checkouts(&self) {
+        let roots: Vec<(ProjectId, PathBuf)> = {
+            let mut seen: HashSet<ProjectId> = HashSet::new();
+            lock(&self.state)
+                .registry
+                .live()
+                .filter_map(|a| a.project.as_ref())
+                .filter(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
+                .filter(|p| seen.insert(p.id()))
+                .map(|p| (p.id(), p.dir().to_path_buf()))
+                .collect()
+        };
+        if roots.is_empty() {
+            return;
+        }
+        let found = tokio::task::spawn_blocking(move || {
+            roots
+                .into_iter()
+                .map(|(id, dir)| {
+                    let dirs = vcs::worktrees(&dir, SUBJECT_TIMEOUT);
+                    (id, dirs)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        {
+            let mut state = lock(&self.state);
+            for (id, dirs) in found {
+                if dirs.is_empty() {
+                    continue;
+                }
+                state.project_checkouts.insert(id, dirs);
+            }
+        }
+        // Take each checkout's head now rather than waiting for a
+        // filesystem event. Two reasons: a checkout first seen at the
+        // moment of a commit would have that commit read as its
+        // starting point and swallowed, and this is the polling net
+        // under the watcher for the days it misses something.
+        for checkout in self.watch_targets() {
+            self.note_checkout(&checkout).await;
+        }
     }
 
     /// Let the watcher hand us its flush channel.
@@ -2161,8 +2355,26 @@ impl Daemon {
                 .events
                 .send(Event::new(EventKind::FileChanged { change }, now));
         }
-        for checkout in vcs_touched {
+        // A repository's refs are shared between its worktrees: a commit
+        // made in a linked one writes `refs/heads/<branch>` under the
+        // *main* checkout's git directory. So the touched checkout says
+        // which repository moved, not which checkout of it — and every
+        // checkout of that repository has to be looked at.
+        let touched: HashSet<ProjectId> = vcs_touched.into_iter().map(|c| c.project).collect();
+        if touched.is_empty() {
+            return;
+        }
+        for checkout in self
+            .watch_targets()
+            .into_iter()
+            .filter(|c| touched.contains(&c.project))
+        {
+            // Both, and in this order: the agents in that checkout get
+            // their branch and head refreshed, and the checkout itself
+            // is journaled even when no agent lives in it. A worktree
+            // nobody registered is where most of the work happens.
             self.refresh_vcs(Some(&checkout.dir)).await;
+            self.note_checkout(&checkout).await;
         }
     }
 
@@ -3295,9 +3507,7 @@ impl State {
         Response::JournalEntry { entry }
     }
 
-    /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
-    /// however many agents share it. Attributed to the only agent in that
-    /// checkout, else the holder of its `branch:` lease, else nobody.
+    /// A checkout's HEAD moved, seen through an agent that lives in it.
     fn note_head_move(
         &mut self,
         id: &AgentId,
@@ -3305,20 +3515,50 @@ impl State {
         new: &VcsState,
         subject: Option<String>,
     ) {
-        let Some(head) = new.head.clone() else {
-            return;
-        };
-        let Some(record) = self.registry.get(id).cloned() else {
+        let Some(record) = self.registry.get(id) else {
             return;
         };
         let Some(project) = record.project.clone() else {
             return;
         };
-        let checkout = project.dir().to_path_buf();
+        self.note_checkout_move(
+            project.id(),
+            project.dir().to_path_buf(),
+            project.worktree.clone(),
+            old,
+            new,
+            subject,
+        );
+    }
+
+    /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
+    /// however many agents share it. Attributed to the only agent in that
+    /// checkout, else the holder of its `branch:` lease, else nobody.
+    ///
+    /// Takes the checkout rather than an agent, because most checkouts
+    /// of a project have no agent registered in them — a `--isolate`
+    /// worktree, or one a person made by hand — and a commit there is
+    /// still a commit in this project.
+    fn note_checkout_move(
+        &mut self,
+        project_id: ProjectId,
+        checkout: PathBuf,
+        worktree: Option<PathBuf>,
+        old: Option<&VcsState>,
+        new: &VcsState,
+        subject: Option<String>,
+    ) {
+        let Some(head) = new.head.clone() else {
+            return;
+        };
         if self.last_head.get(&checkout) == Some(&head) {
             return;
         }
         self.last_head.insert(checkout.clone(), head.clone());
+        let was_on = self
+            .last_branch
+            .insert(checkout.clone(), new.branch.clone())
+            .flatten();
         if self.committing.contains(&checkout) {
             // The daemon is making this commit itself and will record it
             // against the agent that asked. `last_head` is updated above,
@@ -3329,7 +3569,8 @@ impl State {
             return; // first observation, not a move
         }
         let short: String = head.chars().take(7).collect();
-        let summary = match (&old.and_then(|o| o.branch.clone()), &new.branch) {
+        let before_branch = old.and_then(|o| o.branch.clone()).or(was_on);
+        let summary = match (&before_branch, &new.branch) {
             (before, Some(branch)) if before.as_deref() != Some(branch) => {
                 format!("switched to {branch} at {short}")
             }
@@ -3357,30 +3598,30 @@ impl State {
                 self.registry.get(&holder).cloned()
             }),
         };
-        let attributed_entry = attributed.as_ref().and_then(|agent| {
-            self.plain_entry(
-                agent,
-                JournalKind::Commit,
-                summary.clone(),
-                SummarySource::Synthesised,
-            )
-        });
-        // The branch holder may work outside any project; the move is then
-        // recorded against the observed checkout and attributed to nobody.
-        let Some(mut entry) = attributed_entry.or_else(|| {
-            self.plain_entry(
-                &record,
-                JournalKind::Commit,
-                summary,
-                SummarySource::Synthesised,
-            )
-            .map(|mut e| {
-                e.agent = None;
-                e.agent_name = "external".to_owned();
-                e
-            })
-        }) else {
-            return;
+        // Built here rather than from an agent record: the checkout is
+        // what this entry is about, and there may be no agent in it.
+        let (agent, agent_name) = match &attributed {
+            Some(agent) => (Some(agent.id.clone()), agent.spec.name.clone()),
+            None => (None, "external".to_owned()),
+        };
+        let mut entry = JournalEntry {
+            project: project_id,
+            seq: 0,
+            at: Utc::now(),
+            agent,
+            agent_name,
+            branch: None,
+            checkout: Some(checkout.clone()),
+            worktree,
+            kind: JournalKind::Commit,
+            summary,
+            summary_source: SummarySource::Synthesised,
+            resources: Vec::new(),
+            paths: Vec::new(),
+            paths_total: 0,
+            head_before: None,
+            head_after: None,
+            changes: None,
         };
         entry.branch = new.branch.clone();
         entry.head_before = old.and_then(|o| o.head.clone());
@@ -3894,6 +4135,57 @@ mod tests {
         // human is still here after a sweep that reaps dead processes.
         daemon.check_liveness();
         assert!(daemon.is_live(&first.id));
+    }
+
+    /// A window started from a Dock or a launcher inherits `/` as its
+    /// working directory and reports it. Taking that at face value moved
+    /// the person out of the project they were in, and everything that
+    /// needs their checkout — `commit`, the journal digest — then had a
+    /// filesystem root to work with instead of a repository.
+    #[tokio::test]
+    async fn a_client_with_no_working_directory_does_not_move_the_human_to_nowhere() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let workdir = dir.path().to_path_buf();
+
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(workdir.clone()),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(agent.spec.workdir, Some(workdir.clone()));
+
+        // The same person, reported from nowhere.
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(PathBuf::from("/")),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(
+            agent.spec.workdir,
+            Some(workdir),
+            "the record they had is kept, not replaced with the root"
+        );
+
+        // And an actual directory still moves them, which is the whole
+        // point of `me` being idempotent rather than write-once.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let Response::Agent { agent } = daemon
+            .handle(Request::Me {
+                workdir: Some(elsewhere.clone()),
+            })
+            .await
+        else {
+            panic!("me failed")
+        };
+        assert_eq!(agent.spec.workdir, Some(elsewhere));
     }
 
     #[tokio::test]
@@ -6154,6 +6446,109 @@ deny = ["send:all"]
             })
             .await;
         assert!(matches!(response, Response::Lease { .. }), "{response:?}");
+    }
+
+    // ----- every checkout of a project --------------------------------------
+
+    /// The bug this exists for, found by auditing a real fleet: a
+    /// project had eight checkouts, the daemon watched the one an agent
+    /// was registered in, and twenty-seven commits produced four
+    /// journal entries. Worse, `overlap` answered "no path was changed
+    /// in more than one checkout" — a confident wrong answer to the
+    /// question the feature exists for — because it could only see one.
+    #[tokio::test]
+    async fn a_commit_in_a_worktree_nobody_registered_still_reaches_the_journal() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "root"],
+        ] {
+            assert!(git(dir.path(), &repo, &args), "{args:?}");
+        }
+        // A second checkout of the same repository, with no agent in it.
+        let elsewhere = dir.path().join("elsewhere");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "side",
+                "--",
+                elsewhere.to_str().unwrap(),
+                "HEAD",
+            ],
+        ));
+
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        register_in(&daemon, "home", &repo).await;
+        // The enumeration is what tells the watcher the second checkout
+        // exists; on the daemon it runs on the five-second tick.
+        daemon.refresh_project_checkouts().await;
+        let watched: Vec<_> = daemon.watch_targets().into_iter().map(|c| c.dir).collect();
+        assert!(
+            watched.iter().any(|d| d.ends_with("elsewhere")),
+            "the other checkout is watched: {watched:?}"
+        );
+
+        // Work happens over there, and nothing is registered there.
+        std::fs::write(elsewhere.join("kept.txt"), "changed elsewhere\n").unwrap();
+        assert!(git(dir.path(), &elsewhere, &["add", "."]));
+        assert!(git(
+            dir.path(),
+            &elsewhere,
+            &["commit", "-q", "-m", "work nobody registered"],
+        ));
+
+        let entries = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            (!entries.is_empty()).then_some(entries)
+        })
+        .await;
+        let entry = &entries[0];
+        assert!(
+            entry.summary.contains("work nobody registered"),
+            "the commit is named: {}",
+            entry.summary
+        );
+        assert_eq!(
+            entry.checkout,
+            Some(elsewhere.canonicalize().unwrap()),
+            "and attributed to the checkout it happened in"
+        );
     }
 
     // ----- commit ----------------------------------------------------------

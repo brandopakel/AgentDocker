@@ -658,7 +658,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 4 | 🔄 service/lazy start and release archives/installer ✅; maintained Homebrew tap/cask pending | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
-| 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback | 3 | 3, 6 |
+| 7 | ✅ project watcher over every checkout of a project — the main one and each linked worktree, capped at 32 extra per project with a `watcher_gap` when the cap bites — ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback that also re-reads each checkout's HEAD | 3 | 3, 6 |
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
