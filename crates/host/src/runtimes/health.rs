@@ -177,7 +177,16 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
         Ok(value) => value,
         Err(check) => return vec![check],
     };
-    let servers = value[if is_toml { "mcp_servers" } else { "mcpServers" }].as_object();
+    let key = if is_toml { "mcp_servers" } else { "mcpServers" };
+    if !value.is_object() || value.get(key).is_some_and(|servers| !servers.is_object()) {
+        return vec![Check::new(
+            "mcp",
+            Some(&path),
+            Status::Unverified,
+            "Configuration has an invalid MCP registration container; preserved",
+        )];
+    }
+    let servers = value[key].as_object();
     let mut checks = Vec::new();
     if let Some(servers) = servers {
         for (name, server) in servers {
@@ -384,6 +393,33 @@ mod tests {
             json!({"mcpServers":{"agentdocker":entry}}).to_string(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn malformed_mcp_containers_are_unverified_in_both_inventory_and_health() {
+        let (_temporary, roots) = machine();
+        for (name, cases) in [
+            (
+                "gemini-cli",
+                vec!["[]", r#"{"mcpServers":[]}"#, r#"{"mcpServers":null}"#],
+            ),
+            ("codex", vec!["mcp_servers = []", "mcp_servers = false"]),
+        ] {
+            let spec = spec(name);
+            let path = mcp_config_path(spec, &roots).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for raw in cases {
+                std::fs::write(&path, raw).unwrap();
+                assert_eq!(
+                    super::super::mcp_wiring(spec, &roots, "agentdocker"),
+                    agentdocker_core::runtime::Wiring::Unverified,
+                    "{raw}"
+                );
+                let checks = inspect(spec, &roots, "agentdocker");
+                assert_eq!(checks[0].status, Status::Unverified, "{raw}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            }
+        }
     }
 
     #[test]
