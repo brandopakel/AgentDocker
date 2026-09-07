@@ -215,6 +215,10 @@ pub enum EventKind {
     },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
+    /// Durable restore intent and lease protection precede process launch.
+    AgentRestoring {
+        agent: AgentId,
+    },
     AgentRestored {
         agent: AgentId,
         pid: Option<u32>,

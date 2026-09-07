@@ -4,7 +4,6 @@
 //! `ssh-agent` and `buildkitd` are started by their clients, unless
 //! `AGENTDOCKER_NO_AUTOSTART` is set. See [`Client::with_start_timeout`].
 
-use std::fs::OpenOptions;
 use std::future::Future;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -299,12 +298,9 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
         .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
         .filter(|sibling| sibling.is_file())
         .unwrap_or_else(|| PathBuf::from("agentd"));
-    std::fs::create_dir_all(home)?;
+    agentdocker_host::dirs::secure_state_dir(home)?;
     let log_path = paths::daemon_log(home);
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
+    let log = agentdocker_host::dirs::private_file(&log_path, true, true)
         .with_context(|| format!("cannot open {}", log_path.display()))?;
     Command::new(&exe)
         .arg("--socket")

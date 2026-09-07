@@ -245,11 +245,8 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
         .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
         .filter(|sibling| sibling.is_file())
         .unwrap_or_else(|| PathBuf::from("agentd"));
-    std::fs::create_dir_all(home)?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths::daemon_log(home))?;
+    agentdocker_host::dirs::secure_state_dir(home)?;
+    let log = agentdocker_host::dirs::private_file(&paths::daemon_log(home), true, true)?;
     Command::new(&exe)
         .arg("--socket")
         .arg(socket)

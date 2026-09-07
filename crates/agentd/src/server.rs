@@ -76,7 +76,7 @@ impl Reader {
     }
 }
 
-pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
+pub async fn bind(daemon: &Daemon) -> anyhow::Result<UnixListener> {
     std::fs::create_dir_all(daemon.home.join("logs"))?;
     require_fits(&daemon.socket)?;
     prepare_socket_parent(&daemon.home, &daemon.socket)?;
@@ -93,7 +93,10 @@ pub async fn serve(daemon: Arc<Daemon>) -> anyhow::Result<()> {
         .with_context(|| format!("cannot bind {}", daemon.socket.display()))?;
     std::fs::set_permissions(&daemon.socket, std::fs::Permissions::from_mode(0o600))?;
     info!(socket = %daemon.socket.display(), home = %daemon.home.display(), "agentd listening");
+    Ok(listener)
+}
 
+pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();

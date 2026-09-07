@@ -218,7 +218,7 @@ impl Claimed {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LeaseTable {
     leases: HashMap<LeaseId, Lease>,
 }

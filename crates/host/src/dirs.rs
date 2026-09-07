@@ -3,10 +3,67 @@
 //! only if it is ours alone.
 
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::paths;
+
+/// Protect app-owned state, including existing 0755 installations. Validate
+/// the final component without following symlinks, then chmod the opened
+/// directory rather than a second path lookup. Never recurse into its contents.
+pub fn secure_state_dir(dir: &Path) -> io::Result<()> {
+    ensure_private_dir(dir)?;
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)?;
+    validate_owner(&handle.metadata()?, dir)?;
+    handle.set_permissions(std::fs::Permissions::from_mode(0o700))
+}
+
+/// Open an app-owned private regular file without truncation. Existing 0644
+/// data is narrowed to 0600; symlinks, hard links and foreign/writable files
+/// are refused before changing their contents or permissions.
+pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<std::fs::File> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => validate_file(&meta, path)?,
+        Err(error) if create && error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error),
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .append(append)
+        .create(create)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    validate_file(&file.metadata()?, path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+fn validate_owner(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    if meta.uid() != me || meta.mode() & 0o022 != 0 {
+        return Err(io::Error::other(format!(
+            "{} must be owned by this user and not writable by others",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_file(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
+    if !meta.is_file() || meta.nlink() != 1 {
+        return Err(io::Error::other(format!(
+            "{} must be a regular file with one link",
+            path.display()
+        )));
+    }
+    validate_owner(meta, path)
+}
 
 /// Create `dir` for this user alone (mode `0700`) when it is missing, and
 /// refuse it when it is not a directory we own that nobody else can write
@@ -106,6 +163,50 @@ pub fn socket_dir_ready(home: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn private_state_creation_and_legacy_permissions_preserve_contents() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let data = state.join("state.db");
+        private_file(&data, true, false)
+            .unwrap()
+            .write_all(b"retained")
+            .unwrap();
+        assert_eq!(std::fs::metadata(&state).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&data).unwrap().mode() & 0o777, 0o600);
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o644)).unwrap();
+        secure_state_dir(&state).unwrap();
+        private_file(&data, false, true)
+            .unwrap()
+            .write_all(b"-appended")
+            .unwrap();
+        assert_eq!(std::fs::read(&data).unwrap(), b"retained-appended");
+        assert_eq!(std::fs::metadata(&state).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&data).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn private_state_refuses_links_without_changing_their_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("unrelated");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let symlink = tmp.path().join("symlink");
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+        assert!(private_file(&symlink, true, false).is_err());
+        let hardlink = tmp.path().join("hardlink");
+        std::fs::hard_link(&target, &hardlink).unwrap();
+        assert!(private_file(&hardlink, true, false).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o644);
+        let dir_link = tmp.path().join("directory-link");
+        std::os::unix::fs::symlink(tmp.path(), &dir_link).unwrap();
+        assert!(secure_state_dir(&dir_link).is_err());
+    }
 
     #[test]
     fn private_dir_is_created_0700_and_others_are_refused() {
