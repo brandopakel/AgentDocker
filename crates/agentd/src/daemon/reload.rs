@@ -183,13 +183,14 @@ impl Daemon {
             }
         };
 
-        let child = match self.spawn_replacement(&path) {
+        let mut child = match self.spawn_replacement(&path) {
             Ok(child) => child,
             Err(error) => {
                 let _ = std::fs::remove_file(&path);
                 return Response::error(ErrorCode::Internal, error.to_string());
             }
         };
+        let pid = child.id();
 
         let carried: Vec<Carried> = sessions
             .iter()
@@ -209,13 +210,11 @@ impl Daemon {
 
         let masters: Vec<Arc<std::os::fd::OwnedFd>> =
             sessions.iter().map(|(_, s)| s.master()).collect();
-        let sent = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            // Bounded: a replacement that never connects must not leave
-            // this daemon waiting with a client on the line.
-            listener.set_nonblocking(false)?;
-            let (stream, _) = listener.accept()?;
+        let sent = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let stream = await_replacement(&listener, &mut child)?;
             let borrowed: Vec<_> = masters.iter().map(|fd| fd.as_fd()).collect();
-            handoff::send(&stream, &message, &borrowed)
+            handoff::send(&stream, &message, &borrowed)?;
+            Ok(())
         })
         .await;
         let _ = std::fs::remove_file(&path);
@@ -224,8 +223,7 @@ impl Daemon {
             Ok(Ok(())) => {
                 info!(
                     terminals = sessions.len(),
-                    pid = child,
-                    "handed the terminals to the replacement"
+                    pid, "handed the terminals to the replacement"
                 );
                 // From here the agents belong to nobody until the
                 // replacement claims them, so this daemon must leave
@@ -235,7 +233,7 @@ impl Daemon {
             }
             Ok(Err(error)) => Response::error(
                 ErrorCode::Internal,
-                format!("could not hand the terminals over: {error}"),
+                format!("could not hand the terminals over: {error:#}"),
             ),
             Err(error) => Response::error(
                 ErrorCode::Internal,
@@ -251,9 +249,9 @@ impl Daemon {
     /// Start the replacement, pointed at the handoff socket and at the
     /// same home. It waits for the lock this daemon still holds, so the
     /// two never serve at once.
-    fn spawn_replacement(&self, handoff_socket: &Path) -> anyhow::Result<u32> {
+    fn spawn_replacement(&self, handoff_socket: &Path) -> anyhow::Result<std::process::Child> {
         let program = std::env::current_exe()?;
-        let child = std::process::Command::new(program)
+        Ok(std::process::Command::new(program)
             .arg("--home")
             .arg(&self.home)
             .arg("--socket")
@@ -261,7 +259,133 @@ impl Daemon {
             .arg("--receive-handoff")
             .arg(handoff_socket)
             .stdin(std::process::Stdio::null())
-            .spawn()?;
-        Ok(child.id())
+            .spawn()?)
+    }
+}
+
+/// How long the daemon being replaced waits for its successor to come
+/// and take the terminals.
+///
+/// Generous, because the replacement has to start a runtime, open its
+/// store and read the state file before it connects, and a loaded host
+/// makes all three slower. Bounded, because the alternative is worse:
+/// see `await_replacement`.
+const HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Wait for the replacement to connect, and give up if it will not.
+///
+/// The obvious version of this is a blocking `accept()`, and it is
+/// wrong. A replacement can fail to arrive — the binary under
+/// `current_exe` was overwritten in place and the kernel refuses to run
+/// it, a library it needs is gone, the machine is out of memory — and a
+/// blocking accept turns that into a daemon wedged forever with a
+/// client still on the line and a stale handoff socket on disk. That is
+/// a worse failure than a reload that reports it could not happen.
+///
+/// So this polls, and watches the child while it does: a replacement
+/// that exits before connecting is reported with its status, which is
+/// the thing the operator actually needs to see, rather than as a
+/// timeout thirty seconds later.
+fn await_replacement(
+    listener: &UnixListener,
+    child: &mut std::process::Child,
+) -> anyhow::Result<UnixStream> {
+    listener.set_nonblocking(true)?;
+    let deadline = std::time::Instant::now() + HANDOFF_TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // handoff::send wants an ordinary blocking socket.
+                stream.set_nonblocking(false)?;
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!("the replacement exited before taking the terminals ({status})");
+        }
+        if std::time::Instant::now() >= deadline {
+            // It is alive but not coming. Nothing has moved yet, so the
+            // safe end is to stop it and stay the daemon.
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!(
+                "the replacement did not take the terminals within {}s",
+                HANDOFF_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listener(dir: &tempfile::TempDir) -> (UnixListener, PathBuf) {
+        let path = dir.path().join("handoff.sock");
+        (UnixListener::bind(&path).unwrap(), path)
+    }
+
+    /// The failure that actually happened: the replacement could not
+    /// run at all — its binary had been overwritten in place, so the
+    /// kernel killed it on exec — and the old daemon sat in `accept()`
+    /// forever with the client still waiting. It must report instead,
+    /// and report the status, not time out half a minute later.
+    #[test]
+    fn a_replacement_that_dies_before_connecting_is_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (listener, _path) = listener(&dir);
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let error = await_replacement(&listener, &mut child).unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the death is noticed, not waited out: took {:?}",
+            started.elapsed()
+        );
+        let said = error.to_string();
+        assert!(
+            said.contains("exited before taking the terminals"),
+            "{said}"
+        );
+        assert!(said.contains('3'), "the status is in the message: {said}");
+    }
+
+    #[test]
+    fn a_replacement_that_connects_hands_back_a_blocking_socket() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (listener, path) = listener(&dir);
+        // Alive but idle, standing in for a replacement still starting.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let connector = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            UnixStream::connect(&path).unwrap()
+        });
+        let stream = await_replacement(&listener, &mut child).unwrap();
+        // Blocking again, because handoff::send needs it to be: a read
+        // with nothing to read waits for the timeout rather than
+        // returning at once, which is the difference that matters.
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+            .unwrap();
+        let mut byte = [0u8; 1];
+        let waited = std::time::Instant::now();
+        let _ = std::io::Read::read(&mut &stream, &mut byte);
+        assert!(
+            waited.elapsed() >= std::time::Duration::from_millis(150),
+            "a non-blocking socket returns at once; this one waited {:?}",
+            waited.elapsed()
+        );
+        let _ = connector.join();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

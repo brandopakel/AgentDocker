@@ -675,10 +675,13 @@ impl App {
             ui.label(RichText::new(format!("attached to {}", terminal.agent)).strong());
             match terminal.status() {
                 Status::Attached => {
-                    ui.label(RichText::new("● live").color(Color32::from_rgb(60, 170, 90)));
+                    let green = Color32::from_rgb(60, 170, 90);
+                    crate::projects::bullet(ui, green);
+                    ui.label(RichText::new("live").color(green));
                 }
                 Status::Ended(reason) => {
-                    ui.label(RichText::new(format!("● {reason}")).color(Color32::GRAY));
+                    crate::projects::bullet(ui, Color32::GRAY);
+                    ui.label(RichText::new(reason).color(Color32::GRAY));
                 }
             }
             if terminal.scrolled_back() {
@@ -996,15 +999,15 @@ impl eframe::App for App {
                 ui.separator();
                 match &self.connected {
                     Ok(()) => {
-                        ui.label(
-                            RichText::new("● connected").color(Color32::from_rgb(60, 170, 90)),
-                        );
+                        let green = Color32::from_rgb(60, 170, 90);
+                        crate::projects::bullet(ui, green);
+                        ui.label(RichText::new("connected").color(green));
                         ui.label(RichText::new(&self.socket).color(Color32::GRAY));
                     }
                     Err(reason) => {
-                        ui.label(
-                            RichText::new("● disconnected").color(Color32::from_rgb(200, 80, 60)),
-                        );
+                        let red = Color32::from_rgb(200, 80, 60);
+                        crate::projects::bullet(ui, red);
+                        ui.label(RichText::new("disconnected").color(red));
                         ui.label(RichText::new(reason).color(Color32::GRAY));
                     }
                 }

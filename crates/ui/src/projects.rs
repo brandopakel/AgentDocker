@@ -60,11 +60,20 @@ fn from_hsl(h: f32, s: f32, l: f32) -> Color32 {
 /// The mark that carries a project's identity into a row: a filled dot
 /// in the project's colour, sized to sit beside text.
 pub fn dot(ui: &mut egui::Ui, project_id: &str) {
+    bullet(ui, colour(project_id));
+}
+
+/// A small filled circle in whatever colour is given.
+///
+/// Drawn rather than written. The obvious way to put a dot next to a
+/// word is to write "\u{25cf}" in the label, and egui's bundled font
+/// does not have that glyph, so it comes out as an empty box — which is
+/// exactly what a broken status indicator looks like.
+pub fn bullet(ui: &mut egui::Ui, colour: Color32) {
     let size = egui::vec2(10.0, 10.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.painter()
-            .circle_filled(rect.center(), 4.0, colour(project_id));
+        ui.painter().circle_filled(rect.center(), 4.0, colour);
     }
     let _ = response;
 }
