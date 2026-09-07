@@ -320,6 +320,25 @@ async fn type_into_terminal(
 }
 
 /// Wait for the child in the background and record how it ended.
+async fn wait_owned_child(
+    child: &mut agentdocker_host::launch::OwnedChild,
+) -> std::io::Result<std::process::ExitStatus> {
+    // Subscribe before checking waitpid, so an exit between the check and
+    // receive is retained. Signals can coalesce or describe another child;
+    // only this owned PID is reaped, and no timer wakes idle agents.
+    let mut changes = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        changes
+            .recv()
+            .await
+            .ok_or_else(|| std::io::Error::other("child signal stream closed"))?;
+    }
+}
+
+/// Retain process ownership through exit, cancellation and group cleanup.
 pub fn supervise(
     daemon: Arc<Daemon>,
     id: AgentId,
@@ -333,14 +352,7 @@ pub fn supervise(
             loop {
                 tokio::select! {
                     biased;
-                    result = async {
-                        loop {
-                            if let Some(status) = child.try_wait()? {
-                                break Ok(status);
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                        }
-                    } => break result,
+                    result = wait_owned_child(child) => break result,
                     Ok(()) = spawned.stop.changed() => {
                         if let Some(force) = *spawned.stop.borrow_and_update() {
                             let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
@@ -430,4 +442,51 @@ pub(crate) fn group_exists(group: u32) -> bool {
             kill(Pid::from_raw(-group), None),
             Ok(()) | Err(nix::errno::Errno::EPERM)
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::libc;
+    use std::io::Write;
+    use std::os::{fd::OwnedFd, unix::process::CommandExt};
+
+    #[tokio::test]
+    async fn child_exit_before_or_after_signal_subscription_is_not_lost() {
+        for already_exited in [true, false] {
+            let (mut input, stdin) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "read line; exit 17"]).process_group(0);
+            command.stdin(Stdio::from(OwnedFd::from(stdin)));
+            let pending = agentdocker_host::launch::prepare(command).unwrap();
+            let pid = pending.pid;
+            let mut child = pending.activate().unwrap();
+            if already_exited {
+                input.write_all(b"exit\n").unwrap();
+                // Observe exit without reaping; OwnedChild retains the PID.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                assert_eq!(
+                    unsafe {
+                        libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT)
+                    },
+                    0
+                );
+            }
+            let mut waiting = tokio::spawn(async move { wait_owned_child(&mut child).await });
+            if !already_exited {
+                tokio::task::yield_now().await;
+                input.write_all(b"exit\n").unwrap();
+            }
+            let status =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), &mut waiting).await {
+                    Ok(result) => result.unwrap().unwrap(),
+                    Err(error) => {
+                        waiting.abort();
+                        let _ = waiting.await;
+                        panic!("{error}");
+                    }
+                };
+            assert_eq!(status.code(), Some(17));
+        }
+    }
 }
