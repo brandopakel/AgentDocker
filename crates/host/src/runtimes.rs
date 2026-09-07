@@ -120,6 +120,7 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
 
 /// The first executable file of that name on the path. A data file that
 /// happens to share the name is not a CLI.
+#[cfg(unix)]
 fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     roots
@@ -130,6 +131,32 @@ fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
             std::fs::metadata(candidate)
                 .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
+}
+
+/// Resolve common Windows CLI executables and npm command shims from PATH.
+/// Never implicitly search the working directory or execute a data-only file.
+#[cfg(windows)]
+fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
+    const EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat"];
+    let names: Vec<_> = if let Some(extension) = Path::new(name).extension() {
+        if !EXTENSIONS
+            .iter()
+            .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        {
+            return None;
+        }
+        vec![name.to_owned()]
+    } else {
+        EXTENSIONS
+            .iter()
+            .map(|extension| format!("{name}.{extension}"))
+            .collect()
+    };
+    roots
+        .path
+        .iter()
+        .flat_map(|root| names.iter().map(move |name| root.join(name)))
+        .find(|candidate| std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file()))
 }
 
 /// The first line of `<cli> --version`, trimmed to something table-sized.
@@ -348,6 +375,7 @@ pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn machine() -> (tempfile::TempDir, Roots) {
@@ -360,9 +388,18 @@ mod tests {
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         for cli in ["claude", "codex"] {
-            let path = bin.join(cli);
-            std::fs::write(&path, "#!/bin/sh\necho 9.9.9\n").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            #[cfg(unix)]
+            {
+                let path = bin.join(cli);
+                std::fs::write(&path, "#!/bin/sh\necho 9.9.9\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            #[cfg(windows)]
+            std::fs::write(
+                bin.join(format!("{cli}.cmd")),
+                "@echo off\r\necho 9.9.9\r\n",
+            )
+            .unwrap();
         }
         std::fs::create_dir_all(apps.join("Claude.app/Contents")).unwrap();
         let roots = Roots {
@@ -410,7 +447,10 @@ mod tests {
         let by = |name: &str| all.iter().find(|r| r.name == name).unwrap().clone();
         let claude = by("claude-code");
         assert!(claude.installed());
+        #[cfg(unix)]
         assert!(claude.cli.as_ref().unwrap().ends_with("bin/claude"));
+        #[cfg(windows)]
+        assert!(claude.cli.as_ref().unwrap().ends_with("bin/claude.cmd"));
         assert!(claude.apps.is_empty(), "the CLI is separate from Desktop");
         assert_eq!(by("claude-desktop").apps[0].label, "Claude Desktop");
         assert_eq!(by("claude-desktop").hooks, Wiring::Unsupported);

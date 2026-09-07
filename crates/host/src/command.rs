@@ -1,12 +1,20 @@
 //! Bounded local command execution for Git integration operations.
+#[cfg(windows)]
+use process_wrap::std::{ChildWrapper, CommandWrap, JobObject};
 use std::io::{self, Read};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 struct ChildGroup {
+    #[cfg(unix)]
     child: Child,
+    #[cfg(windows)]
+    child: Box<dyn ChildWrapper>,
     reaped: bool,
 }
 impl Drop for ChildGroup {
@@ -14,9 +22,12 @@ impl Drop for ChildGroup {
         if !self.reaped {
             // SAFETY: the unreaped child still reserves its PID. Never signal
             // its cached group number once that identity can be reused.
+            #[cfg(unix)]
             unsafe {
                 libc::kill(-(self.child.id() as i32), libc::SIGKILL);
             }
+            #[cfg(windows)]
+            let _ = self.child.start_kill();
             let _ = self.child.wait();
         }
     }
@@ -43,8 +54,17 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
-        .stderr(errors.try_clone()?)
-        .process_group(0);
+        .stderr(errors.try_clone()?);
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    let mut command = {
+        let mut wrapped = CommandWrap::from(command);
+        // Assignment happens while suspended, before the command can spawn a
+        // descendant. Dropping the wrapper closes its kill-on-close Job Object.
+        wrapped.wrap(JobObject);
+        wrapped
+    };
     let mut child = ChildGroup {
         child: command.spawn()?,
         reaped: false,
@@ -91,7 +111,7 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -113,5 +133,64 @@ mod tests {
         .err()
         .unwrap();
         assert!(output.to_string().contains("output exceeded"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn powershell() -> String {
+        Path::new(&std::env::var_os("SystemRoot").expect("Windows system directory"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn timeout_terminates_the_owned_descendant_and_output_is_bounded() {
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("descendant.pid");
+        let script = format!(
+            "$p = Start-Process -FilePath '{}' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep 30' -PassThru -NoNewWindow; Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep 30",
+            powershell().replace('\'', "''"),
+            marker.display().to_string().replace('\'', "''")
+        );
+        let argv = vec![
+            powershell(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script,
+        ];
+        let result = run(temporary.path(), &argv, Duration::from_secs(5));
+        assert!(result.err().unwrap().to_string().contains("timed out"));
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .expect("descendant started before timeout")
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            crate::procinfo::start_time(pid).is_none(),
+            "owned job descendant survived cancellation"
+        );
+        let output = run(
+            temporary.path(),
+            &[
+                powershell(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "[Console]::Out.Write('x' * (5 * 1024 * 1024))".into(),
+            ],
+            Duration::from_secs(10),
+        );
+        assert!(
+            output
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("output exceeded")
+        );
     }
 }

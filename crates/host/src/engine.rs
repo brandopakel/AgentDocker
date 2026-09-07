@@ -8,7 +8,6 @@ use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -268,7 +267,7 @@ fn capture(root: &Path) -> Result<Captured, EngineError> {
         let out = dir.path().join(relative);
         let record = if metadata.is_dir() {
             fs::create_dir(&out)?;
-            fs::set_permissions(&out, fs::Permissions::from_mode(0o755))?;
+            crate::files::set_context_mode(&out, 0o755)?;
             b"directory:755".to_vec()
         } else if metadata.file_type().is_symlink() {
             let target = fs::read_link(entry.path())?;
@@ -279,15 +278,20 @@ fn capture(root: &Path) -> Result<Captured, EngineError> {
                     "build context symlink escapes its root",
                 )));
             }
+            #[cfg(unix)]
             std::os::unix::fs::symlink(&target, &out)?;
+            #[cfg(windows)]
+            if entry.path().is_dir() {
+                std::os::windows::fs::symlink_dir(&target, &out)?;
+            } else {
+                std::os::windows::fs::symlink_file(&target, &out)?;
+            }
             let mut record = b"symlink:".to_vec();
             record.extend(target.as_os_str().as_encoded_bytes());
             record
         } else {
-            let mut input = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-                .open(entry.path())?;
+            let mut input = crate::files::open_regular(entry.path())?;
+            let stamp = crate::files::stamp(&input)?;
             let before = input.metadata()?;
             if !before.is_file() || before.len() > budget {
                 return Err(EngineError::Input(io::Error::other(
@@ -301,26 +305,22 @@ fn capture(root: &Path) -> Result<Captured, EngineError> {
             budget = budget
                 .checked_sub(data.len() as u64)
                 .ok_or_else(|| io::Error::other("build context exceeds 256 MiB"))?;
-            use std::os::unix::fs::MetadataExt;
-            let after = input.metadata()?;
-            if before.len() != after.len()
-                || before.mtime() != after.mtime()
-                || before.mtime_nsec() != after.mtime_nsec()
-                || before.ctime() != after.ctime()
-                || before.ctime_nsec() != after.ctime_nsec()
-            {
+            if stamp != crate::files::stamp(&input)? {
                 return Err(EngineError::Input(io::Error::other(
                     "build input changed during capture; retry",
                 )));
             }
-            let mode = before.permissions().mode() & 0o777;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&out)?;
+            let mode = crate::files::context_mode(&before);
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&out)?;
             file.write_all(&data)?;
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
+            crate::files::set_context_mode(&out, mode)?;
             format!("file:{mode:o}:{}", digest(&data)).into_bytes()
         };
         entries.insert(relative.to_path_buf(), record);
@@ -329,24 +329,8 @@ fn capture(root: &Path) -> Result<Captured, EngineError> {
     // than introducing capture-time metadata absent from the content identity.
     for relative in entries.keys().rev().chain(std::iter::once(&PathBuf::new())) {
         let path = dir.path().join(relative);
-        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(io::Error::other)?;
-        let times = [libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        }; 2];
-        // SAFETY: the path is NUL-terminated and times holds both required entries.
-        if unsafe {
-            libc::utimensat(
-                libc::AT_FDCWD,
-                path.as_ptr(),
-                times.as_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error().into());
-        }
+        let epoch = filetime::FileTime::from_unix_time(0, 0);
+        filetime::set_symlink_file_times(&path, epoch, epoch)?;
     }
     let mut hash = Sha256::new();
     for (path, record) in entries {
@@ -399,10 +383,14 @@ mod tests {
             "captured"
         );
         assert_ne!(before.version, capture(dir.path()).unwrap().version);
-        std::os::unix::fs::symlink("../../outside", dir.path().join("escape")).unwrap();
-        assert!(capture(dir.path()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("../../outside", dir.path().join("escape")).unwrap();
+            assert!(capture(dir.path()).is_err());
+        }
     }
 
+    #[cfg(unix)]
     #[test]
     fn capture_refuses_special_files_without_blocking() {
         let (dir, _) = fixture(ContainerEngine::Docker);

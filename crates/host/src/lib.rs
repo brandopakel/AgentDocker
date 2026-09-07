@@ -20,7 +20,11 @@ pub mod runtimes;
 pub mod dirs;
 pub mod multiplexer;
 pub mod notify;
+#[cfg(unix)]
 pub mod pty;
+#[cfg_attr(windows, path = "transport/windows.rs")]
 pub mod transport;
 
 pub mod relay;
+
+pub mod files;

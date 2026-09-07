@@ -1,0 +1,45 @@
+name: Windows native foundations
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  native-foundations:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: windows-native-foundations
+      - name: Native core and host lint
+        run: cargo clippy --locked -p agentdocker-core -p agentdocker-host --all-targets -- -D warnings
+      - name: Install strict test runner
+        run: cargo install --locked cargo-nextest --version 0.9.143
+      - name: Native core and host acceptance
+        run: cargo nextest run --locked -p agentdocker-core -p agentdocker-host --profile ci
+      - name: Native doctests
+        run: cargo test --locked -p agentdocker-core -p agentdocker-host --doc
+      - name: Preserve test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-native-foundations-tests
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn

@@ -9,9 +9,7 @@
 
 #[cfg(test)]
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::VcsState;
@@ -112,11 +110,7 @@ pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// Read only bounded regular files. O_NONBLOCK also prevents FIFO open from hanging.
 pub(crate) fn read_metadata(path: &Path, limit: u64) -> Option<String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-        .open(path)
-        .ok()?;
+    let file = crate::files::open_regular(path).ok()?;
     let metadata = file.metadata().ok()?;
     if !metadata.is_file() || metadata.len() > limit {
         return None;
@@ -307,9 +301,12 @@ mod tests {
         fs::write(dot.join("HEAD"), "x".repeat(8192)).unwrap();
         assert_eq!(state(tmp.path()), None);
         fs::remove_file(dot.join("HEAD")).unwrap();
-        let name = std::ffi::CString::new(dot.join("HEAD").to_str().unwrap()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert_eq!(state(tmp.path()), None);
+        #[cfg(unix)]
+        {
+            let name = std::ffi::CString::new(dot.join("HEAD").to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            assert_eq!(state(tmp.path()), None);
+        }
     }
 
     #[test]
@@ -320,7 +317,10 @@ mod tests {
         fs::write(dot.join("HEAD"), "ref: refs/heads/main").unwrap();
         let secret = tmp.path().join("secret");
         fs::write(&secret, "a".repeat(40)).unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(secret, dot.join("refs/heads/main")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(secret, dot.join("refs/heads/main")).unwrap();
         assert_eq!(state(tmp.path()).unwrap().head, None);
     }
 }

@@ -108,7 +108,7 @@ impl Client {
     /// both spawn a daemon; the loser exits when it finds the lock taken.
     async fn start_daemon(&self, timeout: Duration) -> Result<UnixStream> {
         let home = dirs::home();
-        let lock_path = paths::lock_path(&self.socket);
+        let lock_path = paths::daemon_lock(&home, &self.socket);
         if let Some(parent) = lock_path.parent() {
             if parent == paths::socket_dir(&home) && parent != home {
                 dirs::ensure_private_dir(parent).with_context(|| {

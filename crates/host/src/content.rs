@@ -1,9 +1,7 @@
 //! Bounded, deterministic content snapshots for observations and validation.
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 const MAX_FILES: usize = 20_000;
@@ -61,10 +59,8 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
             Sha256::digest(target.as_os_str().as_encoded_bytes())
         ));
     }
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-        .open(path)?;
+    let mut file = crate::files::open_regular(path)?;
+    let stamp = crate::files::stamp(&file)?;
     let before = file.metadata()?;
     if !before.is_file() {
         return Err(io::Error::other("snapshot requires a regular file"));
@@ -73,7 +69,7 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
         return Err(io::Error::other("snapshot exceeds 256 MiB"));
     }
     let mut hash = Sha256::new();
-    hash.update((before.mode() & 0o111).to_le_bytes());
+    hash.update(crate::files::observed_permissions(&before).to_le_bytes());
     let mut buffer = [0u8; 65536];
     loop {
         let n = file.read(&mut buffer)?;
@@ -85,13 +81,7 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
             .ok_or_else(|| io::Error::other("snapshot exceeds 256 MiB"))?;
         hash.update(&buffer[..n]);
     }
-    let after = file.metadata()?;
-    if before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.ctime() != after.ctime()
-        || before.ctime_nsec() != after.ctime_nsec()
-    {
+    if stamp != crate::files::stamp(&file)? {
         return Err(io::Error::other(
             "file changed while being observed; retry the read",
         ));
@@ -102,6 +92,7 @@ fn file_digest(path: &Path, budget: &mut u64) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn snapshots_apply_ignores_outside_git_and_track_executable_bits() {
         use std::os::unix::fs::PermissionsExt;

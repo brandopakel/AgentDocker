@@ -3,14 +3,22 @@
 //! only if it is ours alone.
 
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::paths;
 
+#[cfg(windows)]
+#[path = "dirs/windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub use windows::{check_socket_parent, ensure_private_dir, private_file, secure_state_dir};
+
 /// Protect app-owned state, including existing 0755 installations. Validate
 /// the final component without following symlinks, then chmod the opened
 /// directory rather than a second path lookup. Never recurse into its contents.
+#[cfg(unix)]
 pub fn secure_state_dir(dir: &Path) -> io::Result<()> {
     ensure_private_dir(dir)?;
     let handle = std::fs::OpenOptions::new()
@@ -24,6 +32,7 @@ pub fn secure_state_dir(dir: &Path) -> io::Result<()> {
 /// Open an app-owned private regular file without truncation. Existing 0644
 /// data is narrowed to 0600; symlinks, hard links and foreign/writable files
 /// are refused before changing their contents or permissions.
+#[cfg(unix)]
 pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<std::fs::File> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => validate_file(&meta, path)?,
@@ -43,6 +52,7 @@ pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<std::
     Ok(file)
 }
 
+#[cfg(unix)]
 fn validate_owner(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
     // SAFETY: geteuid has no preconditions.
     let me = unsafe { libc::geteuid() };
@@ -55,6 +65,7 @@ fn validate_owner(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn validate_file(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
     if !meta.is_file() || meta.nlink() != 1 {
         return Err(io::Error::other(format!(
@@ -69,6 +80,7 @@ fn validate_file(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
 /// refuse it when it is not a directory we own that nobody else can write
 /// to. A pre-planted directory or symlink under `/tmp` fails here instead
 /// of receiving our sockets.
+#[cfg(unix)]
 pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(dir) {
         Ok(meta) if !meta.is_dir() => {
@@ -109,6 +121,7 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
 /// Validate managed fallback directories before trusting an existing socket.
 /// Missing directories are left for autostart to create; explicit sockets outside
 /// the managed /tmp namespace retain their existing caller-selected semantics.
+#[cfg(unix)]
 pub fn check_socket_parent(socket: &Path) -> io::Result<()> {
     let Some(parent) = socket.parent() else {
         return Ok(());
@@ -151,7 +164,9 @@ pub fn canonical_home(home: PathBuf) -> PathBuf {
 /// be private. Both binaries call this before binding or locking there.
 pub fn socket_dir_ready(home: &Path) -> io::Result<PathBuf> {
     let dir = paths::socket_dir(home);
-    if dir == home {
+    if cfg!(windows) {
+        secure_state_dir(&dir)?;
+    } else if dir == home {
         std::fs::create_dir_all(&dir)?;
     } else {
         ensure_private_dir(&dir)?;
@@ -159,9 +174,10 @@ pub fn socket_dir_ready(home: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
