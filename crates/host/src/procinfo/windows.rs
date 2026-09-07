@@ -18,7 +18,12 @@ use windows_sys::Win32::{
 fn snapshot(pid: Option<u32>) -> io::Result<(System, Vec<Pid>)> {
     let me = Pid::from_u32(std::process::id());
     let owner = crate::dirs::current_sid()?;
-    let selected = [me, Pid::from_u32(pid.unwrap_or(std::process::id()))];
+    // The dependency clears an entry's refreshed bit while retiring missing
+    // PIDs. Passing our PID twice removes the live entry on the second visit.
+    let mut selected = vec![me];
+    if let Some(pid) = pid.map(Pid::from_u32).filter(|pid| *pid != me) {
+        selected.push(pid);
+    }
     let mut system = System::new();
     system.refresh_processes_specifics(
         if pid.is_some() {
