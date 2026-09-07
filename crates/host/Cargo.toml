@@ -34,6 +34,3 @@ criterion.workspace = true
 [[bench]]
 name = "fingerprint"
 harness = false
-
-[target.'cfg(windows)'.dev-dependencies]
-sysinfo = { workspace = true, features = ["debug"] }

@@ -122,6 +122,23 @@ fn token_sid(token: HANDLE) -> io::Result<String> {
     unsafe { sid_text(user.User.Sid) }
 }
 
+/// Query an actual process token; never infer ownership from an executable or
+/// accept an unavailable owner as the current user.
+pub(crate) fn process_sid(pid: u32) -> io::Result<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    token_sid(token.as_raw_handle())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
     State,

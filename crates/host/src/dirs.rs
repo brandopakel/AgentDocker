@@ -14,6 +14,8 @@ use agentdocker_core::paths;
 pub(crate) mod windows;
 #[cfg(windows)]
 pub use windows::{check_socket_parent, ensure_private_dir, private_file, secure_state_dir};
+#[cfg(windows)]
+pub(crate) use windows::{current_sid, process_sid};
 
 /// Protect app-owned state, including existing 0755 installations. Validate
 /// the final component without following symlinks, then chmod the opened
