@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
 use agentdocker_core::{
-    AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease, ProjectRef, Request,
-    Response, RuntimeInfo,
+    AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease, MessageId, ProjectRef,
+    Question, Request, Response, RuntimeInfo,
 };
 use chrono::Utc;
 use egui::{Color32, RichText};
 
 use crate::client::Client;
+use crate::terminal::{Status, Terminal};
 
 /// Events kept for the feed.
 const EVENT_HISTORY: usize = 500;
@@ -28,6 +29,9 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Agents,
+    Questions,
+    Terminal,
+    Console,
     Runtimes,
     Journal,
     Leases,
@@ -35,8 +39,11 @@ enum Screen {
 }
 
 impl Screen {
-    const ALL: [Screen; 5] = [
+    const ALL: [Screen; 8] = [
         Screen::Agents,
+        Screen::Questions,
+        Screen::Terminal,
+        Screen::Console,
         Screen::Runtimes,
         Screen::Journal,
         Screen::Leases,
@@ -46,6 +53,9 @@ impl Screen {
     fn title(self) -> &'static str {
         match self {
             Screen::Agents => "Agents",
+            Screen::Questions => "Questions",
+            Screen::Terminal => "Terminal",
+            Screen::Console => "Console",
             Screen::Runtimes => "Runtimes",
             Screen::Journal => "Journal",
             Screen::Leases => "Leases",
@@ -61,10 +71,17 @@ enum Cmd {
     Runtimes,
     Discovered,
     Journal(String),
+    /// Register the person at the keyboard, so agents can address them.
+    Me,
+    Questions,
+    Answer(MessageId, String),
     Adopt(u32),
     AdoptAll,
     Stop(String),
     Setup(String),
+    /// Any `agentdocker` command, so the window is not limited to the
+    /// few actions that have buttons.
+    Console(String),
 }
 
 /// What comes back to the window.
@@ -74,10 +91,12 @@ enum Msg {
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Vec<JournalEntry>),
+    Questions(Vec<Question>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
     Status(String),
+    Console(String),
 }
 
 pub struct App {
@@ -99,6 +118,15 @@ pub struct App {
     last_refresh: Instant,
     last_runtimes: Instant,
     socket: String,
+    client: Option<Arc<Client>>,
+    terminal: Option<Terminal>,
+    console_input: String,
+    console_output: String,
+    /// Questions put to the human, and what is being typed in reply to
+    /// each. The draft is keyed by message id so answering one question
+    /// does not disturb another half-written answer.
+    questions: Vec<Question>,
+    answers: BTreeMap<MessageId, String>,
 }
 
 impl App {
@@ -108,7 +136,16 @@ impl App {
         let (msg_tx, msg_rx) = channel::<Msg>();
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
         spawn_events(client.clone(), msg_tx, cc.egui_ctx.clone());
-        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Runtimes] {
+        // The window is a person being present, so the person is an
+        // agent for as long as it is open.
+        for cmd in [
+            Cmd::Me,
+            Cmd::Agents,
+            Cmd::Leases,
+            Cmd::Discovered,
+            Cmd::Runtimes,
+            Cmd::Questions,
+        ] {
             let _ = cmd_tx.send(cmd);
         }
         Self {
@@ -128,6 +165,12 @@ impl App {
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
             socket: client.socket().display().to_string(),
+            client: Some(client),
+            terminal: None,
+            console_input: String::new(),
+            console_output: String::new(),
+            questions: Vec::new(),
+            answers: BTreeMap::new(),
         }
     }
 
@@ -151,6 +194,12 @@ impl App {
             last_refresh: Instant::now(),
             last_runtimes: Instant::now(),
             socket: String::new(),
+            client: None,
+            terminal: None,
+            console_input: String::new(),
+            console_output: String::new(),
+            questions: Vec::new(),
+            answers: BTreeMap::new(),
         }
     }
 
@@ -171,11 +220,25 @@ impl App {
                         self.journal = entries;
                     }
                 }
+                Msg::Questions(questions) => {
+                    // Forget drafts for questions nobody is waiting on any
+                    // more, so the map does not grow with the session.
+                    self.answers
+                        .retain(|id, _| questions.iter().any(|q| q.id == *id));
+                    self.questions = questions;
+                }
                 Msg::Event(event) => self.on_event(*event),
                 Msg::Connected => {
                     if self.connected.is_err() {
                         self.connected = Ok(());
-                        for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Runtimes] {
+                        for cmd in [
+                            Cmd::Me,
+                            Cmd::Agents,
+                            Cmd::Leases,
+                            Cmd::Discovered,
+                            Cmd::Runtimes,
+                            Cmd::Questions,
+                        ] {
                             self.send(cmd);
                         }
                         if let Some(project) = &self.journal_project {
@@ -185,6 +248,10 @@ impl App {
                 }
                 Msg::Disconnected(reason) => self.connected = Err(reason),
                 Msg::Status(text) => self.status = text,
+                Msg::Console(text) => {
+                    self.console_output = text;
+                    self.screen = Screen::Console;
+                }
             }
         }
         // Nothing is asked of a daemon that is not there: each request
@@ -192,7 +259,7 @@ impl App {
         // worker. Coming back re-reads everything anyway.
         if self.connected.is_ok() && self.last_refresh.elapsed() >= REFRESH {
             self.last_refresh = Instant::now();
-            for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered] {
+            for cmd in [Cmd::Agents, Cmd::Leases, Cmd::Discovered, Cmd::Questions] {
                 self.send(cmd);
             }
         }
@@ -233,6 +300,11 @@ impl App {
             | EventKind::LeaseTransferred { .. } => self.send(Cmd::Leases),
             EventKind::AgentDiscovered { .. } | EventKind::AgentVanished { .. } => {
                 self.send(Cmd::Discovered);
+            }
+            // A question is worth showing the moment it is asked, not on
+            // the next two-second sweep: somebody is blocked on it.
+            EventKind::MessageSent { kind, .. } if kind == "question" || kind == "answer" => {
+                self.send(Cmd::Questions);
             }
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
@@ -282,6 +354,7 @@ impl App {
             groups.entry(key).or_default().push(agent);
         }
         let mut stop: Option<String> = None;
+        let mut attach: Option<String> = None;
         if groups.is_empty() {
             ui.label("No live agents. Start one with `agentdocker run`, or adopt one below.");
         }
@@ -312,6 +385,9 @@ impl App {
                         if ui.small_button("Stop").clicked() {
                             stop = Some(agent.id.to_string());
                         }
+                        if agent.spec.tty && ui.small_button("Attach").clicked() {
+                            attach = Some(agent.id.to_string());
+                        }
                         ui.end_row();
                     }
                 });
@@ -319,6 +395,10 @@ impl App {
         }
         if let Some(id) = stop {
             self.send(Cmd::Stop(id));
+        }
+        if let Some(id) = attach {
+            self.attach(id, ui.ctx().clone());
+            self.screen = Screen::Terminal;
         }
         ui.separator();
         ui.heading("Running, not registered");
@@ -367,6 +447,185 @@ impl App {
                 self.send(Cmd::AdoptAll);
             }
         }
+    }
+
+    /// An agent's terminal, or the list of agents that have one.
+    fn terminal_screen(&mut self, ui: &mut egui::Ui) {
+        // A 13pt monospace cell, near enough: the agent lays itself out to
+        // whatever size we report, so a pixel here or there is harmless.
+        const CELL: (f32, f32) = (7.8, 16.0);
+        let Some(terminal) = &mut self.terminal else {
+            let attachable: Vec<&AgentRecord> = self
+                .agents
+                .iter()
+                .filter(|a| a.status.is_live() && a.spec.tty)
+                .collect();
+            if attachable.is_empty() {
+                ui.label(
+                    "No agent has a terminal. Start one with `agentdocker run --tty -- <command>`, \
+                     or `tty = true` in an Agentfile entry.",
+                );
+                return;
+            }
+            let mut attach: Option<String> = None;
+            for agent in attachable {
+                ui.horizontal(|ui| {
+                    ui.label(&agent.spec.name);
+                    if ui.button("Attach").clicked() {
+                        attach = Some(agent.id.to_string());
+                    }
+                });
+            }
+            if let Some(agent) = attach {
+                self.attach(agent, ui.ctx().clone());
+            }
+            return;
+        };
+
+        let mut detach = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("attached to {}", terminal.agent)).strong());
+            match terminal.status() {
+                Status::Attached => {
+                    ui.label(RichText::new("● live").color(Color32::from_rgb(60, 170, 90)));
+                }
+                Status::Ended(reason) => {
+                    ui.label(RichText::new(format!("● {reason}")).color(Color32::GRAY));
+                }
+            }
+            if ui.button("Detach").clicked() {
+                detach = true;
+            }
+        });
+        ui.separator();
+
+        let space = ui.available_size();
+        terminal.resize(
+            (space.x / CELL.0) as u16,
+            ((space.y / CELL.1) as u16).saturating_sub(1),
+        );
+        // Everything typed while this screen is up goes to the agent.
+        if terminal.status() == Status::Attached {
+            let events = ui.input(|i| i.events.clone());
+            let bytes = crate::terminal::keystrokes(&events);
+            if !bytes.is_empty() {
+                terminal.send(bytes);
+            }
+        }
+        egui::ScrollArea::both()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                terminal.ui(ui);
+            });
+        if detach {
+            self.terminal = None;
+        }
+    }
+
+    fn attach(&mut self, agent: String, ctx: egui::Context) {
+        if let Some(client) = &self.client {
+            self.terminal = Some(Terminal::attach(client.clone(), agent, ctx));
+        }
+    }
+
+    /// What agents are waiting on the person at the keyboard.
+    ///
+    /// An agent that asks a question is blocked until it is answered, so
+    /// this screen is the one part of the window where doing nothing has
+    /// a cost. The question and the answer box sit together: reading it
+    /// and replying to it should not be two places.
+    fn questions_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            "Questions agents have put to you. Each one has an agent waiting on the answer; \
+             unanswered, it gives up when its time runs out.",
+        );
+        ui.add_space(6.0);
+        if self.questions.is_empty() {
+            ui.label(RichText::new("Nothing is waiting on you.").weak());
+            return;
+        }
+        let mut answered: Option<(MessageId, String)> = None;
+        let questions = self.questions.clone();
+        for question in &questions {
+            let left = (question.expires_at - Utc::now()).num_seconds().max(0);
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(self.name_of(&question.from)).strong());
+                    ui.label(RichText::new(format!("· {} left", span(left))).weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(question.id.to_string()).weak().monospace());
+                    });
+                });
+                ui.add_space(2.0);
+                ui.label(&question.text);
+                ui.add_space(4.0);
+                let draft = self.answers.entry(question.id.clone()).or_default();
+                let mut send = false;
+                let entry = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("your answer"),
+                );
+                if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    send = true;
+                }
+                if ui.button("Answer").clicked() {
+                    send = true;
+                }
+                if send && !draft.trim().is_empty() {
+                    answered = Some((question.id.clone(), draft.clone()));
+                }
+            });
+            ui.add_space(4.0);
+        }
+        if let Some((id, text)) = answered {
+            self.answers.remove(&id);
+            // Drop it from the list at once: the daemon forgets an
+            // answered question, and the next sweep would anyway.
+            self.questions.retain(|q| q.id != id);
+            self.send(Cmd::Answer(id, text));
+        }
+    }
+
+    /// Any command the CLI has, run from the window.
+    fn console_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            "Every `agentdocker` command, run here. The command line is the whole surface, so this \
+             is the whole surface.",
+        );
+        let mut run = false;
+        ui.horizontal(|ui| {
+            ui.label("agentdocker");
+            let entry = ui.add(
+                egui::TextEdit::singleline(&mut self.console_input)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("ps --all   ·   journal --new   ·   channels   ·   runtimes"),
+            );
+            if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                run = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Run").clicked() {
+                run = true;
+            }
+            if ui.button("Clear").clicked() {
+                self.console_output.clear();
+            }
+        });
+        if run && !self.console_input.trim().is_empty() {
+            let line = self.console_input.clone();
+            self.console_output = format!("$ agentdocker {line}\n");
+            self.send(Cmd::Console(line));
+        }
+        ui.separator();
+        egui::ScrollArea::both().show(ui, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(&self.console_output).monospace())
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            );
+        });
     }
 
     fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
@@ -572,6 +831,9 @@ impl eframe::App for App {
                         "Agents ({})",
                         self.agents.iter().filter(|a| a.status.is_live()).count()
                     ),
+                    Screen::Questions if !self.questions.is_empty() => {
+                        format!("Questions ({})", self.questions.len())
+                    }
                     Screen::Leases => format!("Leases ({})", self.leases.len()),
                     Screen::Events => format!("Events ({})", self.events.len()),
                     other => other.title().to_owned(),
@@ -582,8 +844,17 @@ impl eframe::App for App {
             }
         });
         egui::CentralPanel::default().show(ui, |ui| {
+            // The terminal draws its own scroll region and wants every
+            // keystroke, so it is not inside the shared scroll area.
+            if self.screen == Screen::Terminal {
+                self.terminal_screen(ui);
+                return;
+            }
             egui::ScrollArea::vertical().show(ui, |ui| match self.screen {
                 Screen::Agents => self.agents_screen(ui),
+                Screen::Questions => self.questions_screen(ui),
+                Screen::Console => self.console_screen(ui),
+                Screen::Terminal => {}
                 Screen::Runtimes => self.runtimes_screen(ui),
                 Screen::Journal => self.journal_screen(ui),
                 Screen::Leases => self.leases_screen(ui),
@@ -732,6 +1003,28 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Journal { entries, .. } => Some(Msg::Journal(project, entries)),
             _ => None,
         },
+        Cmd::Me => match client.call(&Request::Me {
+            workdir: std::env::current_dir().ok(),
+        })? {
+            Response::Agent { .. } => None,
+            _ => None,
+        },
+        Cmd::Questions => match client.call(&Request::Questions {
+            agent: Some(agentdocker_core::HUMAN.to_owned()),
+        })? {
+            Response::Questions { questions } => Some(Msg::Questions(questions)),
+            _ => None,
+        },
+        Cmd::Answer(message, text) => Some(
+            match client.call(&Request::Answer {
+                from: None,
+                message,
+                text,
+            }) {
+                Ok(_) => Msg::Status("answered".to_owned()),
+                Err(err) => Msg::Status(err.to_string()),
+            },
+        ),
         Cmd::Adopt(pid) => Some(
             match client.call(&Request::Adopt {
                 pid,
@@ -777,17 +1070,91 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             },
         ),
         Cmd::Setup(runtime) => Some(Msg::Status(setup(&runtime))),
+        Cmd::Console(line) => Some(Msg::Console(console(&line))),
     })
+}
+
+/// Any `agentdocker` command, run with the CLI beside this binary. The
+/// command line is the complete surface and it keeps growing; a window
+/// that mirrored it in widgets would always lag behind, so the window
+/// runs the real thing and shows what it said.
+fn console(line: &str) -> String {
+    let words = match shell_words(line) {
+        Some(words) if !words.is_empty() => words,
+        Some(_) => return String::new(),
+        None => return "unbalanced quotes".to_owned(),
+    };
+    // `agentdocker agentdocker ps` is a typo worth forgiving.
+    let args: Vec<String> = match words.split_first() {
+        Some((first, rest)) if first == "agentdocker" => rest.to_vec(),
+        _ => words,
+    };
+    let cli = beside("agentdocker");
+    match std::process::Command::new(&cli).args(&args).output() {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            let errors = String::from_utf8_lossy(&output.stderr);
+            if !errors.trim().is_empty() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&errors);
+            }
+            if text.trim().is_empty() {
+                text = format!("({})", output.status);
+            }
+            text
+        }
+        Err(err) => format!("cannot run {}: {err}", cli.display()),
+    }
+}
+
+/// Split a command line on whitespace, honouring single and double
+/// quotes, so a note or a summary can contain spaces.
+fn shell_words(line: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut any = false;
+    for c in line.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => word.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                any = true;
+            }
+            None if c.is_whitespace() => {
+                if !word.is_empty() || any {
+                    words.push(std::mem::take(&mut word));
+                    any = false;
+                }
+            }
+            None => word.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if !word.is_empty() || any {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// The named binary next to this one, else whatever is on `PATH`.
+fn beside(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(|dir| dir.join(name)))
+        .filter(|sibling| sibling.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
 /// `agentdocker setup <runtime>`, with the CLI beside this binary: it
 /// writes the runtime's configuration, and the app shows what it said.
 fn setup(runtime: &str) -> String {
-    let cli = std::env::current_exe()
-        .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join("agentdocker")))
-        .filter(|sibling| sibling.is_file())
-        .unwrap_or_else(|| std::path::PathBuf::from("agentdocker"));
+    let cli = beside("agentdocker");
     let Some(cli_arg) = cli.to_str() else {
         return "CLI path is not UTF-8".into();
     };
@@ -862,11 +1229,13 @@ mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 5);
+        assert_eq!(received.len(), 7);
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Discovered)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Runtimes)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Questions)));
         assert!(
             received
                 .iter()
@@ -910,6 +1279,25 @@ mod tests {
         app.on_event(live.clone());
         app.on_event(live);
         assert_eq!(app.events.len(), 5);
+    }
+
+    #[test]
+    fn a_command_line_splits_the_way_a_shell_would() {
+        let words = |line: &str| shell_words(line).unwrap();
+        assert_eq!(words("ps --all"), ["ps", "--all"]);
+        assert_eq!(words("   ps   "), ["ps"]);
+        assert!(words("").is_empty());
+        assert_eq!(
+            words("review c1 --changes \"handle the empty input\""),
+            ["review", "c1", "--changes", "handle the empty input"]
+        );
+        assert_eq!(
+            words("journal add --as me 'two words'"),
+            ["journal", "add", "--as", "me", "two words"]
+        );
+        // An empty quoted argument is still an argument.
+        assert_eq!(words("send --to x \"\""), ["send", "--to", "x", ""]);
+        assert_eq!(shell_words("unbalanced \"quote"), None);
     }
 
     #[test]

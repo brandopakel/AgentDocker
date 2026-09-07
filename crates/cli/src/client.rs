@@ -134,6 +134,13 @@ impl Client {
         wait_for_start(&self.socket, &log_path, timeout, child).await
     }
 
+    /// Send one request and hand back the raw connection, for a caller
+    /// that then speaks a duplex protocol on it. Nothing has been read
+    /// yet, so no buffered bytes are lost.
+    pub async fn open(&self, request: &Request) -> Result<UnixStream> {
+        Ok(self.connect(request).await?.into_inner())
+    }
+
     /// Send one request and read exactly one response. Error responses
     /// become `Err`.
     pub async fn call(&self, request: &Request) -> Result<Response> {

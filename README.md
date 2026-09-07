@@ -82,7 +82,14 @@ agentdocker watch --as writer &                       # live delivery from here 
 agentdocker send --from reviewer --to topic:repo/reviews --kind notice "PR #12 approved"
 agentdocker send --from reviewer --to project "heads up: I'm touching src/ next"   # everyone in this repo
 
-# 5. See what happened.
+# 5. Be reachable yourself. You are an agent too.
+agentdocker me                                        # you are now the agent `user`
+agentdocker watch --me &                              # questions and messages, live
+agentdocker ask --from reviewer --to user "merge or rebase?"   # blocks until you answer
+agentdocker questions --me                            # what is waiting on you
+agentdocker answer <message id> "rebase"              # the asker unblocks
+
+# 6. See what happened.
 agentdocker changes               # the ledger: files that changed in this project, and who held each
 agentdocker blame src/parser.rs   # the same for one file
 agentdocker journal               # what happened and why, one line per release, note, or commit
@@ -90,6 +97,11 @@ agentdocker release --as writer --all --summary "rewrote the tokenizer"   # your
 agentdocker events
 agentdocker logs -f writer
 agentdocker stop writer
+
+# An agent that should outlive a daemon restart says so, and comes back
+# under its own id — with its read set, journal cursor, checkpoints and
+# leases, and a note saying what changed while it was down.
+agentdocker run --name keeper --restore -- claude
 ```
 
 Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
@@ -105,7 +117,7 @@ An agent you did not start through the daemon (an interactive Claude Code sessio
 
 ### Give any MCP-capable agent the tools directly
 
-`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `send_message`, `read_inbox`, `wait_for_messages`, `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
+`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
 
 ```sh
 # Claude Code
@@ -155,6 +167,7 @@ workdir = "."                         # relative to this file
 isolate = true                        # its own worktree and branch
 
 [agents.reviewer]
+tty = true                            # a terminal, for an interactive agent
 runtime = "codex"
 command = ["codex", "exec", "Review whatever writer changes and message it"]
 env = { RUST_LOG = "info" }
@@ -195,6 +208,21 @@ Where the ledger records every file change, the journal records what happened an
 ### Worktrees and overlap
 
 `agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
+
+### Sessions: run an interactive agent, and attach to it
+
+`run` gives an agent pipes by default, which is fine for a batch command and useless for an agent that wants a terminal. `--tty` gives it a real one:
+
+```sh
+agentdocker run --tty --name writer -- claude          # an interactive agent, supervised
+agentdocker attach writer                              # your terminal, connected to its
+                                                       # Ctrl-] detaches; the agent keeps running
+agentdocker logs -f writer                             # or just watch, without typing
+```
+
+The terminal belongs to the daemon, so attaching and detaching are only a client coming and going: the agent does not notice, and its output still lands in the log either way. The window size follows yours, so full-screen agents lay themselves out correctly.
+
+One limit worth knowing: the agent's *process* survives a daemon restart, but its terminal does not, so `attach` cannot reconnect afterwards. Making the terminal outlive the daemon is the rest of [roadmap row 23](docs/ARCHITECTURE.md#sessions-and-persistence).
 
 ### Channels: when two agents are on the same thing
 
@@ -275,7 +303,7 @@ Five crates:
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
-- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents by project, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed. `agentdocker ui` opens it.
+- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents by project, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed, plus the questions agents have put to you, a terminal for attaching to an interactive agent, and a console that runs any `agentdocker` command. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
@@ -288,7 +316,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events; next, desktop notifications and the human as a first-class agent with `ask`/`answer`; deadlock detection; policy and quotas; restart policies and `depends_on`.
+- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events, with a terminal and a console; ✅ the human as a first-class agent — `me`, `ask`/`answer`, and a desktop notification when something reaches you; next, deadlock detection; policy and quotas; restart policies and `depends_on`.
 - **Phase 5 also brings**: PTY-backed sessions so interactive agents run under `run` and survive a daemon restart, with `attach`; activity derived from the working set (working, idle, or blocked on a named resource held by a named agent); adapters that recognise agents living in `tmux` panes or a [herdr](https://github.com/herdrdev/herdr) session; and token-lean output, because everything an agent reads from us costs it tokens.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 

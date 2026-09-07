@@ -1,6 +1,6 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Envelope, Event, EventKind, ResourceKey};
+use agentdocker_core::{Envelope, Event, EventKind, Question, ResourceKey};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -72,7 +72,7 @@ fn span(secs: i64) -> String {
 }
 
 /// First 12 characters of an id-like string, without splitting a char.
-fn short(s: &str) -> &str {
+pub fn short(s: &str) -> &str {
     let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
     &s[..end]
 }
@@ -121,8 +121,37 @@ pub fn message_line(message: &Envelope) -> String {
     )
 }
 
+/// A question somebody is blocked on. The id comes first because
+/// answering means naming it: `agentdocker answer <id> "..."`.
+pub fn question_line(question: &Question) -> String {
+    format!(
+        "{}  {}  {} → {}  ({} left)  {}",
+        clock(question.asked_at),
+        question.id,
+        short(&question.from),
+        question.to,
+        span_secs(
+            (question.expires_at - Utc::now())
+                .num_seconds()
+                .max(0)
+                .unsigned_abs()
+        ),
+        single_line(&question.text)
+    )
+}
+
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::AgentRestored { agent, pid, stale } => format!(
+            "agent restored: {} (pid {}){}",
+            agent.short(),
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_owned()),
+            if *stale > 0 {
+                format!(", {stale} path(s) changed while it was down")
+            } else {
+                String::new()
+            }
+        ),
         EventKind::ContainerUpdated { agent } => format!("{agent} container state updated"),
         EventKind::ImageBuilt {
             build,

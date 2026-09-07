@@ -43,9 +43,11 @@ mod access;
 mod channels;
 mod containers;
 mod handoff;
+pub mod humans;
 mod images;
 mod recovery;
 mod relay;
+mod restore;
 mod transport;
 mod working;
 mod worktrees;
@@ -105,6 +107,10 @@ pub struct Daemon {
     /// The restricted container endpoint: where it serves, or why it does
     /// not. Grants need it; the host socket does not.
     restricted: Mutex<RestrictedEndpoint>,
+    /// Terminals of managed agents that were given one, so `attach` can
+    /// find them. Held here rather than under the state lock: attaching
+    /// is I/O and must not block a coordination request.
+    sessions: Mutex<HashMap<AgentId, supervisor::Session>>,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -194,6 +200,12 @@ struct State {
     /// Which checkouts have changed each path, so the second one is a
     /// collision the daemon can act on without scanning the ledger.
     contested: HashMap<(ProjectId, PathBuf), HashSet<PathBuf>>,
+    /// Questions somebody is blocked on, by message id: an answer names
+    /// one and only the question knows who is waiting for it.
+    questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Where desktop notifications are handed off to be posted. `None`
+    /// until the daemon starts its notifier, and in tests.
+    notifier: Option<mpsc::Sender<humans::Notice>>,
 }
 
 struct JournalRing {
@@ -409,6 +421,9 @@ impl Daemon {
         }
     }
     pub async fn stop_all(self: &Arc<Self>) {
+        // Before anything stops: stopping releases leases, so what a
+        // restorable agent holds has to be written down while it holds it.
+        self.save_restore_points();
         let managed: Vec<_> = lock(&self.state)
             .registry
             .live()
@@ -707,6 +722,8 @@ impl Daemon {
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
+                questions: HashMap::new(),
+                notifier: None,
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
@@ -716,7 +733,17 @@ impl Daemon {
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
+            sessions: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Start posting desktop notifications for messages that reach a
+    /// person. Separate from `open` so tests, which have no desktop and
+    /// want no side effects, simply never call it.
+    pub fn notify_desktop(self: &Arc<Self>) {
+        let (tx, rx) = mpsc::channel(64);
+        lock(&self.state).notifier = Some(tx);
+        tokio::spawn(humans::notifier(rx));
     }
 
     pub fn log_path(&self, id: &AgentId) -> PathBuf {
@@ -887,6 +914,19 @@ impl Daemon {
                 payload,
                 reply_to,
             } => self.send(from, &to, kind, payload, reply_to).await,
+            Request::Me { workdir } => self.me(workdir).await,
+            Request::Ask {
+                from,
+                to,
+                question,
+                timeout_secs,
+            } => self.ask(from, to, question, timeout_secs).await,
+            Request::Answer {
+                from,
+                message,
+                text,
+            } => self.answer(from, message, text).await,
+            Request::Questions { agent } => self.questions(agent),
             Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
             Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
             Request::Claim {
@@ -981,7 +1021,12 @@ impl Daemon {
                 Err(response) => *response,
             },
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
-            Request::Subscribe { .. } | Request::Events { .. } | Request::Logs { .. } => {
+            Request::Subscribe { .. }
+            | Request::Events { .. }
+            | Request::Logs { .. }
+            | Request::Attach { .. }
+            | Request::AttachInput { .. }
+            | Request::AttachResize { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
             }
         }
@@ -1029,6 +1074,9 @@ impl Daemon {
             Ok(spawned) => {
                 let pid = spawned.pid;
                 let process_started_at = procinfo::start_time(pid);
+                if let Some(session) = spawned.session.clone() {
+                    lock(&self.sessions).insert(record.id.clone(), session);
+                }
                 let updated = {
                     let mut state = lock(&self.state);
                     state
@@ -1602,6 +1650,16 @@ impl Daemon {
         self.emit(EventKind::WatcherUnavailable { reason });
     }
 
+    /// The terminal of a managed agent, when it was given one.
+    pub fn session(&self, agent: &AgentId) -> Option<supervisor::Session> {
+        lock(&self.sessions).get(agent).cloned()
+    }
+
+    /// The agent is gone; so is its terminal.
+    pub fn end_session(&self, agent: &AgentId) {
+        lock(&self.sessions).remove(agent);
+    }
+
     /// The restricted endpoint is serving on `socket`.
     pub fn restricted_listening(&self, socket: PathBuf) {
         *lock(&self.restricted) = RestrictedEndpoint::On(socket.clone());
@@ -2059,23 +2117,36 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
-        let from = match lock(&self.state).registry.resolve(&from) {
-            Ok(id) => id.to_string(),
-            Err(RegistryError::NotFound(_)) => from,
-            Err(err) => return registry_error(err),
-        };
-        let to = match Destination::parse(to) {
-            Destination::Agent(reference) => match self.resolve(reference.as_str()) {
-                Ok(id) => Destination::Agent(id),
-                Err(response) => return *response,
-            },
-            Destination::Project(selector) => match self.resolve_project(selector.as_str()).await {
-                Ok(id) => Destination::Project(id),
-                Err(response) => return *response,
-            },
-            other => other,
+        let (from, to) = match self.endpoints(from, to).await {
+            Ok(pair) => pair,
+            Err(response) => return *response,
         };
         lock(&self.state).send(from, to, kind, payload, reply_to)
+    }
+
+    /// Turn a sender name and a destination shorthand into what the bus
+    /// routes on. `ask` needs the resolved pair as well as the send, so
+    /// that it can record who is waiting for the answer.
+    async fn endpoints(
+        &self,
+        from: String,
+        to: &str,
+    ) -> Result<(String, Destination), Box<Response>> {
+        let from = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => id.to_string(),
+            // An unregistered sender is allowed: `agentd` and a bare
+            // `user` both speak without a record of their own.
+            Err(RegistryError::NotFound(_)) => from,
+            Err(err) => return Err(Box::new(registry_error(err))),
+        };
+        let to = match Destination::parse(to) {
+            Destination::Agent(reference) => Destination::Agent(self.resolve(reference.as_str())?),
+            Destination::Project(selector) => {
+                Destination::Project(self.resolve_project(selector.as_str()).await?)
+            }
+            other => other,
+        };
+        Ok((from, to))
     }
 
     /// Open a live subscription. Returns the filter plus the raw receiver so
@@ -3227,6 +3298,10 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
+        // A person is not polling a socket, so a message that reaches one
+        // is worth an interruption. Queued or live, the notification is
+        // the same: it is the arrival that matters, not the route.
+        self.notify_humans(&envelope, &recipients);
         let offline: Vec<AgentId> = {
             let live = &self.live_subscribers;
             recipients
@@ -3428,6 +3503,579 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    // ----- the human as an agent -----------------------------------------
+
+    async fn me(daemon: &Arc<Daemon>) -> AgentRecord {
+        match daemon.handle(Request::Me { workdir: None }).await {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn me_is_idempotent_and_outlives_the_liveness_check() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        let first = me(&daemon).await;
+        assert_eq!(first.spec.name, agentdocker_core::HUMAN);
+        assert_eq!(first.spec.runtime, agentdocker_core::HUMAN_RUNTIME);
+        assert_eq!(first.pid, None, "a person is not a process");
+
+        let again = me(&daemon).await;
+        assert_eq!(again.id, first.id, "the same person, not a second one");
+
+        // A record with no pid has nothing for liveness to check, so the
+        // human is still here after a sweep that reaps dead processes.
+        daemon.check_liveness();
+        assert!(daemon.is_live(&first.id));
+    }
+
+    #[tokio::test]
+    async fn ask_returns_the_answer_that_names_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let human = me(&daemon).await;
+        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let answering = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                // Wait for the question to be recorded, then answer it.
+                let id = loop {
+                    let Response::Questions { questions } = daemon
+                        .handle(Request::Questions {
+                            agent: Some("user".to_owned()),
+                        })
+                        .await
+                    else {
+                        panic!("questions did not answer with questions")
+                    };
+                    if let Some(question) = questions.first() {
+                        assert_eq!(question.text, "ship it?");
+                        break question.id.clone();
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                };
+                daemon
+                    .handle(Request::Answer {
+                        from: None,
+                        message: id,
+                        text: "yes".to_owned(),
+                    })
+                    .await
+            })
+        };
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: asker.id.to_string(),
+                to: "user".to_owned(),
+                question: "ship it?".to_owned(),
+                timeout_secs: 10,
+            })
+            .await;
+        let Response::Answer { from, text, .. } = response else {
+            panic!("unexpected {response:?}")
+        };
+        assert_eq!(text, "yes");
+        assert_eq!(from, human.id.to_string());
+        answering.await.unwrap();
+
+        // The question is no longer waiting for anyone.
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert!(questions.is_empty(), "answered, so no longer open");
+
+        // And the asker can still read the answer, because an answer is an
+        // ordinary message as well as the end of a wait.
+        let waiting = inbox(&daemon, asker.id.as_str(), true).await;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].kind, "answer");
+    }
+
+    #[tokio::test]
+    async fn ask_times_out_rather_than_waiting_forever() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: asker.id.to_string(),
+                to: "user".to_owned(),
+                question: "anyone there?".to_owned(),
+                timeout_secs: 1,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Timeout,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+        // Nobody is blocked on it any more, so it is not still open.
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert!(questions.is_empty());
+        // The question itself still reached the human's inbox: a timeout
+        // is the asker giving up, not the message being withdrawn.
+        let waiting = inbox(&daemon, "user", true).await;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].kind, "question");
+    }
+
+    #[tokio::test]
+    async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: "user".to_owned(),
+                to: "user".to_owned(),
+                question: "   ".to_owned(),
+                timeout_secs: 1,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+
+        let response = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: MessageId::from("nosuchquestion".to_owned()),
+                text: "hello?".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn questions_are_listed_only_for_whoever_was_asked() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+
+        // Two questions in flight, to different agents. Neither is
+        // answered, so both asks are still waiting when we look.
+        let to_human = {
+            let daemon = daemon.clone();
+            let from = alpha.id.to_string();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Ask {
+                        from,
+                        to: "user".to_owned(),
+                        question: "for the human".to_owned(),
+                        timeout_secs: 30,
+                    })
+                    .await
+            })
+        };
+        let to_beta = {
+            let daemon = daemon.clone();
+            let from = alpha.id.to_string();
+            let beta = beta.id.to_string();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Ask {
+                        from,
+                        to: beta,
+                        question: "for beta".to_owned(),
+                        timeout_secs: 30,
+                    })
+                    .await
+            })
+        };
+
+        let both = loop {
+            let Response::Questions { questions } =
+                daemon.handle(Request::Questions { agent: None }).await
+            else {
+                panic!("questions did not answer with questions")
+            };
+            if questions.len() == 2 {
+                break questions;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert!(both[0].asked_at >= both[1].asked_at, "newest first");
+
+        let Response::Questions { questions } = daemon
+            .handle(Request::Questions {
+                agent: Some("user".to_owned()),
+            })
+            .await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].text, "for the human");
+
+        to_human.abort();
+        to_beta.abort();
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does_not() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let human = me(&daemon).await;
+        let worker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let (tx, mut notices) = mpsc::channel(8);
+        lock(&daemon.state).notifier = Some(tx);
+
+        daemon
+            .handle(Request::Send {
+                from: worker.id.to_string(),
+                to: human.id.to_string(),
+                kind: "chat".to_owned(),
+                payload: json!({ "text": "look at this" }),
+                reply_to: None,
+            })
+            .await;
+        let notice = notices.try_recv().expect("a person is worth interrupting");
+        assert_eq!(notice.from, "worker", "by name, not by id");
+        assert_eq!(notice.kind, "chat");
+        assert_eq!(notice.text, "look at this");
+
+        daemon
+            .handle(Request::Send {
+                from: "user".to_owned(),
+                to: worker.id.to_string(),
+                kind: "chat".to_owned(),
+                payload: json!({ "text": "carry on" }),
+                reply_to: None,
+            })
+            .await;
+        assert!(
+            notices.try_recv().is_err(),
+            "a program has no desktop to interrupt"
+        );
+    }
+
+    // ----- snapshot restore ----------------------------------------------
+
+    /// A daemon that stops and comes back on the same home, as a restart
+    /// looks from the store's point of view.
+    async fn restart(dir: &TempDir, daemon: Arc<Daemon>) -> Arc<Daemon> {
+        daemon.stop_all().await;
+        drop(daemon);
+        let daemon = open(dir);
+        daemon.restore_agents().await;
+        daemon
+    }
+
+    #[tokio::test]
+    async fn a_restarted_daemon_brings_back_a_restorable_agent_under_its_own_identity() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("keeper");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        // Something worth keeping: a lease, and a journal cursor, both
+        // keyed by this agent's id.
+        assert!(matches!(
+            claim(&daemon, "keeper", "task:the-work").await,
+            Response::Lease { .. }
+        ));
+        let before = agent.pid;
+
+        let daemon = restart(&dir, daemon).await;
+
+        let Response::Agent { agent: after } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("the agent is gone")
+        };
+        assert_eq!(after.id, agent.id, "the same identity, not a new agent");
+        assert_eq!(after.status, AgentStatus::Running);
+        assert_ne!(after.pid, before, "a new process under the old identity");
+        // The lease is still held, because its holder never stopped being
+        // live and never stopped being this id.
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].holder, agent.id);
+
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_did_not_ask_to_be_restored_is_not() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("ephemeral");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+
+        let daemon = restart(&dir, daemon).await;
+
+        // Nothing was relaunched, and the liveness sweep retires it.
+        daemon.check_liveness();
+        assert!(!daemon.is_live(&agent.id));
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_restored_agent_is_told_what_changed_while_it_was_down() {
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let watched = work.join("parser.rs");
+        std::fs::write(&watched, "fn parse() {}\n").unwrap();
+
+        let daemon = open(&dir);
+        let mut command = spec("reader");
+        command.workdir = Some(work.clone());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        let observed = daemon
+            .handle(Request::Observe {
+                agent: agent.id.to_string(),
+                paths: vec![watched.display().to_string()],
+            })
+            .await;
+        assert!(matches!(observed, Response::Reads { .. }), "{observed:?}");
+        let Response::Checkpoint { checkpoint } = daemon
+            .handle(Request::Checkpoint {
+                agent: agent.id.to_string(),
+                key: "k1".to_owned(),
+                task: "rewrite the tokenizer".to_owned(),
+                assumptions: Vec::new(),
+                next_steps: vec!["handle raw strings".to_owned()],
+                release_leases: false,
+            })
+            .await
+        else {
+            panic!("checkpoint failed")
+        };
+
+        daemon.stop_all().await;
+        drop(daemon);
+        // Somebody edits the file while nothing is running.
+        std::fs::write(&watched, "fn parse() { todo!() }\n").unwrap();
+        let daemon = open(&dir);
+        daemon.restore_agents().await;
+
+        let waiting = inbox(&daemon, agent.id.as_str(), true).await;
+        let brief = waiting
+            .iter()
+            .find(|m| m.kind == "restored")
+            .expect("a restored agent is told it was restored");
+        assert_eq!(brief.payload["restored"], json!(true));
+        assert_eq!(brief.payload["reads"], json!(1));
+        let stale = brief.payload["stale"].as_array().unwrap();
+        assert_eq!(stale.len(), 1, "the edited path: {stale:?}");
+        assert_eq!(brief.payload["checkpoint"], json!(checkpoint.id));
+        assert_eq!(brief.payload["task"], json!("rewrite the tokenizer"));
+        assert_eq!(brief.payload["next_steps"], json!(["handle raw strings"]));
+        let text = brief.payload["text"].as_str().unwrap();
+        assert!(text.contains("reread"), "and told to reread it: {text}");
+        assert!(text.contains("reader"), "under its own name: {text}");
+        assert!(
+            text.contains("rewrite the tokenizer") && text.contains("handle raw strings"),
+            "and what it was doing: {text}"
+        );
+
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_cannot_run_records_the_failure_and_does_not_stop_the_others() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        let mut broken = spec("broken");
+        broken.workdir = Some(dir.path().to_path_buf());
+        broken.restore = true;
+        broken.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent: broken } = daemon.handle(Request::Run { spec: broken }).await
+        else {
+            panic!("managed launch failed");
+        };
+        let mut fine = spec("fine");
+        fine.workdir = Some(dir.path().to_path_buf());
+        fine.restore = true;
+        fine.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent: fine } = daemon.handle(Request::Run { spec: fine }).await
+        else {
+            panic!("managed launch failed");
+        };
+
+        daemon.stop_all().await;
+        drop(daemon);
+        // The command is gone by the time the daemon comes back.
+        let daemon = open(&dir);
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&broken.id).unwrap();
+            record.spec.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
+            let record = record.clone();
+            state.persist("agent", |store| store.upsert_agent(&record));
+        }
+        daemon.restore_agents().await;
+
+        let Response::Agent { agent: broken } = daemon
+            .handle(Request::Inspect {
+                agent: broken.id.to_string(),
+            })
+            .await
+        else {
+            panic!("record gone")
+        };
+        assert!(
+            matches!(&broken.status, AgentStatus::Failed { reason } if reason.contains("restored")),
+            "unexpected {:?}",
+            broken.status
+        );
+        assert!(daemon.is_live(&fine.id), "the other one still came back");
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_stopped_on_purpose_is_not_brought_back() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("finished");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        // The flag is cleared in the record itself, so the reason it will
+        // not come back is visible rather than hidden.
+        let Response::Agent { agent: stopped } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("record gone")
+        };
+        assert!(!stopped.spec.restore);
+
+        let daemon = restart(&dir, daemon).await;
+        daemon.check_liveness();
+        assert!(!daemon.is_live(&agent.id));
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("holder");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        let Response::Lease { lease } = daemon
+            .handle(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: "task:the-refactor".to_owned(),
+                mode: LeaseMode::Shared,
+                ttl_secs: 300,
+                note: Some("halfway through".to_owned()),
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("claim failed")
+        };
+
+        // A clean shutdown stops the agent, and stopping it releases the
+        // lease — correctly, because nothing is working on it any more.
+        daemon.stop_all().await;
+        assert!(list_leases(&daemon).await.is_empty());
+        drop(daemon);
+
+        let daemon = open(&dir);
+        daemon.restore_agents().await;
+
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1, "put back for the restored agent");
+        assert_eq!(leases[0].holder, agent.id);
+        assert_eq!(leases[0].resource, lease.resource);
+        assert_eq!(leases[0].mode, LeaseMode::Shared, "as it was held");
+        assert_eq!(leases[0].note.as_deref(), Some("halfway through"));
+        assert_ne!(leases[0].id, lease.id, "a new lease, not a resurrected one");
+
+        let waiting = inbox(&daemon, agent.id.as_str(), true).await;
+        let brief = waiting.iter().find(|m| m.kind == "restored").unwrap();
+        assert_eq!(
+            brief.payload["reclaimed_leases"],
+            json!([lease.resource.to_string()])
+        );
+        assert_eq!(
+            brief.payload["leases"],
+            json!([lease.resource.to_string()]),
+            "listed once, not once per way it came back"
+        );
+        let text = brief.payload["text"].as_str().unwrap();
+        assert_eq!(
+            text.matches("task:the-refactor").count(),
+            1,
+            "and read once: {text}"
+        );
+        assert!(text.contains("You still hold"), "{text}");
+        daemon.stop_all().await;
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
@@ -5305,6 +5953,120 @@ mod tests {
         })
         .await;
         assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
+    }
+
+    #[tokio::test]
+    async fn a_managed_agent_with_a_tty_gets_a_terminal_and_a_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("interactive");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.tty = true;
+        // Proves it is a terminal, then waits so the session is still there
+        // to inspect.
+        command.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "test -t 0 && echo I_HAVE_A_TTY; sleep 5".into(),
+        ];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        assert!(agent.spec.tty);
+
+        // The daemon holds its terminal, and what it prints reaches both a
+        // watcher and the log.
+        let session = eventually(async || daemon.session(&agent.id)).await;
+        let mut watching = session.output.subscribe();
+        let printed = eventually(async || {
+            let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap_or_default();
+            log.contains("I_HAVE_A_TTY").then_some(log)
+        })
+        .await;
+        assert!(printed.contains("I_HAVE_A_TTY"), "{printed}");
+
+        // Typing at it arrives: `cat` echoes on a terminal, so what we
+        // send comes straight back to anyone attached.
+        session.input.send(b"hello\n".to_vec()).await.unwrap();
+        let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = String::new();
+            while let Ok(bytes) = watching.recv().await {
+                seen.push_str(&String::from_utf8_lossy(&bytes));
+                if seen.contains("hello") {
+                    return seen;
+                }
+            }
+            seen
+        })
+        .await
+        .unwrap_or_default();
+        assert!(
+            echoed.contains("hello"),
+            "input reached the terminal: {echoed:?}"
+        );
+
+        // Resizing is accepted while it lives.
+        session.resize(100, 30).unwrap();
+
+        // Attaching late still shows what it printed, and shows it once:
+        // the scrollback and the live stream are taken together.
+        let (seen, mut live) = session.attach();
+        let seen = String::from_utf8_lossy(&seen).into_owned();
+        assert!(seen.contains("I_HAVE_A_TTY"), "the screen so far: {seen:?}");
+        session.input.send(b"after\n".to_vec()).await.unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut got = String::new();
+            while let Ok(bytes) = live.recv().await {
+                got.push_str(&String::from_utf8_lossy(&bytes));
+                if got.contains("after") {
+                    return got;
+                }
+            }
+            got
+        })
+        .await
+        .unwrap_or_default();
+        assert!(next.contains("after"), "and what comes next: {next:?}");
+        assert!(
+            !next.contains("I_HAVE_A_TTY"),
+            "without repeating the history: {next:?}"
+        );
+
+        // When it ends, so does the terminal: an attach afterwards has
+        // nothing to connect to.
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        eventually(async || daemon.session(&agent.id).is_none().then_some(())).await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_without_a_tty_has_no_session() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("piped");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec!["sh".into(), "-c".into(), "echo piped; sleep 5".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        assert!(!agent.spec.tty);
+        let printed = eventually(async || {
+            let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap_or_default();
+            log.contains("piped").then_some(log)
+        })
+        .await;
+        assert!(printed.contains("piped"));
+        assert!(daemon.session(&agent.id).is_none(), "pipes, not a terminal");
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
     }
 
     #[tokio::test]

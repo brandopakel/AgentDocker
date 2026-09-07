@@ -259,6 +259,9 @@ impl Daemon {
             Ok(id) => id,
             Err(e) => return *e,
         };
+        // Asked for by a person, so it is not the daemon going down: an
+        // agent stopped on purpose is not brought back by the next start.
+        self.clear_restore(&id);
         if self.container_record(&id).is_none() {
             return self.stop(reference, force);
         }
