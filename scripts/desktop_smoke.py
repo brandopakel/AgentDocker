@@ -34,13 +34,38 @@ def stop(process):
             process.wait(timeout=5)
 
 
-def check_no_tcp(processes):
+def check_no_tcp(processes, deadline):
     if not shutil.which("lsof"):
         raise RuntimeError("lsof is required to check the native app's transport")
     for process in processes:
-        result = subprocess.run(["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"], capture_output=True, text=True)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("native fixture transport observation timed out")
+        result = subprocess.run(["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"], capture_output=True, text=True, timeout=min(5, remaining))
         if result.returncode != 1 or result.stdout or result.stderr:
             raise RuntimeError("native fixture has a TCP socket or its transport could not be checked")
+
+
+def wait_window(daemon, window, timeout=45):
+    """Sample both owned processes through GUI readiness and capture, with one deadline."""
+    started = time.monotonic()
+    deadline = started + timeout
+    samples = 0
+    while True:
+        if daemon.poll() is not None:
+            raise RuntimeError("fixture daemon exited during graphical acceptance")
+        check_no_tcp([daemon, window], deadline)
+        samples += 1
+        status = window.poll()
+        if status is not None:
+            if status != 0:
+                raise RuntimeError("graphical acceptance failed; inspect private window.log")
+            return {"samples": samples, "elapsed_seconds": time.monotonic() - started,
+                    "method": "lsof polling through window exit; short-lived sockets between samples may be missed"}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("native window did not exit before the graphical acceptance deadline")
+        time.sleep(min(0.1, remaining))
 
 
 def smoke(binary_dir, output):
@@ -69,6 +94,7 @@ def smoke(binary_dir, output):
                 while True:
                     if daemon.poll() is not None:
                         raise RuntimeError("fixture daemon exited before readiness")
+                    check_no_tcp([daemon], deadline)
                     try:
                         if rpc(endpoint, {"op": "ping"}).get("type") == "pong":
                             break
@@ -80,10 +106,7 @@ def smoke(binary_dir, output):
                 window = subprocess.Popen([str(binary_dir / "agentdocker-ui"), "--smoke-test", str(output / "capture"),
                                            "--expect-pid", str(fixture.pid)], cwd=project, env=env,
                                           stdin=subprocess.DEVNULL, stdout=window_log, stderr=subprocess.STDOUT)
-                # Observe transport while the actual window is alive.
-                check_no_tcp([daemon, window])
-                if window.wait(timeout=45) != 0:
-                    raise RuntimeError("graphical acceptance failed; inspect private window.log")
+                observation = wait_window(daemon, window)
                 report = json.loads((output / "capture/result.json").read_text())
                 if report.get("result") != "passed" or not report.get("fixture_discovered"):
                     raise RuntimeError("graphical acceptance did not discover the fixture")
@@ -91,6 +114,7 @@ def smoke(binary_dir, output):
                 if png[:8] != b"\x89PNG\r\n\x1a\n" or len(png) < 1000:
                     raise RuntimeError("native renderer produced no usable screenshot")
                 report.update({"transport": "unix-socket", "tcp_socket_observation": "none",
+                               "tcp_observation": observation,
                                "scope": "native window, daemon connection, runtime inventory, running process discovery"})
                 (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
                 return report
