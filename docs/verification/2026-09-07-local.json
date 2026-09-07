@@ -581,6 +581,12 @@
     "measured_free_space_recovered_gib": 185.21,
     "project_docs_mib": 1.6,
     "current_mac_preview_payload_mib": 36,
-    "generated_cache_policy": "Publish sanitized evidence, then prune local intermediates. One local campaign at a time."
+    "generated_cache_policy": "Publish sanitized evidence, then prune local intermediates. One local campaign at a time.",
+    "idle_primary_debug_recovered_gib": 79.43,
+    "completed_temporary_builds_recovered_gib": 20.39,
+    "measured_cleanup_sum_gib": 285.03,
+    "free_space_after_gib_approximate": 296,
+    "source_changes_preserved": true,
+    "report_verified_remotely_before_completed_build_prune": true
   }
 }

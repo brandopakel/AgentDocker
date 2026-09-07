@@ -132,3 +132,14 @@ incremental compilation address recurrence; one local campaign and at most two
 retained debug caches are now required. T12 records disk use and cleanup as well
 as process cleanup. The active main checkout belongs to another session and was
 preserved. See the testing standard for scope and configurable limits.
+
+
+Storage audit checkpoint: the first temporary-cache pass recovered 185.21 GiB;
+once the main checkout's tests finished, idle debug output recovered another
+79.43 GiB under its existing Cargo lock. After byte-verifying the sanitized
+22-campaign report on GitHub, completed temporary build outputs recovered a
+further 20.39 GiB. The measured cleanup sum is **285.03 GiB**. Source changes,
+private credentials, reports and running release binaries were preserved.
+Project documentation totals **1.6 MiB**, not 10 GB. Other projects' raw recovery
+databases, personal files and application state require separate retention
+review; Apple storage-category labels alone are not deletion evidence.
