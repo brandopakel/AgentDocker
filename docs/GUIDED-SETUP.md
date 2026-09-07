@@ -1,0 +1,34 @@
+# Guided setup and connection checks
+
+In the native agentdocker window, open **Runtimes**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Saved setup plans**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
+
+The equivalent CLI flow is:
+
+```sh
+agentdocker setup codex claude-code --preview
+agentdocker setup --show PLAN_ID
+agentdocker setup --apply PLAN_ID
+agentdocker setup --health
+agentdocker setup --list
+agentdocker setup --undo PLAN_ID
+```
+
+Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
+
+Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. It does not rewrite Claude's mutable `.claude.json` application state or add a second MCP identity. Codex and supported JSON MCP hosts receive the existing stdio MCP adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement.
+
+## Apply, recovery and undo
+
+Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.
+
+All files are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
+
+A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly. Unreadable or incompatible receipts are preserved and counted while healthy plans remain visible.
+
+## What a connection check proves
+
+**Check connections** separates configuration detection from daemon connectivity. It makes a bounded ping to the selected socket without starting a daemon and reports each runtime's detected MCP/hooks wiring. It does not contact a model, certify that a configured executable still works, or prove that a provider consumed a message. MCP approval remains controlled by the provider; setup does not preapprove tools.
+
+The [local trial](LOCAL-TRIAL.md) requires a fresh real-provider round trip. During the native delivery work, a disposable Claude Code session received a token through hooks and wrote it to its fixture file; a fresh Codex session received a different token through MCP, echoed it to its fixture peer and recorded it in the journal. Both used private fixture IPC and left the monitored provider settings unchanged. This is bounded acceptance of those installed CLI versions, not certification of every provider/version or sustained use. The first Codex run correctly failed consumption assertions because tool approval was not configured; the passing run explicitly approved only its five fixture tools for that invocation.
+
+Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in [DESKTOP-DISTRIBUTION.md](DESKTOP-DISTRIBUTION.md).

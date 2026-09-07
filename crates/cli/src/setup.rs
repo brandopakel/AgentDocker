@@ -3,6 +3,8 @@
 //! one, hooks installed for Claude Code — idempotently, with a backup of
 //! every file it changes.
 
+pub mod guided;
+
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -220,7 +222,23 @@ pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let mut document: Value = match existing.as_deref().filter(|s| !s.trim().is_empty()) {
+    let Some(contents) = json_edit(path, existing.as_deref(), exe, runtime)? else {
+        return Ok(Outcome::Present);
+    };
+    if dry_run {
+        return Ok(Outcome::Planned);
+    }
+    write_config(path, existing.as_deref(), &contents)?;
+    Ok(Outcome::Added)
+}
+
+pub(super) fn json_edit(
+    path: &Path,
+    existing: Option<&str>,
+    exe: &Path,
+    runtime: &str,
+) -> Result<Option<String>> {
+    let mut document: Value = match existing.filter(|s| !s.trim().is_empty()) {
         Some(raw) => serde_json::from_str(raw)
             .with_context(|| format!("{} is not valid JSON", path.display()))?,
         None => json!({}),
@@ -243,19 +261,13 @@ pub fn register_json(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
         }
     }
     if servers.values().any(runs_agentdocker) {
-        return Ok(Outcome::Present);
-    }
-    if dry_run {
-        return Ok(Outcome::Planned);
+        return Ok(None);
     }
     servers.insert("agentdocker".to_owned(), entry(exe, runtime));
-    write_config(
-        path,
-        existing.as_deref(),
-        &format!("{}\n", serde_json::to_string_pretty(&document)?),
-    )
-    .with_context(|| format!("cannot write {}", path.display()))?;
-    Ok(Outcome::Added)
+    Ok(Some(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&document)?
+    )))
 }
 
 /// `[mcp_servers.agentdocker]` appended to a TOML configuration file, so
@@ -266,7 +278,23 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let existing = original.as_deref().unwrap_or("");
+    let Some(contents) = toml_edit(path, original.as_deref(), exe, runtime)? else {
+        return Ok(Outcome::Present);
+    };
+    if dry_run {
+        return Ok(Outcome::Planned);
+    }
+    write_config(path, original.as_deref(), &contents)?;
+    Ok(Outcome::Added)
+}
+
+pub(super) fn toml_edit(
+    path: &Path,
+    original: Option<&str>,
+    exe: &Path,
+    runtime: &str,
+) -> Result<Option<String>> {
+    let existing = original.unwrap_or("");
     let table: toml::Table = existing
         .parse()
         .with_context(|| format!("{} is not valid TOML", path.display()))?;
@@ -300,7 +328,7 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
             );
         }
         if servers.values().any(runs) {
-            return Ok(Outcome::Present);
+            return Ok(None);
         }
     }
     let mut block = toml::Table::new();
@@ -329,12 +357,7 @@ pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> R
     appended
         .parse::<toml::Table>()
         .context("MCP registration would produce invalid TOML; configuration unchanged")?;
-    if dry_run {
-        return Ok(Outcome::Planned);
-    }
-    write_config(path, original.as_deref(), &appended)
-        .with_context(|| format!("cannot write {}", path.display()))?;
-    Ok(Outcome::Added)
+    Ok(Some(appended))
 }
 
 /// `claude mcp add`, user scope: Claude Code writes its own configuration.

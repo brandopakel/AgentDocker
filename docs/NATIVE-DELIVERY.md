@@ -27,3 +27,7 @@ These changes do not provide a preserved terminal across daemon replacement, ven
 5. Sustained-use restart/dependency/retention and planned-upgrade behavior, then longer controlled soaks and the independent second-Mac trial. Federation remains a later delivery.
 
 The development Mac currently has no Developer ID Application signing identity installed. Build and local preview verification can proceed; public signing/notarization requires the user's developer identity and credentials through local secure configuration. Bencher credentials remain outside the repository and GitHub.
+
+## Desktop and onboarding follow-up
+
+[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. Automatic installation/update/rollback, signed public release, Windows parity and sustained upgrade crash boundaries still require implementation and acceptance.
