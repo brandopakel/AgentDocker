@@ -31,6 +31,11 @@ cp "$binary" "$app/Contents/MacOS/AgentDocker"
 chmod 0755 "$app/Contents/MacOS/AgentDocker"
 cp "$work/AgentDocker.icns" "$app/Contents/Resources/AgentDocker.icns"
 
+# The four-character type and creator codes. Classic Mac OS metadata
+# that modern macOS mostly ignores, present in every shipping bundle
+# and free to be right about.
+printf 'APPL????' > "$app/Contents/PkgInfo"
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
