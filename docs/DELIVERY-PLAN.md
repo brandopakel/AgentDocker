@@ -43,8 +43,10 @@ Add these checks to the existing T04/T10/T11/T12 and L12/L14/L15 matrices:
 - Limits, retention and recovery for logs, SQLite/event/journal/watcher records,
   snapshots, temporary checkouts, package staging and rollback copies. Cleanup
   must preserve active references and user work and recover space after failures.
-- Upload exact-source sanitized results and failure evidence to the repository
-  or GitHub Actions artifacts, confirm publication, then prune local generated
+- Sanitize exact-source results and all failure evidence before uploading to the
+  repository or GitHub Actions artifacts. Exclude credentials, user paths,
+  transcripts, screenshots/frames and provider data; keep raw diagnostics private.
+  Confirm publication, then prune local generated
   outputs. Preserve the current small package only while acceptance needs it.
   Prefer CI for broad platform matrices; one local campaign runs at a time.
 
@@ -134,7 +136,8 @@ as process cleanup. The active main checkout belongs to another session and was
 preserved. See the testing standard for scope and configurable limits.
 
 
-Storage audit checkpoint: the first temporary-cache pass recovered 185.21 GiB;
+Storage audit checkpoint ([pinned verification record](https://github.com/brandopakel/AgentDocker/blob/705677497c08679818b95d27892b5b785942e2ba/docs/verification/2026-09-07-local.json)):
+the first temporary-cache pass recovered 185.21 GiB;
 once the main checkout's tests finished, idle debug output recovered another
 79.43 GiB under its existing Cargo lock. After byte-verifying the sanitized
 22-campaign report on GitHub, completed temporary build outputs recovered a
