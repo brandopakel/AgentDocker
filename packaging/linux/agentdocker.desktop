@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=agentdocker
+Comment=Discover and coordinate local AI agents
+Exec=agentdocker-ui
+Icon=agentdocker
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=agentdocker

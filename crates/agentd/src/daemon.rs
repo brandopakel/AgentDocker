@@ -2601,11 +2601,8 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
+                let backlog = state.read_inbox(id, true)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
-                let backlog = state.inboxes.remove(id).map(Vec::from).unwrap_or_default();
-                if !backlog.is_empty() {
-                    state.persist("inbox", |store| store.clear_inbox(id));
-                }
                 backlog
             }
             None => Vec::new(),
@@ -3147,22 +3144,37 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let messages: Vec<Envelope> = {
-            let inboxes = &mut self.inboxes;
-            if drain {
-                inboxes.remove(&id).map(Vec::from).unwrap_or_default()
-            } else {
-                inboxes
-                    .get(&id)
-                    .map(|queue| queue.iter().cloned().collect())
-                    .unwrap_or_default()
-            }
-        };
-        if drain && !messages.is_empty() {
-            self.persist("inbox", |store| store.clear_inbox(&id));
-        }
+        // A failed liveness write must stop the operation before queue removal.
         self.touch(&id);
+        let messages = match self.read_inbox(&id, drain) {
+            Ok(messages) => messages,
+            Err(error) => return *error,
+        };
         Response::Messages { messages }
+    }
+
+    /// Snapshot before removal; commit its exact IDs and replay event together
+    /// before exposing a destructive read or changing live delivery routing.
+    fn read_inbox(&mut self, id: &AgentId, drain: bool) -> Result<Vec<Envelope>, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        let messages: Vec<Envelope> = self
+            .inboxes
+            .get(id)
+            .map(|queue| queue.iter().cloned().collect())
+            .unwrap_or_default();
+        if drain && !messages.is_empty() {
+            let ids = messages
+                .iter()
+                .map(|message| message.id.clone())
+                .collect::<Vec<_>>();
+            let response = self.ack_inbox(id.as_str(), &ids);
+            if !matches!(response, Response::Ok) {
+                return Err(Box::new(response));
+            }
+        }
+        Ok(messages)
     }
 
     fn unsubscribe(&mut self, agent: &AgentId) {
@@ -6967,6 +6979,173 @@ deny = ["send:all"]
         {
             Response::Messages { messages } => messages,
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
+        for subscribe in [false, true] {
+            for event_failure in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let daemon = open(&dir);
+                let receiver = register(&daemon, "receiver", None).await;
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":"retain after failed drain"}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+                let queued = inbox(&daemon, "receiver", false).await;
+                let mut events = daemon.subscribe_events();
+                let next_seq = {
+                    let state = lock(&daemon.state);
+                    if event_failure {
+                        state.store.reject_event_for_test("inbox_acknowledged");
+                    } else {
+                        state.store.reject_writes_for_test();
+                    }
+                    state.next_seq
+                };
+                let response = if subscribe {
+                    match daemon.subscribe(Some("receiver"), Vec::new()) {
+                        Err(error) => *error,
+                        Ok(_) => panic!("failed storage allowed an inbox subscription"),
+                    }
+                } else {
+                    daemon
+                        .handle(Request::Inbox {
+                            agent: "receiver".into(),
+                            drain: true,
+                        })
+                        .await
+                };
+                assert!(
+                    matches!(
+                        response,
+                        Response::Error {
+                            code: ErrorCode::StorageUnavailable,
+                            ..
+                        }
+                    ),
+                    "{response:?}"
+                );
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    state.inboxes[&receiver.id]
+                        .iter()
+                        .map(|message| &message.id)
+                        .collect::<Vec<_>>(),
+                    queued.iter().map(|message| &message.id).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    state.store.load_inboxes().unwrap()[&receiver.id].len(),
+                    queued.len()
+                );
+                assert_eq!(state.next_seq, next_seq);
+                assert!(!state.live_subscribers.contains_key(&receiver.id));
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_inbox_touch_does_not_acknowledge_messages() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain after failed touch"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_agent_writes_for_test();
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Inbox {
+                agent: "receiver".into(),
+                drain: true,
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery() {
+        for subscribe in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let receiver = register(&daemon, "receiver", None).await;
+            for text in ["first", "second"] {
+                assert!(matches!(
+                    daemon
+                        .handle(Request::Send {
+                            from: "user".into(),
+                            to: "receiver".into(),
+                            kind: "chat".into(),
+                            payload: json!({"text":text}),
+                            reply_to: None,
+                        })
+                        .await,
+                    Response::Sent { .. }
+                ));
+            }
+            let mut events = daemon.subscribe_events();
+            let delivered = if subscribe {
+                let (subscription, _) = daemon.subscribe(Some("receiver"), Vec::new()).unwrap();
+                subscription.backlog.clone()
+            } else {
+                inbox(&daemon, "receiver", true).await
+            };
+            assert_eq!(delivered.len(), 2);
+            let event = events.try_recv().unwrap();
+            assert!(
+                matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
+                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
+            );
+            let state = lock(&daemon.state);
+            assert!(
+                state
+                    .inboxes
+                    .get(&receiver.id)
+                    .is_none_or(|queue| queue.is_empty())
+            );
+            assert!(
+                !state
+                    .store
+                    .load_inboxes()
+                    .unwrap()
+                    .contains_key(&receiver.id)
+            );
+            assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
+            assert!(events.try_recv().is_err());
         }
     }
 

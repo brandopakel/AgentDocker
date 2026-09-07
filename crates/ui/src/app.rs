@@ -117,6 +117,7 @@ enum Msg {
 }
 
 pub struct App {
+    smoke: Option<crate::smoke::Smoke>,
     tx: Sender<Cmd>,
     rx: Receiver<Msg>,
     screen: Screen,
@@ -167,6 +168,11 @@ pub struct App {
 }
 
 impl App {
+    pub fn with_smoke(mut self, smoke: Option<crate::smoke::Smoke>) -> Self {
+        self.smoke = smoke;
+        self
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let client = Arc::new(Client::from_env());
         // The same directory the daemon uses, so a throwaway
@@ -200,6 +206,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            smoke: None,
             connected: Err("connecting…".to_owned()),
             last_seq: 0,
             status: String::new(),
@@ -237,6 +244,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            smoke: None,
             connected: Ok(()),
             last_seq: 0,
             status: String::new(),
@@ -1465,6 +1473,14 @@ impl eframe::App for App {
                     Screen::Settings => self.settings_screen(ui),
                 });
         });
+        if let Some(smoke) = &mut self.smoke {
+            smoke.tick(
+                ui.ctx(),
+                self.connected.is_ok(),
+                self.runtimes.len(),
+                &self.discovered,
+            );
+        }
     }
 }
 

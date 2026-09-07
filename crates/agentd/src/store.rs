@@ -396,6 +396,16 @@ impl Store {
     }
 
     #[cfg(test)]
+    pub(crate) fn reject_agent_writes_for_test(&self) {
+        self.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_agent_write BEFORE INSERT ON agents
+            BEGIN SELECT RAISE(FAIL, 'injected agent write failure'); END;",
+            )
+            .unwrap();
+    }
+
+    #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
@@ -651,14 +661,6 @@ impl Store {
             params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
         )?;
         tx.commit()?;
-        Ok(())
-    }
-
-    pub fn clear_inbox(&self, agent: &AgentId) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM inbox WHERE agent = ?1",
-            params![agent.as_str()],
-        )?;
         Ok(())
     }
 
@@ -1301,8 +1303,21 @@ mod tests {
             .collect();
         assert_eq!(texts, vec!["2", "3", "4"]);
 
-        store.clear_inbox(&agent).unwrap();
+        let ids = inboxes[&agent]
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        let mut event = Event::new(
+            EventKind::InboxAcknowledged {
+                agent: agent.clone(),
+                messages: ids.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = 1;
+        store.ack_inbox(&agent, &ids, &event).unwrap();
         assert!(store.load_inboxes().unwrap().is_empty());
+        assert_eq!(store.recent_events(1).unwrap()[0], event);
     }
 
     #[test]

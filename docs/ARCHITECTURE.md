@@ -275,7 +275,9 @@ Five destinations:
 
 **Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, channel, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
-Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
+Destructive inbox reads and subscription startup commit removal of the queued message IDs and one `InboxAcknowledged` event in the same SQLite transaction before changing memory or live delivery routing. Failed removal/event persistence returns `storage_unavailable`, retains queued messages and does not register a new subscriber. That event records server-side queue removal; it does not prove the provider consumed the message.
+
+Live delivery is at-most-once: a slow subscriber that falls more than 1024 messages behind is told it lagged and skips. Inboxes survive daemon restart, but `inbox --drain` and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Clients that require recovery should read without draining and explicitly acknowledge only processed message IDs through `ack_inbox`. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
 
 ## Channels
 
@@ -310,6 +312,8 @@ The complete variant definitions and payloads are in [`EventKind`](../crates/cor
 ## Process supervision
 
 `run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Captured log lines carry timestamps and stream tags. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+
+For supervised native commands, the daemon overrides `AGENTDOCKER_HOME`, `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID` and `AGENTDOCKER_AGENT_NAME` with its own context after applying `spec.env`. It removes `AGENTDOCKER_TOKEN_FILE` because these children use the host endpoint, and sets `AGENTDOCKER_NO_AUTOSTART=1` so an unavailable owner fails explicitly instead of starting a replacement from a child. The same rules apply to initial launches and restored commands, including PTY launches. Explicit container mounts use their separate scoped endpoint and credentials.
 
 ## Security model
 

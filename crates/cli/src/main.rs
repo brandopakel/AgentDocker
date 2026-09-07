@@ -525,7 +525,7 @@ enum Command {
     Inbox {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
-        /// Remove the messages after showing them.
+        /// Remove queued messages before replying; a broken connection can lose this delivery.
         #[arg(long)]
         drain: bool,
     },

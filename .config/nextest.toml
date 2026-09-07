@@ -11,6 +11,18 @@ flaky-result = "fail"
 leak-timeout = { period = "2s", result = "fail" }
 slow-timeout = { period = "30s", terminate-after = 3 }
 
+# Stock nextest on Darwin can inherit a sibling test's output pipe during
+# concurrent process creation. Keep leak detection strict and serialize test
+# processes until upstream spawn serialization is available. Concurrency inside
+# each test is unchanged. See docs/TEST-RUNNER-MACOS.md for captured evidence.
+[[profile.default.overrides]]
+platform = { host = 'cfg(target_os = "macos")' }
+filter = 'all()'
+test-group = 'macos-test-process'
+
+[test-groups.macos-test-process]
+max-threads = 1
+
 [profile.ci]
 fail-fast = false
 retries = 0
