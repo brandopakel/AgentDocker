@@ -15,11 +15,13 @@
 //! Reading it is where the platforms differ, and the difference is worth
 //! stating rather than papering over. On Linux `/proc/<pid>/environ` is
 //! readable for our own user's processes, so the daemon can look for
-//! itself. **On macOS it cannot**: `ps -E` returns only the command line
-//! for a process that is not the caller, whatever the user. So the
-//! signal has to arrive another way there, and it does — an agent that
-//! registers itself is running *inside* the session, so the client reads
-//! its own environment and sends what it saw.
+//! itself. **On macOS it cannot**: measured on 26.5.1, `ps -E` returns
+//! only the command line for a process other than the caller, even one
+//! owned by the same user. (A privileged caller was not tested, and
+//! nothing here depends on what one would see.) So the signal has to
+//! arrive another way there, and it does — an agent that registers
+//! itself is running *inside* the session, so the client reads its own
+//! environment and sends what it saw.
 //!
 //! Where neither is available, process ancestry still shows a `tmux` or
 //! `zellij` between the agent and its shell. That is weaker — it cannot
