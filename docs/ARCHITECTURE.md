@@ -1,22 +1,22 @@
 # AgentDocker architecture
 
-This document describes what exists today precisely, and the later phases at the level of design intent. When the two disagree, the code wins and this document has a bug.
+This document describes implemented behavior and later design intent. The [September 6 audit](AUDIT-2026-09-06.md) records known exceptions and test evidence at a pinned revision; implementation does not imply release availability or completion of hardening.
 
 The [product direction](PRODUCT-DIRECTION.md) sets the next delivery priorities: native local orchestration, automatic discovery and setup, an installed desktop GUI, and macOS/Linux/Windows support. Container engines are optional execution adapters. The historical phase order below does not make container expansion or a browser dashboard prerequisites for that desktop product.
 
 ## Goals
 
 1. **Universal.** Any agent — any model, any vendor, any runtime — can participate with nothing more than the ability to write JSON to a socket. No SDK is required, though one may exist for convenience.
-2. **Safe by default.** Nothing an agent can do to the daemon can wedge another agent. Every claim expires; every exit releases.
+2. **Bounded coordination.** Claims expire, waiting is cancellable, and confirmed process/group exit releases protection. Uncertain writers retain protection according to the documented lifecycle and TTL rules. These are tested contracts, not a guarantee against arbitrary local processes.
 3. **Familiar.** If you know Docker's mental model and CLI, you know AgentDocker's.
 4. **Local first.** One host works with no network, no accounts, no cloud. Federation is layered on top later, not baked into the core.
-5. **Observant.** The daemon derives an agent's state — what it read, holds, changed, and which branch it is on — from what hooks and adapters report, and never asks an agent to describe itself. Everything past Phase 1 is a derivation of that working set; see [The thesis](#the-thesis).
+5. **Observant.** The daemon derives working state from filesystem/process evidence and explicit hooks/MCP reports. Model/provider identity and task notes can be supplied by a launch specification or integration; discovery alone does not reveal them. Everything past Phase 1 is a derivation of that working set; see [The thesis](#the-thesis).
 
 ## Components
 
 ### `agentdocker-core` (`crates/core`)
 
-Pure types and pure logic. It has no I/O, no async, and no access to a clock: every operation that depends on time takes `now: DateTime<Utc>` as an argument. This is what makes the coordination logic deterministic and cheaply testable.
+Coordination types and state machines are pure; time-dependent operations accept `now: DateTime<Utc>`. The architectural target is no host I/O or environment lookup here. The current `paths` module still reads home/socket environment defaults; moving that host policy into `crates/host` is an audit follow-up. Core has no async runtime.
 
 | Module | Contents |
 |---|---|
@@ -27,15 +27,20 @@ Pure types and pure logic. It has no I/O, no async, and no access to a clock: ev
 | `event` | `Event`, `EventKind` — everything the daemon announces |
 | `protocol` | `Request`, `Response`, `ErrorCode` — the wire format |
 | `project` | `ProjectRef`, `ProjectId`, `ProjectSource` — the project an agent works in and how it becomes an id |
-| `paths` | Where the socket and data live |
+| `paths` | Socket/data path calculations and legacy environment-default helpers |
+| `runtime` | Curated tool inventory and supported setup formats |
+| `working_set`, `change`, `journal` | Read marks, change records, journal entries and digest logic |
+| `recovery`, `handoff` | Checkpoints, validation evidence and portable handoff records |
+| `channel`, `contest` | Membership, reviews, evidence-backed entries and rankings |
+| `wait`, `multiplexer` | FIFO/deadlock logic and reported session descriptors |
 
 ### `agentdocker-host` (`crates/host`)
 
-The I/O that both binaries need but that does not belong in the daemon's state: project discovery from a working directory (`project::discover`, `project::fingerprint`) and process inspection (`procinfo::start_time`). Stateless: every function answers a question about the host as it is right now.
+Shared host I/O: project/path discovery, Git/content inspection, process identity, installed-runtime/config inventory, bounded subprocesses, terminal operations, notifications, multiplexer queries and optional container transports. It owns no daemon registry or durable coordination state.
 
 ### `agentd` (`crates/agentd`)
 
-One process per host. It is a library crate whose `main` the `agentdocker` package wraps as the `agentd` binary, so one `cargo install agentdocker` ships both. It owns:
+One process per host. It is a library crate whose `main` the `agentdocker` package wraps as the `agentd` binary, so a source install of the `agentdocker` package ships both CLI and daemon. It owns:
 
 - **Registry** — in memory, guarded by a mutex.
 - **Supervisor** — spawns managed agents with `tokio::process`, captures stdout/stderr to `<home>/logs/<id>.log` with timestamps and stream tags, and records the exit status.
@@ -51,17 +56,17 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 ## Persistence
 
-A failed SQLite write latches `storage_unavailable`: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported.
+The intended write contract is to latch `storage_unavailable` on SQLite failure: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported. The startup restore path currently violates the fail-closed launch contract: a failed reclaimed-lease write can still be followed by process spawn. See the [blocking audit findings](AUDIT-2026-09-06.md#blocking-findings); do not treat automatic restore as hardened.
 
 Reads are served from memory; every mutation is written through to SQLite (`rusqlite`, bundled, WAL mode) before the response goes out. Rows are JSON blobs of the core types beside the few columns needed for lookups (`agents`, `leases`, `inbox`, `events`, `changes`, `journal` with its `journal_paths` and `journal_fts` indexes and `journal_cursors`; `projects` is the one plain table, a cache of fingerprints per repository root), so adding a field to a core type is not a migration. A `meta.schema_version` row guards against opening a database written by an incompatible build. Schema 7 upgrades schemas 1 through 6 on open and idempotently translates old `file:` leases using each holder's recorded checkout. Older daemons refuse schema 7, which preserves image-bound validation, runner deadlines, and container lifetime independently of host PIDs; process-group tracking and `stopping` status remain supported.
 
-On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Leases keep their original expiry, so a restart never extends anyone's claim.
+On startup the daemon reloads agents, leases, and inboxes, tidying as it goes: a managed record still `created` (the old daemon died mid-spawn) is recorded as failed, a second live record with an already-live name is recorded as exited, and a lease whose holder is not live is dropped — each written back so the store and the registry agree. Reloaded leases keep their original expiry. Opt-in snapshot restoration may acquire new leases from a recent restore point with new IDs and expiries; that is distinct from extending an existing lease.
 
 Agents that were live when the previous daemon stopped are *adopted*: the new daemon has no `Child` handle for them, so a once-per-second liveness check inspects every unsupervised live agent that reported a pid and records an exit (releasing its leases) when the process is gone. "Gone" means signal 0 fails, *or* the process now behind that pid started at a different time than the one that registered — the daemon records the process start time (macOS `proc_pidinfo`, Linux `/proc/<pid>/stat`) so a recycled pid, typically after a reboot, is not mistaken for the agent. The same check covers externally registered agents, which is what makes a Claude Code session that dies without deregistering harmless. An external agent that registered without a pid can only leave by deregistering; a managed agent still being spawned is skipped.
 
 Lease deletion and its `lease_released` or `lease_expired` event commit in one transaction, including startup cleanup, explicit release, agent exit and expiration. A failed event write retains the durable lease; restart never repeats an already committed cleanup event.
 
-Every event carries a strictly increasing `seq`, assigned by the daemon and continued across restarts from the stored history. Events are appended to the store as they are emitted and trimmed to the newest 10,000 once a minute; `agentdocker events --replay N` shows the last N before streaming, and the server drops any live event whose `seq` the replay already covered, so an event emitted while the stream was being set up is delivered once. A persistence failure disables coordination and fails the request as described above; no failed event is published live. Inbox acknowledgment deletes and its event commit in one transaction.
+Persisted replay events carry a strictly increasing `seq`, continued across restarts. High-volume `file_changed` and `agent_stale` notifications instead use `seq: 0` and are live-only; retained ledger/read-set data supplies their recovery path. Events are appended to the store as they are emitted and trimmed to the newest 10,000 once a minute; `agentdocker events --replay N` shows the last N before streaming, and the server drops any live event whose `seq` the replay already covered, so an event emitted while the stream was being set up is delivered once. A persistence failure disables coordination and fails the request as described above; no failed event is published live. Inbox acknowledgment deletes and its event commit in one transaction.
 
 ### `agentdocker` (`crates/cli`)
 
@@ -75,7 +80,7 @@ Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`a
 
 **As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux. Both restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
 
-**Installing.** `cargo install agentdocker` builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb.in` is the template for a tap formula, with a `brew services` block that runs the daemon. The release workflow builds and uploads archives with SHA-256 checksums on every protected `v*` tag, then generates `agentdocker.rb` from all four verified checksum inputs. The installer requires a valid matching checksum before extracting or replacing anything. Workspace dependencies include versions so `cargo package --workspace` packages all five crates; actual crates.io publication and tap publication remain release operations.
+**Installing.** Installing the CLI package from a pinned Git tag/commit or checkout builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb.in` is the template for a tap formula, with a `brew services` block that runs the daemon. The release workflow builds and uploads archives with SHA-256 checksums on every protected `v*` tag, then generates `agentdocker.rb` from all four verified checksum inputs. The installer requires a valid matching checksum before extracting or replacing anything. Workspace dependencies include versions so `cargo package --workspace` packages all five crates; actual crates.io publication and tap publication remain release operations.
 
 ### `agentdocker mcp` (`crates/cli/src/mcp.rs`)
 
@@ -129,7 +134,7 @@ Agents are grouped by the project they work in, and the project is **derived, ne
 
 The daemon watches the filesystem of every checkout a live agent works in and keeps a ledger of what changed and who held it. This is the substrate for staleness notices and the change journal (Phase 3), and it is what makes branch tracking event-driven.
 
-**Watching.** One `notify` watcher (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second, and at once when an agent registers — `register` and `run` wait, bounded at 500 ms, for the watcher to cover the new checkout before replying — including while the watcher is still starting — so a session's first edit is never made in the gap before the next tick — and an agent leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
+**Watching.** One `notify` watcher (FSEvents on macOS, inotify on Linux) covers each distinct checkout — the main root or a linked worktree — of every live agent whose project is a repository or an `Agentfile.toml` root. Plain directories are not watched: a recursive watch on a home directory is exactly what inotify cannot afford. Watches are reconciled against the registry once a second and on registration. Normal `run` waits up to 500 ms for checkout coverage before spawning; failed attachment prevents launch. `register` waits before reporting successful coverage, but an externally started process may already be writing. Snapshot restore currently bypasses this readiness barrier; see [R2](AUDIT-2026-09-06.md#r2--restored-workers-bypass-startup-readiness). An agent leaving needs no hook. Raw events are debounced for 100 ms and duplicates within a batch collapse; each path is filtered through the checkout's `.gitignore` so `target/` and `node_modules/` never reach the ledger; directories are skipped; and `.git/` is ignored except the files that say where HEAD is (`HEAD`, `refs/heads/**`, `packed-refs`, a worktree's `HEAD`), which trigger a branch re-read for the agents in that checkout instead of an entry. A linked worktree's own git directory, which lives under the main root, is watched too so its `HEAD` is seen.
 
 **The ledger.** Each surviving change becomes a `Change`: project, worktree, checkout-relative path, kind (created, modified, removed, renamed), time, the checkout's HEAD, and an **attribution** — the holder of an unexpired exclusive lease on the physical checkout path (shared leases are not authorship evidence), else `external`: the user's editor, a git command, a build. Attribution is best-effort by construction and every rendering says so. Entries are persisted in the `changes` table (`seq`, indexed by project and by project + path, so "everything under `src/`" is a prefix range) and announced live as `file_changed`, which is deliberately *not* kept in the event history: change volume would crowd out everything else in that 10,000-event window. The newest 100,000 entries per project are kept, pruned once a minute.
 
@@ -236,7 +241,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
 
-Errors: `{"type":"error","code":"conflict|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|engine_unavailable|build_failed|unavailable|internal","message":"...","details":{...}?}`.
+Errors: `{"type":"error","code":"conflict|deadlock|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|engine_unavailable|build_failed|unavailable|timeout|internal","message":"...","details":{...}?}`.
 
 ## Leases
 
@@ -256,16 +261,17 @@ Two **modes**: `exclusive` conflicts with any lease on an overlapping resource h
 
 ## Messaging
 
-An **envelope** carries `from` (an agent id, or `user` for CLI-injected messages), `to`, a free-form `kind`, a JSON `payload`, an optional `reply_to`, and a timestamp. The daemon routes; it does not interpret `kind` or `payload`.
+An **envelope** carries `from` (an agent id, or `user` for CLI-injected messages), `to`, a free-form `kind`, a JSON `payload`, an optional `reply_to`, and a timestamp. Most payloads are opaque; built-in question/answer, handoff and notification paths interpret their documented fields.
 
-Four destinations:
+Five destinations:
 
 - **Agent** — one recipient, resolved by id/prefix/name before publishing.
 - **Project** — every live agent in a project except the sender. `project:<selector>` takes an id (any unique prefix) or an absolute path inside the project; the CLI and MCP server turn a bare `project` into the caller's current directory, so `send --to project` needs no ids at all.
 - **Topic** — a `/`-separated path like `repo/backend/reviews`. Subscribers give MQTT-style patterns: `+` matches one level, `#` matches the rest.
 - **Broadcast** — every live agent except the sender.
+- **Channel** — members of a named channel except the sender, with inbox fallback when a member has no live subscription.
 
-**Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
+**Delivery.** A message is pushed to every live subscription whose filter matches (a project delivery matches subscribers whose agent was in that project when it subscribed). For agent, project, channel, and broadcast destinations, each recipient *without* a live subscription gets the message queued in its inbox instead. Topic messages are live-only; whether they should ever queue is an [open question](#open-questions). When an agent opens a subscription its inbox is flushed into the stream first; a message that lands in the tiny window between "subscribed to the bus" and "inbox drained" is suppressed by id so it is not shown twice.
 
 Guarantees, stated plainly: live delivery is at-most-once (a slow subscriber that falls more than 1024 messages behind is told it lagged and skips); inboxes survive daemon restart, but drain and subscription handover remove queued messages before transport acknowledgement, so a broken connection can lose that delivery. Reliable handoffs and questions require the acknowledgement protocol planned below. A `lagged {skipped}` response explicitly reports skipped live items. The CLI warns and continues for messages; event streams exit with an error directing the caller to recover retained history.
 
@@ -295,17 +301,17 @@ Several agents attempt one task, and the evidence decides. A channel is what hap
 
 ## Events
 
-`agent_discovered` (an unregistered process appeared or its metadata changed; includes PID and optional start time), `agent_vanished` (that PID/start-time session exited, or `adopted`), `discovery_unavailable` (scan failed; prior snapshot retained), `discovery_available` (scanning recovered), `agent_id`, `project_ref`, `container_updated`, `image_built`, `worktree_created`, `worktree_cleanup`, `integration_prepared`, `access_granted`, `access_revoked`, `checkpoint_saved`, `handoff_accepted`, `handoff_sent`, `handoff_imported`, `lease_transferred`, `validation_started`, `validation_finished`, `watcher_gap`, `watcher_starting`, `watcher_started`, `watcher_unavailable`, `restricted_endpoint_listening`, `restricted_endpoint_unavailable`, `reads_observed`, `inbox_acknowledged`, `agent_created`, `agent_started`, `agent_stopping`, `agent_exited`, `agent_removed`, `message_sent`, `lease_claimed`, `lease_renewed`, `lease_released`, `lease_expired`, `lease_conflict`, `project_discovered`, `journal_appended`, `journal_read`, `channel_opened`, `channel_joined`, `channel_closed`, `review_submitted`, `agent_vcs_changed`, `daemon_stopping`. Each carries a timestamp and enough data to be actionable on its own (a lease event carries the whole lease). `agentdocker events` streams them; dashboards and policy engines will consume the same stream.
+The complete variant definitions and payloads are in [`EventKind`](../crates/core/src/event.rs). They cover discovery availability and PID/start-time changes; watcher and restricted-endpoint readiness; agent/process/restore transitions; messages/inbox acknowledgements; lease acquisition, waiting/deadlock and release; journal/read observations; worktrees and integration; channels/reviews/contests; credentials, images and containers; validation and handoff. Each event carries a timestamp. Persisted events can be replayed; readiness and lag handling must follow the stream contract above. `agent_id` and `project_ref` are record types, not event variants.
 
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
 ## Process supervision
 
-`run` spawns the command with stdin closed and stdout/stderr piped into a log writer that prefixes each line with an ISO timestamp and `[out]`/`[err]`. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Captured log lines carry timestamps and stream tags. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
 
 ## Security model
 
-The host control socket is mode `0600` and trusts the owning user. The separate `container.sock` also has mode `0600` but requires a scoped token: first `authenticate`, then exactly one operation, then close. Frames are bounded to 1 MiB and connections time out after 30 seconds. Tokens are stored hashed, scoped to one running agent and physical checkout, and checked for revocation/expiry on every operation. Only mapped path claims/reads, own inbox/lease operations, inspection and direct project-peer messaging are allowed. Host process control, validation execution and credential administration are unavailable. Missing tokens never fall back to host authority. Existing leases survive revocation until normal release/expiry/observed exit. Engine sockets and the host control socket are never container mounts.
+The host control socket is mode `0600` and trusts the owning user. This is not authentication between mutually untrusted same-user processes. State/database/log file modes need separate hardening; see the [privacy finding](AUDIT-2026-09-06.md#p1--state-and-log-privacy-depends-on-inherited-permissions). The separate `container.sock` also has mode `0600` but requires a scoped token: first `authenticate`, then exactly one operation, then close. Host request frames are bounded to `IMPORT_BYTES + 64 KiB` (8 MiB + 64 KiB, including the newline); the handoff bundle itself is limited to 8 MiB. Restricted-endpoint request frames are bounded to 1 MiB and restricted connections time out after 30 seconds. Tokens are stored hashed, scoped to one running agent and physical checkout, and checked for revocation/expiry on every operation. Only mapped path claims/reads, own inbox/lease operations, inspection, direct project-peer messaging, and mapped journal note writes/reads are allowed. Journal digest readers are bound to the token's agent, and cursor advancement is limited to that agent. Host process control, validation execution and credential administration are unavailable. Missing tokens never fall back to host authority. Existing leases survive revocation until normal release/expiry/observed exit. Engine sockets and the host control socket are never container mounts.
 
 ## Roadmap
 
@@ -329,7 +335,7 @@ Docker's moat was a layered filesystem plus namespaces: the daemon knew exactly 
 
 ### Phase 1 — adapters & persistence *(done)*
 
-[Persistence](#persistence), [`agentdocker mcp`](#agentdocker-mcp-cratesclisrcmcprs), [`agentdocker hook`](#agentdocker-hook-cratesclisrchooksrs), [`Agentfile.toml`](#agentfiletoml-and-agentdocker-up-down-cratesclisrcagentfilers-teamsrs), and `claim --wait` all exist. A FIFO wait queue now exists (see [Wait queue, deadlock detection, and what an agent is doing](#wait-queue-deadlock-detection-and-what-an-agent-is-doing-done)). One thing the original design called for is still deliberately deferred: a daemon-side notion of a team (the Agentfile is a client convenience; `list {labels?}` arrives with project filtering in Phase 2 so `ps --team` can be sugar over labels).
+[Persistence](#persistence), [`agentdocker mcp`](#agentdocker-mcp-cratesclisrcmcprs), [`agentdocker hook`](#agentdocker-hook-cratesclisrchooksrs), [`Agentfile.toml`](#agentfiletoml-and-agentdocker-up--down-cratesclisrcagentfilers-teamsrs), and `claim --wait` all exist. A FIFO wait queue now exists (see [Wait queue, deadlock detection, and what an agent is doing](#wait-queue-deadlock-detection-and-what-an-agent-is-doing-done)). One thing the original design called for is still deliberately deferred: a daemon-side notion of a team (the Agentfile is a client convenience and team selection uses agent labels).
 
 ### Phase 2 — native install & projects
 
@@ -374,9 +380,9 @@ See [Watching and the ledger](#watching-and-the-ledger). The watcher, filtering,
 
 #### Change journal *(done)*
 
-What exists is described under [The journal](#the-journal); the rest of this section is the settled design it follows.
+What exists is described under [The journal](#the-journal); the rest of this section retains the historical design sketch. The implemented wire types and contracts above take precedence where the sketch omits newer fields or indexes.
 
-A per-project, append-only narrative of what changed and why: coarse where the ledger is fine-grained, readable by models and humans, cheap to read incrementally, and the thing a newcomer is handed instead of the event stream. The design below was settled decision by decision on 2026-09-04 (the list is at the end) and is ready to build.
+A per-project, append-only narrative of what changed and why: coarse where the ledger is fine-grained, readable by models and humans, cheap to read incrementally, and the thing a newcomer is handed instead of the event stream. The design below was settled decision by decision on 2026-09-04 (the list is at the end) and has since been implemented and extended.
 
 **Entries.** One entry per *release request* — a `release` or `release_all` that freed at least one lease — never one per resource, so a `Stop` that drops twenty file leases yields one line, not twenty. An entry is written when the request freed a lease and either the ledger shows changes under those resources or a summary was given; a lease claimed and abandoned untouched leaves nothing.
 
@@ -487,7 +493,7 @@ Docker and Podman are equal targets for the container workstream. AgentDocker re
 
 The current implementation provides worktree operations and a separate authenticated container endpoint. Managed image build/launch, authenticated mounts, Podman VM transport and image-bound validation are implemented. The delivery and acceptance plan is [CONTAINER-ENGINES.md](CONTAINER-ENGINES.md).
 
-The shared engine interface will cover availability/capability discovery, image build and inspection, container create/start/inspect/stop/remove, logs, and wait. Implementations invoke the selected engine with structured arguments. Engine selection is explicit and persisted; a failed engine must never silently switch to another engine or the host. Record the engine, container ID, resolved image ID/digest and platform with the agent. A client process exiting does not prove the container stopped: engine inspection must establish termination before releasing its protection. An unavailable engine leaves status uncertain and protection governed by existing lease TTLs.
+The shared engine interface covers availability/capability checks, image build/inspection and managed container lifecycle, logs and exit observations. Implementations invoke the selected engine with structured arguments. Engine selection is explicit and persisted; a failed engine must never silently switch to another engine or the host. Record the engine, container ID, resolved image ID/digest and platform with the agent. A client process exiting does not prove the container stopped: engine inspection must establish termination before releasing its protection. An unavailable engine leaves status uncertain and protection governed by existing lease TTLs.
 
 Build support uses a common Dockerfile/Containerfile and explicit context, with per-engine handling for unsupported features. Podman accepts both formats, but its `buildx` compatibility does not cover all Docker Buildx features ([Podman build reference](https://docs.podman.io/en/latest/markdown/podman-build.1.html)). Build provenance must record the source content identity, build recipe, engine/version, target platform, and resulting immutable image identity. Build success is distinct from test success; validation evidence also needs the image identity and command before it can be reused across container sessions.
 
@@ -509,7 +515,7 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 
 #### Native desktop app *(done)*
 
-`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs any `agentdocker` command and shows what it said, because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so they arrive whether or not the window is open. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
+`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs CLI commands with a 20-second limit and shows their output (long-running/streaming operations are not a persistent shell), because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so notification attempts do not depend on the window being open; OS permission/tool failure can prevent display, and display does not prove a person read it. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
 
 #### Wait queue, deadlock detection, and what an agent is doing *(done)*
 
@@ -541,7 +547,7 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 #### Sessions and persistence
 
-`run` gives a managed agent pipes and captures them to a log. Two things follow, and both are wrong. An interactive agent cannot be run that way at all — `claude` and `codex` want a terminal, and a pipe is not one — so in practice agents are started by hand and only *adopted*. And nothing survives: if `agentd` restarts, the child lives on in its own process group but its output is gone, and there is no way back to it.
+`run` uses pipes by default for batch commands and `--tty` supplies a controlling terminal for interactive commands. Attaching to that terminal is separate from discovering or adopting an externally started process.
 
 Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = true` in an `Agentfile.toml` entry) gives the agent a **pty** instead of pipes: `posix_openpt` in the daemon, and in the child, between `fork` and `exec`, `setsid` and `TIOCSCTTY` so the terminal is genuinely its controlling one. That replaces `process_group(0)` rather than joining it — `setsid` makes the child a process-group leader by itself, so signalling `-pid` still reaches its descendants, and doing both would fail. Everything the agent prints goes two ways: whole lines to the log, so `logs` reads exactly as before, and raw bytes to a broadcast for whoever is attached.
 
@@ -549,13 +555,11 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
 
-What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with `agentd`, so `attach` afterwards has nothing to reconnect to.
+Terminal continuity across daemon restart is **not** implemented. Clean shutdown stops managed agents. On a crash, the PTY master or output pipe can close and the child may exit; being in a separate process group does not guarantee survival. Existing terminal handles cannot be reattached after the owning daemon exits.
 
-**What herdr does about this, and what it means for us.** Worth knowing precisely, because the answer is less magical than the marketing suggests, and it sets our own target. Their server owns the terminals, so sessions survive client detach, sleep, and network loss — the same property we now have. When the *server itself* restarts, their own documentation is explicit that running processes are not preserved: "Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes." What is restored is structure — workspaces, tabs, panes, cwd, layout, focus — and panes "come back as new shells in their saved directories", optionally replaying recent screen contents, optionally letting an agent resume its own conversation if it reported a session reference. Only a *planned* upgrade preserves processes, behind an experimental `--handoff` flag: the old server duplicates its pty master descriptors and passes them to the new one over a private Unix socket with `SCM_RIGHTS`, so, in their words, it "does not move the child processes. It moves ownership of the terminals those processes are already attached to."
+Snapshot relaunch and transfer of live terminal descriptors are separate engineering tasks. The former restarts a stored command; the latter would preserve the running process during a planned upgrade. Neither automatically restores an LLM conversation.
 
-So the target splits in two, and the second half is where we are better placed than they are.
-
-Row 27, the **snapshot restore**, is done. `run --restore` (or `restore = true` in an `Agentfile.toml`) marks a managed agent as one to bring back; opt-in, because starting a daemon should never spawn processes nobody asked it to, and `agentdocker ps` starts the daemon. On startup, before the liveness sweep can retire anything, such an agent is relaunched **under its own id**. That is the whole of it: the read set, the journal cursor, the checkpoints, the ledger attribution and the leases are all keyed by the agent id, so restoring the identity restores the working set with it rather than handing out a fresh shell in the right directory.
+Row 27, **snapshot restore**, is implemented with known readiness and storage-failure defects described in the [audit](AUDIT-2026-09-06.md#blocking-findings). `run --restore` (or `restore = true` in an `Agentfile.toml`) marks a managed agent as one to bring back; opt-in, because starting a daemon should never spawn processes nobody asked it to, and `agentdocker ps` starts the daemon. On startup, before the liveness sweep can retire anything, such an agent is relaunched **under its own id**. That is the whole of it: the read set, the journal cursor, the checkpoints, the ledger attribution and the leases are all keyed by the agent id, so restoring the identity restores the working set with it rather than handing out a fresh shell in the right directory.
 
 Which records qualify does not depend on how the last daemon ended. A clean shutdown stops its agents, so their records read `exited`; a crash writes nothing, so they still read `running`. Either way the process is gone and the agent asked to come back. An agent whose process group is somehow still alive is left alone rather than started twice, and an agent stopped on purpose is not restored — `stop` clears the flag on the record, so the reason it will not come back is visible in `inspect` rather than hidden in the daemon.
 
@@ -567,7 +571,7 @@ What is still not restored is the terminal. A `--tty` agent comes back with a ne
 
 Row 28 is the **descriptor handoff**: `agentdocker daemon reload` passing pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade does not disturb a running agent. The same mechanism herdr uses, for the same reason, and worth having once upgrades are frequent enough to notice.
 
-This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
+Descriptor transfer needs its own planned-upgrade, interrupted-transfer and crash tests before it can be an availability guarantee.
 
 #### The app's terminal and command bar
 
@@ -617,7 +621,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | ✅ canonical physical `path:` lease keys with validated `file:` input aliases | 2 | 1 |
-| 4 | ✅ `daemon install/uninstall/status`; lazy start; release workflow, tap, installer | 2 | — |
+| 4 | 🔄 service/lazy start and release archives/installer ✅; maintained Homebrew tap/cask pending | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | ✅ project watcher, ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback | 3 | 3, 6 |
@@ -626,38 +630,37 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
 | 10 | 🔄 `run --isolate` ✅, `worktree-diff` ✅, `overlap` ✅; `commit` (an agent committing its worktree through the daemon, so the act is journaled and attributed) is not built | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
-| 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
+| 12 | ✅ scoped tokens, Docker/Podman builds and supervision, authenticated workspaces, engine-volume relay and image-bound validation | 4 | 3 |
 | 13 | ✅ FIFO wait queue with RAII places, pure deadlock search over the lease and wait tables, `error(deadlock)` with the cycle, `waiting` | 5 | — |
 | 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
 | 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
-| 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
+| 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, OS IPC), terminal/console/questions; desktop distribution and onboarding remain incomplete | 5 | 18 |
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | ✅ contests: passing, provenance-matched `validate` evidence as the entry; a measure fixed before anyone starts, taken by the daemon where it can be; a declared noise floor, inside which the ranking refuses to decide and channel review settles it | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
-| 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
+| 27 | 🔄 snapshot restore (implemented; readiness/persistence fixes required): `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
 | 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | ✅ multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover`; `run --in-pane` starts an agent in a new tmux session and registers what tmux started, so the human attaches with the tool that owns the terminal | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 15, 16, 28, the `commit` half of 10, 20, and 17.
+Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): correct restore/privacy defects, complete the local native trial and desktop packaging, then deliver Linux desktop and Windows parity. Policy/quotas (15), supervision policy (16), descriptor handoff (28), the `commit` half of 10 and federation (17) remain backlog items.
 
 ### Planned protocol and event additions
 
-Listed here so the wire-protocol table above stays a description of what exists.
+Listed here so the wire-protocol table above stays a description of what exists. Handoff and scoped authentication are already implemented with the request shapes above; the older design of a token field on every host request was superseded by the separate authenticated endpoint.
 
 | Request | Response | Phase |
 |---|---|---|
 | `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
 | `diff {agent, stat?}` | `diff` | 4 |
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
-| `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
-| `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
+| Additional execution adapters | capability-specific | 4 |
 
 Shipped events include `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 

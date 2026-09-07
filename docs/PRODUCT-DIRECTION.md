@@ -1,29 +1,49 @@
 # Product direction
 
-AgentDocker is a native application for discovering and orchestrating AI agents on a user's computer. The user opens an installed desktop app and sees active agents, their projects, current work, shared context and coordination state. Docker and Podman supply familiar ideas for lifecycle, inspection and organization; they are not required infrastructure for local agents.
+agentdocker is a native desktop application for discovering and orchestrating AI agents on a user's computer. Opening the app should show the agents already working, their projects, supported actions, shared context and coordination state. Docker and Podman inspired the lifecycle and organization model; they are optional execution adapters, not required infrastructure.
 
-The target platforms are macOS, Linux and Windows. The current implementation supports macOS and Linux. Windows belongs in the product scope, with its own process inspection, local transport, service lifecycle, packaging and test coverage. An application window is the primary GUI experience; users should not need to start a web server, open a localhost URL or use a terminal. The GUI communicates with the local daemon through operating-system IPC. The UI toolkit is still to be selected against these requirements.
+The target platforms are macOS, Linux and Windows. The selected GUI is Rust with egui/eframe, communicating with the local daemon through operating-system IPC. The current transport is a Unix socket. A browser, localhost HTTP server, container engine or cloud account is not required for native use. Windows needs its own transport, process, terminal, service, path and packaging adapters; a portable GUI toolkit alone does not supply those.
 
-## Discovery and integration
+The display name is **agentdocker**. macOS application bundles retain their underlying `.app` format with the extension hidden in normal Finder display. Packaging suffixes are not product names.
 
-- Inventory installed agent CLIs and desktop applications across vendors, including installation location, available version evidence and configuration status.
-- Scan for active sessions in the daemon and publish additions, changes and exits as events so the GUI stays current without CLI commands.
-- Distinguish an installed application, a running application process and an actual agent session. Show model/provider details only when an integration supplies that evidence.
-- Expose each adapter's supported capabilities: discovery, activity reporting, hooks/MCP configuration, messages, launch/stop and handoff. Detecting a process alone does not provide control over it or its context.
-- Provide guided setup that previews configuration changes, preserves existing settings and credentials, and can undo changes made by AgentDocker.
-- Support native agents directly. Keep existing container execution available as an optional adapter for users who choose it.
+## Implemented foundation
+
+Main contains a per-user daemon, CLI, native GUI, persistent registry/inboxes/events, project grouping, native process supervision, expiring physical-path leases, FIFO waiting/deadlock detection, activity derived from observed coordination, and messaging. Working-state features include content observations, stale-context checks, a change ledger, journal/digests, checkpoints, validation evidence, linked worktrees, integration previews and addressed/exported handoffs. Channels and contests coordinate reviews and competing attempts.
+
+Discovery runs in the daemon every five seconds. Installed-tool inventory includes CLI paths/versions, selected macOS application bundles and known configuration wiring. Setup supports selected MCP hosts and Claude Code hooks with dry-run output and backups. The GUI includes agents, runtimes, journal, leases, events, human questions, a terminal and a CLI console. Notifications are best effort through installed OS tools. PTY attach/detach and opt-in command relaunch exist; seamless daemon restart does not. Multiplexer adapters recognize reported/observed sessions and can launch a tmux-owned agent.
+
+These are implementation statements, not a claim that every path is hardened or shipped in the latest release. The [September 6 audit](AUDIT-2026-09-06.md) records exact source identities, fresh tests, confirmed restore defects, and privacy/readiness gaps. The [trial plan](LOCAL-TRIAL.md) defines acceptance before normal use.
+
+## Discovery and integration contract
+
+- Keep installed tools, running processes, registered sessions and verified integration health distinct. Finding an executable or configuration entry does not prove control, message consumption or model context access.
+- The inventory is a curated table (12 rows at the audit), and running-process recognition covers nine CLI families. It does not discover every company's agent or every session inside a desktop app. Linux desktop application inventory remains missing.
+- Preserve separate identities for desktop applications and CLIs. Claude Desktop and Claude Code are separate; VS Code does not prove an agent extension is installed. The current Codex row also lists ChatGPT/Codex bundles; this must not be interpreted as shared integration health and needs clearer per-application capability reporting.
+- Report model/provider details only when a launch specification or integration supplies them. An agent's ability to speak the protocol makes the design vendor-neutral; it does not create an adapter for an unsupported tool.
+- Show what each adapter supports: inventory, discovery, messages, observation, hooks/MCP setup, launch/stop, terminal access and handoff. Generic adoption adds a registry record; it does not install hooks or cause an agent to read its inbox.
+- Guided setup should preview exact changes, retain private backups, verify the connection and offer scoped undo. The current CLI has `--dry-run` and backups; the GUI Set up action applies changes directly, and there is no guided health check or automatic undo yet.
+- Native coordination is cooperative. Claude hooks cover selected tools and fail open if coordination is unavailable; arbitrary shell writes and unrelated applications are not guarded by leases. Optional containers supply a stronger execution boundary when chosen explicitly.
+
+## Platforms and distribution
+
+| Platform/channel | Current availability | Remaining delivery |
+|---|---|---|
+| macOS arm64/Intel | v0.1.0 archives contain CLI, daemon and GUI executables; local universal app preview has been built and launched on Apple Silicon | Repository-owned bundle/DMG packaging, signing/notarization, upgrade/rollback and Intel runtime trials |
+| Linux x86-64/ARM64 | Released CLI/daemon archives; GUI builds from source and is included in Ubuntu build/test CI | Desktop packages, desktop inventory, graphical runtime/notification/service trials across target distributions |
+| Windows | Product scope only; current binaries depend on Unix APIs | Named pipes/access controls, process identity and termination, ConPTY, service/session lifecycle, paths, installer and Windows CI |
+| GitHub and shell installer | [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), four archives and checksums; `install.sh` selects a target | Publish a newer verified release after trial blockers are fixed |
+| Homebrew | Generated formula is a v0.1.0 release asset | Maintained tap/formula and a GUI cask; do not advertise a default `brew install agentdocker` yet |
+| Cargo | Source installation from a pinned Git tag/commit or checkout | Registry publication has not been established as a supported install route |
+
+The published release is source `52fd88d`, before sessions, human questions/notifications, fair waiting/activity, contests and multiplexer work. A source build or local preview must name its exact revision; package version `0.1.0` alone cannot distinguish these builds.
 
 ## Delivery order
 
-1. Finish the existing handoff/socket-path and optional Docker Desktop integration, resolve review findings, and verify the combined branch before merging.
-2. Restructure documentation around the desktop product and native agent workflow; preserve precise implementation and protocol references.
-3. Add installed-tool inventory, capability-aware setup and daemon discovery events. Extend the existing runtime table through adapters rather than claiming unsupported tools are integrated.
-4. Build the installed desktop GUI with automatic discovery on launch, live agent/project views, journal and handoff visibility, and supported orchestration actions. Add platform tray/notification integration where available.
-5. Package a native single-machine trial for the second MacBook and publish a verified release. Test configured Claude Code hooks and Codex MCP integrations as explicit adapters.
-6. Deliver Windows host support and packaging with the same local behavior, then expand the tested vendor/application matrix. The GUI architecture must account for Windows from the beginning.
+1. Fix the confirmed restore readiness/persistence defects and harden private state/log creation. Turn the fault probes into regression tests. Keep automatic restore off in the initial trial.
+2. Run a pinned native trial on this Mac in a disposable repository/private state directory. Exercise the GUI and protocol before configuring one test Claude Code session and one test Codex session. Preview configuration changes and verify message/observation round trips.
+3. Complete desktop onboarding, per-tool capability/health reporting, undo and packaging. Publish the tested Mac candidate and run the independent second-Mac trial. Keep Bencher credentials outside the repository and GitHub; upload verified benchmark artifacts using private configuration.
+4. Deliver Linux desktop packaging/inventory and real GUI/service trials, then Windows host support with equivalent behavior and tests. Cross-platform desktop delivery takes priority over additional optional engine features or competitive benchmark features.
+5. Add admission policy/quotas, restart/backoff/dependencies, retention controls and planned daemon descriptor handoff as real usage identifies requirements. A daemon-attributed worktree commit command and optional compressed log views remain backlog items.
+6. Add authenticated federation only after the single-host product is dependable. Two installations currently have independent registries and leases; exported handoff files do not create a shared cluster.
 
-Two computers running AgentDocker remain independent until an explicit multi-host feature is implemented and configured. A first release should make the native single-machine experience useful and accurately report which capabilities each integration supports.
-
-## Current boundary
-
-There is no desktop GUI or automatic installed-app inventory yet. Current process discovery is a heuristic for known runtime command lines; hooks and MCP supply richer coordination data for configured agents. Completing the container work closes an existing workstream and does not change the native desktop priority.
+Historical phase numbers in the architecture are implementation dependency labels, not GitHub PR numbers or an override of this delivery order. Additional terminal managers, a cloud control plane and a required web dashboard are not prerequisites for the native desktop product.

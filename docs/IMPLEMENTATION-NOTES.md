@@ -2,7 +2,7 @@
 
 Contracts and hardening decisions behind what `docs/ARCHITECTURE.md` describes, kept here so the architecture stays a design document. When the two disagree, the code wins and one of them has a bug.
 
-Implementation order after hardening: complete read/content-version observations and staleness; add durable journal and acknowledged recovery with validation evidence tied to exact code; then worktree integration and authenticated container transport. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
+The original hardening sequence delivered read/content-version observations and staleness, durable journal/recovery, worktree integration and authenticated container transport. Current priorities are in [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md); the [September 6 audit](AUDIT-2026-09-06.md) identifies newer restore paths that do not yet satisfy the readiness and storage-failure contracts below. Checks must distinguish uncommitted content generations from HEAD, and cross-branch overlap from staleness in the reader's own checkout. A ref movement is not by itself evidence of a new commit.
 
 The integrated watcher attributes a change only to an unexpired exclusive lease on its physical checkout path; a reader's shared lease is not authorship evidence. Watcher-triggered VCS refreshes retain the five-second poll as a fallback. `file_changed` uses its ledger sequence (`change.seq`), and its event envelope has `seq: 0`; event replay filtering does not suppress these live ledger notifications.
 

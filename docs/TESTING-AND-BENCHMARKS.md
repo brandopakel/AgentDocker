@@ -16,13 +16,13 @@ Standardized September 5, 2026 at the user's request. Apply throughout the corre
 | Transport-dependent | k6 | Use for supported network endpoints when present. Evaluate a maintained extension before using the native Unix-socket protocol; a bridge benchmark measures the bridge too. Do not add a production HTTP API solely to accommodate k6. |
 | Integration | Real Docker and Podman jobs | Shared engine contract scenarios and separate real-engine results for builds, lifecycle, mount translation and scoped authentication. Linux CI first, explicit macOS VM checks. |
 
-Bencher and k6 were reported installed by the user. Neither executable was visible on this session's PATH or at the usual Homebrew binary paths during the initial check; locate the existing installation before duplicating it. Hosted Bencher/Grafana account setup and repository credentials have not been verified. Local runs and downloadable CI artifacts must work without service credentials. No paid service enrollment is required for the initial plan.
+Bencher reporting is configured privately for this project, and verified main benchmark artifacts have been uploaded. The user requires its key and configuration to remain outside the repository and GitHub. Local runs and downloadable CI artifacts work without credentials. k6 remains optional for future network transports; it is not a reason to introduce a production HTTP endpoint.
 
 ## Behavioral gates
 
 Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures.
 
-Nightly/scheduled jobs run bounded fuzz campaigns, repeated concurrency scenarios, large-checkout workloads and both container engines. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
+The scheduled workflow runs bounded protocol/resource-key fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Repeated concurrency soaks, large-checkout latency workloads and the full desktop/OS lifecycle matrix are still required trial work, not existing scheduled coverage. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
 
 ## Measurements and thresholds
 
@@ -34,7 +34,7 @@ Every result includes commit SHA, dirty-content identity if applicable, Rust/too
 
 1. Add nextest configuration, meaningful Proptest models and coverage reporting to the reviewed foundation.
 2. Add Criterion and the native protocol load harness; emit local artifacts and Bencher-compatible metrics.
-3. Connect Bencher CI reporting when project/key configuration is available, with credentials isolated from untrusted PR execution.
+3. Upload source-verified benchmark artifacts through private Bencher configuration; keep credentials outside GitHub as requested.
 4. Add fuzz campaigns and Docker/Podman E2E jobs, then calibrate performance gates from collected baselines.
 
 References: [nextest configuration](https://nexte.st/docs/configuring-nextest/), [Criterion](https://bheisler.github.io/criterion.rs/book/), [Bencher GitHub Actions](https://bencher.dev/docs/how-to/github-actions/), [Proptest](https://proptest-rs.github.io/proptest/), [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html), [Loom](https://github.com/tokio-rs/loom), [k6 protocols](https://grafana.com/docs/k6/latest/using-k6/protocols/).
@@ -47,4 +47,4 @@ Install tools with `cargo install --locked cargo-nextest --version 0.9.143`, `ca
 
 CI stores JUnit, coverage, benchmark provenance/results, and fuzz reproducers. Proptest automatically records minimized failing seeds beside its source tests; commit those regressions. Do not disable or retry away a failing coordination invariant. Fuzzing complements the deterministic suite and requires nightly; nightly results are tracked separately from stable builds.
 
-Optional Bencher integration uses repository variable `BENCHER_PROJECT` and secret `BENCHER_API_KEY`. Reporting uploads already-produced results only on trusted `main` pushes; ordinary PRs require neither a key nor a service account. See the performance workflow for the exact reporting commands. Set thresholds after baseline calibration. k6 remains part of the documented toolkit for future supported network transports, with no synthetic production endpoint introduced for testing.
+The performance workflow contains an optional trusted-main reporting job, but this project intentionally leaves GitHub Bencher credentials unset. Its report job may be skipped while benchmark generation and artifact checks pass. Download artifacts, verify before/after manifests and exact source identity, then upload with the privately configured helper. Never copy the key into a tracked file, release artifact or GitHub secret. Set thresholds after baseline calibration. See [LOCAL-TRIAL.md](LOCAL-TRIAL.md) for desktop, failure and real-agent acceptance work still needed.
