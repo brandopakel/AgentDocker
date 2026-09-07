@@ -1231,9 +1231,9 @@ impl Daemon {
             }
         }
         match supervisor::spawn(self, &record).await {
-            Ok(spawned) => {
+            Ok(mut spawned) => {
                 let pid = spawned.pid;
-                let process_started_at = procinfo::start_time(pid);
+                let process_started_at = Some(spawned.process_started_at);
                 if let Some(session) = spawned.session.clone() {
                     lock(&self.sessions).insert(record.id.clone(), session);
                 }
@@ -1242,30 +1242,63 @@ impl Daemon {
                     state
                         .supervised
                         .insert(record.id.clone(), spawned.control.clone());
-                    if let Some(rec) = state.registry.get_mut(&record.id) {
-                        rec.pid = Some(pid);
-                        rec.process_started_at = process_started_at;
-                        rec.process_group = Some(pid);
+                    let candidate = state
+                        .registry
+                        .get(&record.id)
+                        .cloned()
+                        .filter(|current| current.status == AgentStatus::Created);
+                    if let Some(mut running) = candidate {
+                        let now = Utc::now();
+                        running.pid = Some(pid);
+                        running.process_started_at = process_started_at;
+                        running.process_group = Some(pid);
+                        running.status = AgentStatus::Running;
+                        running.started_at = Some(now);
+                        running.last_seen = now;
+                        let mut event = Event::new(
+                            EventKind::AgentStarted {
+                                agent: record.id.clone(),
+                                pid: Some(pid),
+                            },
+                            now,
+                        );
+                        event.seq = state.next_seq;
+                        state.persist("launch completion", |store| {
+                            store.agent_transition(&running, &event)
+                        });
+                        if state.storage_error.is_none() {
+                            *state
+                                .registry
+                                .get_mut(&record.id)
+                                .expect("launch identity retained") = running.clone();
+                            state.next_seq += 1;
+                            let _ = state.events.send(event);
+                            Some(running)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
                     }
-                    let updated =
-                        state
-                            .registry
-                            .set_status(&record.id, AgentStatus::Running, Utc::now());
-                    if let Some(rec) = &updated {
-                        state.persist("agent", |store| store.upsert_agent(rec));
-                    }
-                    state.emit(EventKind::AgentStarted {
-                        agent: record.id.clone(),
-                        pid: Some(pid),
-                    });
-                    updated
                 };
                 let failed = lock(&self.state).storage_failure();
-                if failed.is_some() {
+                let activation_error = if failed.is_none() && updated.is_some() {
+                    spawned.activate("launched").await.err()
+                } else {
+                    None
+                };
+                if failed.is_some() || updated.is_none() || activation_error.is_some() {
                     spawned.control.send_replace(Some(true));
                 }
                 let supervision = supervisor::supervise(self.clone(), record.id, spawned);
-                if let Some(error) = failed {
+                if let Some(error) = failed.or_else(|| {
+                    activation_error.map(|error| {
+                        Response::error(
+                            ErrorCode::Internal,
+                            format!("failed to execute command: {error:#}"),
+                        )
+                    })
+                }) {
                     let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                     return error;
                 }
@@ -3062,17 +3095,77 @@ impl State {
         if !self.is_live(id) {
             return self.registry.get(id).cloned();
         }
-        let record = self.registry.set_status(id, status.clone(), Utc::now())?;
-        self.persist("agent", |store| store.upsert_agent(&record));
-        let released = self.leases.release_all(id);
-        self.finish_release(id, released, None, SummarySource::Explicit);
-        self.leave_channels(id);
-        self.journal_event(&record, JournalKind::Leave, format!("left ({status})"));
-        info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
-        self.emit(EventKind::AgentExited {
+        let now = Utc::now();
+        let mut record = self.registry.get(id)?.clone();
+        record.status = status.clone();
+        record.finished_at.get_or_insert(now);
+        record.last_seen = now;
+        let released: Vec<_> = self.leases.by_holder(id).into_iter().cloned().collect();
+        let mut journal = Vec::new();
+        if !released.is_empty() {
+            if let Some(entry) = self.release_entry(id, &released, None, SummarySource::Explicit) {
+                journal.push(entry);
+            }
+        }
+        if let Some(entry) = self.plain_entry(
+            &record,
+            JournalKind::Leave,
+            format!("left ({status})"),
+            SummarySource::Explicit,
+        ) {
+            journal.push(entry);
+        }
+        let channels = self.closing_channels(id, now);
+        let previous_seq = self.journal_seq.clone();
+        let mut kinds: Vec<_> = released
+            .iter()
+            .cloned()
+            .map(|lease| EventKind::LeaseReleased { lease })
+            .collect();
+        for entry in &mut journal {
+            entry.seq = self.next_journal_seq(&entry.project);
+            kinds.push(EventKind::JournalAppended {
+                entry: entry.clone(),
+            });
+        }
+        kinds.extend(channels.iter().map(|channel| EventKind::ChannelClosed {
+            channel: channel.id.clone(),
+            resolution: channel.resolution.clone(),
+        }));
+        kinds.push(EventKind::AgentExited {
             agent: id.clone(),
-            status,
+            status: status.clone(),
         });
+        let events: Vec<_> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let mut event = Event::new(kind, now);
+                event.seq = self.next_seq + index as u64;
+                event
+            })
+            .collect();
+        let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
+        self.persist("agent exit", |store| {
+            store.agent_exit(&record, &leases, &journal, &channels, &events)
+        });
+        if self.storage_error.is_some() {
+            self.journal_seq = previous_seq;
+            return self.registry.get(id).cloned();
+        }
+        *self.registry.get_mut(id).expect("exit identity retained") = record.clone();
+        self.leases.release_all(id);
+        for entry in journal {
+            self.cache_journal(entry);
+        }
+        for channel in channels {
+            self.channels.insert(channel.id.clone(), channel);
+        }
+        self.next_seq += events.len() as u64;
+        for event in events {
+            let _ = self.events.send(event);
+        }
+        info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
         Some(record)
     }
 
