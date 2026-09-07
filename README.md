@@ -106,6 +106,11 @@ agentdocker stop writer
 # leases, and a note saying what changed while it was down.
 agentdocker run --name keeper --restore -- claude
 
+# Keep a service up. `on-failure` counts and backs off; stopping it on
+# purpose clears the policy, so it stays stopped.
+agentdocker run --name indexer --restart on-failure:3 -- ./index.sh
+agentdocker top      # the fleet, live: who is working, blocked, waiting
+
 # Or hand it to tmux, and keep only the coordination. tmux owns the
 # terminal, so you reach it with `tmux attach -t reviewer`; AgentDocker
 # still knows its project, leases, read set and journal cursor.

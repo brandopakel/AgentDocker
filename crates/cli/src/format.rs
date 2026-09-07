@@ -187,6 +187,15 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(" — {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::AgentRestarted {
+            agent,
+            pid,
+            attempt,
+        } => format!(
+            "agent restarted: {} (attempt {attempt}, pid {})",
+            agent.short(),
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "-".to_owned())
+        ),
         EventKind::LeaseWaiting {
             resource: key,
             requester,

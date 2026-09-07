@@ -9,6 +9,7 @@ mod mcp;
 mod service;
 mod setup;
 mod teams;
+mod top;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -460,6 +461,9 @@ enum Command {
     },
     /// Claims waiting for a resource, oldest first.
     Waiting,
+    /// The fleet, live: who is running, what they are doing, what is
+    /// held and who is waiting. Redraws as the daemon reports changes.
+    Top,
     /// Contests: several agents attempt one task, ranked by a measure
     /// declared before any of them starts.
     Contest(ContestArgs),
@@ -612,6 +616,11 @@ struct RunArgs {
     /// there is no captured log and the agent ends when its command does.
     #[arg(long, conflicts_with_all = ["tty", "restore", "image_build"])]
     in_pane: bool,
+    /// When to start it again after it exits: `no` (the default),
+    /// `always`, `on-failure`, or `on-failure:<n>`. Stopping an agent on
+    /// purpose clears its policy, so it stays stopped.
+    #[arg(long, default_value = "no", conflicts_with = "in_pane")]
+    restart: String,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -1399,6 +1408,14 @@ async fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => std::env::current_dir()?,
             };
+            let restart =
+                agentdocker_core::RestartPolicy::parse(&args.restart).with_context(|| {
+                    format!(
+                        "`--restart {}` is not a policy; use no, always, on-failure, or \
+                         on-failure:<n>",
+                        args.restart
+                    )
+                })?;
             let spec = AgentSpec {
                 name: args.name.unwrap_or_default(),
                 runtime: args.runtime,
@@ -1412,6 +1429,8 @@ async fn main() -> Result<()> {
                 tty: args.tty,
                 restore: args.restore,
                 in_pane: args.in_pane,
+                restart,
+                depends_on: Vec::new(),
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1451,6 +1470,8 @@ async fn main() -> Result<()> {
                 tty: false,
                 restore: false,
                 in_pane: false,
+                restart: Default::default(),
+                depends_on: Vec::new(),
             };
             let request = Request::Register {
                 spec,
@@ -1583,6 +1604,7 @@ async fn main() -> Result<()> {
                 print_activity(&client, &activity).await;
             }
         }
+        Command::Top => top::run(&client).await?,
         Command::Waiting => {
             if let Response::Waiting { waiting } = client.call(&Request::Waiting).await? {
                 if waiting.is_empty() {

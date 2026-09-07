@@ -213,6 +213,13 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// A managed agent that exited was started again by its restart
+    /// policy, under its own identity. `attempt` counts from one.
+    AgentRestarted {
+        agent: AgentId,
+        pid: Option<u32>,
+        attempt: u32,
+    },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
     AgentRestored {

@@ -15,7 +15,9 @@ pub mod project;
 pub mod protocol;
 pub mod registry;
 
-pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, VcsState};
+pub use agent::{
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
+};
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
 pub use event::{Event, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};

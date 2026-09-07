@@ -166,6 +166,8 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         tty: false,
         restore: false,
         in_pane: false,
+        restart: Default::default(),
+        depends_on: Vec::new(),
     };
     match client
         .call(&Request::Register {

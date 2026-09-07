@@ -315,7 +315,10 @@ pub fn supervise(daemon: Arc<Daemon>, id: AgentId, mut spawned: Spawned) {
         // The terminal goes with the agent: anyone attached sees the
         // stream end rather than a room that is no longer there.
         daemon.end_session(&id);
-        daemon.mark_exited(&id, status);
+        daemon.mark_exited(&id, status.clone());
+        // After the exit is recorded, so a reader of the event stream
+        // sees the agent end before it sees it start again.
+        daemon.consider_restart(&id, &status);
     });
 }
 

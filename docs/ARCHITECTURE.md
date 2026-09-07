@@ -171,7 +171,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ping` | `pong` | version, uptime, restricted endpoint while serving |
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
-| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restore` brings it back under the same id after a daemon restart; `spec.in_pane` starts it in a new `tmux` session and registers it instead, so tmux owns the process and there is no captured log — it requires `spec.workdir` (tmux needs a directory to start in) and tmux 3.2 or newer (`new-session -e`, which is how the agent is told its own id), and is refused with `run_container` |
+| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restart` starts it again after it exits (`no` by default, cleared by `stop`); `spec.restore` brings it back under the same id after a daemon restart; `spec.in_pane` starts it in a new `tmux` session and registers it instead, so tmux owns the process and there is no captured log — it requires `spec.workdir` (tmux needs a directory to start in) and tmux 3.2 or newer (`new-session -e`, which is how the agent is told its own id), and is refused with `run_container` |
 | `run_container {spec, build, options?}` | `agent` | host-only; retained image with durable identity/intent; opt-in checkout/scoped endpoint mounts, Podman VM transport, and bridge networking |
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?, session?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project; `session` is the multiplexer the client can see it is in, read first-hand from its own environment |
@@ -535,9 +535,17 @@ Like Docker's authorization plugins: a policy file the daemon consults before ac
 
 Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>` with a capacity set in policy, claimed in shared mode with `amount`, so `claim quota:tokens/<project> --amount 50000` fails once the sum of live amounts would exceed capacity. This folds quotas into a mechanism that already has TTLs, release-on-exit, and events; whether amounts belong on `Lease` or in a sibling `Quota` table is decided when the policy PR lands.
 
-#### Supervision policy and dashboard
+#### Supervision policy and dashboard *(done)*
 
-`--restart no | on-failure[:max] | always` on `run` and as `restart` in `Agentfile.toml`, `depends_on` (start after the dependency is running) and `after = "A exits 0"` (start after it succeeds), and `agentdocker top`, a TUI fed by the event stream showing agents by project, their branches, held leases, waiting claims, and the latest journal entries.
+**Restart policies.** `run --restart no | always | on-failure | on-failure:<n>`, and `restart = "..."` in an `Agentfile.toml`. The default is `no`, because a supervisor that restarts by default turns a command that fails immediately into a loop. `on-failure` counts, and only counts failures: a clean zero ends it whatever the limit, while a signal, a nonzero code and a spawn that never started all count as failures worth retrying. The decision is pure — `RestartPolicy::restarts(status, already)` in core — so every rule about it is a unit test rather than a daemon run.
+
+Three properties make it safe to leave on. An agent **stopped on purpose stays stopped**: `stop` clears the policy on the record, so the reason it will not come back is visible in `inspect` rather than hidden in the daemon, the same rule `--restore` follows. Restarts **back off**, doubling from a fifth of a second and capped at half a minute, because the other case is a command that fails every time and the daemon should not spend a core discovering that. And the agent comes back **under its own id**, as a restored one does, so its read set, journal cursor, leases and ledger attribution continue to describe it — a restart is the same agent running again, not a new one with the same name. `agent_restarted {agent, pid, attempt}` announces each one, and `AgentRecord.restarts` carries the count, because a reader deserves to know an agent has died nine times.
+
+Only a managed agent can have a policy: the daemon has to own the process to start it again, so an adopted or in-pane agent is left alone whatever its spec says.
+
+**`depends_on`.** Names in an `Agentfile.toml` that must be running before an agent starts. `agentdocker up` orders the file by dependency — preserving the order things were written in wherever a dependency does not decide it — and then *waits* for each dependency to reach `running`, because ordering alone is not enough: an agent that is `created` has not run its first line, and the one about to start may be its client. The file is validated when it is read, so a name that is not in it, an agent depending on itself, and a cycle are all sentences rather than a wait that never ends. (`after = "A exits 0"` from the original sketch is not built: `depends_on` covers the case that came up, and a second ordering vocabulary can wait for a second need.)
+
+**`agentdocker top`.** The fleet, live: agents grouped by project with what each is doing, how many leases each holds, and the wait queue underneath. Not a TUI framework — the screen is a few ANSI escapes and the content is the same rendering the one-shot commands use, so there is one renderer to keep correct rather than two. Redraws are driven by the daemon's event stream, so a lease taken or an agent blocked appears at once, with a slow tick underneath to keep relative times honest. Piped rather than shown on a terminal, it draws one frame and exits, so `top | head` is not a hang.
 
 #### Sessions and persistence
 
@@ -630,7 +638,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 13 | ✅ FIFO wait queue with RAII places, pure deadlock search over the lease and wait tables, `error(deadlock)` with the cycle, `waiting` | 5 | — |
 | 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
-| 16 | restart policies, `depends_on`, `top` | 5 | — |
+| 16 | ✅ restart policies (`no`/`always`/`on-failure[:n]`, backed off, cleared by `stop`, restarting under the same id), `depends_on` with ordering and a wait in `up`, and `agentdocker top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
 | 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
 | 19 | ✅ native desktop app `agentdocker-ui` (Rust, egui, over the socket): agents, runtimes, journal, leases, events; notifications follow with row 14 | 5 | 18 |
@@ -645,7 +653,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 15, 16, 28, the `commit` half of 10, 20, and 17.
+Order from here: 15, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -659,7 +667,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 
-Shipped events include `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 `lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Planned events: `policy_denied`. Error codes `Timeout` (`ask`) and `Deadlock` (`claim --wait`) are both shipped.
 

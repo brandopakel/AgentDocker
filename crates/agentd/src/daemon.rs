@@ -49,6 +49,7 @@ mod images;
 mod panes;
 mod recovery;
 mod relay;
+mod restarts;
 mod restore;
 mod transport;
 mod waiting;
@@ -5561,6 +5562,180 @@ mod tests {
             starts[0], agent.pid,
             "and with the pid tmux actually started, never None"
         );
+    }
+
+    // ----- restart policies -----------------------------------------------
+
+    /// Wait for a condition on an agent, so a test never races the
+    /// supervisor's own tasks.
+    async fn until(
+        daemon: &Arc<Daemon>,
+        id: &AgentId,
+        what: &str,
+        ready: impl Fn(&AgentRecord) -> bool,
+    ) -> AgentRecord {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                let found = lock(&daemon.state).registry.get(id).cloned();
+                if let Some(record) = found
+                    && ready(&record)
+                {
+                    return record;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    }
+
+    #[tokio::test]
+    async fn a_failing_agent_comes_back_until_its_limit_and_then_stays_down() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("flaky");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 7".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 2 };
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+
+        // Two restarts, and then it is left alone: the command is broken
+        // rather than flaky, and retrying forever would say nothing new.
+        let settled = until(&daemon, &agent.id, "the limit to be reached", |r| {
+            r.restarts >= 2 && !r.status.is_live()
+        })
+        .await;
+        assert_eq!(settled.restarts, 2, "exactly the limit");
+        // It stays that way.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 2, "and no more");
+        assert!(!after.status.is_live());
+    }
+
+    #[tokio::test]
+    async fn a_clean_exit_is_the_end_of_an_on_failure_agent() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("tidy");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 0".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 5 };
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        until(&daemon, &agent.id, "it to finish", |r| !r.status.is_live()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0, "nothing failed, so nothing to retry");
+        assert_eq!(after.status, AgentStatus::Exited { code: Some(0) });
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_the_agents_identity_and_says_so() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("service");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec!["sh".into(), "-c".into(), "exit 1".into()];
+        spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 1 };
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        let mut events = daemon.subscribe_events();
+
+        let restarted = until(&daemon, &agent.id, "one restart", |r| r.restarts >= 1).await;
+        // Same identity: everything already recorded about it — its read
+        // set, journal cursor, leases, ledger rows — still describes it.
+        assert_eq!(restarted.id, agent.id);
+        assert_eq!(restarted.spec.name, "service");
+
+        let mut announced = None;
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentRestarted {
+                agent: id, attempt, ..
+            } = event.kind
+                && id == agent.id
+            {
+                announced = Some(attempt);
+            }
+        }
+        assert_eq!(
+            announced,
+            Some(1),
+            "the restart is announced, with its number"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_stopped_on_purpose_is_not_restarted() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("stoppable");
+        spec.workdir = Some(dir.path().to_path_buf());
+        spec.command = vec![
+            "sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        spec.restart = agentdocker_core::RestartPolicy::Always;
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
+            panic!("run failed")
+        };
+        until(&daemon, &agent.id, "it to be running", |r| {
+            r.status == AgentStatus::Running
+        })
+        .await;
+
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        let stopped = until(&daemon, &agent.id, "it to stop", |r| !r.status.is_live()).await;
+        // The policy is cleared on the record, so the reason it will not
+        // come back is visible in `inspect` rather than hidden here.
+        assert!(stopped.spec.restart.is_no(), "stopping clears the policy");
+
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0, "and it stayed stopped");
+        assert!(!after.status.is_live());
+    }
+
+    #[tokio::test]
+    async fn an_unmanaged_agent_is_never_restarted_whatever_it_asks_for() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut spec = spec("not-ours");
+        spec.restart = agentdocker_core::RestartPolicy::Always;
+        let agent = register_spec(&daemon, spec).await;
+        // The daemon did not start it, so it cannot start it again.
+        daemon.mark_exited(&agent.id, AgentStatus::Exited { code: Some(1) });
+        daemon.consider_restart(&agent.id, &AgentStatus::Exited { code: Some(1) });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let after = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(after.restarts, 0);
+        assert!(!after.status.is_live());
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
