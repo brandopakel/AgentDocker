@@ -125,6 +125,17 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
     assert_eq!(response["type"], "error", "{response}");
     assert_eq!(response["code"], "unavailable", "{response}");
     assert!(daemon.child.try_wait().unwrap().is_none());
+    let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .args(["daemon", "reload"])
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "0")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .output()
+        .unwrap();
+    assert!(!cli.status.success());
+    assert!(String::from_utf8_lossy(&cli.stderr).contains("reload is unavailable"));
+    assert!(cli.stdout.is_empty());
     for (name, id, pid, log) in agents {
         std::fs::write(work.join(format!("{name}-go")), b"").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -143,6 +154,17 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
         assert_eq!(inspected["agent"]["status"]["state"], "running");
     }
     daemon.stop();
+    let absent_home = root.join("not-created");
+    let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .args(["daemon", "reload"])
+        .env("AGENTDOCKER_HOME", &absent_home)
+        .env("AGENTDOCKER_SOCKET", root.join("absent.sock"))
+        .env("AGENTDOCKER_NO_AUTOSTART", "0")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .output()
+        .unwrap();
+    assert!(!cli.status.success());
+    assert!(!absent_home.exists(), "reload must not autostart a daemon");
 }
 
 #[test]
