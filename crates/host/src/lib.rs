@@ -4,6 +4,12 @@
 //! and the process table are consulted. Nothing here holds state — every
 //! function answers a question about the host as it is right now.
 
+// The gate is a fork that holds the child before exec and a socketpair
+// carrying the exec-error handshake: `pre_exec`, raw descriptors and a
+// process-group `kill`, none of which Windows has. Windows starts a
+// suspended process and resumes it, which is the same idea and a
+// different implementation; until that exists the module is Unix-only.
+#[cfg(unix)]
 pub mod launch;
 pub mod lock;
 pub mod procinfo;
@@ -36,3 +42,5 @@ pub mod transport;
 pub mod relay;
 
 pub mod files;
+
+pub mod ipc;

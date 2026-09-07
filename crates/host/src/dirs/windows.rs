@@ -139,12 +139,19 @@ pub(crate) fn process_sid(pid: u32) -> io::Result<String> {
     token_sid(token.as_raw_handle())
 }
 
-struct Protection {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    State,
+    Ancestor,
+    Pipe,
+}
+
+pub(crate) struct Protection {
     sid: String,
     descriptor: LocalAllocation,
 }
 impl Protection {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         let sid = current_sid()?;
         // Private to the owning user and SYSTEM, inherited by child state.
         let sddl: Vec<_> = format!("O:{sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{sid})")
@@ -169,7 +176,7 @@ impl Protection {
         })
     }
 
-    fn attributes(&self) -> SECURITY_ATTRIBUTES {
+    pub(crate) fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: self.descriptor.0,
@@ -179,7 +186,7 @@ impl Protection {
 
     /// Existing state may have broad read access that can be narrowed. Refuse
     /// foreign ownership or untrusted write access before changing any ACL.
-    fn validate_access(&self, handle: HANDLE, ancestor: bool) -> io::Result<()> {
+    pub(crate) fn validate_access(&self, handle: HANDLE, access: Access) -> io::Result<()> {
         let mut owner = null_mut();
         let mut acl = null_mut();
         let mut descriptor = null_mut();
@@ -200,7 +207,7 @@ impl Protection {
         }
         let _allocated = LocalAllocation(descriptor);
         let owner = unsafe { sid_text(owner)? };
-        if owner != self.sid && !(ancestor && trusted_system(&owner)) {
+        if owner != self.sid && !(access == Access::Ancestor && trusted_system(&owner)) {
             return Err(denied(
                 "state or ancestor belongs to an untrusted Windows principal",
             ));
@@ -208,7 +215,9 @@ impl Protection {
         if acl.is_null() {
             return Err(denied("state has an unrestricted DACL"));
         }
-        let writable = if ancestor {
+        let writable = if access == Access::Pipe {
+            u32::MAX // A private pipe must not expose even read access to others.
+        } else if access == Access::Ancestor {
             GENERIC_ALL | GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD
         } else {
             GENERIC_ALL
@@ -260,7 +269,7 @@ impl Protection {
     }
 
     fn validate_and_narrow(&self, handle: HANDLE) -> io::Result<()> {
-        self.validate_access(handle, false)?;
+        self.validate_access(handle, Access::State)?;
         let mut present = 0;
         let mut defaulted = 0;
         let mut private_acl: *mut ACL = null_mut();
@@ -338,7 +347,7 @@ fn guard_ancestors(path: &Path, protection: &Protection) -> io::Result<Vec<File>
         }
         let file = unsafe { File::from_raw_handle(handle) };
         check_kind(&file, true)?;
-        protection.validate_access(file.as_raw_handle(), true)?;
+        protection.validate_access(file.as_raw_handle(), Access::Ancestor)?;
         guards.push(file);
     }
     Ok(guards)
@@ -470,6 +479,26 @@ pub fn check_socket_parent(path: &Path) -> io::Result<()> {
         .ok_or_else(|| denied("a local Windows named-pipe endpoint is required"))?;
     if name.is_empty() || name.contains(['\\', '/', '\0']) || text.encode_utf16().count() > 256 {
         return Err(denied("invalid Windows named-pipe endpoint"));
+    }
+    Ok(())
+}
+
+/// A named-pipe peer must belong to this Windows user. This query does not
+/// impersonate the peer or enable debug privileges.
+pub(crate) fn same_user_process(pid: u32) -> io::Result<()> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    if token_sid(token.as_raw_handle())? != current_sid()? {
+        return Err(denied("named-pipe peer belongs to another Windows user"));
     }
     Ok(())
 }

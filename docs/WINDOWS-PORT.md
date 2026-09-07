@@ -27,7 +27,9 @@ on Windows until a checked named-pipe/VM transport is implemented.
 
 Work still required before platform support can be claimed:
 
-- Private named-pipe listener and clients, peer verification, bounded streams.
+- Native runtime acceptance of the new shared named-pipe listener/clients,
+  peer verification, bounded streams and desktop cancellation; these modules
+  cross-compile but do not yet constitute a running Windows daemon.
 - Native supervised processes, ConPTY terminal input/output/resize, same-user
   identity checks for stopping adopted processes, and restart recovery.
 - Windows provider configuration and desktop application inventory.
@@ -38,3 +40,24 @@ Work still required before platform support can be claimed:
 
 The supported download/platform matrix remains unchanged until those acceptance
 stages pass. See [native delivery](NATIVE-DELIVERY.md) for the macOS/Linux stack.
+
+## Local connection boundary
+
+The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on
+Windows. Windows pipe creation supplies a protected user/SYSTEM DACL, reserves
+the first instance, and rejects remote clients. Both ends check the peer's user
+without impersonation or privilege changes; clients also reject any untrusted
+read grant on the pipe before sending application data. This is a same-user,
+per-host boundary across that user's local logon sessions. Other machine
+administrators remain privileged.
+
+Active Windows connections are limited to 254 while one instance waits for the
+next connection; admission waits instead of exhausting the OS's 255-instance
+limit. Desktop workers use overlapped I/O with read/write deadlines and shared
+cancellation for terminal clones. Named pipes do not provide stream half-close:
+explicit shutdown closes the whole Windows connection. The native tests cover
+transfer beyond the pipe buffer, name ownership, cancellation-safe admission,
+broad-read ACL refusal, desktop read deadlines and connection cancellation.
+
+The implementation follows [Microsoft's pipe security model](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+and the [Tokio named-pipe API](https://docs.rs/tokio/latest/tokio/net/windows/named_pipe/struct.ServerOptions.html).

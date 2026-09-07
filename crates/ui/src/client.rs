@@ -2,9 +2,8 @@
 //! that asks questions from a worker thread and follows the event stream
 //! from another. Starts the daemon on demand the way the CLI does.
 
+use agentdocker_host::ipc::BlockingStream as Stream;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -58,7 +57,7 @@ impl Client {
 
     /// Send one request and hand back the raw connection, for a caller
     /// that then speaks a duplex protocol on it — `attach`.
-    pub fn open(&self, request: &Request) -> Result<UnixStream> {
+    pub fn open(&self, request: &Request) -> Result<Stream> {
         let mut stream = self.connect()?;
         // The read side stays unbounded — an attach is a long silence
         // punctuated by output — but the write side must not be. Every
@@ -141,9 +140,9 @@ impl Client {
     }
 
     /// Connect, starting the daemon when nobody listens, as the CLI does.
-    fn connect(&self) -> Result<UnixStream> {
+    fn connect(&self) -> Result<Stream> {
         check_socket(&self.socket)?;
-        match UnixStream::connect(&self.socket) {
+        match Stream::connect(&self.socket) {
             Ok(stream) => return Ok(stream),
             Err(err) if absent(&err) => {}
             Err(err) => {
@@ -208,7 +207,7 @@ impl Drop for StartingChild {
     }
 }
 
-fn wait_for_start(socket: &Path, timeout: Duration, child: Option<Child>) -> Result<UnixStream> {
+fn wait_for_start(socket: &Path, timeout: Duration, child: Option<Child>) -> Result<Stream> {
     let mut child = StartingChild(child);
     let deadline = Instant::now() + timeout;
     loop {
@@ -218,7 +217,7 @@ fn wait_for_start(socket: &Path, timeout: Duration, child: Option<Child>) -> Res
         {
             bail!("agentd exited during startup ({status})");
         }
-        match UnixStream::connect(socket) {
+        match Stream::connect(socket) {
             Ok(stream) => {
                 // The app stays open, so reap our detached daemon if it later
                 // exits. Startup failures are instead killed and reaped by Drop.
@@ -252,17 +251,21 @@ fn absent(err: &std::io::Error) -> bool {
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
     let exe = std::env::current_exe()
         .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
+        .and_then(|me| {
+            me.parent()
+                .map(|dir| dir.join(format!("agentd{}", std::env::consts::EXE_SUFFIX)))
+        })
         .filter(|sibling| sibling.is_file())
-        .unwrap_or_else(|| PathBuf::from("agentd"));
+        .unwrap_or_else(|| PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX)));
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log = agentdocker_host::dirs::private_file(&paths::daemon_log(home), true, true)?;
-    Command::new(&exe)
+    let mut command = Command::new(&exe);
+    agentdocker_host::command::detach(&mut command);
+    command
         .arg("--socket")
         .arg(socket)
         .arg("--home")
         .arg(home)
-        .process_group(0)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)

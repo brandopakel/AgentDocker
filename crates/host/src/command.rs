@@ -33,6 +33,19 @@ impl Drop for ChildGroup {
     }
 }
 
+/// Detach an explicitly started daemon from the requesting terminal. This is
+/// separate from bounded command jobs: the daemon must survive its client.
+pub fn detach(command: &mut Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+}
+
 pub struct Output {
     pub success: bool,
     /// Standard output only, for structured engine responses.
