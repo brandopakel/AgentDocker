@@ -47,6 +47,7 @@ pub mod humans;
 mod images;
 mod recovery;
 mod relay;
+mod restore;
 mod transport;
 mod working;
 mod worktrees;
@@ -420,6 +421,9 @@ impl Daemon {
         }
     }
     pub async fn stop_all(self: &Arc<Self>) {
+        // Before anything stops: stopping releases leases, so what a
+        // restorable agent holds has to be written down while it holds it.
+        self.save_restore_points();
         let managed: Vec<_> = lock(&self.state)
             .registry
             .live()
@@ -3783,6 +3787,295 @@ mod tests {
             notices.try_recv().is_err(),
             "a program has no desktop to interrupt"
         );
+    }
+
+    // ----- snapshot restore ----------------------------------------------
+
+    /// A daemon that stops and comes back on the same home, as a restart
+    /// looks from the store's point of view.
+    async fn restart(dir: &TempDir, daemon: Arc<Daemon>) -> Arc<Daemon> {
+        daemon.stop_all().await;
+        drop(daemon);
+        let daemon = open(dir);
+        daemon.restore_agents().await;
+        daemon
+    }
+
+    #[tokio::test]
+    async fn a_restarted_daemon_brings_back_a_restorable_agent_under_its_own_identity() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("keeper");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        // Something worth keeping: a lease, and a journal cursor, both
+        // keyed by this agent's id.
+        assert!(matches!(
+            claim(&daemon, "keeper", "task:the-work").await,
+            Response::Lease { .. }
+        ));
+        let before = agent.pid;
+
+        let daemon = restart(&dir, daemon).await;
+
+        let Response::Agent { agent: after } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("the agent is gone")
+        };
+        assert_eq!(after.id, agent.id, "the same identity, not a new agent");
+        assert_eq!(after.status, AgentStatus::Running);
+        assert_ne!(after.pid, before, "a new process under the old identity");
+        // The lease is still held, because its holder never stopped being
+        // live and never stopped being this id.
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].holder, agent.id);
+
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_did_not_ask_to_be_restored_is_not() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("ephemeral");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+
+        let daemon = restart(&dir, daemon).await;
+
+        // Nothing was relaunched, and the liveness sweep retires it.
+        daemon.check_liveness();
+        assert!(!daemon.is_live(&agent.id));
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_restored_agent_is_told_what_changed_while_it_was_down() {
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let watched = work.join("parser.rs");
+        std::fs::write(&watched, "fn parse() {}\n").unwrap();
+
+        let daemon = open(&dir);
+        let mut command = spec("reader");
+        command.workdir = Some(work.clone());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        let observed = daemon
+            .handle(Request::Observe {
+                agent: agent.id.to_string(),
+                paths: vec![watched.display().to_string()],
+            })
+            .await;
+        assert!(matches!(observed, Response::Reads { .. }), "{observed:?}");
+        let Response::Checkpoint { checkpoint } = daemon
+            .handle(Request::Checkpoint {
+                agent: agent.id.to_string(),
+                key: "k1".to_owned(),
+                task: "rewrite the tokenizer".to_owned(),
+                assumptions: Vec::new(),
+                next_steps: vec!["handle raw strings".to_owned()],
+                release_leases: false,
+            })
+            .await
+        else {
+            panic!("checkpoint failed")
+        };
+
+        daemon.stop_all().await;
+        drop(daemon);
+        // Somebody edits the file while nothing is running.
+        std::fs::write(&watched, "fn parse() { todo!() }\n").unwrap();
+        let daemon = open(&dir);
+        daemon.restore_agents().await;
+
+        let waiting = inbox(&daemon, agent.id.as_str(), true).await;
+        let brief = waiting
+            .iter()
+            .find(|m| m.kind == "restored")
+            .expect("a restored agent is told it was restored");
+        assert_eq!(brief.payload["restored"], json!(true));
+        assert_eq!(brief.payload["reads"], json!(1));
+        let stale = brief.payload["stale"].as_array().unwrap();
+        assert_eq!(stale.len(), 1, "the edited path: {stale:?}");
+        assert_eq!(brief.payload["checkpoint"], json!(checkpoint.id));
+        assert_eq!(brief.payload["task"], json!("rewrite the tokenizer"));
+        assert_eq!(brief.payload["next_steps"], json!(["handle raw strings"]));
+        let text = brief.payload["text"].as_str().unwrap();
+        assert!(text.contains("reread"), "and told to reread it: {text}");
+        assert!(text.contains("reader"), "under its own name: {text}");
+        assert!(
+            text.contains("rewrite the tokenizer") && text.contains("handle raw strings"),
+            "and what it was doing: {text}"
+        );
+
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_cannot_run_records_the_failure_and_does_not_stop_the_others() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+
+        let mut broken = spec("broken");
+        broken.workdir = Some(dir.path().to_path_buf());
+        broken.restore = true;
+        broken.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent: broken } = daemon.handle(Request::Run { spec: broken }).await
+        else {
+            panic!("managed launch failed");
+        };
+        let mut fine = spec("fine");
+        fine.workdir = Some(dir.path().to_path_buf());
+        fine.restore = true;
+        fine.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent: fine } = daemon.handle(Request::Run { spec: fine }).await
+        else {
+            panic!("managed launch failed");
+        };
+
+        daemon.stop_all().await;
+        drop(daemon);
+        // The command is gone by the time the daemon comes back.
+        let daemon = open(&dir);
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&broken.id).unwrap();
+            record.spec.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
+            let record = record.clone();
+            state.persist("agent", |store| store.upsert_agent(&record));
+        }
+        daemon.restore_agents().await;
+
+        let Response::Agent { agent: broken } = daemon
+            .handle(Request::Inspect {
+                agent: broken.id.to_string(),
+            })
+            .await
+        else {
+            panic!("record gone")
+        };
+        assert!(
+            matches!(&broken.status, AgentStatus::Failed { reason } if reason.contains("restored")),
+            "unexpected {:?}",
+            broken.status
+        );
+        assert!(daemon.is_live(&fine.id), "the other one still came back");
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_stopped_on_purpose_is_not_brought_back() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("finished");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        daemon
+            .handle(Request::Stop {
+                agent: agent.id.to_string(),
+                force: true,
+            })
+            .await;
+        // The flag is cleared in the record itself, so the reason it will
+        // not come back is visible rather than hidden.
+        let Response::Agent { agent: stopped } = daemon
+            .handle(Request::Inspect {
+                agent: agent.id.to_string(),
+            })
+            .await
+        else {
+            panic!("record gone")
+        };
+        assert!(!stopped.spec.restore);
+
+        let daemon = restart(&dir, daemon).await;
+        daemon.check_liveness();
+        assert!(!daemon.is_live(&agent.id));
+        daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("holder");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.restore = true;
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        let Response::Lease { lease } = daemon
+            .handle(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: "task:the-refactor".to_owned(),
+                mode: LeaseMode::Shared,
+                ttl_secs: 300,
+                note: Some("halfway through".to_owned()),
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("claim failed")
+        };
+
+        // A clean shutdown stops the agent, and stopping it releases the
+        // lease — correctly, because nothing is working on it any more.
+        daemon.stop_all().await;
+        assert!(list_leases(&daemon).await.is_empty());
+        drop(daemon);
+
+        let daemon = open(&dir);
+        daemon.restore_agents().await;
+
+        let leases = list_leases(&daemon).await;
+        assert_eq!(leases.len(), 1, "put back for the restored agent");
+        assert_eq!(leases[0].holder, agent.id);
+        assert_eq!(leases[0].resource, lease.resource);
+        assert_eq!(leases[0].mode, LeaseMode::Shared, "as it was held");
+        assert_eq!(leases[0].note.as_deref(), Some("halfway through"));
+        assert_ne!(leases[0].id, lease.id, "a new lease, not a resurrected one");
+
+        let waiting = inbox(&daemon, agent.id.as_str(), true).await;
+        let brief = waiting.iter().find(|m| m.kind == "restored").unwrap();
+        assert_eq!(
+            brief.payload["reclaimed_leases"],
+            json!([lease.resource.to_string()])
+        );
+        assert_eq!(
+            brief.payload["leases"],
+            json!([lease.resource.to_string()]),
+            "listed once, not once per way it came back"
+        );
+        let text = brief.payload["text"].as_str().unwrap();
+        assert_eq!(
+            text.matches("task:the-refactor").count(),
+            1,
+            "and read once: {text}"
+        );
+        assert!(text.contains("You still hold"), "{text}");
+        daemon.stop_all().await;
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

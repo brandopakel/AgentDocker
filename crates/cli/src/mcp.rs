@@ -164,6 +164,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
         isolate: false,
         tty: false,
+        restore: false,
     };
     match client
         .call(&Request::Register {
