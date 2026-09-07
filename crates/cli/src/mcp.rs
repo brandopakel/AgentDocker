@@ -493,6 +493,7 @@ impl<B: Backend> McpServer<B> {
                         agent: me,
                         resource: crate::resource_key(&args.resource),
                         mode: args.mode,
+                        amount: None,
                         ttl_secs: args.ttl_secs,
                         note: args.note,
                         wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),

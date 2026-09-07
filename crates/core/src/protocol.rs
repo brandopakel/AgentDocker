@@ -379,6 +379,10 @@ pub enum Request {
         resource: String,
         #[serde(default)]
         mode: LeaseMode,
+        /// How much of a `quota:` resource to take. Ignored for every
+        /// other kind, which have no quantity to spend.
+        #[serde(default)]
+        amount: Option<u64>,
         #[serde(default = "default_ttl")]
         ttl_secs: u64,
         #[serde(default)]
@@ -857,6 +861,7 @@ mod tests {
                 agent: "reviewer".into(),
                 resource: "path:/repo/src".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
                 wait_secs: 0,

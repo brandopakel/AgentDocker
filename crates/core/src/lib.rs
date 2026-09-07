@@ -30,6 +30,9 @@ pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
 
+pub mod policy;
+pub use policy::{Policy, Ruling};
+
 pub mod multiplexer;
 
 pub mod contest;

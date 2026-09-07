@@ -808,6 +808,7 @@ mod tests {
                 agent: record.id.to_string(),
                 resource: "task:protected".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 600,
                 note: None,
                 wait_secs: 0,

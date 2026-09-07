@@ -216,7 +216,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout)` | sends a `question` message and holds the connection until an answer names it; timeout defaults to 300 s and is clamped to 1–86,400 |
 | `answer {from?, message, text}` | `sent` | reply to a waiting question by its id; who to reply to comes from the question, not the caller; `from` defaults to `user` |
 | `questions {agent?}` | `questions {questions: Question[]}` | what is still waiting, newest first; `agent` narrows to the ones put to that agent |
-| `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease`, `error(conflict)` or `error(deadlock)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) queues in arrival order and retries when it is this waiter's turn; a wait that would close a cycle is refused at once with `details.cycle` |
+| `claim {agent, resource, mode?, amount?, ttl_secs?, note?, wait_secs?}` | `lease`, `error(conflict)`, `error(deadlock)` or `error(forbidden)` | `amount` spends a `quota:` resource and is ignored for every other kind; policy is checked once, before the first attempt | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) queues in arrival order and retries when it is this waiter's turn; a wait that would close a cycle is refused at once with `details.cycle` |
 | `activity {agent?, project?, all?}` | `activity {activity: AgentActivity[]}` | what each agent is doing — `starting`, `working`, `blocked {resource, held_by, since}`, `idle`, `finished` — blocked first; derived from the wait queue and last contact, never from terminal output |
 | `waiting` | `waiting {waiting: Waiter[]}` | the claim queue, oldest first |
 | `contest_open {agent, project?, task, metric, entrants?, channel?}` | `contest {contest, standing}` | announces a task and fixes the measure; opens a channel for the entrants unless told not to |
@@ -529,11 +529,23 @@ Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker 
 
 The one thing genuinely different about a person is that they are not polling a socket, so the daemon raises a desktop notification for any message that reaches an agent whose runtime is `human` — `terminal-notifier` then `osascript` on macOS, `notify-send` on Linux — throttled to one per sender per minute. It is best-effort by design: a headless box has none of these tools, and that is not an error, because the message is still queued, still in the inbox, still on the event stream. Notifications are built under the state lock and posted on another thread, so a desktop that is slow to draw one never delays a coordination request.
 
-#### Admission policy and budgets
+#### Admission policy and budgets *(done)*
 
-Like Docker's authorization plugins: a policy file the daemon consults before acting. `<home>/policy.toml` and, per project, `<root>/.agentdocker/policy.toml` (project rules cannot widen host rules). Rules match agents by runtime, labels, name glob, and project, and allow or deny actions expressed as patterns: `claim:path:/repo/migrations/**`, `send:project:*`, `run:*`. Evaluation is pure (`Policy::check(agent, action) -> Allow | Deny { rule, reason }` in core) and refusals use the existing `ErrorCode::Forbidden` with the rule in `details`; a `policy_denied {agent, action, rule}` event fires. Files are reloaded on change (the same watcher) and on `SIGHUP`.
+Leases stop two agents editing one file. Policy stops one agent touching something it was never meant to. `<home>/policy.toml` is the machine owner's; `<root>/.agentdocker/policy.toml` belongs to a project.
 
-Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>` with a capacity set in policy, claimed in shared mode with `amount`, so `claim quota:tokens/<project> --amount 50000` fails once the sum of live amounts would exceed capacity. This folds quotas into a mechanism that already has TTLs, release-on-exit, and events; whether amounts belong on `Lease` or in a sibling `Quota` table is decided when the policy PR lands.
+**A project can narrow the host and never widen it.** That asymmetry is the whole reason there are two files: a project policy travels in a repository and could be written by anyone who can open a pull request, so the host is asked first and its refusal is final. A quota works the same way — a project may lower one, or set one the host did not, but the tighter of the two always wins.
+
+Rules match agents by runtime, name glob, project, and labels; every field left out matches everything. Within a rule, `deny` and `allow` are action patterns like `claim:path:/repo/migrations/**`, `send:project:*`, `run:**`. Three steps decide, and the order is the point: a matching **deny** refuses outright, whatever else is written and in whatever order; otherwise, if any rule covering the agent carries an **allow** list, that agent is in whitelist mode and the action has to appear in one; otherwise it is permitted. A machine with no policy file allows everything, and a file that only denies leaves everything else alone.
+
+Globs are the ones used everywhere else: `*` stays inside a segment and `**` crosses them, so `claim:path:/repo/src/*` is a directory and `claim:path:/repo/src/**` is the tree. A `:` is an ordinary character, so `send:project:*` reads as it looks, and a pattern is anchored at both ends rather than being a substring search.
+
+**Path patterns are canonicalised when a policy loads.** The daemon canonicalises a resource before claiming it, so on macOS the action says `/private/tmp/...` while the person wrote `/tmp/...`; a rule that silently matched nothing would be the worst possible failure for a security boundary, because it reads as protection. Only the literal part before the first wildcard is resolved, walking up to the nearest ancestor that exists — a rule about a migrations directory is usually written before the directory is.
+
+Evaluation is pure: `policy::check(host, project, agent, action) -> Ruling` in core, with no filesystem and no clock, so every rule about precedence is a unit test. Refusals use `ErrorCode::Forbidden` with the rule and action in `details`, and a `policy_denied {agent, action, rule}` event fires, so a refusal is explainable from the event stream alone. `claim` is checked once before its first attempt rather than on every retry, and `send` is checked against its destination.
+
+Files are re-read when their modification time changes, on the daemon's existing one-second tick — a `stat` per file, and editing a policy takes effect without restarting anything or remembering a signal. **A file that will not parse is not treated as empty**: an empty policy allows everything, so a typo would silently switch off every rule in it, and instead the last good version stays in force and the problem is logged. Removing the file is a decision and does take effect.
+
+**Budgets** ride the lease primitive as a quantitative resource kind. `claim quota:tokens --amount 50000` succeeds while the sum of live amounts fits the capacity set in policy, and fails with a `conflict` naming what is left when it does not. A quota is shared by construction — it is spent, not occupied, so exclusivity would make every budget a lock on itself — and the arithmetic happens under the same lock as the lease table, so two claims cannot both see room for the last of it. `Lease.amount` carries the quantity, zero for every other kind, which is what makes their arithmetic ignore it. A quota nobody set a capacity for is unlimited, so a typo in a quota name loosens nothing that was not already loose.
 
 #### Supervision policy and dashboard *(done)*
 
@@ -637,7 +649,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
 | 13 | ✅ FIFO wait queue with RAII places, pure deadlock search over the lease and wait tables, `error(deadlock)` with the cycle, `waiting` | 5 | — |
 | 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
-| 15 | admission policy and quotas | 5 | 12 |
+| 15 | ✅ admission policy: host and project files, a project narrowing and never widening, deny-beats-allow with allow lists as whitelists, path patterns canonicalised on load, reloaded by mtime, a broken file keeping the last good one; quotas as `quota:<name>` with `--amount` on the lease primitive | 5 | 12 |
 | 16 | ✅ restart policies (`no`/`always`/`on-failure[:n]`, backed off, cleared by `stop`, restarting under the same id), `depends_on` with ordering and a wait in `up`, and `agentdocker top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
 | 18 | ✅ runtime inventory (`runtimes`), one-command `setup` per runtime, continuous discovery with `agent_discovered` / `agent_vanished`, `adopt --all` | 5 | 5 |
@@ -653,7 +665,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 15, 28, the `commit` half of 10, 20, and 17.
+Order from here: 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -667,7 +679,7 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
 
-Shipped events include `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 `lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Planned events: `policy_denied`. Error codes `Timeout` (`ask`) and `Deadlock` (`claim --wait`) are both shipped.
 

@@ -213,6 +213,14 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// The policy refused something. Carries what was asked and which
+    /// rule said no, so a refusal is explainable from the event stream
+    /// alone.
+    PolicyDenied {
+        agent: AgentId,
+        action: String,
+        rule: String,
+    },
     /// A managed agent that exited was started again by its restart
     /// policy, under its own identity. `attempt` counts from one.
     AgentRestarted {

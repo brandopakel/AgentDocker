@@ -187,6 +187,11 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(" — {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::PolicyDenied {
+            agent,
+            action,
+            rule,
+        } => format!("policy denied    {} {action} ({rule})", agent.short()),
         EventKind::AgentRestarted {
             agent,
             pid,

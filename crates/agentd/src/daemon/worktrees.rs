@@ -348,6 +348,7 @@ impl Daemon {
                 reference,
                 format!("path:{}", target.display()),
                 LeaseMode::Exclusive,
+                None,
                 600,
                 Some(format!("integrating verified source {head}")),
                 0,

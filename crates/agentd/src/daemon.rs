@@ -47,6 +47,7 @@ mod handoff;
 pub mod humans;
 mod images;
 mod panes;
+pub mod policies;
 mod recovery;
 mod relay;
 mod restarts;
@@ -214,6 +215,10 @@ struct State {
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
+    /// The machine owner's policy, and one per project that has a file.
+    /// Empty means everything is allowed, which is what no file means.
+    host_policy: policies::Loaded,
+    project_policies: HashMap<PathBuf, policies::Loaded>,
 }
 
 struct JournalRing {
@@ -756,6 +761,8 @@ impl Daemon {
                 questions: HashMap::new(),
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
+                host_policy: policies::Loaded::default(),
+                project_policies: HashMap::new(),
             }),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
@@ -1017,11 +1024,12 @@ impl Daemon {
                 agent,
                 resource,
                 mode,
+                amount,
                 ttl_secs,
                 note,
                 wait_secs,
             } => {
-                self.claim(&agent, resource, mode, ttl_secs, note, wait_secs)
+                self.claim(&agent, resource, mode, amount, ttl_secs, note, wait_secs)
                     .await
             }
             Request::Renew {
@@ -2246,7 +2254,19 @@ impl Daemon {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
-        lock(&self.state).send(from, to, kind, payload, reply_to)
+        let mut state = lock(&self.state);
+        // `agentd` and a bare `user` speak without a record, and a rule
+        // has nothing to match them against; the daemon's own notices
+        // are not the thing a policy is for.
+        let sender = AgentId::from(from.as_str());
+        if state.registry.get(&sender).is_some() {
+            let action = format!("send:{to}");
+            let ruling = state.permits(&sender, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&sender, &action, ruling);
+            }
+        }
+        state.send(from, to, kind, payload, reply_to)
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -2315,11 +2335,13 @@ impl Daemon {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn claim(
         &self,
         reference: &str,
         resource: String,
         mode: LeaseMode,
+        amount: Option<u64>,
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
@@ -2336,6 +2358,17 @@ impl Daemon {
             Ok(resource) => resource,
             Err(response) => return *response,
         };
+        // Asked once, before the first attempt: a policy answer does not
+        // change while a claim waits, and re-asking would put a refusal
+        // in the log for every retry.
+        {
+            let mut state = lock(&self.state);
+            let action = format!("claim:{resource}");
+            let ruling = state.permits(&holder, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&holder, &action, ruling);
+            }
+        }
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
         // Subscribe before the first attempt so a release that lands between
@@ -2368,11 +2401,43 @@ impl Daemon {
                 // overlapping resource does not try, so a newcomer
                 // cannot take what somebody has been waiting minutes
                 // for. A first attempt has no ticket and always tries.
+                // A quota is a number, not a place: several agents hold
+                // one at once, and what decides is whether the sum fits.
+                // Checked here, under the same lock as the table, so two
+                // claims cannot both see room for the last of it.
+                if resource.kind() == "quota"
+                    && let Some(capacity) = state.quota_capacity(&holder, resource.value())
+                {
+                    let want = amount.unwrap_or(1);
+                    let committed = state.leases.committed(&resource);
+                    if committed.saturating_add(want) > capacity {
+                        return Response::Error {
+                            code: ErrorCode::Conflict,
+                            message: format!(
+                                "{resource} has {} of {capacity} left and {want} was asked for",
+                                capacity.saturating_sub(committed)
+                            ),
+                            details: Some(json!({
+                                "quota": resource.value(),
+                                "capacity": capacity,
+                                "committed": committed,
+                                "requested": want,
+                            })),
+                        };
+                    }
+                }
                 let result = if state.may_attempt(waiting.ticket()) {
                     state.leases.claim(
                         resource.clone(),
                         holder.clone(),
-                        mode,
+                        // A quota is shared by construction: it is spent,
+                        // not occupied, so exclusivity would make every
+                        // budget a lock on itself.
+                        if resource.kind() == "quota" {
+                            LeaseMode::Shared
+                        } else {
+                            mode
+                        },
                         ttl(ttl_secs),
                         note.clone(),
                         now,
@@ -2392,6 +2457,9 @@ impl Daemon {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
                             .store_op("lease ledger boundary", |store| store.change_watermark());
+                        if lease.resource.kind() == "quota" {
+                            lease.amount = amount.unwrap_or(1);
+                        }
                         state.leases.restore(lease.clone());
                         state.persist("lease", |store| store.upsert_lease(&lease));
                         state.emit(EventKind::LeaseClaimed {
@@ -4238,6 +4306,7 @@ mod tests {
                 agent: agent.id.to_string(),
                 resource: "task:the-refactor".to_owned(),
                 mode: LeaseMode::Shared,
+                amount: None,
                 ttl_secs: 300,
                 note: Some("halfway through".to_owned()),
                 wait_secs: 0,
@@ -4400,6 +4469,7 @@ mod tests {
                 agent: agent.to_owned(),
                 resource: resource.to_owned(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs,
@@ -5738,12 +5808,242 @@ mod tests {
         assert!(!after.status.is_live());
     }
 
+    // ----- admission policy and quotas ------------------------------------
+
+    /// Write a host policy and wait for the daemon to pick it up, which
+    /// it does on its own tick by modification time.
+    fn write_policy(daemon: &Arc<Daemon>, toml: &str) {
+        std::fs::write(daemon.home.join("policy.toml"), toml).unwrap();
+        daemon.reload_policies();
+    }
+
+    #[tokio::test]
+    async fn a_denied_claim_is_refused_and_says_which_rule() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        write_policy(
+            &daemon,
+            r#"
+[[rule]]
+name = "migrations are mine"
+deny = ["claim:task:migrations"]
+"#,
+        );
+
+        let mut events = daemon.subscribe_events();
+        let refused = claim(&daemon, agent.id.as_str(), "task:migrations").await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("the policy should have refused it")
+        };
+        assert_eq!(code, ErrorCode::Forbidden);
+        assert!(message.contains("migrations are mine"), "{message}");
+        let details = details.expect("the rule is in the details");
+        assert_eq!(details["rule"], json!("host: migrations are mine"));
+        assert_eq!(details["action"], json!("claim:task:migrations"));
+
+        // A refusal is explainable from the event stream alone.
+        let mut announced = false;
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::PolicyDenied { action, .. } = &event.kind
+                && action == "claim:task:migrations"
+            {
+                announced = true;
+            }
+        }
+        assert!(announced, "policy_denied is emitted");
+
+        // Everything else is untouched.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:anything-else").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_policy_takes_effect_without_a_restart_and_a_broken_one_does_not_disarm_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        // Nothing written: everything allowed.
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:one").await,
+            Response::Lease { .. }
+        ));
+
+        write_policy(&daemon, "[[rule]]\ndeny = [\"claim:task:**\"]\n");
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:two").await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+
+        // A file that will not parse must not read as "no rules": an
+        // empty policy allows everything, so a typo would switch off
+        // every rule it was written to enforce.
+        std::fs::write(daemon.home.join("policy.toml"), "[[rule]\ndeny = oops").unwrap();
+        daemon.reload_policies();
+        assert!(
+            matches!(
+                claim(&daemon, agent.id.as_str(), "task:three").await,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "the last good policy stays in force"
+        );
+
+        // Removing the file is a decision, and does take effect.
+        std::fs::remove_file(daemon.home.join("policy.toml")).unwrap();
+        daemon.reload_policies();
+        assert!(matches!(
+            claim(&daemon, agent.id.as_str(), "task:four").await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_denied_message_never_reaches_anybody() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let sender = register(&daemon, "loud", Some(std::process::id())).await;
+        let listener = register(&daemon, "quiet", Some(std::process::id())).await;
+        write_policy(
+            &daemon,
+            r#"
+[[rule]]
+agent = "loud"
+deny = ["send:all"]
+"#,
+        );
+        let refused = daemon
+            .handle(Request::Send {
+                from: sender.id.to_string(),
+                to: "all".into(),
+                kind: "chat".into(),
+                payload: json!({ "text": "everyone!" }),
+                reply_to: None,
+            })
+            .await;
+        assert!(matches!(
+            &refused,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        assert!(
+            inbox(&daemon, listener.id.as_str(), true).await.is_empty(),
+            "a refused message is not delivered to anyone"
+        );
+        // Addressing one agent is still fine.
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: sender.id.to_string(),
+                    to: listener.id.to_string(),
+                    kind: "chat".into(),
+                    payload: json!({ "text": "just you" }),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
+        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+        write_policy(&daemon, "[quota]\ntokens = 100\n");
+
+        let take = |agent: String, amount: u64| {
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent,
+                        resource: "quota:tokens".into(),
+                        mode: LeaseMode::Shared,
+                        amount: Some(amount),
+                        ttl_secs: 300,
+                        note: None,
+                        wait_secs: 0,
+                    })
+                    .await
+            }
+        };
+
+        // A quota is shared: several agents hold it at once.
+        assert!(matches!(
+            take(alpha.id.to_string(), 60).await,
+            Response::Lease { .. }
+        ));
+        assert!(matches!(
+            take(beta.id.to_string(), 30).await,
+            Response::Lease { .. }
+        ));
+        // 90 of 100 spent; 20 does not fit.
+        let refused = take(alpha.id.to_string(), 20).await;
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = refused
+        else {
+            panic!("the quota should have refused it: {refused:?}")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(message.contains("10 of 100 left"), "{message}");
+        let details = details.expect("the arithmetic is in the details");
+        assert_eq!(details["committed"], json!(90));
+        assert_eq!(details["capacity"], json!(100));
+        // What does fit still does.
+        assert!(matches!(
+            take(beta.id.to_string(), 10).await,
+            Response::Lease { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "spender", Some(std::process::id())).await;
+        write_policy(&daemon, "[quota]\ntokens = 10\n");
+        // A typo in a quota name must loosen nothing that was not
+        // already loose, so an unmentioned quota has no ceiling.
+        let response = daemon
+            .handle(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: "quota:tokns".into(),
+                mode: LeaseMode::Shared,
+                amount: Some(1_000_000),
+                ttl_secs: 300,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        assert!(matches!(response, Response::Lease { .. }), "{response:?}");
+    }
+
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
         daemon
             .handle(Request::Claim {
                 agent: agent.to_owned(),
                 resource: resource.to_owned(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
@@ -6025,6 +6325,7 @@ mod tests {
                 change_seq: None,
                 expires_at: now + Duration::hours(1),
                 note: None,
+                amount: 0,
             };
             store
                 .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -6128,6 +6429,7 @@ mod tests {
                         agent: "b".into(),
                         resource: "task:w".into(),
                         mode: LeaseMode::Exclusive,
+                        amount: None,
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
@@ -6161,6 +6463,7 @@ mod tests {
                 agent: "b".into(),
                 resource: "task:w".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 1,
@@ -6997,6 +7300,7 @@ mod tests {
                         agent: "waiter".into(),
                         resource: "task:wait".into(),
                         mode: LeaseMode::Exclusive,
+                        amount: None,
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
@@ -7262,6 +7566,7 @@ mod tests {
             change_seq: None,
             expires_at: now - Duration::seconds(1),
             note: None,
+            amount: 0,
         };
         {
             let mut state = lock(&daemon.state);

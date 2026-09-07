@@ -111,6 +111,15 @@ agentdocker run --name keeper --restore -- claude
 agentdocker run --name indexer --restart on-failure:3 -- ./index.sh
 agentdocker top      # the fleet, live: who is working, blocked, waiting
 
+# And set the rules. `~/.agentdocker/policy.toml` is yours; a project's
+# `.agentdocker/policy.toml` may narrow it and never widen it.
+#   [[rule]]
+#   name = "migrations are mine"
+#   deny = ["claim:path:/repo/migrations/**"]
+#   [quota]
+#   tokens = 500000
+agentdocker claim --as writer quota:tokens --amount 50000 --shared
+
 # Or hand it to tmux, and keep only the coordination. tmux owns the
 # terminal, so you reach it with `tmux attach -t reviewer`; AgentDocker
 # still knows its project, leases, read set and journal cursor.

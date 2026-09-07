@@ -870,6 +870,11 @@ struct ClaimArgs {
     /// Seconds to wait for the resource to free up instead of failing at once.
     #[arg(long, default_value_t = 0)]
     wait: u64,
+    /// How much of a `quota:` resource to take. A quota is spent rather
+    /// than occupied, so several agents hold one at once and what
+    /// decides is whether the sum fits its capacity.
+    #[arg(long)]
+    amount: Option<u64>,
 }
 
 #[tokio::main]
@@ -1688,6 +1693,7 @@ async fn main() -> Result<()> {
             let request = Request::Claim {
                 agent: args.agent,
                 resource: resource_key(&args.resource),
+                amount: args.amount,
                 mode: if args.shared {
                     LeaseMode::Shared
                 } else {
