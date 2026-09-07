@@ -352,6 +352,21 @@ mod tests {
         RUNTIMES.iter().find(|spec| spec.name == name).unwrap()
     }
 
+    /// An absolute path to something that is not there.
+    ///
+    /// Absolute matters: the check answers "no working directory to
+    /// resolve this against" for a relative command and only reaches
+    /// the does-it-exist question for an absolute one. `/absent/...`
+    /// is absolute on Unix and *relative* on Windows, where absolute
+    /// means a drive letter or a UNC prefix.
+    fn absent() -> &'static str {
+        if cfg!(windows) {
+            r"C:\absent\agentdocker"
+        } else {
+            "/absent/agentdocker"
+        }
+    }
+
     fn write_mcp(roots: &Roots, command: &str, extra: Value) {
         let path = roots.home.join(".gemini/settings.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -396,7 +411,7 @@ mod tests {
     #[test]
     fn disabled_and_wrapped_registrations_are_not_reported_as_available() {
         let (_temporary, roots) = machine();
-        write_mcp(&roots, "/absent/agentdocker", json!({"disabled":true}));
+        write_mcp(&roots, absent(), json!({"disabled":true}));
         assert_eq!(
             mcp(spec("gemini-cli"), &roots, "agentdocker")[0].status,
             Status::Disabled
@@ -419,7 +434,7 @@ mod tests {
             json!(["mcp", "--runtime", "--unexpected"]),
             json!(["mcp", "--runtime", "gemini-cli", "extra"]),
         ] {
-            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            write_mcp(&roots, absent(), json!({"args": args}));
             assert_eq!(
                 mcp(runtime, &roots, "agentdocker")[0].status,
                 Status::Unverified
@@ -431,7 +446,7 @@ mod tests {
         }
         // The generated setup registration carries its provider runtime.
         for args in [json!(["mcp"]), json!(["mcp", "--runtime", "gemini-cli"])] {
-            write_mcp(&roots, "/absent/agentdocker", json!({"args": args}));
+            write_mcp(&roots, absent(), json!({"args": args}));
             assert_eq!(
                 mcp(runtime, &roots, "agentdocker")[0].status,
                 Status::ExecutableMissing
