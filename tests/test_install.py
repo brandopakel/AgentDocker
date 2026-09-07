@@ -141,6 +141,36 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(bundled.exists(), carries_bundle, result.stdout)
                 self.assertTrue((install / "agentdocker-ui").exists(), result.stdout)
 
+    def test_the_mark_is_present_and_square(self):
+        """The icon is composed around artwork now, not drawn, so the
+        artwork has to be there and has to be the shape the pipeline
+        assumes: square, so centring it needs no judgement."""
+        mark = ROOT / "docs/images/agentdocker-mark.png"
+        head = mark.read_bytes()[:24]
+        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = struct.unpack(">II", head[16:24])
+        self.assertEqual(width, height, "the mark is square")
+        self.assertGreaterEqual(width, 512, "large enough for a 1024 icon")
+
+    def test_the_embedded_window_icon_matches_the_pipeline(self):
+        """The app sets its own icon at runtime — it has to, or eframe
+        sets its logo instead — from a PNG compiled into the binary. That
+        copy has to stay the one the iconset is built from, or the Dock
+        and Finder end up showing different marks again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["python3", str(ROOT / "scripts/icon.py"), tmp],
+                check=True,
+                capture_output=True,
+            )
+            fresh = (Path(tmp) / "AgentDocker.iconset/icon_256x256.png").read_bytes()
+            embedded = (ROOT / "crates/ui/src/icon.png").read_bytes()
+            self.assertEqual(
+                embedded,
+                fresh,
+                "crates/ui/src/icon.png is stale; regenerate it from scripts/icon.py",
+            )
+
     def test_icon_renders_every_size_the_iconset_needs(self):
         """The icon has a source rather than a stored file, so the source
         has to actually produce one. A PNG here is checked by its header
@@ -187,13 +217,13 @@ class InstallerTests(unittest.TestCase):
             for x, y in [(middle, middle), (120, middle), (size - 120, middle)]:
                 self.assertEqual(alpha(x, y), 255, f"body at {x},{y} is not solid")
 
-    def test_the_smallest_icon_is_simplified_rather_than_reduced(self):
-        """At 16pt the body is thirteen pixels across, and three
-        connectors converging on a disc become one grey smudge there. So
-        below 24pt the connectors are dropped and the discs grow. The
-        check is that 16 and 32 really are different drawings rather than
-        the same one resampled: the grey the connectors are made of
-        covers far less of the small one."""
+    def test_the_smallest_icon_is_given_more_of_the_tile(self):
+        """At 16pt the body is thirteen pixels across. Every pixel spent
+        on breathing room is one not spent on the shape, and what
+        survives of a detailed mark at that size is a smudge either way —
+        so the small sizes fill the tile and the large ones keep their
+        margin. The check is that they really are laid out differently
+        rather than being one drawing resampled."""
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(
                 ["python3", str(ROOT / "scripts/icon.py"), tmp],
@@ -202,28 +232,29 @@ class InstallerTests(unittest.TestCase):
             )
             iconset = Path(tmp) / "AgentDocker.iconset"
 
-            def grey_share(name, size):
+            def mark_share(name, size):
+                """How much of the canvas the mark itself covers.
+
+                The mark is the blue; the tile behind it is nearly black.
+                Anything with a blue channel well above the ground is the
+                artwork rather than the tile it sits on.
+                """
                 rows, _ = _read_png(iconset / name)
-                # The connectors and the host are the only greys, and
-                # they are the only thing near this value.
-                grey = sum(
+                blue = sum(
                     1
                     for y in range(size)
                     for x in range(size)
-                    if abs(rows[y][x * 4] - 0x8A) < 24
-                    and abs(rows[y][x * 4 + 1] - 0x93) < 24
-                    and abs(rows[y][x * 4 + 2] - 0xA5) < 24
-                    and rows[y][x * 4 + 3] > 200
+                    if rows[y][x * 4 + 3] > 200 and rows[y][x * 4 + 2] > 90
                 )
-                return grey / (size * size)
+                return blue / (size * size)
 
-            small = grey_share("icon_16x16.png", 16)
-            large = grey_share("icon_32x32.png", 32)
-            self.assertGreater(large, 0.0, "the connectors are there at 32pt")
-            self.assertLess(
+            small = mark_share("icon_16x16.png", 16)
+            large = mark_share("icon_512x512.png", 512)
+            self.assertGreater(large, 0.05, "the mark is on the large tile at all")
+            self.assertGreater(
                 small,
-                large / 2,
-                f"16pt drops the connectors: {small:.3f} against {large:.3f}",
+                large * 1.15,
+                f"16pt gives the mark more room: {small:.3f} against {large:.3f}",
             )
 
     @unittest.skipUnless(sys.platform == "darwin", "iconutil is macOS-only")
