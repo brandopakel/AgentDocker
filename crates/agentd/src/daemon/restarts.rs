@@ -102,9 +102,9 @@ impl Daemon {
             "restarting"
         );
         match supervisor::spawn(self, &record).await {
-            Ok(spawned) => {
+            Ok(mut spawned) => {
                 let pid = spawned.pid;
-                let started_at = procinfo::start_time(pid);
+                let started_at = Some(spawned.process_started_at);
                 if let Some(session) = spawned.session.clone() {
                     lock(&self.sessions).insert(id.clone(), session);
                 }
@@ -153,11 +153,16 @@ impl Daemon {
                         false
                     }
                 };
-                if !persisted {
+                let activation_failed = if persisted {
+                    spawned.activate().await.is_err()
+                } else {
+                    false
+                };
+                if !persisted || activation_failed {
                     spawned.control.send_replace(Some(true));
                 }
                 let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
-                if !persisted {
+                if !persisted || activation_failed {
                     let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                 }
             }
@@ -240,7 +245,12 @@ mod tests {
         let mut previous = AgentRecord::new(
             AgentSpec {
                 name: "restart-storage-fixture".into(),
-                command: vec!["sh".into(), "-c".into(), "exec sleep 30".into()],
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf executed > must-not-execute; exec sleep 30".into(),
+                ],
+                workdir: Some(dir.path().to_path_buf()),
                 restart: agentdocker_core::RestartPolicy::OnFailure { max: 1 },
                 ..Default::default()
             },
@@ -272,6 +282,7 @@ mod tests {
         // Cleanup precedes assertions so the before-fix failure cannot leak a child.
         daemon.stop_all().await;
         assert!(failed, "the event fault must be reached");
+        assert!(!dir.path().join("must-not-execute").exists());
         assert!(
             !controlled,
             "failed restart persistence must finish owned cleanup"

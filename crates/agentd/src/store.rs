@@ -200,6 +200,33 @@ impl Store {
         Ok(())
     }
 
+    /// Native exit, released protection, closed channels and replay are one commit.
+    pub fn agent_exit(
+        &self,
+        record: &AgentRecord,
+        leases: &[LeaseId],
+        journal: &[JournalEntry],
+        channels: &[agentdocker_core::channel::Channel],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(record)?;
+        for lease in leases {
+            self.delete_lease(lease)?;
+        }
+        for entry in journal {
+            self.insert_journal(entry)?;
+        }
+        for channel in channels {
+            self.put_document("channel", channel.id.as_str(), channel)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn finish_restore(&self, record: &AgentRecord, event: &Event) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.upsert_agent(record)?;

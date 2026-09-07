@@ -3,23 +3,27 @@
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use std::os::unix::process::CommandExt;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use agentdocker_core::{AgentId, AgentRecord, AgentStatus};
+use agentdocker_host::launch::{OwnedChild, Pending};
 use anyhow::Context;
 use chrono::Utc;
 use std::os::fd::{AsRawFd, OwnedFd};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::daemon::Daemon;
 
 pub struct Spawned {
     pub pid: u32,
-    child: Child,
+    pub process_started_at: chrono::DateTime<Utc>,
+    child: Option<OwnedChild>,
+    pending: Option<Pending>,
+    batch_log: Option<mpsc::Sender<String>>,
+    launch_error: Option<String>,
     pub control: watch::Sender<Option<bool>>,
     stop: watch::Receiver<Option<bool>>,
     /// The daemon's end of the agent's terminal, when it was given one.
@@ -84,7 +88,6 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         anyhow::bail!("empty command");
     };
     let mut command = Command::new(program);
-    command.kill_on_drop(true);
     command
         .args(args)
         .envs(&record.spec.env)
@@ -117,18 +120,14 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
                 .stderr(Stdio::from(slave));
             // SAFETY: `take_controlling_terminal` uses only
             // async-signal-safe calls, as its contract requires.
-            unsafe {
-                command
-                    .as_std_mut()
-                    .pre_exec(|| agentdocker_host::pty::take_controlling_terminal())
-            };
+            unsafe { command.pre_exec(|| agentdocker_host::pty::take_controlling_terminal()) };
         }
         None => {
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            command.as_std_mut().process_group(0);
+            command.process_group(0);
         }
     }
     if let Some(workdir) = &record.spec.workdir {
@@ -155,13 +154,16 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     .await??;
     let log = File::from_std(log);
     daemon.validate_native_launch(record)?;
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to launch `{program}`"))?;
-    let pid = child.id().context("child exited before reporting a pid")?;
+    let pending = tokio::task::spawn_blocking(move || agentdocker_host::launch::prepare(command))
+        .await?
+        .with_context(|| format!("failed to prepare `{program}`"))?;
+    let pid = pending.pid;
+    let process_started_at = agentdocker_host::procinfo::start_time(pid)
+        .context("cannot verify the prepared command's process identity; exec denied")?;
 
     let (tx, rx) = mpsc::channel::<String>(256);
     tokio::spawn(write_log(log, rx));
+    let mut batch_log = None;
     let session = match pty {
         Some(pty) => {
             let master = Arc::new(pty.into_master());
@@ -192,12 +194,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             })
         }
         None => {
-            if let Some(stdout) = child.stdout.take() {
-                tokio::spawn(pump(stdout, "out", tx.clone()));
-            }
-            if let Some(stderr) = child.stderr.take() {
-                tokio::spawn(pump(stderr, "err", tx));
-            }
+            batch_log = Some(tx);
             None
         }
     };
@@ -205,11 +202,54 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     let (control, stop) = watch::channel(None);
     Ok(Spawned {
         pid,
-        child,
+        process_started_at,
+        child: None,
+        pending: Some(pending),
+        batch_log,
+        launch_error: None,
         control,
         stop,
         session,
     })
+}
+
+impl Spawned {
+    /// The durable identity and event must already be committed. Dropping an
+    /// unactivated Spawned closes its gate; the command never executes.
+    pub async fn activate(&mut self) -> anyhow::Result<()> {
+        let result = self.activate_inner().await;
+        if let Err(error) = &result {
+            self.launch_error = Some(format!("{error:#}"));
+        }
+        result
+    }
+
+    async fn activate_inner(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.stop.borrow().is_none(),
+            "launch was stopped before activation"
+        );
+        let pending = self.pending.take().context("launch already activated")?;
+        let mut child = tokio::task::spawn_blocking(move || pending.activate()).await??;
+        if let Some(tx) = self.batch_log.take() {
+            let stdout = child
+                .take_stdout()
+                .map(tokio::process::ChildStdout::from_std)
+                .transpose()?;
+            let stderr = child
+                .take_stderr()
+                .map(tokio::process::ChildStderr::from_std)
+                .transpose()?;
+            if let Some(stdout) = stdout {
+                tokio::spawn(pump(stdout, "out", tx.clone()));
+            }
+            if let Some(stderr) = stderr {
+                tokio::spawn(pump(stderr, "err", tx));
+            }
+        }
+        self.child = Some(child);
+        Ok(())
+    }
 }
 
 /// Read the agent's terminal: every byte goes to whoever is attached, and
@@ -285,24 +325,43 @@ pub fn supervise(
         let group = Pid::from_raw(-(spawned.pid as i32));
         let mut stopping = false;
         let mut deadline = tokio::time::Instant::now();
-        let result = loop {
-            tokio::select! {
-                biased;
-                result = spawned.child.wait() => break result,
-                Ok(()) = spawned.stop.changed() => {
-                    if let Some(force) = *spawned.stop.borrow_and_update() {
-                        let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
-                        if !stopping {
-                            deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-                            stopping = true;
+        let result = if let Some(child) = &mut spawned.child {
+            loop {
+                tokio::select! {
+                    biased;
+                    result = async {
+                        loop {
+                            if let Some(status) = child.try_wait()? {
+                                break Ok(status);
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    } => break result,
+                    Ok(()) = spawned.stop.changed() => {
+                        if let Some(force) = *spawned.stop.borrow_and_update() {
+                            let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
+                            if !stopping {
+                                deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                                stopping = true;
+                            }
                         }
                     }
-                }
-                () = tokio::time::sleep_until(deadline), if stopping => {
-                    let _ = kill(group, Signal::SIGKILL);
-                    stopping = false;
+                    () = tokio::time::sleep_until(deadline), if stopping => {
+                        let _ = kill(group, Signal::SIGKILL);
+                        stopping = false;
+                    }
                 }
             }
+        } else {
+            // Pending's socket shutdown denies exec, including after storage
+            // failure. Command's worker reaps its pre-exec failure.
+            spawned.pending.take();
+            Err(std::io::Error::other(
+                spawned
+                    .launch_error
+                    .take()
+                    .unwrap_or_else(|| "launch was not activated".into()),
+            ))
         };
         let status = match result {
             Ok(exit) => AgentStatus::Exited { code: exit.code() },

@@ -31,3 +31,9 @@ The development Mac currently has no Developer ID Application signing identity i
 ## Desktop and onboarding follow-up
 
 [Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. Automatic installation/update/rollback, signed public release, Windows parity and sustained upgrade crash boundaries still require implementation and acceptance.
+
+## September 7: native launch and exit durability follow-up
+
+The delivery branch now gates initial runs, restores and automatic restarts before command execution. PID and exact process birth identity must commit with the lifecycle event before the owner releases exec. Cancellation, failed persistence and owner death before authorization deny exec. Native exit writes status, lease deletion, journal entries, channel closure and replay events in one transaction. The initial-launch regression previously left a durable Running identity after its event failed; the strengthened fixture now retains Created and executes no command. Storage faults during exit retain both memory and durable protection.
+
+Focused evidence includes actual parent SIGKILL before activation, cancelled and missing-program launch, initial/restore/restart event failure, native exit faults in leases/journal/channels/events, and actual daemon first-instruction coordination and batch/PTY logging. Full gate and platform acceptance must be recorded on the final source; this is not completion of the full delivery matrix or live reload.
