@@ -166,6 +166,8 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         tty: false,
         restore: false,
         in_pane: false,
+        restart: Default::default(),
+        depends_on: Vec::new(),
     };
     match client
         .call(&Request::Register {
@@ -310,10 +312,11 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(request).await
             }
-            "create_worktree" | "worktree_diff" | "integrate_worktree" => {
+            "create_worktree" | "worktree_diff" | "integrate_worktree" | "commit" => {
                 let op = match name {
                     "create_worktree" => "worktree_create",
                     "worktree_diff" => "worktree_diff",
+                    "commit" => "commit",
                     _ => "integrate",
                 };
                 self.forward(tagged_request(arguments, op, &me)?).await
@@ -491,6 +494,7 @@ impl<B: Backend> McpServer<B> {
                         agent: me,
                         resource: crate::resource_key(&args.resource),
                         mode: args.mode,
+                        amount: None,
                         ttl_secs: args.ttl_secs,
                         note: args.note,
                         wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),
@@ -984,6 +988,7 @@ fn tool_definitions() -> Vec<Value> {
     vec![
         json!({"name":"create_worktree","description":"Host endpoint only: create a new linked checkout and branch from this session's HEAD; existing files are preserved.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"branch":{"type":"string"}},"required":["path","branch"],"additionalProperties":false}}),
         json!({"name":"worktree_diff","description":"Host endpoint only: show tracked uncommitted changes in this session's physical checkout.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({"name":"commit","description":"Host endpoint only: commit this session's checkout. The journal records the commit against this agent with the message given, rather than inferring afterwards who moved HEAD. Nothing is written into the commit itself: the git author is unchanged and no trailer is added. all=true stages tracked modifications and deletions first; push=true pushes the branch afterwards.","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"all":{"type":"boolean"},"push":{"type":"boolean"}},"required":["message"],"additionalProperties":false}}),
         json!({"name":"integrate_worktree","description":"Host endpoint only: preview validated committed source from a linked checkout. apply=true prepares an uncommitted merge and retains a target-checkout lease for review; it never commits automatically.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"validation":{"type":"string"},"apply":{"type":"boolean"}},"required":["source","validation"],"additionalProperties":false}}),
         json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
         json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session; leases move to it only when the accepted handoff bundle asked for that, and a plain checkpoint never transfers them.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
@@ -1497,6 +1502,7 @@ mod tests {
             [
                 "create_worktree",
                 "worktree_diff",
+                "commit",
                 "integrate_worktree",
                 "save_checkpoint",
                 "resume_checkpoint",

@@ -419,6 +419,7 @@ mod tests {
             agent: agent.into(),
             resource: format!("path:{path}"),
             mode: LeaseMode::Exclusive,
+            amount: None,
             ttl_secs: 300,
             note: None,
             wait_secs: 20,

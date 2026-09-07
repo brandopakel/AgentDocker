@@ -438,6 +438,7 @@ mod tests {
                 agent: agent.into(),
                 resource: resource.into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: 60,
                 note: Some("mine".into()),
                 wait_secs: 0,

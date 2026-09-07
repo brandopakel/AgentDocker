@@ -9,7 +9,7 @@
 //! binary beside the CLI — one `cargo install agentdocker` gets both. The
 //! binary is [`main`] and nothing else.
 
-mod daemon;
+pub mod daemon;
 mod server;
 mod store;
 mod supervisor;
@@ -97,6 +97,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
+    daemon.reload_policies();
     // Bind before any restored command can execute. Poll serving alongside
     // restoration so an agent's first hook/MCP request can receive a reply.
     let listener = server::bind(&daemon).await?;
@@ -115,8 +116,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             daemon.reconcile_containers();
             daemon.expire_leases();
             daemon.check_liveness();
+            // A `stat` per policy file, so editing one takes effect
+            // within a second without a restart or a signal.
+            daemon.reload_policies();
             ticks += 1;
             if ticks.is_multiple_of(5) {
+                daemon.refresh_project_checkouts().await;
                 daemon.refresh_vcs(None).await;
                 let _ = daemon.scan_agents().await;
             }
