@@ -708,3 +708,6 @@ Shipped events include `policy_updated` (effective rules or load diagnostic chan
 What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in [IMPLEMENTATION-NOTES.md](IMPLEMENTATION-NOTES.md).
 
 Configuration references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Codex state locations and CODEX_HOME](https://learn.chatgpt.com/docs/config-file/config-advanced), [Claude Desktop local MCP configuration](https://py.sdk.modelcontextprotocol.io/get-started/real-host/). Setup respects an explicit CODEX_HOME for the calling host; inventory uses the daemon's configuration environment. Model and provider details are not inferred from an installed app or process name.
+
+
+Lease admission and renewal commit the holder's liveness, lease row and ordered replay event atomically. Conflict replies commit their liveness and initial conflict event together. Planning does not mutate the live lease table; memory and publication advance only after commit. Release deletion, journal and replay commit before memory protection is removed. Storage failure freezes coordination and retains its prior protection; a failed liveness write does not make an agent appear more recently active in memory.
