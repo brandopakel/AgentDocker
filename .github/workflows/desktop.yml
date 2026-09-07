@@ -56,7 +56,7 @@ jobs:
           xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/desktop-smoke
       - name: Mac native window and fixture discovery
         if: runner.os == 'macOS'
-        run: python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/desktop-smoke
+        run: python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker.app/Contents/MacOS --output artifacts/desktop-smoke
       - name: Disposable installation, activation and rollback
         run: python3 scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/desktop-install-smoke
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

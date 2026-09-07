@@ -1503,7 +1503,7 @@ impl eframe::App for App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading("AgentDocker");
+                    ui.heading("agentdocker");
                     ui.separator();
                     match &self.connected {
                         Ok(()) => {

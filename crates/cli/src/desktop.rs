@@ -155,7 +155,7 @@ impl Layout {
         let prefix = project::try_canonical(&prefix)?;
         ensure!(prefix.is_absolute(), "installation prefix must be absolute");
         let application = if cfg!(target_os = "macos") {
-            prefix.join("Applications/AgentDocker.app")
+            prefix.join("Applications/agentdocker.app")
         } else {
             prefix.join(".local/share/applications/agentdocker.desktop")
         };
@@ -375,7 +375,7 @@ fn validate_release(release: &Release) -> Result<()> {
     ensure!(
         release.payload
             == if cfg!(target_os = "macos") {
-                "AgentDocker.app"
+                "agentdocker.app"
             } else {
                 "agentdocker-desktop"
             },
@@ -494,7 +494,7 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
         .canonicalize()
         .context("desktop source does not exist")?;
     let payload_name = if cfg!(target_os = "macos") {
-        "AgentDocker.app"
+        "agentdocker.app"
     } else {
         "agentdocker-desktop"
     };
@@ -815,7 +815,7 @@ mod tests {
             tree_sha256: id,
             installation_lock: agentdocker_host::installation::LOCK_FORMAT,
             payload: if cfg!(target_os = "macos") {
-                "AgentDocker.app"
+                "agentdocker.app"
             } else {
                 "agentdocker-desktop"
             }

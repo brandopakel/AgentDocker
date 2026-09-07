@@ -19,13 +19,8 @@ use std::time::{Duration, Instant};
 /// together is how a graphical check becomes flaky with no evidence.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
 
-// Asked for exactly once, and this is not an oversight. Sending
-// `ViewportCommand::Screenshot` again before the first has been
-// answered replaces the pending request rather than queuing a second
-// one, so a retry loop asks forever and is answered never: measured at
-// 12 failures in 12 runs with a two-second retry against 15 passes in
-// 15 without one. If the single reply is ever genuinely lost, the
-// deadline below reports it by name rather than hanging silently.
+// Keep one outstanding capture request. The original timeout remains under
+// investigation; repeated requests would change that diagnostic experiment.
 
 pub struct Smoke {
     output: PathBuf,
@@ -36,7 +31,7 @@ pub struct Smoke {
     /// trail in the log rather than an empty file.
     reported: Instant,
     /// When a screenshot was last asked for, or `None` before the first
-    /// ask. See `RETRY_AFTER`.
+    /// ask.
     requested: Option<Instant>,
     frames: usize,
     outcome: Arc<AtomicU8>,
@@ -59,9 +54,8 @@ fn unmet(connected: bool, runtimes: usize, fixture: bool, frames: usize) -> Stri
     }
     if waiting.is_empty() {
         // Everything the window waits for has happened, so what is left
-        // is the screenshot the renderer owes us. It is asked for again
-        // every RETRY_AFTER, so reaching the deadline here means every
-        // one of those went unanswered.
+        // is the screenshot the renderer owes us. A timeout preserves this
+        // distinction from failed connection, inventory or discovery.
         return "the renderer to hand back a screenshot".to_owned();
     }
     waiting.join(", ")

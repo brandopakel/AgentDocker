@@ -18,7 +18,7 @@ import tempfile
 import time
 
 MAC = sys.platform == "darwin"
-PAYLOAD = "AgentDocker.app" if MAC else "agentdocker-desktop"
+PAYLOAD = "agentdocker.app" if MAC else "agentdocker-desktop"
 BIN = Path("Contents/MacOS") if MAC else Path("bin")
 META = Path("Contents/Resources/build.json") if MAC else Path("build.json")
 
