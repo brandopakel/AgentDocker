@@ -37,3 +37,19 @@ DOCKER_CONTEXT=desktop-linux python3 tests/containers/workspace.py --engine dock
 Keep the Docker CLI on PATH for the fixture and daemon. Results include the host OS/architecture, engine versions and selected transport so Desktop evidence stays distinct from Linux Docker. This requires an initialized Desktop installation; the current GitHub matrix has no such macOS runner.
 
 With Desktop's containerd image store, a cached rebuild may have a new image index ID because [BuildKit attaches provenance attestations to that index](https://docs.docker.com/build/metadata/attestations/). The fixture requires identical captured inputs, tests rejection if the immutable image ID changed, and uses the original retained image for the successful handoff. If the rebuilt image ID is identical, it also tests portability across local build IDs. Production recovery always requires exact immutable image identity.
+
+Failure evidence is retained beside `--result`: the failed scenario and primary
+error, a daemon log tail, and one container log tail per owned container. Each
+container diagnostic has a fixed 30-second deadline and a 2 MiB output cap;
+exit status, timeout and truncation are recorded. A diagnostic failure stays
+secondary to the scenario failure. CI uploads these files from `artifacts/`.
+
+The engine-volume rendezvous directory uses sticky mode 1777 so the relay can
+create its socket as the configured workspace UID in a new root-owned volume.
+The socket itself is mode 0600 and the writer mounts the volume read-only.
+The sole writable mount belongs to the confined relay; no credentials are
+stored in the volume. Volume ownership labels and its local driver/options
+are verified before use. Engine administration is a trusted boundary. Making
+existing root-owned volumes private would require a separate ownership
+initialization design; adding a root helper is not part of the relay readability
+fix. Host credential/state directories remain mode 0700.
