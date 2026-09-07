@@ -5,16 +5,15 @@
 //! `AGENTDOCKER_NO_AUTOSTART` is set. See [`Client::with_start_timeout`].
 
 use std::future::Future;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Request, Response, paths};
+use agentdocker_host::ipc::Stream;
 use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 
 /// How long the CLI waits for a daemon it started. Hooks use less: they
 /// fail open and must not stall the editor.
@@ -48,7 +47,7 @@ impl Client {
         self
     }
 
-    async fn connect(&self, request: &Request) -> Result<BufReader<UnixStream>> {
+    async fn connect(&self, request: &Request) -> Result<BufReader<Stream>> {
         if !paths::fits_socket(&self.socket) {
             bail!(
                 "socket path {} is {} bytes; this OS allows {} — set AGENTDOCKER_SOCKET to a shorter path or use a shorter AGENTDOCKER_HOME",
@@ -60,7 +59,7 @@ impl Client {
         dirs::check_socket_parent(&self.socket).with_context(|| {
             format!("socket directory for {} is unusable", self.socket.display())
         })?;
-        let stream = match UnixStream::connect(&self.socket).await {
+        let stream = match Stream::connect(&self.socket).await {
             Ok(stream) => stream,
             Err(err) if absent(&err) && self.autostart.is_some() => {
                 self.start_daemon(self.autostart.unwrap_or(START_TIMEOUT))
@@ -106,7 +105,7 @@ impl Client {
     /// the daemon must take it itself); not getting it means one is up or
     /// starting, so only the wait is needed. Two clients racing here may
     /// both spawn a daemon; the loser exits when it finds the lock taken.
-    async fn start_daemon(&self, timeout: Duration) -> Result<UnixStream> {
+    async fn start_daemon(&self, timeout: Duration) -> Result<Stream> {
         let home = dirs::home();
         let lock_path = paths::daemon_lock(&home, &self.socket);
         if let Some(parent) = lock_path.parent() {
@@ -136,7 +135,7 @@ impl Client {
     /// Send one request and hand back the raw connection, for a caller
     /// that then speaks a duplex protocol on it. Nothing has been read
     /// yet, so no buffered bytes are lost.
-    pub async fn open(&self, request: &Request) -> Result<UnixStream> {
+    pub async fn open(&self, request: &Request) -> Result<Stream> {
         Ok(self.connect(request).await?.into_inner())
     }
 
@@ -247,12 +246,12 @@ async fn wait_for_start(
     log_path: &Path,
     timeout: Duration,
     child: Option<std::process::Child>,
-) -> Result<UnixStream> {
+) -> Result<Stream> {
     let mut child = StartingChild(child);
     let deadline = Instant::now() + timeout;
     loop {
         dirs::check_socket_parent(socket)?;
-        match UnixStream::connect(socket).await {
+        match Stream::connect(socket).await {
             Ok(stream) => {
                 child.0.take();
                 return Ok(stream);
@@ -295,14 +294,19 @@ fn absent(err: &std::io::Error) -> bool {
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
     let exe = std::env::current_exe()
         .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
+        .and_then(|me| {
+            me.parent()
+                .map(|dir| dir.join(format!("agentd{}", std::env::consts::EXE_SUFFIX)))
+        })
         .filter(|sibling| sibling.is_file())
-        .unwrap_or_else(|| PathBuf::from("agentd"));
+        .unwrap_or_else(|| PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX)));
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log_path = paths::daemon_log(home);
     let log = agentdocker_host::dirs::private_file(&log_path, true, true)
         .with_context(|| format!("cannot open {}", log_path.display()))?;
-    Command::new(&exe)
+    let mut command = Command::new(&exe);
+    agentdocker_host::command::detach(&mut command);
+    command
         .arg("--socket")
         .arg(socket)
         .arg("--home")
@@ -310,7 +314,6 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
-        .process_group(0)
         .spawn()
         .with_context(|| format!("cannot start {}", exe.display()))
 }

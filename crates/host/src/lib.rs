@@ -28,3 +28,5 @@ pub mod transport;
 pub mod relay;
 
 pub mod files;
+
+pub mod ipc;

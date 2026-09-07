@@ -1,6 +1,7 @@
 //! Unix-socket server: newline-delimited JSON requests in, responses out.
 
 use std::io::{self, SeekFrom};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,11 +9,10 @@ use std::time::Duration;
 
 use agentdocker_core::{ErrorCode, Request, Response, paths};
 use agentdocker_host::dirs;
+use agentdocker_host::ipc::{Listener, OwnedReadHalf, OwnedWriteHalf, Stream};
 use anyhow::Context;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
@@ -76,12 +76,13 @@ impl Reader {
     }
 }
 
-pub async fn bind(daemon: &Daemon) -> anyhow::Result<UnixListener> {
-    std::fs::create_dir_all(daemon.home.join("logs"))?;
+pub async fn bind(daemon: &Daemon) -> anyhow::Result<Listener> {
+    dirs::secure_state_dir(&daemon.home.join("logs"))?;
     require_fits(&daemon.socket)?;
     prepare_socket_parent(&daemon.home, &daemon.socket)?;
+    #[cfg(unix)]
     if daemon.socket.exists() {
-        if UnixStream::connect(&daemon.socket).await.is_ok() {
+        if Stream::connect(&daemon.socket).await.is_ok() {
             anyhow::bail!(
                 "another agentd is already listening on {}",
                 daemon.socket.display()
@@ -89,14 +90,15 @@ pub async fn bind(daemon: &Daemon) -> anyhow::Result<UnixListener> {
         }
         std::fs::remove_file(&daemon.socket)?;
     }
-    let listener = UnixListener::bind(&daemon.socket)
+    let listener = Listener::bind(&daemon.socket)
         .with_context(|| format!("cannot bind {}", daemon.socket.display()))?;
+    #[cfg(unix)]
     std::fs::set_permissions(&daemon.socket, std::fs::Permissions::from_mode(0o600))?;
     info!(socket = %daemon.socket.display(), home = %daemon.home.display(), "agentd listening");
     Ok(listener)
 }
 
-pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener) -> anyhow::Result<()> {
+pub async fn serve(daemon: Arc<Daemon>, listener: Listener) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -108,7 +110,7 @@ pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener) -> anyhow::Resul
     }
 }
 
-async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
+async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
     let (read_half, mut writer) = stream.into_split();
     let mut reader = Reader::new(read_half);
 
@@ -483,14 +485,16 @@ pub async fn serve_restricted(daemon: Arc<Daemon>, socket: PathBuf) -> anyhow::R
     }
     require_fits(&socket)?;
     prepare_socket_parent(&daemon.home, &socket)?;
+    #[cfg(unix)]
     if socket.exists() {
-        if UnixStream::connect(&socket).await.is_ok() {
+        if Stream::connect(&socket).await.is_ok() {
             anyhow::bail!("restricted endpoint is already listening");
         }
         std::fs::remove_file(&socket)?;
     }
     let listener =
-        UnixListener::bind(&socket).with_context(|| format!("cannot bind {}", socket.display()))?;
+        Listener::bind(&socket).with_context(|| format!("cannot bind {}", socket.display()))?;
+    #[cfg(unix)]
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     info!(socket = %socket.display(), "restricted endpoint listening");
     daemon.restricted_listening(socket.clone());
@@ -509,7 +513,7 @@ pub async fn serve_restricted(daemon: Arc<Daemon>, socket: PathBuf) -> anyhow::R
 }
 
 /// A directory-mounted proxy reconnects to the restricted socket after daemon restart.
-pub(crate) async fn serve_workspace(listener: UnixListener, target: std::path::PathBuf) {
+pub(crate) async fn serve_workspace(listener: Listener, target: std::path::PathBuf) {
     let mut delay = Duration::from_millis(10);
     loop {
         let (mut stream, _) = match listener.accept().await {
@@ -541,7 +545,7 @@ pub(crate) async fn serve_workspace(listener: UnixListener, target: std::path::P
         let target = target.clone();
         tokio::spawn(async move {
             let _ = tokio::time::timeout(Duration::from_secs(30), async move {
-                let mut upstream = UnixStream::connect(target).await?;
+                let mut upstream = Stream::connect(target).await?;
                 tokio::io::copy_bidirectional(&mut stream, &mut upstream).await
             })
             .await;
@@ -564,6 +568,7 @@ fn require_fits(socket: &Path) -> anyhow::Result<()> {
 
 /// The socket's directory, created: the home's own is simply made, the
 /// short fallback under the runtime directory must be ours alone.
+#[cfg(unix)]
 fn prepare_socket_parent(home: &Path, socket: &Path) -> anyhow::Result<()> {
     let Some(parent) = socket.parent() else {
         return Ok(());
@@ -577,7 +582,12 @@ fn prepare_socket_parent(home: &Path, socket: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Request> {
+#[cfg(windows)]
+fn prepare_socket_parent(_home: &Path, socket: &Path) -> anyhow::Result<()> {
+    dirs::check_socket_parent(socket).map_err(Into::into)
+}
+
+async fn restricted_frame(reader: &mut BufReader<Stream>) -> io::Result<Request> {
     let mut line = String::new();
     (&mut *reader)
         .take(1024 * 1024 + 1)
@@ -588,16 +598,13 @@ async fn restricted_frame(reader: &mut BufReader<UnixStream>) -> io::Result<Requ
     }
     serde_json::from_str(&line).map_err(io::Error::other)
 }
-async fn restricted_reply(
-    reader: &mut BufReader<UnixStream>,
-    response: &Response,
-) -> io::Result<()> {
+async fn restricted_reply(reader: &mut BufReader<Stream>, response: &Response) -> io::Result<()> {
     let mut line = serde_json::to_vec(response).map_err(io::Error::other)?;
     line.push(b'\n');
     reader.get_mut().write_all(&line).await
 }
 
-async fn restricted_connection(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
+async fn restricted_connection(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
     let token = match restricted_frame(&mut reader).await? {
         Request::Authenticate { token } => token,
@@ -631,7 +638,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
         for newline in [false, true] {
-            let (client, server) = UnixStream::pair().unwrap();
+            let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
             let task = tokio::spawn(handle(daemon.clone(), server));
             let mut client = BufReader::new(client);
             let mut frame = vec![b' '; HOST_REQUEST_BYTES + 1];
@@ -654,7 +661,7 @@ mod tests {
 
         // A frame exactly at the limit remains valid, and the byte budget
         // resets for the next request on the same connection.
-        let (client, server) = UnixStream::pair().unwrap();
+        let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let task = tokio::spawn(handle(daemon, server));
         let mut client = BufReader::new(client);
         let mut frame = b"{\"op\":\"ping\"}".to_vec();
@@ -715,7 +722,7 @@ mod tests {
             .expect("reader made no progress to the cancellation boundary");
         }
 
-        let (mut client, server) = UnixStream::pair().unwrap();
+        let (mut client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let (read, _write) = server.into_split();
         let mut reader = Reader::new(read);
         client.write_all(b"{\"op\":").await.unwrap();
@@ -774,7 +781,7 @@ mod tests {
         else {
             panic!()
         };
-        let (client, server) = UnixStream::pair().unwrap();
+        let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let task = tokio::spawn(restricted_connection(daemon.clone(), server));
         let mut client = BufReader::new(client);
         client
@@ -792,7 +799,7 @@ mod tests {
             }
         ));
         task.await.unwrap().unwrap();
-        let (client, server) = UnixStream::pair().unwrap();
+        let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let task = tokio::spawn(restricted_connection(daemon.clone(), server));
         let mut client = BufReader::new(client);
         let auth = serde_json::to_string(&Request::Authenticate {
@@ -809,7 +816,7 @@ mod tests {
         );
         // A valid credential must not allow an oversized operation through the
         // frame reader. The connection closes without acquiring its lease.
-        let (oversized, server) = UnixStream::pair().unwrap();
+        let (oversized, server) = agentdocker_host::ipc::pair().await.unwrap();
         let oversized_task = tokio::spawn(restricted_connection(daemon.clone(), server));
         let mut oversized = BufReader::new(oversized);
         oversized
@@ -892,7 +899,7 @@ mod tests {
             })
             .await;
         let mut events = daemon.subscribe_events();
-        let (mut client, server) = UnixStream::pair().unwrap();
+        let (mut client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let running = tokio::spawn(handle(daemon.clone(), server));
         client.write_all(b"{\"op\":\"claim\",\"agent\":\"waiter\",\"resource\":\"task:wait\",\"wait_secs\":5}\n").await.unwrap();
         while !matches!(

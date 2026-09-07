@@ -37,7 +37,7 @@ enum Outbound {
 struct Shared {
     parser: Arc<Mutex<vt100::Parser>>,
     status: Arc<Mutex<Status>>,
-    connection: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+    connection: Arc<Mutex<Option<agentdocker_host::ipc::BlockingStream>>>,
 }
 
 /// One attached agent.

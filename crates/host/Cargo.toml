@@ -19,6 +19,8 @@ thiserror.workspace = true
 toml.workspace = true
 
 tempfile.workspace = true
+tokio.workspace = true
+uuid.workspace = true
 filetime.workspace = true
 
 [target.'cfg(windows)'.dependencies]

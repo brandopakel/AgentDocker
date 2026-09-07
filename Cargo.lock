@@ -211,7 +211,9 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
  "toml",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
