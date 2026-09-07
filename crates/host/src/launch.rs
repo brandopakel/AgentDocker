@@ -12,6 +12,54 @@ use std::time::Duration;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
+/// Fork-safe monotonic deadline: signal interruptions must not restart the
+/// owner's 30-second authorization interval. Only POSIX signal-safe calls run.
+fn child_gate(fd: libc::c_int) -> io::Result<()> {
+    let cancelled = || io::Error::from_raw_os_error(libc::ECANCELED);
+    let now = || -> io::Result<i64> {
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } != 0 {
+            return Err(cancelled());
+        }
+        time.tv_sec
+            .checked_mul(1000)
+            .and_then(|seconds| seconds.checked_add(time.tv_nsec / 1_000_000))
+            .ok_or_else(cancelled)
+    };
+    let deadline = now()?.checked_add(30_000).ok_or_else(cancelled)?;
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let remaining = deadline.saturating_sub(now()?);
+        if remaining <= 0 {
+            return Err(cancelled());
+        }
+        let ready = unsafe { libc::poll(&mut poll, 1, remaining.min(30_000) as i32) };
+        if ready < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        if ready <= 0 {
+            return Err(cancelled());
+        }
+        let mut token = 0_u8;
+        let read = unsafe { libc::read(fd, (&mut token as *mut u8).cast(), 1) };
+        if read < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return if read == 1 && token == b'G' {
+            Ok(())
+        } else {
+            Err(cancelled())
+        };
+    }
+}
+
 pub struct Pending {
     pub pid: u32,
     gate: Option<UnixStream>,
@@ -70,20 +118,7 @@ pub fn prepare(mut command: Command) -> io::Result<Pending> {
             if libc::write(fd, pid.as_ptr().cast(), pid.len()) != pid.len() as isize {
                 return Err(io::Error::from_raw_os_error(libc::EIO));
             }
-            let mut poll = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // A hung owner cannot strand an unexecuted child indefinitely.
-            if libc::poll(&mut poll, 1, 30_000) <= 0 {
-                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
-            }
-            let mut token = 0_u8;
-            if libc::read(fd, (&mut token as *mut u8).cast(), 1) != 1 || token != b'G' {
-                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
-            }
-            Ok(())
+            child_gate(fd)
         });
     }
     let (sender, result) = mpsc::channel();
@@ -125,7 +160,12 @@ impl Pending {
     /// Authorize exec only after the PID/protection transaction commits.
     /// A failed exec is returned with Command's original OS error.
     pub fn activate(mut self) -> io::Result<OwnedChild> {
-        self.gate.as_mut().expect("gate retained").write_all(b"G")?;
+        if let Err(error) = self.gate.as_mut().expect("gate retained").write_all(b"G") {
+            return match self.result.recv_timeout(DEADLINE) {
+                Ok(Err(launch_error)) => Err(launch_error),
+                _ => Err(error),
+            };
+        }
         let result = self
             .result
             .recv_timeout(DEADLINE)
@@ -151,6 +191,60 @@ impl Drop for Pending {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn a_signal_interrupt_does_not_cancel_an_authorized_launch() {
+        extern "C" fn ignore_signal(_: libc::c_int) {}
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("executed");
+        let mut command = fixture(&marker);
+        unsafe {
+            command.pre_exec(|| {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = ignore_signal as *const () as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                if libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let pending = prepare(command).unwrap();
+        let pid = pending.pid;
+        // PID handshake precedes the gate poll; no exec token has been sent.
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGUSR1) }, 0);
+        let result = pending.activate();
+        let mut child = match result {
+            Ok(child) => child,
+            Err(error) => {
+                wait_gone(pid);
+                panic!("signal cancelled launch: {error}");
+            }
+        };
+        let end = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "executed");
+    }
+
+    #[test]
+    fn a_failed_activation_reports_the_child_gate_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = prepare(fixture(&dir.path().join("executed"))).unwrap();
+        let pid = pending.pid;
+        pending
+            .gate
+            .as_ref()
+            .unwrap()
+            .shutdown(std::net::Shutdown::Both)
+            .unwrap();
+        let error = pending.activate().err().unwrap();
+        wait_gone(pid);
+        assert_eq!(error.raw_os_error(), Some(libc::ECANCELED));
+    }
 
     fn fixture(path: &std::path::Path) -> Command {
         let mut command = Command::new("sh");
