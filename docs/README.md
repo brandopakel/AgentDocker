@@ -5,6 +5,7 @@ AgentDocker runs native agents directly on the user's computer. Docker and Podma
 - [Getting started, adapters and working sets](../README.md)
 - [Product direction and current delivery order](PRODUCT-DIRECTION.md)
 - [Engineering audit, feature coverage and known blockers](AUDIT-2026-09-06.md)
+- [Native delivery progress and regression coverage](NATIVE-DELIVERY.md)
 - [Local native trial and acceptance plan](LOCAL-TRIAL.md)
 - [Architecture and wire protocol](ARCHITECTURE.md)
 - [Implementation and recovery contracts](IMPLEMENTATION-NOTES.md)

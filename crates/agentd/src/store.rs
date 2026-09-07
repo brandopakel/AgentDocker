@@ -17,7 +17,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i64 = 7;
+// v8 makes restore points durable launch intent (including Created records).
+// Older daemons must not reinterpret these records as failed initial launches.
+const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -167,6 +169,37 @@ pub struct ChangesQuery {
 }
 
 impl Store {
+    /// Restore intent, replacement protection and its replay evidence are one
+    /// recoverable transition. Keep the point until the new process is recorded.
+    pub fn prepare_restore<T: serde::Serialize>(
+        &self,
+        record: &AgentRecord,
+        point: &T,
+        leases: &[Lease],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_document("restore_point", record.id.as_str(), point)?;
+        self.upsert_agent(record)?;
+        for lease in leases {
+            self.upsert_lease(lease)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn finish_restore(&self, record: &AgentRecord, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(record)?;
+        self.append_event(event)?;
+        self.delete_document("restore_point", record.id.as_str())?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Container identity/status, exit lease cleanup and replay history commit together.
     pub fn container_transition(
         &self,
@@ -366,6 +399,21 @@ impl Store {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
+        // Secure the database before SQLite can create a journal/WAL. Existing
+        // companion files are checked without following links as well.
+        agentdocker_host::dirs::private_file(path, true, false)?;
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            let companion = PathBuf::from(name);
+            match std::fs::symlink_metadata(&companion) {
+                Ok(_) => {
+                    agentdocker_host::dirs::private_file(&companion, false, false)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
         Self::init(conn)
@@ -385,6 +433,30 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // Check compatibility before DDL or journal pragmas mutate the file.
+        let has_meta: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+            [],
+            |row| row.get(0),
+        )?;
+        let version: Option<String> = if has_meta {
+            conn.query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+        if let Some(raw) = &version {
+            anyhow::ensure!(
+                raw.parse::<i64>()
+                    .is_ok_and(|found| (1..=SCHEMA_VERSION).contains(&found)),
+                "state database has schema version {raw:?}; this build expects {SCHEMA_VERSION}"
+            );
+        }
+
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
@@ -405,13 +477,6 @@ impl Store {
             tx.commit()?;
         }
 
-        let version: Option<String> = conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
         match version.as_deref().map(str::parse::<i64>) {
             None => {
                 conn.execute(
@@ -420,7 +485,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=6)) => {
+            Some(Ok(1..=7)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -1283,7 +1348,7 @@ mod tests {
 
     #[test]
     fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=6 {
+        for version in 1..=7 {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1300,7 +1365,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "7");
+            assert_eq!(version, "8");
         }
     }
 

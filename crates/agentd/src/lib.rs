@@ -63,6 +63,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // One spelling of the home, whatever it was given as, so the socket
     // directory it derives is the one clients derive.
     let home = agentdocker_host::dirs::canonical_home(args.home);
+    agentdocker_host::dirs::secure_state_dir(&home)?;
     let socket = args.socket.unwrap_or_else(|| paths::socket_path(&home));
     agentdocker_host::dirs::check_socket_parent(&socket)?;
     let lock_path = paths::lock_path(&socket);
@@ -79,47 +80,41 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
+    // Bind before any restored command can execute. Poll serving alongside
+    // restoration so an agent's first hook/MCP request can receive a reply.
+    let listener = server::bind(&daemon).await?;
+    daemon.expect_watcher();
+    watcher::spawn(daemon.clone());
     daemon.notify_desktop();
-    // Before the reaper: an agent that was running is still marked live,
-    // and its leases with it. Retiring it first would take them away.
-    daemon.restore_agents().await;
 
-    let containers = daemon.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            ticker.tick().await;
-            containers.reconcile_containers();
-        }
-    });
-
-    let reaper = daemon.clone();
-    tokio::spawn(async move {
+    let maintenance = async {
+        // Liveness and lease expiration must not retire restore candidates
+        // while their identities and protection are being recovered.
+        daemon.restore_agents().await;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
-            reaper.expire_leases();
-            reaper.check_liveness();
+            daemon.reconcile_containers();
+            daemon.expire_leases();
+            daemon.check_liveness();
             ticks += 1;
             if ticks.is_multiple_of(5) {
-                reaper.refresh_vcs(None).await;
-                let _ = reaper.scan_agents().await;
+                daemon.refresh_vcs(None).await;
+                let _ = daemon.scan_agents().await;
             }
             if ticks.is_multiple_of(60) {
-                reaper.prune_events();
-                reaper.prune_changes();
-                reaper.evict_journal_rings();
+                daemon.prune_events();
+                daemon.prune_changes();
+                daemon.evict_journal_rings();
             }
         }
-    });
-
-    daemon.expect_watcher();
-    watcher::spawn(daemon.clone());
+    };
 
     let restricted = paths::container_socket(&daemon.home);
     let result = tokio::select! {
-        served = server::serve(daemon.clone()) => served,
+        served = server::serve(daemon.clone(), listener) => served,
+        () = maintenance => Ok(()),
         () = server::restricted_endpoint(daemon.clone(), restricted.clone()) => Ok(()),
         () = shutdown_signal() => {
             info!("shutting down on signal");

@@ -614,7 +614,19 @@ impl Daemon {
 
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&home)?;
+        agentdocker_host::dirs::secure_state_dir(&home)?;
+        let logs = home.join("logs");
+        agentdocker_host::dirs::secure_state_dir(&logs)?;
+        for entry in std::fs::read_dir(&logs)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "log") {
+                agentdocker_host::dirs::private_file(&path, false, false)?;
+            }
+        }
+        let daemon_log = paths::daemon_log(&home);
+        if std::fs::symlink_metadata(&daemon_log).is_ok() {
+            agentdocker_host::dirs::private_file(&daemon_log, false, false)?;
+        }
         let store = Store::open(&home.join("state.db"))?;
         Self::with_store(home, socket, store)
     }
@@ -623,7 +635,13 @@ impl Daemon {
         let now = Utc::now();
         let mut registry = Registry::new();
         for mut record in store.load_agents()? {
-            if record.managed && record.container.is_none() && record.status == AgentStatus::Created
+            if record.managed
+                && record.container.is_none()
+                && record.status == AgentStatus::Created
+                && !(record.spec.restore
+                    && store
+                        .document::<restore::RestorePoint>("restore_point", record.id.as_str())?
+                        .is_some())
             {
                 // The previous daemon stopped between creating the record and
                 // spawning the process, so nothing is running for it.
@@ -1188,7 +1206,16 @@ impl Daemon {
                     });
                     updated
                 };
-                supervisor::supervise(self.clone(), record.id, spawned);
+                let failed = lock(&self.state).storage_failure();
+                if failed.is_some() {
+                    spawned.control.send_replace(Some(true));
+                }
+                let supervision = supervisor::supervise(self.clone(), record.id, spawned);
+                if let Some(error) = failed {
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), supervision).await;
+                    return error;
+                }
                 match updated {
                     Some(agent) => Response::Agent { agent },
                     None => Response::error(ErrorCode::NotFound, "agent vanished"),
