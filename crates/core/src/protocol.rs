@@ -50,6 +50,20 @@ pub enum Request {
     WorktreeDiff {
         agent: String,
     },
+    /// Commit an agent's checkout through the daemon, so the act is
+    /// journaled against the agent that asked for it rather than guessed
+    /// afterwards from a HEAD that moved.
+    Commit {
+        agent: String,
+        message: String,
+        /// Stage tracked modifications and deletions first, as `-a` does.
+        /// Without it only what is already staged is committed.
+        #[serde(default)]
+        all: bool,
+        /// Push the branch to its upstream once the commit is made.
+        #[serde(default)]
+        push: bool,
+    },
     Integrate {
         agent: String,
         source: String,
@@ -243,6 +257,10 @@ pub enum Request {
     },
     /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
     Shutdown,
+    /// Replace this daemon with a fresh one, handing it the terminals of
+    /// every running agent so an upgrade does not disturb them. The
+    /// agents keep running throughout; only the daemon is replaced.
+    Reload,
 
     /// Publish a message. `to` uses [`crate::Destination::parse`] shorthand.
     Send {
@@ -379,6 +397,10 @@ pub enum Request {
         resource: String,
         #[serde(default)]
         mode: LeaseMode,
+        /// How much of a `quota:` resource to take. Ignored for every
+        /// other kind, which have no quantity to spend.
+        #[serde(default)]
+        amount: Option<u64>,
         #[serde(default = "default_ttl")]
         ttl_secs: u64,
         #[serde(default)]
@@ -659,6 +681,17 @@ pub enum Response {
     Diff {
         text: String,
     },
+    Committed {
+        /// The commit that was made.
+        head: String,
+        /// The branch it was made on, when the checkout is on one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// How many paths it carries.
+        files: usize,
+        /// Whether the branch was pushed, which only `push` asks for.
+        pushed: bool,
+    },
     Integration {
         source_head: String,
         applied: bool,
@@ -857,6 +890,7 @@ mod tests {
                 agent: "reviewer".into(),
                 resource: "path:/repo/src".into(),
                 mode: LeaseMode::Exclusive,
+                amount: None,
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
                 wait_secs: 0,

@@ -71,6 +71,16 @@ if [ -n "$ui" ]; then
     install -m 0755 "$ui" "$dir/agentdocker-ui"
     installed="$installed, agentdocker-ui"
 fi
+# And the bundle, which is what macOS reads the name and the icon from.
+# Into the user's own Applications: this installer never asks for a
+# password, so it does not write to /Applications.
+app="$(find "$tmp" -type d -name AgentDocker.app | head -n 1)"
+if [ -n "$app" ]; then
+    mkdir -p "$HOME/Applications"
+    rm -rf "$HOME/Applications/AgentDocker.app"
+    cp -R "$app" "$HOME/Applications/AgentDocker.app"
+    installed="$installed, AgentDocker.app"
+fi
 echo "installed $installed into $dir"
 
 case ":$PATH:" in
