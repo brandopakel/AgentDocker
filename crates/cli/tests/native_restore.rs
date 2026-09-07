@@ -223,3 +223,55 @@ fn service_install_preview_does_not_create_state_or_write_service_files() {
         "a preview must leave the state directory absent"
     );
 }
+
+#[test]
+fn native_launch_and_restore_use_the_owning_daemon_context() {
+    let temporary = tempfile::Builder::new()
+        .prefix("ad-context-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let home = root.join("owning-state");
+    let socket = root.join("owning.sock");
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let mut daemon = RunningDaemon::start(&home, &socket);
+    let response = rpc(&socket, json!({"op":"run", "spec": {
+        "name":"context-fixture", "workdir":work, "restore":true,
+        "env": {"AGENTDOCKER_HOME":root.join("unrelated-state"),
+            "AGENTDOCKER_SOCKET":root.join("unrelated.sock"),
+            "AGENTDOCKER_TOKEN_FILE":root.join("unrelated-token"),
+            "AGENTDOCKER_NO_AUTOSTART":"0"},
+        "command":["sh", "-c",
+            "test \"$AGENTDOCKER_HOME\" = \"$2\" || exit 71; test \"$AGENTDOCKER_SOCKET\" = \"$3\" || exit 72; test \"${AGENTDOCKER_TOKEN_FILE+x}\" != x || exit 73; test \"$AGENTDOCKER_NO_AUTOSTART\" = 1 || exit 74; \"$1\" inspect \"$AGENTDOCKER_AGENT_ID\" >/dev/null || exit 75; printf passed > context; exec sleep 30",
+            "fixture", env!("CARGO_BIN_EXE_agentdocker"),home,socket]
+    }})).unwrap();
+    assert_eq!(response["type"], "agent", "{response}");
+    let id = response["agent"]["id"].as_str().unwrap();
+    let first_pid = response["agent"]["pid"].as_u64().unwrap();
+    for restored in [false, true] {
+        if restored {
+            daemon.stop();
+            std::fs::remove_file(work.join("context")).unwrap();
+            daemon = RunningDaemon::start(&home, &socket);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(work.join("context")).is_ok_and(|value| value == "passed") {
+            assert!(
+                Instant::now() < deadline,
+                "native context failed (restored={restored}): {}",
+                rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if restored {
+            assert_ne!(
+                rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap()["agent"]["pid"].as_u64(),
+                Some(first_pid)
+            );
+        }
+    }
+    assert!(!root.join("unrelated-state").exists());
+    assert!(!root.join("unrelated.sock").exists());
+    daemon.stop();
+}
