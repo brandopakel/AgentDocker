@@ -1494,7 +1494,7 @@ fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
     ];
     argv.extend_from_slice(args);
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(300))
+    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(600))
         .map_err(|error| error.to_string())?;
     if !output.success {
         return Err(format!("Installation failed: {}", output.text.trim()));

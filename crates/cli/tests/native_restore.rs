@@ -16,15 +16,23 @@ struct RunningDaemon {
 
 impl RunningDaemon {
     fn start(home: &Path, socket: &Path) -> Self {
+        let log =
+            agentdocker_host::dirs::private_file(&home.with_extension("daemon.log"), true, true)
+                .unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_agentd"))
             .arg("--home")
             .arg(home)
             .arg("--socket")
             .arg(socket)
-            .env("RUST_LOG", "off")
+            .env("AGENTDOCKER_HOME", home)
+            .env("AGENTDOCKER_SOCKET", socket)
+            .env("AGENTDOCKER_NO_AUTOSTART", "1")
+            .env_remove("AGENTDOCKER_TOKEN_FILE")
+            .env_remove("AGENTDOCKER_AGENT_ID")
+            .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
             .spawn()
             .unwrap();
         let mut running = Self {
@@ -84,6 +92,41 @@ fn rpc(socket: &Path, request: Value) -> std::io::Result<Value> {
 }
 
 #[test]
+fn build_info_reports_compiled_contract_without_opening_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("absent-state");
+    let socket = tmp.path().join("absent.sock");
+    // The bounded host runner kills a regression that accidentally starts a daemon.
+    let output = agentdocker_host::command::run(
+        tmp.path(),
+        &[
+            env!("CARGO_BIN_EXE_agentd").to_owned(),
+            "--build-info".into(),
+            "--home".into(),
+            home.display().to_string(),
+            "--socket".into(),
+            socket.display().to_string(),
+        ],
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(output.success, "{}", output.text);
+    let value: Value = serde_json::from_str(&output.text).unwrap();
+    assert_eq!(value["format"], 1);
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(value["os"], std::env::consts::OS);
+    assert_eq!(value["arch"], std::env::consts::ARCH);
+    assert!(
+        value["state_schema"]
+            .as_u64()
+            .is_some_and(|schema| (1..=u32::MAX as u64).contains(&schema))
+    );
+    assert!(!home.exists());
+    assert!(!socket.exists());
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
     let tmp = tempfile::Builder::new()
         .prefix("ad-restore-")
@@ -108,10 +151,14 @@ fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
     let old_pid = response["agent"]["pid"].as_u64().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while std::fs::read_to_string(work.join("first-edit")).unwrap() != "coordinated" {
-        assert!(
-            Instant::now() < deadline,
-            "initial fixture did not coordinate"
-        );
+        if Instant::now() >= deadline {
+            let record = rpc(&socket, json!({"op":"inspect", "agent":id}));
+            let log = std::fs::read_to_string(home.join("logs").join(format!("{id}.log")));
+            let retained = tmp.keep();
+            panic!(
+                "initial fixture did not coordinate; record={record:?}; log={log:?}; retained={retained:?}"
+            );
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     let claimed = rpc(

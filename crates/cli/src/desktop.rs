@@ -86,12 +86,16 @@ enum DesktopCommand {
     },
     /// Activate the previous retained version, only with a compatible state schema.
     Rollback {
+        /// Print the rollback paths and changes without writing anything.
         #[arg(long)]
         preview: bool,
+        /// Permit an ad-hoc-signed Mac preview; public installs require Gatekeeper acceptance.
         #[arg(long)]
         local_preview: bool,
+        /// Refuse a different payload than the reviewed SHA-256 release ID.
         #[arg(long)]
         expect_release: Option<String>,
+        /// Refuse a changed active installation.
         #[arg(long)]
         expect_current: Option<String>,
     },
@@ -178,23 +182,32 @@ impl Layout {
         let icon = self
             .root
             .join("current/payload/share/icons/hicolor/scalable/apps/agentdocker.svg");
-        let escape = |path: &Path| -> Result<String> {
+        let text = |path: &Path| -> Result<String> {
             let text = path.to_str().context("launcher path must be UTF-8")?;
             ensure!(
-                !text.contains(['\n', '\r']),
-                "launcher paths cannot contain newlines"
+                !text.chars().any(char::is_control),
+                "launcher paths cannot contain control characters"
             );
-            Ok(text
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('`', "\\`")
-                .replace('$', "\\$")
-                .replace('%', "%%"))
+            Ok(text.to_owned())
         };
+        let executable = text(&executable)?;
+        ensure!(
+            !executable.contains('='),
+            "desktop executable paths cannot contain '='"
+        );
+        // Exec has two decoding layers: Desktop Entry strings, then quoted
+        // command arguments. Icon only has the first, with literal percent signs.
+        let executable = executable
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('`', "\\`")
+            .replace('$', "\\$")
+            .replace('%', "%%")
+            .replace('\\', "\\\\");
+        let icon = text(&icon)?.replace('\\', "\\\\");
         Ok(format!(
             "[Desktop Entry]\nType=Application\nName=agentdocker\nComment=Orchestrate local AI agents\nExec=\"{}\"\nIcon={}\nTerminal=false\nCategories=Development;\n",
-            escape(&executable)?,
-            icon.display()
+            executable, icon
         ))
     }
 
@@ -444,8 +457,8 @@ fn sync_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn checked_command(argv: &[String]) -> Result<()> {
-    let output = command::run(Path::new("/"), argv, Duration::from_secs(60))?;
+fn checked_command(argv: &[String], timeout: Duration) -> Result<()> {
+    let output = command::run(Path::new("/"), argv, timeout)?;
     ensure!(
         output.success,
         "native verification failed: {}",
@@ -535,21 +548,27 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
         }
     }
     if cfg!(target_os = "macos") {
-        checked_command(&[
-            "/usr/bin/codesign".into(),
-            "--verify".into(),
-            "--deep".into(),
-            "--strict".into(),
-            payload.to_string_lossy().into_owned(),
-        ])?;
-        if !local_preview {
-            checked_command(&[
-                "/usr/sbin/spctl".into(),
-                "--assess".into(),
-                "--type".into(),
-                "execute".into(),
+        checked_command(
+            &[
+                "/usr/bin/codesign".into(),
+                "--verify".into(),
+                "--deep".into(),
+                "--strict".into(),
                 payload.to_string_lossy().into_owned(),
-            ])?;
+            ],
+            Duration::from_secs(60),
+        )?;
+        if !local_preview {
+            checked_command(
+                &[
+                    "/usr/sbin/spctl".into(),
+                    "--assess".into(),
+                    "--type".into(),
+                    "execute".into(),
+                    payload.to_string_lossy().into_owned(),
+                ],
+                Duration::from_secs(60),
+            )?;
         }
     }
     let release = Release {
@@ -577,11 +596,14 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
 fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
     if cfg!(target_os = "macos") {
         // ditto preserves bundle resource metadata and notarization tickets.
-        checked_command(&[
-            "/usr/bin/ditto".into(),
-            source.to_string_lossy().into_owned(),
-            destination.to_string_lossy().into_owned(),
-        ])
+        checked_command(
+            &[
+                "/usr/bin/ditto".into(),
+                source.to_string_lossy().into_owned(),
+                destination.to_string_lossy().into_owned(),
+            ],
+            Duration::from_secs(300),
+        )
     } else {
         fn copy(source: &Path, destination: &Path) -> Result<()> {
             std::fs::create_dir(destination)?;
@@ -827,6 +849,45 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn desktop_entry_paths_preserve_literal_backslashes_and_percent_without_key_injection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().join("space \\ folder%$\"`")).unwrap();
+        let launcher = layout.launcher().unwrap();
+        let exec = launcher
+            .lines()
+            .find(|line| line.starts_with("Exec="))
+            .unwrap();
+        let icon = launcher
+            .lines()
+            .find(|line| line.starts_with("Icon="))
+            .unwrap();
+        // These are serialized Desktop Entry values, before its two Exec
+        // decoding layers. Icon has one layer and does not expand field codes.
+        assert!(exec.contains(r#"space \\\\ folder%%\\$\\"\\`"#), "{exec}");
+        assert!(icon.contains(r#"space \\ folder%$"`"#), "{icon}");
+        assert_eq!(
+            launcher
+                .lines()
+                .filter(|line| line.starts_with("Icon="))
+                .count(),
+            1
+        );
+        for suffix in [
+            "new\nExec=other",
+            "carriage\rreturn",
+            "tab\there",
+            "equal=sign",
+        ] {
+            assert!(
+                Layout::new(tmp.path().join(suffix))
+                    .unwrap()
+                    .launcher()
+                    .is_err()
+            );
+        }
     }
 
     #[test]
