@@ -345,8 +345,11 @@ pub enum Request {
         #[serde(default)]
         score: Option<f64>,
     },
-    /// Contests in a project; open ones unless `all`.
+    /// Contests in a project; open ones unless `all`. One `contest` is
+    /// a lookup by id and ignores every other filter.
     Contests {
+        #[serde(default)]
+        contest: Option<ContestId>,
         #[serde(default)]
         project: Option<String>,
         #[serde(default)]

@@ -443,6 +443,7 @@ impl<B: Backend> McpServer<B> {
             "contests" => {
                 let args: ContestsArgs = parse(arguments)?;
                 self.forward(Request::Contests {
+                    contest: None,
                     project: None,
                     agent: Some(me),
                     all: args.all,
@@ -859,6 +860,32 @@ fn brief_channel(channel: &agentdocker_core::Channel) -> Value {
     }))
 }
 
+/// What an entrant reads about a contest: the task, what it is ranked
+/// by, where it stands, and each attempt's agent and score. Not the
+/// absolute checkout path of every entry, nor its validation id, nor the
+/// whole entrant list — a listing pays for all of that in tokens and
+/// none of it changes what the reader does next.
+fn brief_contest(contest: &agentdocker_core::Contest) -> Value {
+    tight(json!({
+        "id": contest.id,
+        "task": contest.task,
+        "measure": contest.metric.measure.name(),
+        "lower_is_better": matches!(
+            contest.metric.direction,
+            agentdocker_core::contest::Direction::Lower
+        ),
+        "noise": contest.metric.noise,
+        "open": contest.is_open(),
+        "entrants": contest.entrants.len(),
+        "standing": contest.standing(),
+        "entries": contest
+            .ranked()
+            .iter()
+            .map(|entry| json!({ "agent": entry.agent, "score": entry.score }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 /// Turn a daemon response into a tool result, unwrapping the payload so the
 /// model sees the data rather than the protocol envelope. Records come back
 /// as a projection unless `verbose`, because everything here is an input
@@ -868,6 +895,11 @@ fn render(response: Response, verbose: bool) -> Value {
         return render_whole(response);
     }
     match response {
+        Response::Contest { contest, .. } => text_result(&brief_contest(&contest), false),
+        Response::Contests { contests } => text_result(
+            &json!({ "contests": contests.iter().map(brief_contest).collect::<Vec<_>>() }),
+            false,
+        ),
         Response::Agent { agent } => text_result(&brief_agent(&agent), false),
         Response::Agents { agents } => text_result(
             &json!({ "agents": agents.iter().map(brief_agent).collect::<Vec<_>>() }),
@@ -921,6 +953,10 @@ fn render_whole(response: Response) -> Value {
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
         Response::Channel { channel } => text_result(&json!(channel), false),
         Response::Channels { channels } => text_result(&json!({ "channels": channels }), false),
+        Response::Contest { contest, standing } => {
+            text_result(&json!({ "contest": contest, "standing": standing }), false)
+        }
+        Response::Contests { contests } => text_result(&json!({ "contests": contests }), false),
         Response::Handoff { bundle } => text_result(&json!(bundle), false),
         Response::Overlap { overlaps } => text_result(&json!({ "overlaps": overlaps }), false),
         Response::Handoffs { bundles } => text_result(&json!({ "handoffs": bundles }), false),

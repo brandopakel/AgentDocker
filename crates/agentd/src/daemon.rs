@@ -979,10 +979,11 @@ impl Daemon {
                 score,
             } => self.contest_submit(&agent, &contest, &validation, score),
             Request::Contests {
+                contest,
                 project,
                 agent,
                 all,
-            } => self.contests(project, agent, all),
+            } => self.contests(contest, project, agent, all),
             Request::ContestClose {
                 agent,
                 contest,
@@ -5057,6 +5058,127 @@ mod tests {
         assert!(
             room.has(&latecomer.id),
             "and the latecomer can argue its own case"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_people_in_a_contest_can_close_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let beta = entrant(&daemon, &root, "beta").await;
+        let outsider = entrant(&daemon, &root, "outsider").await;
+        let contest = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![beta.id.to_string()],
+        )
+        .await;
+        let evidence = validation_id(&daemon, beta.id.as_str(), "true").await;
+        daemon
+            .handle(Request::ContestSubmit {
+                agent: beta.id.to_string(),
+                contest: contest.id.clone(),
+                validation: evidence,
+                score: None,
+            })
+            .await;
+
+        // Closing settles somebody's work, so an agent that is neither
+        // the opener nor an entrant may not do it.
+        let refused = daemon
+            .handle(Request::ContestClose {
+                agent: outsider.id.to_string(),
+                contest: contest.id.clone(),
+                winner: Some(beta.id.to_string()),
+                resolution: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "unexpected {refused:?}"
+        );
+
+        // An entrant can, and so could the opener.
+        let Response::Contest { contest, .. } = daemon
+            .handle(Request::ContestClose {
+                agent: beta.id.to_string(),
+                contest: contest.id.clone(),
+                winner: None,
+                resolution: None,
+            })
+            .await
+        else {
+            panic!("an entrant should be able to close it")
+        };
+        assert_eq!(contest.winner, Some(beta.id));
+    }
+
+    #[tokio::test]
+    async fn one_contest_is_looked_up_rather_than_scanned_for() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let root = dir.path().join("work");
+        let alpha = entrant(&daemon, &root, "alpha").await;
+        let wanted = open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+        open_contest(
+            &daemon,
+            alpha.id.as_str(),
+            Measure::ValidationSeconds,
+            0.0,
+            vec![],
+        )
+        .await;
+
+        let Response::Contests { contests } = daemon
+            .handle(Request::Contests {
+                contest: Some(wanted.id.clone()),
+                project: None,
+                agent: None,
+                all: true,
+            })
+            .await
+        else {
+            panic!("contests did not answer with contests")
+        };
+        assert_eq!(contests.len(), 1, "the one asked for, not both");
+        assert_eq!(contests[0].id, wanted.id);
+
+        let missing = daemon
+            .handle(Request::Contests {
+                contest: Some(agentdocker_core::ContestId::from(
+                    "nosuchcontest".to_owned(),
+                )),
+                project: None,
+                agent: None,
+                all: true,
+            })
+            .await;
+        assert!(
+            matches!(
+                &missing,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "a lookup that finds nothing says so: {missing:?}"
         );
     }
 

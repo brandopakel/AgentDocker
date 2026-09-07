@@ -464,6 +464,7 @@ enum Command {
     Contest(ContestArgs),
     /// List contests in a project.
     Contests {
+        /// Only contests in this project; defaults to every project.
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         /// Only contests this agent is in.
@@ -789,6 +790,7 @@ enum ContestCommand {
         /// Other entrants; more may join while it is open.
         #[arg(long)]
         entrant: Vec<String>,
+        /// Project to open it in; defaults to the opener's own.
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         /// Do not open a channel for the entrants.
@@ -823,8 +825,13 @@ enum ContestCommand {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
         contest: String,
+        /// Who won. Omit it to let the ranking decide, which it can only
+        /// do when the entries are further apart than the noise floor.
         #[arg(long)]
         winner: Option<String>,
+        /// Why, in a sentence. It goes to the channel and the journal,
+        /// which is where anyone reads back what was decided and on what
+        /// grounds.
         #[arg(long)]
         resolution: Option<String>,
     },
@@ -1593,6 +1600,7 @@ async fn main() -> Result<()> {
             all,
         } => {
             let request = Request::Contests {
+                contest: None,
                 project: project.as_deref().map(project_selector),
                 agent,
                 all,
@@ -1978,20 +1986,26 @@ fn project_cell(agent: &AgentRecord) -> String {
     }
 }
 
-/// The contest verbs. All of them answer with where the contest stands,
+/// The contest verbs. Opening prints the new id and nothing else, as
+/// every other creating verb here does — `channel open`, `claim`,
+/// `checkpoint` — so `contest=$(agentdocker contest open …)` captures an
+/// id rather than a report. The rest print where the contest stands,
 /// because that is the only question anyone has about one.
 async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
-    let request = match command {
-        ContestCommand::Open {
-            agent,
-            task,
-            measure,
-            higher_is_better,
-            noise,
-            entrant,
-            project,
-            no_channel,
-        } => Request::ContestOpen {
+    // Opening is handled first because it answers differently: an id,
+    // not a report.
+    if let ContestCommand::Open {
+        agent,
+        task,
+        measure,
+        higher_is_better,
+        noise,
+        entrant,
+        project,
+        no_channel,
+    } = command
+    {
+        let request = Request::ContestOpen {
             agent,
             project: project.as_deref().map(project_selector),
             task,
@@ -2013,7 +2027,15 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
             },
             entrants: entrant,
             channel: !no_channel,
-        },
+        };
+        if let Response::Contest { contest, .. } = client.call(&request).await? {
+            println!("{}", contest.id);
+        }
+        return Ok(());
+    }
+    let request = match command {
+        // Handled above; the compiler still wants the arm.
+        ContestCommand::Open { .. } => unreachable!("opening returns early"),
         ContestCommand::Enter { agent, contest } => Request::ContestEnter {
             agent,
             contest: ContestId::from(contest),
@@ -2030,7 +2052,10 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
             score,
         },
         ContestCommand::Show { contest } => {
+            // A lookup by id, not a scan: the daemon reads the one
+            // document rather than every contest the project has had.
             let request = Request::Contests {
+                contest: Some(ContestId::from(contest)),
                 project: None,
                 agent: None,
                 all: true,
@@ -2038,9 +2063,9 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
             let Response::Contests { contests } = client.call(&request).await? else {
                 return Ok(());
             };
-            match contests.iter().find(|c| c.id.as_str() == contest) {
+            match contests.first() {
                 Some(found) => print_contest(client, found, &found.standing()).await,
-                None => bail!("no contest {contest}"),
+                None => bail!("the daemon found no such contest"),
             }
             return Ok(());
         }

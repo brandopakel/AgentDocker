@@ -291,11 +291,22 @@ impl Daemon {
 
     pub(super) fn contests(
         self: &Arc<Self>,
+        contest: Option<ContestId>,
         project: Option<String>,
         agent: Option<String>,
         all: bool,
     ) -> Response {
         let mut state = lock(&self.state);
+        // One id is a lookup, not a scan: `contest show` should not read
+        // every contest a project has ever had in order to find one.
+        if let Some(id) = contest {
+            return match state.contest(&id) {
+                Some(contest) => Response::Contests {
+                    contests: vec![contest],
+                },
+                None => Response::error(ErrorCode::NotFound, format!("no contest {id}")),
+            };
+        }
         let of = match agent.as_deref() {
             Some(reference) => match state.resolve(reference) {
                 Ok(id) => Some(id),
@@ -342,6 +353,16 @@ impl Daemon {
         };
         if !contest.is_open() {
             return Response::error(ErrorCode::Invalid, "the contest is already closed");
+        }
+        // Closing settles somebody's work, so it belongs to the people
+        // in it — the opener, or an entrant. `channel_close` draws the
+        // same boundary, and a contest without it lets any agent that
+        // can resolve an id finalise a competition it is not part of.
+        if !contest.has(&closer) && contest.opened_by != closer.to_string() {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "only the agent that opened this contest, or one of its entrants, can close it",
+            );
         }
         let winner = match winner.as_deref() {
             Some(reference) => match state.resolve(reference) {
