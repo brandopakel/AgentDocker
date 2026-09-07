@@ -426,6 +426,9 @@ pub async fn run(
             "runtimes": inventory.iter().filter(|runtime| names.is_empty() || names.contains(&runtime.name)).map(|runtime| json!({
                 "name":runtime.name, "installed":runtime.installed(), "mcp_configuration":runtime.mcp,
                 "hooks_configuration":runtime.hooks, "provider_round_trip":"not_tested"
+                , "checks":agentdocker_core::runtime::RUNTIMES.iter()
+                    .find(|spec| spec.name == runtime.name)
+                    .map(|spec| runtimes::health::inspect(spec, &roots, "agentdocker"))
             })).collect::<Vec<_>>(),
             "notes":["Configuration detection and daemon connectivity are separate checks. A fresh provider session must prove tool/message consumption."]})
     } else {
