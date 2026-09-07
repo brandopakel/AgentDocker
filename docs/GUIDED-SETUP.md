@@ -15,7 +15,7 @@ agentdocker setup --undo PLAN_ID
 
 Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
 
-Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. It does not rewrite Claude's mutable `.claude.json` application state or add a second MCP identity. Codex and supported JSON MCP hosts receive the existing stdio MCP adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement.
+Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. It does not rewrite Claude's mutable `.claude.json` application state or add a second MCP identity. Codex and supported JSON MCP hosts receive the existing stdio MCP adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
 ## Apply, recovery and undo
 

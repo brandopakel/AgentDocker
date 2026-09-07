@@ -22,6 +22,38 @@ fn hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
+impl State {
+    /// Commit credential state and its replay event before exposing success.
+    fn save_access(
+        &mut self,
+        id: &str,
+        grant: &Grant,
+        kind: EventKind,
+    ) -> Result<(), Box<Response>> {
+        let mut event = Event::new(kind, Utc::now());
+        event.seq = self.next_seq;
+        self.persist("access transition", |store| {
+            store.put_document_with_event("access", id, grant, &event)
+        });
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Ok(())
+    }
+
+    fn read_access(&mut self, id: &str) -> Result<Option<Grant>, Box<Response>> {
+        self.store_op("access read", |store| store.document("access", id))
+            .ok_or_else(|| {
+                Box::new(
+                    self.storage_failure()
+                        .expect("failed read records storage failure"),
+                )
+            })
+    }
+}
+
 impl Daemon {
     pub(super) fn grant_access(
         &self,
@@ -70,13 +102,16 @@ impl Daemon {
             revoked: false,
         };
         let mut state = lock(&self.state);
-        if let Err(e) = state.store.put_document("access", &id, &grant) {
-            return Response::error(ErrorCode::Internal, e.to_string());
+        if let Err(response) = state.save_access(
+            &id,
+            &grant,
+            EventKind::AccessGranted {
+                agent,
+                grant: id.clone(),
+            },
+        ) {
+            return *response;
         }
-        state.emit(EventKind::AccessGranted {
-            agent,
-            grant: id.clone(),
-        });
         Response::Access {
             grant: id,
             token,
@@ -156,15 +191,17 @@ impl Daemon {
 
     pub(super) fn revoke_access(&self, id: &str) -> Response {
         let mut state = lock(&self.state);
-        let mut grant = match state.store.document::<Grant>("access", id) {
+        let mut grant = match state.read_access(id) {
             Ok(Some(g)) => g,
-            _ => return denied("unknown grant"),
+            Ok(None) => return denied("unknown grant"),
+            Err(response) => return *response,
         };
         grant.revoked = true;
-        if let Err(e) = state.store.put_document("access", id, &grant) {
-            return Response::error(ErrorCode::Internal, e.to_string());
+        if let Err(response) =
+            state.save_access(id, &grant, EventKind::AccessRevoked { grant: id.into() })
+        {
+            return *response;
         }
-        state.emit(EventKind::AccessRevoked { grant: id.into() });
         // Revocation denies new operations; it must not drop a running writer's leases.
         Response::Ok
     }
@@ -179,12 +216,9 @@ impl Daemon {
             .split_once('.')
             .map(|v| v.0)
             .ok_or_else(|| reject("invalid credentials"))?;
-        let state = lock(&self.state);
+        let mut state = lock(&self.state);
         let grant = state
-            .store
-            .document::<Grant>("access", id)
-            .ok()
-            .flatten()
+            .read_access(id)?
             .ok_or_else(|| reject("invalid credentials"))?;
         let supplied = hash(token);
         let difference = supplied
@@ -333,6 +367,118 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn fixture() -> (tempfile::TempDir, Arc<Daemon>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "credential-fixture".into(),
+                        workdir: Some(root),
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        (tmp, daemon)
+    }
+
+    #[tokio::test]
+    async fn access_event_failure_cannot_leave_a_new_credential() {
+        let (_tmp, daemon) = fixture().await;
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("access_granted");
+        let response = daemon
+            .handle(Request::GrantAccess {
+                agent: "credential-fixture".into(),
+                container_root: "/workspace".into(),
+                ttl_secs: 60,
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(
+            lock(&daemon.state)
+                .store
+                .documents::<Grant>("access", None)
+                .unwrap()
+                .is_empty(),
+            "failed grant event must roll back the credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_event_failure_retains_prior_credential_state() {
+        let (_tmp, daemon) = fixture().await;
+        let Response::Access { grant, .. } =
+            daemon.grant_access("credential-fixture", "/workspace".into(), 60)
+        else {
+            panic!()
+        };
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("access_revoked");
+        let response = daemon
+            .handle(Request::RevokeAccess {
+                grant: grant.clone(),
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(
+            !lock(&daemon.state)
+                .store
+                .document::<Grant>("access", &grant)
+                .unwrap()
+                .unwrap()
+                .revoked,
+            "failed revoke event must retain the prior credential state"
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_credential_storage_disables_coordination_instead_of_misreporting_auth() {
+        let (_tmp, daemon) = fixture().await;
+        let Response::Access { grant, token, .. } =
+            daemon.grant_access("credential-fixture", "/workspace".into(), 60)
+        else {
+            panic!()
+        };
+        lock(&daemon.state)
+            .store
+            .put_document("access", &grant, &"invalid stored grant")
+            .unwrap();
+        let error = daemon
+            .restricted_request(&token, Request::Ping)
+            .unwrap_err();
+        assert!(matches!(
+            *error,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(lock(&daemon.state).storage_error.is_some());
+    }
     #[tokio::test]
     async fn credentials_scope_identity_paths_operations_and_revocation() {
         let tmp = tempfile::tempdir().unwrap();

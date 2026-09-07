@@ -513,10 +513,7 @@ impl App {
     fn unwired(&self) -> std::collections::BTreeSet<String> {
         self.runtimes
             .iter()
-            .filter(|r| {
-                r.mcp == agentdocker_core::Wiring::Missing
-                    || r.hooks == agentdocker_core::Wiring::Missing
-            })
+            .filter(|r| r.mcp.needs_review() || r.hooks.needs_review())
             .map(|r| r.name.clone())
             .collect()
     }
@@ -1124,8 +1121,7 @@ impl App {
                     ui.label(text(runtime.hooks.symbol().to_owned()));
                     ui.label(text(runtime.running.to_string()));
                     let needs_setup = runtime.installed()
-                        && (runtime.mcp == agentdocker_core::Wiring::Missing
-                            || runtime.hooks == agentdocker_core::Wiring::Missing);
+                        && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
                     if needs_setup
                         && ui
                             .add_enabled(

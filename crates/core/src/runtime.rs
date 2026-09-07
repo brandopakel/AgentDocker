@@ -207,14 +207,22 @@ pub enum Wiring {
     /// it yet.
     Unsupported,
     Missing,
+    /// Configuration exists but is invalid, disabled or conflicts with the adapter.
+    Unverified,
     Wired,
 }
 
 impl Wiring {
+    /// A supported channel that needs inspection before use.
+    pub fn needs_review(self) -> bool {
+        matches!(self, Self::Missing | Self::Unverified)
+    }
+
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Unsupported => "-",
             Self::Missing => "no",
+            Self::Unverified => "unverified",
             Self::Wired => "yes",
         }
     }

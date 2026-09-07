@@ -119,7 +119,11 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     checks
 }
 
-fn configuration(channel: &'static str, path: &Path, toml: bool) -> Result<Value, Check> {
+pub(super) fn configuration(
+    channel: &'static str,
+    path: &Path,
+    toml: bool,
+) -> Result<Value, Check> {
     let raw = read_configuration(path).map_err(|error| {
         Check::new(
             channel,
@@ -173,7 +177,16 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
         Ok(value) => value,
         Err(check) => return vec![check],
     };
-    let servers = value[if is_toml { "mcp_servers" } else { "mcpServers" }].as_object();
+    let key = if is_toml { "mcp_servers" } else { "mcpServers" };
+    if !value.is_object() || value.get(key).is_some_and(|servers| !servers.is_object()) {
+        return vec![Check::new(
+            "mcp",
+            Some(&path),
+            Status::Unverified,
+            "Configuration has an invalid MCP registration container; preserved",
+        )];
+    }
+    let servers = value[key].as_object();
     let mut checks = Vec::new();
     if let Some(servers) = servers {
         for (name, server) in servers {
@@ -383,6 +396,33 @@ mod tests {
     }
 
     #[test]
+    fn malformed_mcp_containers_are_unverified_in_both_inventory_and_health() {
+        let (_temporary, roots) = machine();
+        for (name, cases) in [
+            (
+                "gemini-cli",
+                vec!["[]", r#"{"mcpServers":[]}"#, r#"{"mcpServers":null}"#],
+            ),
+            ("codex", vec!["mcp_servers = []", "mcp_servers = false"]),
+        ] {
+            let spec = spec(name);
+            let path = mcp_config_path(spec, &roots).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for raw in cases {
+                std::fs::write(&path, raw).unwrap();
+                assert_eq!(
+                    super::super::mcp_wiring(spec, &roots, "agentdocker"),
+                    agentdocker_core::runtime::Wiring::Unverified,
+                    "{raw}"
+                );
+                let checks = inspect(spec, &roots, "agentdocker");
+                assert_eq!(checks[0].status, Status::Unverified, "{raw}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            }
+        }
+    }
+
+    #[test]
     // sets the execute bit directly, which Windows does not have.
     #[cfg(unix)]
     fn configured_missing_non_executable_and_available_are_distinct_without_execution() {
@@ -443,7 +483,7 @@ mod tests {
             );
             assert_eq!(
                 super::super::mcp_wiring(runtime, &roots, "agentdocker"),
-                agentdocker_core::runtime::Wiring::Missing
+                agentdocker_core::runtime::Wiring::Unverified
             );
         }
         // The generated setup registration carries its provider runtime.

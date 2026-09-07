@@ -12,7 +12,7 @@ import socket
 import shutil
 import subprocess
 import time
-from evidence import reject_launch
+from evidence import reject_launch, retain_container_logs
 
 os.umask(0o077)
 
@@ -328,13 +328,7 @@ print('concurrent relay passed')
     Path(a.result).write_text(json.dumps(payload,indent=2)+'\n')
     print(json.dumps(payload),flush=True)
 except BaseException as failure:
-    diagnostic_errors = []
-    for target in owned:
-        try:
-            with (root/('container-'+target[:16]+'.log')).open('w') as output:
-                subprocess.run([a.engine,'container','logs',target],stdout=output,stderr=subprocess.STDOUT,check=False,timeout=30)
-        except (OSError, subprocess.SubprocessError) as error:
-            diagnostic_errors.append(str(error))
+    container_logs, diagnostic_errors = retain_container_logs(a.engine, owned, a.result)
     # CI uploads artifacts/, not the disposable root. Retain bounded daemon
     # output and the failed phase without copying auth directories or databases.
     try:
@@ -346,7 +340,7 @@ except BaseException as failure:
             result.with_suffix('.daemon.log').write_bytes(source.read(2 * 1024 * 1024))
         result.write_text(json.dumps({'result':'failed','engine':a.engine,'machine':a.machine,
             'relay':a.relay,'scenarios_completed':results,'error':str(failure),
-            'diagnostic_errors':diagnostic_errors},indent=2)+'\n')
+            'container_logs':container_logs,'diagnostic_errors':diagnostic_errors},indent=2)+'\n')
     except OSError as error:
         print('could not retain failure evidence: '+str(error),flush=True)
     raise

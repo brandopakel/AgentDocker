@@ -224,83 +224,56 @@ pub fn mcp_command_matches(
 
 /// Whether the runtime's MCP configuration registers AgentDocker.
 pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
-    match spec.mcp {
-        McpWiring::None => Wiring::Unsupported,
-        McpWiring::JsonServers { .. } => {
-            let Ok(raw) =
-                health::read_configuration(&mcp_config_path(spec, roots).expect("JSON path"))
-            else {
-                return Wiring::Missing;
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-                return Wiring::Missing;
-            };
-            let wired = value
-                .get("mcpServers")
-                .and_then(|s| s.as_object())
-                .is_some_and(|servers| {
-                    servers.values().any(|server| {
-                        let command = server.get("command").and_then(|c| c.as_str());
-                        let args: Vec<_> = server
-                            .get("args")
-                            .and_then(|a| a.as_array())
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|a| a.as_str())
-                            .collect();
-                        server
-                            .get("args")
-                            .and_then(|v| v.as_array())
-                            .is_some_and(|args| args.iter().all(|arg| arg.is_string()))
-                            && server.get("disabled").and_then(|v| v.as_bool()) != Some(true)
-                            && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
-                            && mcp_command_matches(command, &args, marker, spec.name)
-                    })
-                });
-            if wired {
-                Wiring::Wired
-            } else {
+    let Some(path) = mcp_config_path(spec, roots) else {
+        return Wiring::Unsupported;
+    };
+    let is_toml = matches!(spec.mcp, McpWiring::TomlServers { .. });
+    let value = match health::configuration("mcp", &path, is_toml) {
+        Ok(value) => value,
+        Err(check) => {
+            return if check.status == health::Status::Missing {
                 Wiring::Missing
-            }
-        }
-        McpWiring::TomlServers { .. } => {
-            let Ok(raw) =
-                health::read_configuration(&mcp_config_path(spec, roots).expect("TOML path"))
-            else {
-                return Wiring::Missing;
-            };
-            let Ok(value) = raw.parse::<toml::Table>() else {
-                return Wiring::Missing;
-            };
-            let wired = value
-                .get("mcp_servers")
-                .and_then(|s| s.as_table())
-                .is_some_and(|servers| {
-                    servers.values().any(|server| {
-                        server.as_table().is_some_and(|server| {
-                            let command = server.get("command").and_then(|c| c.as_str());
-                            let args: Vec<_> = server
-                                .get("args")
-                                .and_then(|a| a.as_array())
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|a| a.as_str())
-                                .collect();
-                            server
-                                .get("args")
-                                .and_then(|v| v.as_array())
-                                .is_some_and(|args| args.iter().all(|arg| arg.is_str()))
-                                && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
-                                && mcp_command_matches(command, &args, marker, spec.name)
-                        })
-                    })
-                });
-            if wired {
-                Wiring::Wired
             } else {
-                Wiring::Missing
-            }
+                Wiring::Unverified
+            };
         }
+    };
+    let Some(config) = value.as_object() else {
+        return Wiring::Unverified;
+    };
+    let Some(servers) = config.get(if is_toml { "mcp_servers" } else { "mcpServers" }) else {
+        return Wiring::Missing;
+    };
+    let Some(servers) = servers.as_object() else {
+        return Wiring::Unverified;
+    };
+    let recognized = |server: &serde_json::Value| {
+        let args: Option<Vec<_>> = server["args"]
+            .as_array()
+            .and_then(|args| args.iter().map(serde_json::Value::as_str).collect());
+        args.is_some_and(|args| {
+            mcp_command_matches(server["command"].as_str(), &args, marker, spec.name)
+        })
+    };
+    let enabled =
+        |server: &serde_json::Value| server["enabled"] != false && server["disabled"] != true;
+    // A valid alias cannot hide a conflicting reserved entry: setup must
+    // preserve it and ask the user to inspect the configuration.
+    if servers
+        .get(marker)
+        .is_some_and(|server| !recognized(server) || !enabled(server))
+    {
+        return Wiring::Unverified;
+    }
+    if servers
+        .values()
+        .any(|server| recognized(server) && enabled(server))
+    {
+        Wiring::Wired
+    } else if servers.values().any(recognized) {
+        Wiring::Unverified
+    } else {
+        Wiring::Missing
     }
 }
 
@@ -502,10 +475,15 @@ mod tests {
         assert_eq!(path, alternate.join("config.toml"));
         for (command, args, enabled, expected) in [
             ("/opt/agentdocker", "[\"mcp\"]", true, Wiring::Wired),
-            ("cat", "[\"agentdocker-notes\"]", true, Wiring::Missing),
-            ("/opt/agentdocker", "[\"mcp\"]", false, Wiring::Missing),
-            ("/opt/agentdocker", "[\"ps\"]", true, Wiring::Missing),
-            ("/opt/agentdocker", "[42, \"mcp\"]", true, Wiring::Missing),
+            ("cat", "[\"agentdocker-notes\"]", true, Wiring::Unverified),
+            ("/opt/agentdocker", "[\"mcp\"]", false, Wiring::Unverified),
+            ("/opt/agentdocker", "[\"ps\"]", true, Wiring::Unverified),
+            (
+                "/opt/agentdocker",
+                "[42, \"mcp\"]",
+                true,
+                Wiring::Unverified,
+            ),
         ] {
             let config = format!(
                 "[mcp_servers.agentdocker]\ncommand = {command:?}\nargs = {args}\nenabled = {enabled}\n"
@@ -513,6 +491,78 @@ mod tests {
             std::fs::write(&path, config).unwrap();
             assert_eq!(mcp_wiring(spec, &roots, "agentdocker"), expected);
         }
+    }
+
+    #[test]
+    fn inventory_preserves_reserved_errors_across_json_and_toml() {
+        let (_tmp, roots) = machine();
+        for name in ["gemini-cli", "codex"] {
+            let spec = agentdocker_core::runtime::spec(name).unwrap();
+            let path = mcp_config_path(spec, &roots).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            assert_eq!(mcp_wiring(spec, &roots, "agentdocker").symbol(), "no");
+            let good =
+                serde_json::json!({"command":"agentdocker", "args":["mcp", "--runtime", name]});
+            let cases = [
+                (serde_json::json!({}), "no"),
+                (
+                    serde_json::json!({"other":{"command":"cat", "args":["notes"]}}),
+                    "no",
+                ),
+                (serde_json::json!({"alias":good}), "yes"),
+                (serde_json::json!({"agentdocker":good}), "yes"),
+                (
+                    serde_json::json!({"agentdocker":{"command":"agentdocker", "args":["mcp", "--runtime", "wrong-runtime"]}, "alias":good}),
+                    "unverified",
+                ),
+                (
+                    serde_json::json!({"agentdocker":{"command":"agentdocker", "args":["mcp"], "disabled":true}, "alias":good}),
+                    "unverified",
+                ),
+                (
+                    serde_json::json!({"agentdocker":{"command":"agentdocker", "args":["mcp"], "enabled":false}}),
+                    "unverified",
+                ),
+                (
+                    serde_json::json!({"agentdocker":{"command":"agentdocker", "args":[42,"mcp"]}}),
+                    "unverified",
+                ),
+                (serde_json::json!({"agentdocker":"malformed"}), "unverified"),
+            ];
+            for (servers, expected) in cases {
+                let value = serde_json::json!({if name == "codex" {"mcp_servers"} else {"mcpServers"}: servers});
+                let raw = if name == "codex" {
+                    toml::to_string(&value).unwrap()
+                } else {
+                    value.to_string()
+                };
+                std::fs::write(&path, &raw).unwrap();
+                let result = mcp_wiring(spec, &roots, "agentdocker");
+                assert_eq!(result.symbol(), expected, "{name}: {raw}");
+                assert_eq!(
+                    result.needs_review(),
+                    matches!(expected, "no" | "unverified")
+                );
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            }
+            std::fs::write(&path, "invalid configuration").unwrap();
+            assert_eq!(
+                mcp_wiring(spec, &roots, "agentdocker").symbol(),
+                "unverified"
+            );
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            assert_eq!(
+                mcp_wiring(spec, &roots, "agentdocker").symbol(),
+                "unverified"
+            );
+        }
+        let state = Wiring::Unverified;
+        assert_eq!(serde_json::to_string(&state).unwrap(), "\"unverified\"");
+        assert_eq!(
+            serde_json::from_str::<Wiring>("\"unverified\"").unwrap(),
+            state
+        );
     }
 
     #[test]
