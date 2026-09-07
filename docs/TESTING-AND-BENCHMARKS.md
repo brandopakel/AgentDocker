@@ -63,3 +63,6 @@ CodeRabbit automatic review includes every base branch, including stacked
 fix/test/docs branches. A skipped or rate-limited review remains pending even
 when its status context is green. Draft PRs can run preliminary CI; final review
 and all applicable checks on the published head are required before integration.
+
+
+Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On this Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.

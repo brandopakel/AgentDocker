@@ -25,17 +25,35 @@ case "${1:-check}" in
     # each campaign's complete samples with its source manifest and artifacts.
     export CRITERION_HOME="$(mktemp -d "$PWD/artifacts/criterion.XXXXXX")"
     python3 scripts/benchmark_manifest.py > artifacts/benchmark-manifest.json
+    # A failed workload still needs a matching final manifest. Remove stale
+    # outcomes so an interrupted campaign cannot appear to have run them.
+    rm -f artifacts/benchmark-manifest-after.json artifacts/socket-{shared,disjoint}-{1,10,100}.{json,log}
+    : > artifacts/benchmark-status.tsv
+    finish_bench() {
+      bench_exit=$?
+      trap - EXIT
+      python3 scripts/benchmark_manifest.py > artifacts/benchmark-manifest-after.json || bench_exit=1
+      python3 -c 'import json; a=json.load(open("artifacts/benchmark-manifest.json")); b=json.load(open("artifacts/benchmark-manifest-after.json")); assert a == b, "source or environment changed during benchmarks"' || bench_exit=1
+      exit "$bench_exit"
+    }
+    trap finish_bench EXIT
     cargo bench --locked -p agentdocker-core --bench leases -- --noplot 2>&1 | tee artifacts/criterion-leases.txt
     cargo bench --locked -p agentdocker-host --bench fingerprint -- --noplot 2>&1 | tee artifacts/criterion-fingerprint.txt
     cargo build --locked --release -p agentdocker --bin agentd
     cargo build --locked --release -p agentd --example socket_load
+    bench_status=0
     for clients in 1 10 100; do
       for workload in shared disjoint; do
-        target/release/examples/socket_load "$(pwd)/target/release/agentd" "$clients" 100 "$workload" > "artifacts/socket-${workload}-${clients}.json" 2> "artifacts/socket-${workload}-${clients}.log"
+        workload_status=0
+        target/release/examples/socket_load "$(pwd)/target/release/agentd" "$clients" 100 "$workload" > "artifacts/socket-${workload}-${clients}.json" 2> "artifacts/socket-${workload}-${clients}.log" || workload_status=$?
+        printf '%s\t%s\t%s\n' "$workload" "$clients" "$workload_status" >> artifacts/benchmark-status.tsv
+        if (( workload_status != 0 )); then
+          bench_status=1
+          cat "artifacts/socket-${workload}-${clients}.log" >&2
+        fi
       done
     done
-    python3 scripts/benchmark_manifest.py > artifacts/benchmark-manifest-after.json
-    python3 -c 'import json; a=json.load(open("artifacts/benchmark-manifest.json")); b=json.load(open("artifacts/benchmark-manifest-after.json")); assert a == b, "source or environment changed during benchmarks"'
+    exit "$bench_status"
     ;;
   fuzz)
     seconds="${FUZZ_SECONDS:-60}"
