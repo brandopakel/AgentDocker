@@ -31,7 +31,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Linux graphics and launcher validation
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers lsof desktop-file-utils
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxkbcommon-x11-dev lsof desktop-file-utils
       - run: python3 scripts/build_native.py --target '${{ matrix.target }}'
       - name: Package exact source build
         shell: bash
