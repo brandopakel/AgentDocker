@@ -1,0 +1,71 @@
+{
+  "format": 1,
+  "date": "2026-09-07",
+  "platform": "aarch64-apple-darwin",
+  "scope": "owned native desktop fixtures; private paths and captures excluded",
+  "standard_gate": {
+    "source": {
+      "commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+      "dirty": false,
+      "content_sha256": "67be5551afa2c712e362f1baccc52a10e386ab5c65a51004b37f7e5d25158275"
+    },
+    "source_unchanged": true,
+    "exit": 0,
+    "elapsed_seconds": 169.8949110507965,
+    "rust_passed": 542,
+    "python_passed": 33,
+    "fixture_skips": 5,
+    "original_log_sha256": "0731fdb0056580a86164fb8cd39a7d932597772015429a063abb36426206733c"
+  },
+  "packaged_maintenance": {
+    "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "activation keeps the existing fixture daemon responsive",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "generations": "same binaries with synthetic metadata; not distinct-source upgrade acceptance"
+  },
+  "graphical_failure": {
+    "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+    "connected": true,
+    "elapsed_seconds": 30.027531584,
+    "error": "native window did not reach readiness and complete a screenshot",
+    "fixture_discovered": true,
+    "frames": 950,
+    "result": "failed",
+    "runtime_rows": 14,
+    "screenshot_requested": true
+  },
+  "instrumented_graphical_run": {
+    "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
+    "result": "passed",
+    "elapsed_seconds": 0.389785375,
+    "frames": 9,
+    "runtime_rows": 14,
+    "fixture_discovered": true,
+    "tcp_observation": {
+      "samples": 4,
+      "elapsed_seconds": 0.45944979204796255,
+      "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+    },
+    "surface_statuses": [
+      "Occluded",
+      "Occluded"
+    ],
+    "source_change": "bounded renderer diagnostics and viewport readiness fields only"
+  },
+  "limitations": [
+    "The original graphical timeout remains unresolved; an instrumented pass does not establish its cause.",
+    "Renderer source consumes screenshot commands before acquiring the surface; a skipped surface can lose capture. This is a diagnostic lead requiring a controlled reproduction.",
+    "No public signing/notarization, native Windows, distinct-source update or live daemon transfer acceptance.",
+    "Raw logs and window captures remain private."
+  ]
+}
