@@ -47,4 +47,4 @@ jobs:
         run: |
           test -n "$BENCHER_API_KEY"
           bencher run --branch main --hash "$SOURCE_SHA" --testbed github-ubuntu --adapter rust_criterion --file results/artifacts/criterion-leases.txt --file results/artifacts/criterion-fingerprint.txt
-          bencher run --branch main --hash "$SOURCE_SHA" --testbed github-ubuntu --adapter json --file results/artifacts/socket-1.json --file results/artifacts/socket-10.json --file results/artifacts/socket-100.json
+          bencher run --branch main --hash "$SOURCE_SHA" --testbed github-ubuntu --adapter json --file results/artifacts/socket-shared-1.json --file results/artifacts/socket-shared-10.json --file results/artifacts/socket-shared-100.json --file results/artifacts/socket-disjoint-1.json --file results/artifacts/socket-disjoint-10.json --file results/artifacts/socket-disjoint-100.json

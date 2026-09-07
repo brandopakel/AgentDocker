@@ -30,7 +30,9 @@ case "${1:-check}" in
     cargo build --locked --release -p agentdocker --bin agentd
     cargo build --locked --release -p agentd --example socket_load
     for clients in 1 10 100; do
-      target/release/examples/socket_load "$(pwd)/target/release/agentd" "$clients" 100 > "artifacts/socket-${clients}.json"
+      for workload in shared disjoint; do
+        target/release/examples/socket_load "$(pwd)/target/release/agentd" "$clients" 100 "$workload" > "artifacts/socket-${workload}-${clients}.json" 2> "artifacts/socket-${workload}-${clients}.log"
+      done
     done
     python3 scripts/benchmark_manifest.py > artifacts/benchmark-manifest-after.json
     python3 -c 'import json; a=json.load(open("artifacts/benchmark-manifest.json")); b=json.load(open("artifacts/benchmark-manifest-after.json")); assert a == b, "source or environment changed during benchmarks"'
