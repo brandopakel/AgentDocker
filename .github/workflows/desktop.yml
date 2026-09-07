@@ -32,12 +32,17 @@ jobs:
       - name: Linux graphics and launcher validation
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxkbcommon-x11-dev lsof desktop-file-utils
-      - run: python3 scripts/build_native.py --target '${{ matrix.target }}'
+      - name: Build native executables and record their actual directory
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          python3 scripts/build_native.py --target '${{ matrix.target }}' > artifacts/native-build.json
       - name: Package exact source build
         shell: bash
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-          python3 packaging/desktop/package.py --binary-dir target/release --output artifacts/desktop --version "$version" --source "$(git rev-parse HEAD)" --target '${{ matrix.target }}'
+          native_binary_dir=$(python3 -c 'import json; print(json.load(open("artifacts/native-build.json"))["binary_directory"])')
+          python3 packaging/desktop/package.py --binary-dir "$native_binary_dir" --output artifacts/desktop --version "$version" --source "$(git rev-parse HEAD)" --target '${{ matrix.target }}'
       - name: Linux native window and fixture discovery
         if: runner.os == 'Linux'
         run: |
