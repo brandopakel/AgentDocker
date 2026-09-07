@@ -13,6 +13,8 @@ jobs:
   desktop:
     name: package and graphical acceptance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      NATIVE_TARGET: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -36,13 +38,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          python3 scripts/build_native.py --target '${{ matrix.target }}' > artifacts/native-build.json
+          python3 scripts/build_native.py --target "$NATIVE_TARGET" > artifacts/native-build.json
       - name: Package exact source build
         shell: bash
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           native_binary_dir=$(python3 -c 'import json; print(json.load(open("artifacts/native-build.json"))["binary_directory"])')
-          python3 packaging/desktop/package.py --binary-dir "$native_binary_dir" --output artifacts/desktop --version "$version" --source "$(git rev-parse HEAD)" --target '${{ matrix.target }}'
+          package_args=(--binary-dir "$native_binary_dir" --output artifacts/desktop --version "$version" --source "$(git rev-parse HEAD)" --target "$NATIVE_TARGET")
+          if [[ "$NATIVE_TARGET" == *-apple-darwin ]]; then
+            package_args+=(--dmg)
+          fi
+          python3 packaging/desktop/package.py "${package_args[@]}"
       - name: Linux native window and fixture discovery
         if: runner.os == 'Linux'
         run: |
@@ -57,6 +63,7 @@ jobs:
           name: desktop-${{ matrix.target }}
           path: |
             artifacts/desktop/*.zip
+            artifacts/desktop/*.dmg
             artifacts/desktop/*.tar.gz
             artifacts/desktop/*.sha256
             artifacts/desktop/manifest.json
