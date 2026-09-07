@@ -183,7 +183,7 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
                 .and_then(|args| args.iter().map(Value::as_str).collect());
             if !arguments
                 .as_ref()
-                .is_some_and(|args| mcp_command_matches(command, args, marker))
+                .is_some_and(|args| mcp_command_matches(command, args, marker, spec.name))
             {
                 if name == marker {
                     checks.push(Check::new(
@@ -433,6 +433,8 @@ mod tests {
             json!(["mcp", "--runtime"]),
             json!(["mcp", "--runtime", "--unexpected"]),
             json!(["mcp", "--runtime", "gemini-cli", "extra"]),
+            json!(["mcp", "--runtime", "codex"]),
+            json!(["mcp", "--runtime", "unknown-runtime"]),
         ] {
             write_mcp(&roots, absent(), json!({"args": args}));
             assert_eq!(
