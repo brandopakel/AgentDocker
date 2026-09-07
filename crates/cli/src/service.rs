@@ -4,10 +4,9 @@
 //! the daemon come back after a reboot or a crash and keeps it out of any
 //! terminal's process group. launchd on macOS, systemd user units on
 //! Linux. The file contents and command sequences are pure so they are
-//! tested; only [`execute`] touches the system.
+//! tested; state preparation and plan execution perform the mutations.
 
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -140,8 +139,10 @@ impl Layout {
             .or_else(|| which("agentd"))
             .context("cannot find the agentd binary beside agentdocker or on PATH")?;
         let home = agentdocker_host::dirs::home();
-        std::fs::create_dir_all(&home)?;
-        let uid = std::fs::metadata(&home)?.uid();
+        // Discovery is also used by status/dry-run; neither creates state.
+        // Service ownership is the caller's identity, not a directory's owner.
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
         let user_home = std::env::home_dir().context("no home directory")?;
         let home = home.canonicalize().unwrap_or(home);
         let socket = service_socket(&home, socket);
@@ -481,6 +482,15 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
     let client = layout.client().with_start_timeout(None);
+    if matches!(
+        &args.command,
+        DaemonCommand::Install { dry_run: false } | DaemonCommand::Start | DaemonCommand::Restart
+    ) {
+        agentdocker_host::dirs::secure_state_dir(&layout.home)?;
+        // launchd opens its log before executing agentd. Precreate/protect it
+        // before service installation or restart can give it any output.
+        agentdocker_host::dirs::private_file(&layout.log(), true, true)?;
+    }
     match args.command {
         DaemonCommand::Install { dry_run } => {
             if !dry_run {

@@ -233,6 +233,7 @@ pub fn event_line(event: &Event) -> String {
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
+        EventKind::AgentRestoring { agent } => format!("restoring {}", agent.short()),
         EventKind::AgentRestored { agent, pid, stale } => format!(
             "agent restored: {} (pid {}){}",
             agent.short(),

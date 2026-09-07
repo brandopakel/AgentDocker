@@ -12,7 +12,7 @@ Main contains a per-user daemon, CLI, native GUI, persistent registry/inboxes/ev
 
 Discovery runs in the daemon every five seconds. Installed-tool inventory includes CLI paths/versions, selected macOS application bundles and known configuration wiring. Setup supports selected MCP hosts and Claude Code hooks with dry-run output and backups. The GUI includes agents, runtimes, journal, leases, events, human questions, a terminal and a CLI console. Notifications are best effort through installed OS tools. PTY attach/detach and opt-in command relaunch exist; seamless daemon restart does not. Multiplexer adapters recognize reported/observed sessions and can launch a tmux-owned agent.
 
-These are implementation statements, not a claim that every path is hardened or shipped in the latest release. The [September 6 audit](AUDIT-2026-09-06.md) records exact source identities, fresh tests, confirmed restore defects, and privacy/readiness gaps. The [trial plan](LOCAL-TRIAL.md) defines acceptance before normal use.
+These are implementation statements, not a claim that every path is hardened or shipped in the latest release. The [September 6 audit](AUDIT-2026-09-06.md) records exact source identities, fresh tests, confirmed restore defects, and privacy/readiness gaps. The [delivery record](NATIVE-DELIVERY.md) tracks subsequent fixes; the [trial plan](LOCAL-TRIAL.md) defines acceptance before normal use.
 
 ## Discovery and integration contract
 

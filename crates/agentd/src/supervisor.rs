@@ -127,6 +127,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         anyhow::bail!("empty command");
     };
     let mut command = Command::new(program);
+    command.kill_on_drop(true);
     command
         .args(args)
         .envs(&record.spec.env)
@@ -174,11 +175,26 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         command.current_dir(workdir);
     }
 
+    // Allocate every fallible terminal descriptor before a process can start.
+    let terminal_io = pty
+        .as_ref()
+        .map(|pty| -> std::io::Result<_> {
+            Ok((pty.master().try_clone()?, pty.master().try_clone()?))
+        })
+        .transpose()
+        .context("cannot clone the agent's terminal")?;
+
     let log_path = daemon.log_path(&record.id);
-    tokio::fs::create_dir_all(log_path.parent().expect("log path has a parent")).await?;
-    let log = File::create(&log_path)
-        .await
-        .with_context(|| format!("cannot create {}", log_path.display()))?;
+    let log = tokio::task::spawn_blocking(move || {
+        agentdocker_host::dirs::secure_state_dir(
+            log_path.parent().expect("log path has a parent"),
+        )?;
+        agentdocker_host::dirs::private_file(&log_path, true, true)
+            .with_context(|| format!("cannot open {}", log_path.display()))
+    })
+    .await??;
+    let log = File::from_std(log);
+    daemon.validate_native_launch(record)?;
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to launch `{program}`"))?;
@@ -197,19 +213,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             // One task reads the terminal into the log, the scrollback and
             // whoever is attached; another types into it.
             //
-            // The child already exists, and dropping a `Child` does not
-            // kill it. Failing out of here with `?` would leave a process
-            // running that nothing supervises, so a failed clone stops it
-            // first — `kill` rather than `start_kill`, because it also
-            // reaps.
-            let (reader, writer) = match (master.try_clone(), master.try_clone()) {
-                (Ok(reader), Ok(writer)) => (reader, writer),
-                (reader, writer) => {
-                    let error = reader.err().or(writer.err()).expect("one of them failed");
-                    let _ = child.kill().await;
-                    return Err(error).context("cannot clone the agent's terminal");
-                }
-            };
+            let (reader, writer) = terminal_io.expect("allocated before launch");
             tokio::spawn(pump_terminal(
                 tokio::fs::File::from_std(std::fs::File::from(reader)),
                 tx,
@@ -312,7 +316,11 @@ async fn type_into_terminal(
 }
 
 /// Wait for the child in the background and record how it ended.
-pub fn supervise(daemon: Arc<Daemon>, id: AgentId, mut spawned: Spawned) {
+pub fn supervise(
+    daemon: Arc<Daemon>,
+    id: AgentId,
+    mut spawned: Spawned,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let group = Pid::from_raw(-(spawned.pid as i32));
         let mut stopping = false;
@@ -362,7 +370,7 @@ pub fn supervise(daemon: Arc<Daemon>, id: AgentId, mut spawned: Spawned) {
         // After the exit is recorded, so a reader of the event stream
         // sees the agent end before it sees it start again.
         daemon.consider_restart(&id, &status);
-    });
+    })
 }
 
 async fn pump<R: AsyncRead + Unpin>(reader: R, stream: &'static str, tx: mpsc::Sender<String>) {

@@ -1,6 +1,6 @@
 # Local native trial
 
-Yes: use this development Mac for a controlled alpha trial now. Begin with the audited code in private state and a disposable repository; fix the [restore and privacy findings](AUDIT-2026-09-06.md#blocking-findings) before enabling automatic restore or integrating all existing sessions. The test tools and local preview already allow useful native testing without a global service install.
+Yes: use this development Mac for a controlled alpha trial now. Begin with the audited code in private state and a disposable repository; use a candidate containing the [restore/privacy fixes](NATIVE-DELIVERY.md) and verify their regression scenarios before enabling automatic restore or integrating existing sessions. The test tools and local preview already allow useful native testing without a global service install.
 
 ## Stage 1 — Isolated candidate
 
@@ -25,7 +25,7 @@ trial_cli="$PWD/target/release/agentdocker"
 
 Keep the current shell and `trial_dir` value for cleanup. Add a small fixture file and commit it before worktree/validation tests. Discovery can list real processes; adopt only deliberately created fixture agents in this stage. Do not run `adopt --all` against an active development machine as a substitute for integration testing. Close the trial window and run `"$trial_cli" daemon stop` in the same environment to stop this daemon; verify fixture writers exited before removing trial files.
 
-The private parent protects the trial even while state-file defaults need hardening. Do not copy credentials into test fixtures, command lines or reports. Do not enable `--restore` outside the dedicated defect probes until R1/R2 are fixed. Test-owned restore probes may intentionally inject failure into a disposable database.
+The private parent also isolates fixture scripts and captured evidence; current state-file creation uses private defaults. Do not copy credentials into test fixtures, command lines or reports. Enable `--restore` only in test-owned sessions after the candidate passes the restore regression scenarios. Test-owned restore probes may intentionally inject failure into a disposable database.
 
 ## Stage 2 — Native acceptance scenarios
 

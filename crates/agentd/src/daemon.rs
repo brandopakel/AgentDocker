@@ -94,6 +94,9 @@ const OVERLAP_SCAN: usize = 50_000;
 /// Rows an overlap query reads per hold of the state lock.
 const OVERLAP_PAGE: usize = 2_000;
 
+/// Maximum foreground wait while failed-launch supervision stops its owned group.
+const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
@@ -650,7 +653,19 @@ impl Daemon {
 
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&home)?;
+        agentdocker_host::dirs::secure_state_dir(&home)?;
+        let logs = home.join("logs");
+        agentdocker_host::dirs::secure_state_dir(&logs)?;
+        for entry in std::fs::read_dir(&logs)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "log") {
+                agentdocker_host::dirs::private_file(&path, false, false)?;
+            }
+        }
+        let daemon_log = paths::daemon_log(&home);
+        if std::fs::symlink_metadata(&daemon_log).is_ok() {
+            agentdocker_host::dirs::private_file(&daemon_log, false, false)?;
+        }
         let store = Store::open(&home.join("state.db"))?;
         Self::with_store(home, socket, store)
     }
@@ -658,8 +673,15 @@ impl Daemon {
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
         let now = Utc::now();
         let mut registry = Registry::new();
+        let mut next_seq = store.max_event_seq()? + 1;
         for mut record in store.load_agents()? {
-            if record.managed && record.container.is_none() && record.status == AgentStatus::Created
+            if record.managed
+                && record.container.is_none()
+                && record.status == AgentStatus::Created
+                && !(record.spec.restore
+                    && store
+                        .document::<restore::RestorePoint>("restore_point", record.id.as_str())?
+                        .is_some())
             {
                 // The previous daemon stopped between creating the record and
                 // spawning the process, so nothing is running for it.
@@ -668,7 +690,16 @@ impl Daemon {
                     reason: "daemon restarted before the process was spawned".to_owned(),
                 };
                 record.finished_at = Some(now);
-                store.upsert_agent(&record)?;
+                let mut event = Event::new(
+                    EventKind::AgentExited {
+                        agent: record.id.clone(),
+                        status: record.status.clone(),
+                    },
+                    now,
+                );
+                event.seq = next_seq;
+                store.agent_transition(&record, &event)?;
+                next_seq += 1;
             }
             match registry.insert(record.clone()) {
                 Ok(()) => {}
@@ -703,7 +734,6 @@ impl Daemon {
             .map(|channel| (channel.id.clone(), channel))
             .collect();
         let mut leases = LeaseTable::new();
-        let mut next_seq = store.max_event_seq()? + 1;
         for mut lease in store.load_leases()? {
             if lease.is_expired(now)
                 || !registry
@@ -1236,7 +1266,15 @@ impl Daemon {
                     });
                     updated
                 };
-                supervisor::supervise(self.clone(), record.id, spawned);
+                let failed = lock(&self.state).storage_failure();
+                if failed.is_some() {
+                    spawned.control.send_replace(Some(true));
+                }
+                let supervision = supervisor::supervise(self.clone(), record.id, spawned);
+                if let Some(error) = failed {
+                    let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
+                    return error;
+                }
                 match updated {
                     Some(agent) => Response::Agent { agent },
                     None => Response::error(ErrorCode::NotFound, "agent vanished"),
@@ -2831,11 +2869,16 @@ impl State {
     }
 
     pub fn mark_exited(&mut self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
+        // Called only after the owned process group has drained. A cancellation
+        // can have made the registry terminal already; still retire its owner.
+        self.supervised.remove(id);
+        if self.storage_error.is_some() {
+            return self.registry.get(id).cloned();
+        }
         if !self.is_live(id) {
             return self.registry.get(id).cloned();
         }
         let record = self.registry.set_status(id, status.clone(), Utc::now())?;
-        self.supervised.remove(id);
         self.persist("agent", |store| store.upsert_agent(&record));
         let released = self.leases.release_all(id);
         self.finish_release(id, released, None, SummarySource::Explicit);
@@ -5789,10 +5832,14 @@ mod tests {
         spec.workdir = Some(dir.path().to_path_buf());
         spec.command = vec!["sh".into(), "-c".into(), "exit 1".into()];
         spec.restart = agentdocker_core::RestartPolicy::OnFailure { max: 1 };
+        // Subscribed before the agent exists. `exit 1` is over almost at
+        // once, and a subscription taken afterwards can miss the very
+        // event this is about — the stream carries what happens after
+        // you join it, not what already happened.
+        let mut events = daemon.subscribe_events();
         let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
             panic!("run failed")
         };
-        let mut events = daemon.subscribe_events();
 
         let restarted = until(&daemon, &agent.id, "one restart", |r| r.restarts >= 1).await;
         // Same identity: everything already recorded about it — its read
@@ -6750,6 +6797,12 @@ deny = ["send:all"]
         assert_eq!(leases.len(), 1);
         assert_eq!(leases[0].id, LeaseId::from("kept"));
         let events = daemon.recent_events(100);
+        let half = agents
+            .iter()
+            .find(|record| record.spec.name == "half")
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(&event.kind,
+            EventKind::AgentExited { agent, status } if agent == &half.id && status == &half.status)));
         let mut removed: Vec<_> = events
             .iter()
             .filter_map(|event| match &event.kind {
@@ -6778,6 +6831,23 @@ deny = ["send:all"]
             .filter(|a| a.status.is_live())
             .count();
         assert_eq!(live_in_store, 1);
+    }
+
+    #[test]
+    fn startup_failure_and_its_event_commit_together() {
+        let dir = TempDir::new().unwrap();
+        let database = dir.path().join("state.db");
+        let store = Store::open(&database).unwrap();
+        let record = AgentRecord::new(spec("never-started"), true, Utc::now());
+        store.upsert_agent(&record).unwrap();
+        store.reject_event_for_test("agent_exited");
+        assert!(Daemon::with_store(dir.path().into(), dir.path().join("sock"), store).is_err());
+        let reopened = Store::open(&database).unwrap();
+        assert_eq!(
+            reopened.load_agents().unwrap()[0].status,
+            AgentStatus::Created
+        );
+        assert!(reopened.recent_events(10).unwrap().is_empty());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
