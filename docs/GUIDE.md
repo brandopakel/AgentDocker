@@ -442,7 +442,7 @@ losing the work to tidy up a failed push would be the wrong trade.
 
 ```sh
 agentdocker logs codex-27221 --compress
-agentdocker validation a1b2c3 --compress
+agentdocker validation a1b2c3 --as codex-27221 --compress
 ```
 
 Where [rtk](https://github.com/rtk-ai/rtk) is installed, this pipes a

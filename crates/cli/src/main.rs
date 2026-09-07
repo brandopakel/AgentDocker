@@ -424,6 +424,9 @@ enum Command {
     Validation {
         /// The validation id, from `validate` or `validations`.
         id: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent whose validations to look in (defaults to this session).")]
+        agent: String,
         /// Show a compressed view through rtk, where it is installed. The
         /// retained log itself is never altered.
         #[arg(long)]
@@ -1594,12 +1597,12 @@ async fn main() -> Result<()> {
                 show(&rtk::view(&collected));
             }
         }
-        Command::Validation { id, compress } => {
-            let response = client
-                .call(&Request::Validations {
-                    agent: String::new(),
-                })
-                .await?;
+        Command::Validation {
+            id,
+            agent,
+            compress,
+        } => {
+            let response = client.call(&Request::Validations { agent }).await?;
             let Response::Validations { validations } = response else {
                 bail!("unexpected response");
             };
