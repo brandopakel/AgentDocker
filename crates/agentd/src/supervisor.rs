@@ -160,6 +160,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     let pid = pending.pid;
     let process_started_at = agentdocker_host::procinfo::start_time(pid)
         .context("cannot verify the prepared command's process identity; exec denied")?;
+    daemon.validate_native_launch(record)?;
 
     let (tx, rx) = mpsc::channel::<String>(256);
     tokio::spawn(write_log(log, rx));

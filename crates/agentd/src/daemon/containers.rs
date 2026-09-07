@@ -17,6 +17,17 @@ impl Drop for Busy {
 }
 
 impl Daemon {
+    /// Recheck only a not-yet-started writer; changed policy does not stop an
+    /// already-running container. A refused pending launch retains stop intent.
+    fn check_container_admission(&self, record: &AgentRecord) -> Result<(), ContainerError> {
+        self.refresh_policy_for(record.project.as_ref());
+        let refused = lock(&self.state).run_refusal(record);
+        if let Some(Response::Error { code, message, .. }) = refused {
+            self.request_container_stop(&record.id, false)?;
+            return Err(ContainerError::with_code(code, message));
+        }
+        Ok(())
+    }
     pub fn container_record(&self, id: &AgentId) -> Option<AgentRecord> {
         lock(&self.state)
             .registry
@@ -133,6 +144,9 @@ impl Daemon {
             );
         }
         let mut record = AgentRecord::new(spec, true, Utc::now());
+        if let Err(response) = self.admit_run(&mut record).await {
+            return *response;
+        }
         if record.spec.isolate {
             record.spec.workdir = match self.isolate(&record).await {
                 Ok(path) => Some(path),
@@ -391,6 +405,9 @@ impl Daemon {
             record = self.current_container(id)?;
         }
         // A transport outage must never prevent stopping or inspecting a writer.
+        if create && !record.container.as_ref().unwrap().create_attempted {
+            self.check_container_admission(&record)?;
+        }
         if create {
             self.ensure_transport(&record).await?;
             record = self.current_container(id)?;
@@ -431,6 +448,7 @@ impl Daemon {
         }
         match (c.intent, inspected.state) {
             (ContainerIntent::Run, ContainerState::Created) => {
+                self.check_container_admission(&record)?;
                 if c.start_attempted {
                     return Err(ContainerError::unavailable(c.last_error.clone().unwrap_or_else(|| "previous start outcome is unknown; stop this container before retrying as a new agent".into())));
                 }
@@ -818,6 +836,60 @@ mod tests {
             panic!("claim failed")
         };
         lease
+    }
+
+    #[tokio::test]
+    async fn run_policy_blocks_creation_and_a_lost_create_cannot_bypass_a_new_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        let path = daemon.home.join("policy.toml");
+        std::fs::write(&path, "[[rule]]\ndeny = [\"run:**\"]\n").unwrap();
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        assert!(lock(&fake.actions).is_empty());
+        assert_eq!(lock(&daemon.state).registry.len(), 0);
+        std::fs::remove_file(&path).unwrap();
+        fake.lost_create.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error { .. }
+        ));
+        let record = retained(&daemon);
+        std::fs::write(&path, "[[rule]]\ndeny = [\"run:**\"]\n").unwrap();
+        let error = daemon
+            .drive_container(record.id.clone(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Forbidden);
+        assert_eq!(
+            daemon
+                .container_record(&record.id)
+                .unwrap()
+                .container
+                .unwrap()
+                .intent,
+            ContainerIntent::Stop
+        );
+        assert_eq!(*lock(&fake.actions), vec!["create"]);
+        daemon
+            .drive_container(record.id.clone(), false)
+            .await
+            .unwrap();
+        assert!(
+            !daemon
+                .container_record(&record.id)
+                .unwrap()
+                .status
+                .is_live()
+        );
+        assert!(!lock(&fake.actions).contains(&"start"));
     }
 
     #[tokio::test]

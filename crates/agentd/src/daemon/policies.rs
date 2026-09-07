@@ -22,6 +22,19 @@ use agentdocker_host::policy_file::{self, ReadPolicy, Stamp};
 
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct LaunchDenied(pub Response);
+
+impl std::fmt::Display for LaunchDenied {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Response::Error { message, .. } => out.write_str(message),
+            _ => out.write_str("launch admission failed"),
+        }
+    }
+}
+impl std::error::Error for LaunchDenied {}
+
 /// The last valid rules, read identity and current diagnostic for one scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Loaded {
@@ -124,6 +137,48 @@ fn canonicalise_pattern(pattern: &str) -> Option<String> {
 }
 
 impl Daemon {
+    /// Load a newly encountered scope before its first governed action.
+    pub(super) fn refresh_policy_for(&self, project: Option<&ProjectRef>) {
+        let root = project.map(|project| project.dir().to_path_buf());
+        let (host, previous) = {
+            let state = lock(&self.state);
+            (
+                state.host_policy.clone(),
+                root.as_ref().map(|root| {
+                    state
+                        .project_policies
+                        .get(root)
+                        .cloned()
+                        .unwrap_or_default()
+                }),
+            )
+        };
+        let next_host = reload(&self.host_policy_path(), &host);
+        let next_project = root
+            .as_ref()
+            .zip(previous.as_ref())
+            .and_then(|(root, previous)| reload(&Self::project_policy_path(root), previous));
+        let mut state = lock(&self.state);
+        if let Some(next) = next_host {
+            state.apply_policy(None, &host, next);
+        }
+        if let Some(next) = next_project {
+            state.apply_policy(root, previous.as_ref().unwrap(), next);
+        }
+    }
+
+    /// Resolve selectors and refuse before creating a worktree, process or engine object.
+    pub(super) async fn admit_run(&self, record: &mut AgentRecord) -> Result<(), Box<Response>> {
+        if record.spec.name.is_empty() {
+            record.spec.name = default_name(&record.id);
+        }
+        record.project = self.project_for(record.spec.workdir.clone(), true).await;
+        self.refresh_policy_for(record.project.as_ref());
+        match lock(&self.state).run_refusal(record) {
+            Some(response) => Err(Box::new(response)),
+            None => Ok(()),
+        }
+    }
     /// The host's policy file.
     fn host_policy_path(&self) -> PathBuf {
         self.home.join("policy.toml")
@@ -176,6 +231,14 @@ impl Daemon {
 }
 
 impl State {
+    pub(super) fn run_refusal(&mut self, record: &AgentRecord) -> Option<Response> {
+        if let Some(error) = self.storage_failure() {
+            return Some(error);
+        }
+        let action = format!("run:{}", record.spec.name);
+        let ruling = self.permits_record(record, &action);
+        (!ruling.is_allowed()).then(|| self.refuse(&record.id, &action, ruling))
+    }
     /// Commit the observable policy transition before changing admission rules.
     fn apply_policy(&mut self, root: Option<PathBuf>, previous: &Loaded, next: Loaded) {
         let current = root
@@ -272,6 +335,180 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restore_obeys_new_run_policy_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let marker = dir.path().join("executed");
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "denied-restore".into(),
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf executed > \"$1\"".into(),
+                    "fixture".into(),
+                    marker.to_string_lossy().into(),
+                ],
+                restore: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Running;
+        lock(&daemon.state).insert_record(record.clone());
+        daemon.save_restore_points();
+        daemon.mark_exited(&record.id, AgentStatus::Exited { code: Some(1) });
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        daemon.restore_agents().await;
+        daemon.stop_all().await;
+        assert!(!marker.exists());
+        let current = lock(&daemon.state)
+            .registry
+            .get(&record.id)
+            .unwrap()
+            .clone();
+        assert!(current.pid.is_none());
+        assert!(
+            matches!(&current.status, AgentStatus::Failed { reason } if reason.contains("run:denied-restore")),
+            "{:?}",
+            current.status
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_project_policy_applies_to_the_first_claim_without_a_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir_all(checkout.join(".agentdocker")).unwrap();
+        std::fs::write(
+            checkout.join(".agentdocker/policy.toml"),
+            "[[rule]]\ndeny = [\"claim:**\"]\n",
+        )
+        .unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "first-project".into(),
+                    workdir: Some(checkout),
+                    ..Default::default()
+                },
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        let response = daemon
+            .handle(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: "task:first".into(),
+                mode: LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await;
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_pane_launch_does_not_probe_or_start_tmux() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        let response = daemon
+            .handle(Request::Run {
+                spec: AgentSpec {
+                    name: "denied-pane".into(),
+                    command: vec!["definitely-no-such-agentdocker-fixture".into()],
+                    workdir: Some(dir.path().to_path_buf()),
+                    in_pane: true,
+                    ..Default::default()
+                },
+            })
+            .await;
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert_eq!(lock(&daemon.state).registry.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_policy_refuses_before_a_native_command_executes() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        daemon.reload_policies();
+        let marker = dir.path().join("executed");
+        let response = daemon
+            .handle(Request::Run {
+                spec: AgentSpec {
+                    name: "denied-launch".into(),
+                    command: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "printf executed > \"$1\"".into(),
+                        "fixture".into(),
+                        marker.to_string_lossy().into(),
+                    ],
+                    ..Default::default()
+                },
+            })
+            .await;
+        daemon.stop_all().await;
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "a refused command must execute no instruction"
+        );
+    }
 
     #[tokio::test]
     async fn initial_invalid_policy_denies_claims_and_recovery_has_a_durable_event() {
