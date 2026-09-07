@@ -8,7 +8,7 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits).
 
-> Status: **alpha, single host.** The daemon, CLI, MCP server, Claude Code hooks, persistence, projects, leases, messaging, the working set (ledger, staleness, journal), worktrees, handoff, runtime discovery/setup and a native desktop window are available on macOS and Linux. Still to come: desktop notifications, human-agent interaction, Windows, and federation across machines. See the [product direction](docs/PRODUCT-DIRECTION.md) and [roadmap](#roadmap).
+> Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux host support exists; Linux desktop packaging and Windows host support remain unfinished. Before real-agent trials, read the [engineering audit and known blockers](docs/AUDIT-2026-09-06.md) and [trial plan](docs/LOCAL-TRIAL.md).
 
 ## The Docker analogy
 
@@ -31,13 +31,13 @@ Agents don't need an SDK. Anything that can write a line of JSON to a Unix socke
 ## Install
 
 ```sh
-cargo install --git https://github.com/brandopakel/AgentDocker --rev <commit> agentdocker --locked   # from source on any machine with Rust, pinned to a commit you have looked at (--tag vX.Y.Z once one exists)
-cargo install --path crates/cli --locked                                                             # from a checkout: both binaries
-curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh          # release binaries into ~/.local/bin, once a release is published
+cargo install --git https://github.com/brandopakel/AgentDocker --tag v0.1.0 agentdocker --locked   # released CLI + daemon, from source on macOS/Linux
+cargo install --path crates/cli --locked                                                       # checked-out source: CLI + daemon
+curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/v0.1.0/install.sh | sh       # latest published binaries into ~/.local/bin
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
 
-Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Release binaries require a published GitHub release; the installer checks the archive against the SHA-256 published with that release (it does not verify a signature). `cargo install agentdocker` becomes available after the crates are published. Homebrew formulae are generated from release checksums, not placeholder hashes.
+Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Use `--rev <reviewed-commit>` for newer source, or a release tag for a released version. Set `AGENTDOCKER_VERSION=v0.1.0` when invoking the installer to pin the downloaded release too. The installer verifies the published SHA-256 checksum, not a signature. The release includes a generated Homebrew formula; a maintained tap/cask and registry-based Cargo installation are not established distribution channels yet. See the [platform and distribution matrix](docs/PRODUCT-DIRECTION.md#platforms-and-distribution).
 
 The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running and where.
 
@@ -45,7 +45,8 @@ Then wire in the agents you already have:
 
 ```sh
 agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
-agentdocker setup             # register the MCP server with each, install the Claude Code hooks (--dry-run shows what would change)
+agentdocker setup --dry-run   # preview supported MCP registrations and Claude Code hooks
+agentdocker setup codex       # apply only the selected integration when ready for the trial
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
@@ -251,7 +252,7 @@ agentdocker logs -f writer                             # or just watch, without 
 
 The terminal belongs to the daemon, so attaching and detaching are only a client coming and going: the agent does not notice, and its output still lands in the log either way. The window size follows yours, so full-screen agents lay themselves out correctly.
 
-One limit worth knowing: the agent's *process* survives a daemon restart, but its terminal does not, so `attach` cannot reconnect afterwards. Making the terminal outlive the daemon is the rest of [roadmap row 23](docs/ARCHITECTURE.md#sessions-and-persistence).
+Closing the client window or detaching keeps a managed PTY session running while the daemon remains alive. A clean daemon shutdown stops managed agents; a crash can close their terminal or output pipes, so process survival is not guaranteed. `--restore` relaunches a command under the same identity; it does not preserve a process, terminal or model conversation. Its current readiness/storage defects are documented in the [audit](docs/AUDIT-2026-09-06.md#blocking-findings). Planned descriptor handoff is [roadmap row 28](docs/ARCHITECTURE.md#sessions-and-persistence).
 
 ### Channels: when two agents are on the same thing
 
@@ -335,7 +336,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 Five crates:
 
-- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). No I/O, no clocks: every operation takes `now`, so it is fully unit-tested.
+- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). Coordination operations are pure and take `now`; legacy environment-default helpers in `core::paths` remain an architectural cleanup item.
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
@@ -353,7 +354,7 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
 - **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events, with a terminal and a console; ✅ the human as a first-class agent — `me`, `ask`/`answer`, and a desktop notification when something reaches you; ✅ a FIFO wait queue with instant deadlock detection, and derived activity that says what a blocked agent is blocked on and who has it; next, policy and quotas; restart policies and `depends_on`.
-- **Phase 5 also brings**: PTY-backed sessions so interactive agents run under `run` and survive a daemon restart, with `attach`; activity derived from the working set (working, idle, or blocked on a named resource held by a named agent); adapters that recognise agents living in `tmux` panes or a [herdr](https://github.com/herdrdev/herdr) session; and token-lean output, because everything an agent reads from us costs it tokens.
+- **Phase 5 also includes**: PTY sessions with attach/detach while the daemon lives; opt-in command relaunch after restart (with known hardening work); multiplexer detection and tmux `run --in-pane`; contests backed by validation records; and compact MCP output. Seamless daemon upgrades and restoration of provider conversations are not implemented.
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 
 ## Development
