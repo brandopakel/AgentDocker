@@ -1,0 +1,1 @@
+{"request": {"op": "claim", "agent": "fixture-owner", "resource": "path:/workspace/new-file", "ttl_secs": 18446744073709551615, "wait_secs": 30}}
