@@ -230,6 +230,15 @@ pub enum EventKind {
         action: String,
         rule: String,
     },
+    /// A policy's effective rules or load diagnostic changed. Invalid initial
+    /// policy denies admission; a later error retains the last good rules.
+    PolicyUpdated {
+        project: Option<std::path::PathBuf>,
+        rules: u64,
+        quotas: u64,
+        error: Option<String>,
+        using_last_good: bool,
+    },
     /// A managed agent that exited was started again by its restart
     /// policy, under its own identity. `attempt` counts from one.
     AgentRestarted {

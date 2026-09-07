@@ -187,6 +187,30 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(" — {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::PolicyUpdated {
+            project,
+            rules,
+            quotas,
+            error,
+            using_last_good,
+        } => format!(
+            "policy updated   {} ({rules} rules, {quotas} quotas){}",
+            project
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "host".to_owned()),
+            error
+                .as_ref()
+                .map(|error| format!(
+                    " — {error}; {}",
+                    if *using_last_good {
+                        "keeping last good rules"
+                    } else {
+                        "admission denied"
+                    }
+                ))
+                .unwrap_or_default()
+        ),
         EventKind::PolicyDenied {
             agent,
             action,

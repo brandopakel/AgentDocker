@@ -12,6 +12,7 @@
 #[cfg(unix)]
 pub mod launch;
 pub mod lock;
+pub mod policy_file;
 pub mod procinfo;
 pub mod project;
 pub mod vcs;
