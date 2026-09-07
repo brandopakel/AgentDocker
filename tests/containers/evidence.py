@@ -6,6 +6,7 @@ import selectors
 import signal
 import subprocess
 import time
+import threading
 
 
 def reject_launch(response, inspect_record, remember_record):
@@ -64,7 +65,14 @@ def capture_tail(command, output_path, *, limit=2 * 1024 * 1024, timeout=30):
                     pass
                 # A kernel-stalled child can survive SIGKILL until I/O returns.
                 # Report that cleanup failure rather than hanging diagnostics.
-                process.wait(timeout=0.5)
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    # Preserve ownership after returning the cleanup failure.
+                    # A daemon thread cannot hold up failure reporting, and it
+                    # collects the child if its kernel wait later completes.
+                    threading.Thread(target=process.wait, name="container-log-reaper", daemon=True).start()
+                    raise
         finally:
             process.stdout.close()
             Path(output_path).write_bytes(tail)
