@@ -370,7 +370,7 @@ impl App {
     }
 
     fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label("The agent tools on this machine, and whether AgentDocker is wired into each.");
+        ui.label("The agent tools on this machine, and whether agentdocker is wired into each.");
         let mut setup: Option<String> = None;
         let mut sorted: Vec<&RuntimeInfo> = self.runtimes.iter().collect();
         sorted.sort_by_key(|r| !r.installed());
@@ -542,7 +542,7 @@ impl eframe::App for App {
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("AgentDocker");
+                ui.heading("agentdocker");
                 ui.separator();
                 match &self.connected {
                     Ok(()) => {
