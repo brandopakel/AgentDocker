@@ -4,6 +4,9 @@ import json
 import os
 import platform
 import subprocess
+import sys
+
+fuzz = len(sys.argv) > 1 and sys.argv[1] == "fuzz"
 
 def run(*args):
     return subprocess.check_output(args, stderr=subprocess.STDOUT).decode().strip()
@@ -31,15 +34,18 @@ print(json.dumps({
     "commit": run("git", "rev-parse", "HEAD"),
     "source_sha256": source.hexdigest(),
     "dirty": bool(run("git", "status", "--porcelain")),
-    "rustc": run("rustc", "--version"),
-    "cargo": run("cargo", "--version"),
+    "rustc": run("rustc", *(["+nightly"] if fuzz else []), "--version"),
+    "cargo": run("cargo", *(["+nightly"] if fuzz else []), "--version"),
+    **({"cargo_fuzz": run("cargo", "+nightly", "fuzz", "--version"),
+        "fuzz_lock_sha256": hashlib.sha256(open("fuzz/Cargo.lock", "rb").read()).hexdigest()} if fuzz else {}),
     "os": platform.platform(),
     "architecture": platform.machine(),
     "processor": platform.processor(),
     "cpu_count": os.cpu_count(),
-    "profile": "release",
+    "profile": "fuzz" if fuzz else "release",
     "container_engine": None,
-    "workloads": {"lease_counts": [1, 100, 1000], "fingerprint_files": 100,
+    "workloads": {"targets": {"protocol": {"max_len": 65536}, "resource-keys": {"max_len": 4096}},
+                  "seconds_per_target": int(sys.argv[2])} if fuzz else {"lease_counts": [1, 100, 1000], "fingerprint_files": 100,
                   "fingerprint_bytes_per_file": 4096, "socket_clients": [1, 10, 100],
         "socket_checkout_kind": "plain-unwatched",
                   "socket_iterations_per_client": 100},
