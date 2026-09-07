@@ -115,6 +115,8 @@ agentdocker run --name reviewer --in-pane -- claude
 
 Processes started with `agentdocker run` get `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, and `AGENTDOCKER_AGENT_NAME` in their environment, so inside an agent the CLI already knows who it is:
 
+Supervised native commands also receive the owning daemon's `AGENTDOCKER_HOME`. These settings override conflicting `-e` values on launch and restore; stale container-token settings are removed and client autostart is disabled inside the child.
+
 ```sh
 agentdocker claim path:src/lib.rs      # --as defaults to $AGENTDOCKER_AGENT_ID
 agentdocker send --to reviewer "done"  # --from too
