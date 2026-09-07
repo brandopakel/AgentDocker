@@ -5,6 +5,7 @@
 //! function answers a question about the host as it is right now.
 
 pub mod lock;
+pub mod policy_file;
 pub mod procinfo;
 pub mod project;
 pub mod vcs;

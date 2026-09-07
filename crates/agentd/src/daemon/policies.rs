@@ -11,85 +11,59 @@
 //! restrictions and never remove one — which is enforced in core by
 //! asking the host first and treating its refusal as final.
 //!
-//! Files are re-read when their modification time changes, checked on
-//! the daemon's existing one-second tick. That is cheap — a `stat` per
-//! file — and it means editing a policy takes effect without restarting
-//! anything or remembering a signal.
-//!
-//! A file that will not parse is **not** treated as empty. An empty
-//! policy allows everything, so a typo would silently switch off every
-//! rule in it; instead the last good version stays in force and the
-//! problem is logged.
+//! Regular files up to 1 MiB are checked on the daemon tick. Errors retain
+//! the last good policy; an initially invalid file denies governed actions.
+//! Policy state changes have durable replay events before publication.
 
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::policy::{self, Policy, Ruling};
+use agentdocker_host::policy_file::{self, ReadPolicy, Stamp};
 
 use super::*;
 
-/// A policy file, and what it looked like when it was read.
-#[derive(Clone, Debug, Default)]
+/// The last valid rules, read identity and current diagnostic for one scope.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Loaded {
     pub policy: Policy,
-    /// `None` when there is no file. Distinguishes "nothing to read"
-    /// from "read and empty", so a file appearing later is noticed.
-    modified: Option<std::time::SystemTime>,
-    present: bool,
+    stamp: Option<Stamp>,
+    has_good: bool,
+    error: Option<String>,
 }
 
-/// Read a policy file if it has changed since `previous`.
-///
-/// Returns `None` when nothing has changed, so the common tick does no
-/// work beyond a `stat`.
+/// Read outside the state lock. Absence removes rules; errors never do.
 fn reload(path: &Path, previous: &Loaded) -> Option<Loaded> {
-    let modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
-    match (modified, previous.present) {
-        // Unchanged.
-        (Some(now), true) if Some(now) == previous.modified => None,
-        // Still absent.
-        (None, false) => None,
-        // Gone: back to allowing everything, which is what no file means.
-        (None, true) => {
-            info!(path = %path.display(), "policy file removed");
-            Some(Loaded::default())
-        }
-        (Some(modified), _) => {
-            let text = match std::fs::read_to_string(path) {
-                Ok(text) => text,
-                Err(error) => {
-                    warn!(path = %path.display(), %error, "cannot read policy; keeping the last one");
-                    return None;
-                }
-            };
-            match toml::from_str::<Policy>(&text) {
-                Ok(mut policy) => {
-                    canonicalise_paths(&mut policy);
-                    info!(
-                        path = %path.display(),
-                        rules = policy.rules.len(),
-                        quotas = policy.quota.len(),
-                        "policy loaded"
-                    );
-                    Some(Loaded {
-                        policy,
-                        modified: Some(modified),
-                        present: true,
-                    })
-                }
-                Err(error) => {
-                    // Not treated as empty: an empty policy allows
-                    // everything, so a typo would switch off every rule
-                    // the file was written to enforce.
-                    warn!(
-                        path = %path.display(),
-                        %error,
-                        "policy file is not valid; keeping the last one in force"
-                    );
-                    None
-                }
+    let stamp = previous
+        .error
+        .is_none()
+        .then_some(previous.stamp.as_ref())
+        .flatten();
+    let result = policy_file::read_changed(path, stamp)
+        .map_err(|error| format!("cannot read policy ({:?})", error.kind()))
+        .and_then(|read| match read {
+            ReadPolicy::Unchanged => Ok(previous.clone()),
+            ReadPolicy::Absent => Ok(Loaded::default()),
+            ReadPolicy::Text { stamp, text } => {
+                let mut policy: Policy =
+                    toml::from_str(&text).map_err(|_| "invalid policy TOML".to_owned())?;
+                canonicalise_paths(&mut policy);
+                Ok(Loaded {
+                    policy,
+                    stamp: Some(stamp),
+                    has_good: true,
+                    error: None,
+                })
             }
+        });
+    let next = match result {
+        Ok(next) => next,
+        Err(error) => {
+            let mut next = previous.clone();
+            next.error = Some(error);
+            next
         }
-    }
+    };
+    (next != *previous).then_some(next)
 }
 
 /// Rewrite the literal part of every `path:` pattern to the canonical
@@ -160,50 +134,74 @@ impl Daemon {
         root.join(".agentdocker").join("policy.toml")
     }
 
-    /// Re-read any policy file whose modification time has moved. Called
-    /// from the daemon's own tick, so an edit takes effect within a
-    /// second without a restart or a signal.
+    /// Check the active scopes outside the state lock. Concurrent scans only
+    /// publish if their previous snapshot is still current.
     pub fn reload_policies(self: &Arc<Self>) {
-        let host_path = self.host_policy_path();
-        let (previous_host, roots) = {
+        let (previous_host, projects) = {
             let state = lock(&self.state);
-            let roots: Vec<PathBuf> = state
+            let roots: std::collections::BTreeSet<PathBuf> = state
                 .registry
                 .live()
                 .filter_map(|a| a.project.as_ref().map(|p| p.dir().to_path_buf()))
                 .collect();
-            (state.host_policy.clone(), roots)
+            let projects: Vec<_> = roots
+                .into_iter()
+                .map(|root| {
+                    let previous = state
+                        .project_policies
+                        .get(&root)
+                        .cloned()
+                        .unwrap_or_default();
+                    (root, previous)
+                })
+                .collect();
+            (state.host_policy.clone(), projects)
         };
-        // Reading files is I/O and does not belong under the lock.
-        let host = reload(&host_path, &previous_host);
-        let mut projects: Vec<(PathBuf, Loaded)> = Vec::new();
-        for root in roots {
-            let previous = {
-                let state = lock(&self.state);
-                state
-                    .project_policies
-                    .get(&root)
-                    .cloned()
-                    .unwrap_or_default()
-            };
-            if let Some(loaded) = reload(&Self::project_policy_path(&root), &previous) {
-                projects.push((root, loaded));
-            }
-        }
-        if host.is_none() && projects.is_empty() {
-            return;
-        }
+        let host = reload(&self.host_policy_path(), &previous_host);
+        let projects: Vec<_> = projects
+            .into_iter()
+            .filter_map(|(root, previous)| {
+                reload(&Self::project_policy_path(&root), &previous)
+                    .map(|next| (root, previous, next))
+            })
+            .collect();
         let mut state = lock(&self.state);
-        if let Some(host) = host {
-            state.host_policy = host;
+        if let Some(next) = host {
+            state.apply_policy(None, &previous_host, next);
         }
-        for (root, loaded) in projects {
-            state.project_policies.insert(root, loaded);
+        for (root, previous, next) in projects {
+            state.apply_policy(Some(root), &previous, next);
         }
     }
 }
 
 impl State {
+    /// Commit the observable policy transition before changing admission rules.
+    fn apply_policy(&mut self, root: Option<PathBuf>, previous: &Loaded, next: Loaded) {
+        let current = root
+            .as_ref()
+            .map(|root| self.project_policies.get(root).cloned().unwrap_or_default())
+            .unwrap_or_else(|| self.host_policy.clone());
+        if &current != previous || self.storage_error.is_some() {
+            return;
+        }
+        self.emit(EventKind::PolicyUpdated {
+            project: root.clone(),
+            rules: next.policy.rules.len() as u64,
+            quotas: next.policy.quota.len() as u64,
+            error: next.error.clone(),
+            using_last_good: next.error.is_some() && next.has_good,
+        });
+        if self.storage_error.is_some() {
+            return;
+        }
+        if let Some(root) = root {
+            self.project_policies.insert(root, next);
+        } else {
+            self.host_policy = next;
+        }
+    }
+
     /// Whether the policy permits this agent to do this.
     ///
     /// The action is a colon-joined string the rules glob against —
@@ -215,12 +213,30 @@ impl State {
             // fail on the missing agent anyway.
             return Ruling::Allow;
         };
+        self.permits_record(record, action)
+    }
+
+    pub(super) fn permits_record(&self, record: &AgentRecord, action: &str) -> Ruling {
         let project = record
             .project
             .as_ref()
-            .and_then(|p| self.project_policies.get(p.dir()))
-            .map(|loaded| &loaded.policy);
-        policy::check(&self.host_policy.policy, project, record, action)
+            .and_then(|p| self.project_policies.get(p.dir()));
+        for (scope, loaded) in std::iter::once(("host", &self.host_policy))
+            .chain(project.map(|loaded| ("project", loaded)))
+        {
+            if !loaded.has_good && loaded.error.is_some() {
+                return Ruling::Deny {
+                    rule: format!("{scope} policy unavailable"),
+                    reason: "policy could not be loaded; no valid rules available".to_owned(),
+                };
+            }
+        }
+        policy::check(
+            &self.host_policy.policy,
+            project.map(|loaded| &loaded.policy),
+            record,
+            action,
+        )
     }
 
     /// Refuse, announce it, and say which rule refused.
@@ -256,6 +272,98 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn initial_invalid_policy_denies_claims_and_recovery_has_a_durable_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "policy-fixture".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Running;
+        assert!(matches!(
+            lock(&daemon.state).insert_record(record.clone()),
+            Response::Agent { .. }
+        ));
+        let request = || Request::Claim {
+            agent: record.id.to_string(),
+            resource: "task:protected".into(),
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs: 60,
+            note: None,
+            wait_secs: 0,
+        };
+        std::fs::write(daemon.home.join("policy.toml"), "[[rule] broken").unwrap();
+        let mut events = daemon.subscribe_events();
+        daemon.reload_policies();
+        let first = events.try_recv().unwrap();
+        assert!(matches!(
+            first.kind,
+            EventKind::PolicyUpdated {
+                error: Some(_),
+                using_last_good: false,
+                ..
+            }
+        ));
+        assert!(first.seq > 0);
+        assert!(matches!(
+            daemon.handle(request()).await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        std::fs::write(daemon.home.join("policy.toml"), "").unwrap();
+        daemon.reload_policies();
+        assert!(matches!(
+            daemon.handle(request()).await,
+            Response::Lease { .. }
+        ));
+        assert!(
+            daemon
+                .recent_events(100)
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::PolicyUpdated { error: None, .. }))
+        );
+    }
+
+    #[test]
+    fn failed_policy_event_keeps_rules_and_disables_coordination() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let path = daemon.home.join("policy.toml");
+        std::fs::write(&path, "[[rule]]\ndeny = [\"claim:**\"]\n").unwrap();
+        daemon.reload_policies();
+        let previous = lock(&daemon.state).host_policy.clone();
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("policy_updated");
+        std::fs::remove_file(&path).unwrap();
+        daemon.reload_policies();
+        let state = lock(&daemon.state);
+        assert_eq!(state.host_policy, previous);
+        assert!(state.storage_error.is_some());
+    }
+
+    #[test]
+    fn a_metadata_error_must_not_erase_the_last_good_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("policy.toml");
+        std::fs::write(&path, "[[rule]]\ndeny = [\"claim:**\"]\n").unwrap();
+        let loaded = reload(&path, &Loaded::default()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&path, &path).unwrap();
+        let next = reload(&path, &loaded).unwrap_or_else(|| loaded.clone());
+        assert_eq!(next.policy, loaded.policy, "ELOOP is not policy deletion");
+    }
 
     /// The daemon canonicalises a resource before claiming it, so a rule
     /// written against `/tmp` would silently match nothing on a machine
@@ -322,15 +430,15 @@ mod tests {
         // everything, so it would switch off exactly what it was
         // written to enforce.
         std::fs::write(&path, "[[rule]\nthis is not toml").unwrap();
-        assert!(
-            reload(&path, &loaded).is_none(),
-            "a broken file changes nothing"
-        );
+        let broken = reload(&path, &loaded).expect("error becomes visible");
+        assert_eq!(broken.policy, loaded.policy);
+        assert!(broken.error.is_some());
+        assert!(broken.has_good);
 
         // Removing it is a decision, and does take effect.
         std::fs::remove_file(&path).unwrap();
         let gone = reload(&path, &loaded).expect("removal is a change");
         assert!(gone.policy.rules.is_empty());
-        assert!(!gone.present);
+        assert!(gone.stamp.is_none());
     }
 }
