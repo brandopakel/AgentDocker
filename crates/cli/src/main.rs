@@ -360,12 +360,34 @@ enum Command {
         agent: String,
     },
     /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
+    #[command(group(clap::ArgGroup::new("guided").args(["preview", "apply", "undo", "health", "list", "show"])))]
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
         runtimes: Vec<String>,
         /// Say what would change without changing it.
         #[arg(long)]
         dry_run: bool,
+        /// Save a private, reviewable plan without changing provider configuration.
+        #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health"])]
+        preview: bool,
+        /// Apply exactly this saved plan; refuse changed provider configuration.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "undo", "health"])]
+        apply: Option<String>,
+        /// Undo this plan only where its configuration is still unchanged.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health"])]
+        undo: Option<String>,
+        /// Check inventory wiring and the daemon connection; no provider/model call.
+        #[arg(long, conflicts_with = "dry_run")]
+        health: bool,
+        /// List saved plans, including interrupted setup operations.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes"])]
+        list: bool,
+        /// Show a saved plan without changing provider configuration.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes"])]
+        show: Option<String>,
+        /// Print a machine-readable plan or health report without configuration secrets.
+        #[arg(long, requires = "guided")]
+        json: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -1393,7 +1415,37 @@ async fn main() -> Result<()> {
                 .spawn()
                 .with_context(|| format!("cannot start {}", app.display()))?;
         }
-        Command::Setup { runtimes, dry_run } => setup::run(&client, &runtimes, dry_run).await?,
+        Command::Setup {
+            runtimes,
+            dry_run,
+            preview,
+            apply,
+            undo,
+            health,
+            list,
+            show,
+            json,
+        } => {
+            if preview || apply.is_some() || undo.is_some() || health || list || show.is_some() {
+                use setup::guided::Action;
+                let action = if let Some(id) = apply.as_deref() {
+                    Action::Apply(id)
+                } else if let Some(id) = undo.as_deref() {
+                    Action::Undo(id)
+                } else if let Some(id) = show.as_deref() {
+                    Action::Show(id)
+                } else if health {
+                    Action::Health
+                } else if list {
+                    Action::List
+                } else {
+                    Action::Preview
+                };
+                setup::guided::run(socket, &runtimes, action, json).await?;
+            } else {
+                setup::run(&client, &runtimes, dry_run).await?;
+            }
+        }
         Command::Run(args) => {
             let workdir = match args.workdir {
                 Some(dir) => dir,

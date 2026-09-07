@@ -83,7 +83,7 @@ enum Cmd {
     Adopt(u32),
     AdoptAll,
     Stop(String),
-    Setup(String),
+    Setup(Vec<String>),
     /// Any `agentdocker` command, so the window is not limited to the
     /// few actions that have buttons.
     Console(String),
@@ -105,11 +105,16 @@ enum Msg {
     Connected,
     Disconnected(String),
     Status(String),
+    Setup(Result<serde_json::Value, String>),
     Console(String),
 }
 
 pub struct App {
     smoke: Option<crate::smoke::Smoke>,
+    setup_plan: Option<serde_json::Value>,
+    setup_health: Option<serde_json::Value>,
+    setup_history: Vec<serde_json::Value>,
+    setup_busy: bool,
     tx: Sender<Cmd>,
     rx: Receiver<Msg>,
     screen: Screen,
@@ -182,6 +187,10 @@ impl App {
             journal_project: None,
             events: VecDeque::new(),
             smoke: None,
+            setup_plan: None,
+            setup_health: None,
+            setup_history: Vec::new(),
+            setup_busy: false,
             connected: Err("connecting…".to_owned()),
             last_seq: 0,
             status: String::new(),
@@ -214,6 +223,10 @@ impl App {
             journal_project: None,
             events: VecDeque::new(),
             smoke: None,
+            setup_plan: None,
+            setup_health: None,
+            setup_history: Vec::new(),
+            setup_busy: false,
             connected: Ok(()),
             last_seq: 0,
             status: String::new(),
@@ -299,6 +312,25 @@ impl App {
                 }
                 Msg::Disconnected(reason) => self.connected = Err(reason),
                 Msg::Status(text) => self.status = text,
+                Msg::Setup(result) => {
+                    self.setup_busy = false;
+                    match result {
+                        Ok(value) if value.get("daemon_reachable").is_some() => {
+                            self.setup_health = Some(value)
+                        }
+                        Ok(value) if value.get("plans").is_some() => {
+                            self.setup_history =
+                                value["plans"].as_array().cloned().unwrap_or_default();
+                        }
+                        Ok(value) => {
+                            self.status =
+                                format!("Setup {}", value["phase"].as_str().unwrap_or("updated"));
+                            self.setup_plan = Some(value);
+                            self.send(Cmd::Runtimes);
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
                 Msg::Console(text) => {
                     self.console_output = text;
                     self.screen = Screen::Console;
@@ -786,19 +818,135 @@ impl App {
                     let needs_setup = runtime.installed()
                         && (runtime.mcp == agentdocker_core::Wiring::Missing
                             || runtime.hooks == agentdocker_core::Wiring::Missing);
-                    if needs_setup && ui.small_button("Set up").clicked() {
+                    if needs_setup
+                        && ui
+                            .add_enabled(
+                                !self.setup_busy,
+                                egui::Button::new("Review setup").small(),
+                            )
+                            .clicked()
+                    {
                         setup = Some(runtime.name.clone());
                     }
                     ui.end_row();
                 }
             });
         if let Some(name) = setup {
-            self.send(Cmd::Setup(name));
+            self.setup_busy = true;
+            self.send(Cmd::Setup(vec![name, "--preview".into()]));
         }
         ui.add_space(8.0);
         if ui.button("Refresh").clicked() {
             self.send(Cmd::Runtimes);
         }
+        self.setup_panel(ui);
+    }
+
+    fn setup_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        if ui
+            .add_enabled(!self.setup_busy, egui::Button::new("Check connections"))
+            .clicked()
+        {
+            self.setup_busy = true;
+            self.send(Cmd::Setup(vec!["--health".into()]));
+        }
+        if ui
+            .add_enabled(!self.setup_busy, egui::Button::new("Saved setup plans"))
+            .clicked()
+        {
+            self.setup_busy = true;
+            self.send(Cmd::Setup(vec!["--list".into()]));
+        }
+        let mut selected = None;
+        for plan in &self.setup_history {
+            let id = plan["id"].as_str().unwrap_or("");
+            let phase = plan["phase"].as_str().unwrap_or("unknown");
+            if ui
+                .add_enabled(
+                    !self.setup_busy,
+                    egui::Button::new(format!(
+                        "{phase} · {}",
+                        id.chars().take(8).collect::<String>()
+                    )),
+                )
+                .clicked()
+            {
+                selected = Some(id.to_owned());
+            }
+        }
+        if let Some(id) = selected {
+            self.setup_busy = true;
+            self.send(Cmd::Setup(vec!["--show".into(), id]));
+        }
+        if self.setup_busy {
+            ui.label("Checking setup…");
+        }
+        if let Some(health) = &self.setup_health {
+            ui.label(format!(
+                "Daemon: {}",
+                health["daemon"].as_str().unwrap_or("unknown")
+            ));
+            ui.label("Configuration detection does not prove that a provider has used its connection. Start a fresh session after setup.");
+        }
+        let Some(plan) = self.setup_plan.clone() else {
+            return;
+        };
+        let phase = plan["phase"].as_str().unwrap_or("unknown");
+        ui.heading(format!("Setup: {phase}"));
+        ui.label(format!("Plan {}", plan["id"].as_str().unwrap_or("")));
+        if let Some(executable) = plan["executable"].as_str() {
+            ui.label(format!("Connect through {executable}"));
+        }
+        let changes = plan["changes"].as_array();
+        if let Some(changes) = changes {
+            for change in changes {
+                ui.label(format!(
+                    "{} · {} · {}",
+                    change["runtime"].as_str().unwrap_or(""),
+                    change["channel"].as_str().unwrap_or(""),
+                    change["path"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        if let Some(notes) = plan["notes"].as_array() {
+            for note in notes {
+                if let Some(note) = note.as_str() {
+                    ui.label(note);
+                }
+            }
+        }
+        let id = plan["id"].as_str().unwrap_or("").to_owned();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !self.setup_busy
+                        && matches!(phase, "prepared" | "applying")
+                        && changes.is_some_and(|changes| !changes.is_empty()),
+                    egui::Button::new("Apply changes"),
+                )
+                .clicked()
+            {
+                self.setup_busy = true;
+                self.send(Cmd::Setup(vec!["--apply".into(), id.clone()]));
+            }
+            if ui
+                .add_enabled(
+                    !self.setup_busy && phase != "undone",
+                    egui::Button::new("Undo this setup"),
+                )
+                .clicked()
+            {
+                self.setup_busy = true;
+                self.send(Cmd::Setup(vec!["--undo".into(), id]));
+            }
+            if ui
+                .add_enabled(!self.setup_busy, egui::Button::new("Close preview"))
+                .clicked()
+            {
+                self.setup_plan = None;
+            }
+        });
     }
 
     fn journal_screen(&mut self, ui: &mut egui::Ui) {
@@ -1054,6 +1202,7 @@ fn summary(kind: &EventKind) -> String {
 fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: egui::Context) {
     std::thread::spawn(move || {
         while let Ok(cmd) = rx.recv() {
+            let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_));
             let outcome = run(&client, cmd);
             let disconnected = outcome.is_err();
             let msg = match outcome {
@@ -1062,7 +1211,7 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
                 Err(err) => Msg::Disconnected(err.to_string()),
             };
             let _ = tx.send(msg);
-            if !disconnected {
+            if !disconnected && talks_to_daemon {
                 let _ = tx.send(Msg::Connected);
             }
             ctx.request_repaint();
@@ -1187,7 +1336,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(err) => Msg::Status(err.to_string()),
             },
         ),
-        Cmd::Setup(runtime) => Some(Msg::Status(setup(&runtime))),
+        Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Console(line) => Some(Msg::Console(console(&line))),
     })
 }
@@ -1271,35 +1420,21 @@ fn beside(name: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
-/// `agentdocker setup <runtime>`, with the CLI beside this binary: it
-/// writes the runtime's configuration, and the app shows what it said.
-fn setup(runtime: &str) -> String {
+/// Keep provider edits in the CLI; only its redacted plan/report crosses
+/// into the window. Configuration snapshots stay in private setup receipts.
+fn setup(args: &[String]) -> Result<serde_json::Value, String> {
     let cli = beside("agentdocker");
-    let Some(cli_arg) = cli.to_str() else {
-        return "CLI path is not UTF-8".into();
-    };
-    let argv = [cli_arg.to_owned(), "setup".into(), runtime.to_owned()];
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => return error.to_string(),
-    };
-    match agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(60)) {
-        Ok(output) => {
-            let text = output
-                .text
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            if output.success {
-                text
-            } else {
-                format!("Setup failed: {text}")
-            }
-        }
-        Err(err) => format!("cannot run {}: {err}", cli.display()),
+    let cli_arg = cli.to_str().ok_or("CLI path is not UTF-8")?;
+    let mut argv = vec![cli_arg.to_owned(), "setup".into()];
+    argv.extend_from_slice(args);
+    argv.push("--json".into());
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(60))
+        .map_err(|error| error.to_string())?;
+    if !output.success {
+        return Err(format!("Setup failed: {}", output.text.trim()));
     }
+    serde_json::from_str(&output.stdout).map_err(|error| format!("Invalid setup reply: {error}"))
 }
 
 fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {

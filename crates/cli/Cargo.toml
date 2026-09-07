@@ -28,5 +28,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
+uuid.workspace = true
 
 tempfile.workspace = true
