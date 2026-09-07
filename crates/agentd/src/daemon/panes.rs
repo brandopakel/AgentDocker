@@ -40,6 +40,18 @@ impl Daemon {
                  daemon has nothing to bring back",
             );
         }
+        // Every argument check first, and only then the machine. What is
+        // wrong with a request does not depend on whether tmux happens
+        // to be installed: a request with no workdir is invalid on a
+        // host with tmux and on a host without it, and answering
+        // `unavailable` there would send the caller after the wrong
+        // problem.
+        let workdir = match spec.workdir.clone() {
+            Some(dir) => dir,
+            None => {
+                return Response::error(ErrorCode::Invalid, "an agent in a pane needs a workdir");
+            }
+        };
         // Probing tmux runs a process and waits for it, so it does not
         // belong on a runtime worker. Asked before the record exists, so
         // "tmux is too old" is never reported as a failed agent.
@@ -53,12 +65,6 @@ impl Daemon {
                 );
             }
         }
-        let workdir = match spec.workdir.clone() {
-            Some(dir) => dir,
-            None => {
-                return Response::error(ErrorCode::Invalid, "an agent in a pane needs a workdir");
-            }
-        };
 
         // The record first, so the child can be told its own id — the
         // same order `run` uses, and for the same reason.

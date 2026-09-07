@@ -5428,6 +5428,9 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Deliberately not skipped where tmux is absent: whether a request
+    /// is well formed does not depend on the machine, and CI proved the
+    /// point by failing here when the tmux probe ran first.
     async fn a_pane_agent_needs_a_workdir_for_tmux_to_start_in() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
