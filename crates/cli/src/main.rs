@@ -6,6 +6,7 @@ mod client;
 mod format;
 mod hooks;
 mod mcp;
+mod rtk;
 mod service;
 mod setup;
 mod teams;
@@ -80,6 +81,21 @@ enum Command {
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
+    },
+    /// Commit this agent's checkout, journaled and attributed to it
+    Commit {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+        #[arg(short, long)]
+        #[arg(help = "The commit message.")]
+        message: String,
+        #[arg(short, long)]
+        #[arg(help = "Stage tracked modifications and deletions first, as `git commit -a` does.")]
+        all: bool,
+        #[arg(long)]
+        #[arg(help = "Push the branch to its upstream once the commit is made.")]
+        push: bool,
     },
     /// Show tracked changes in this agent's checkout.
     WorktreeDiff {
@@ -399,6 +415,19 @@ enum Command {
         /// Lines to replay first; 0 for all.
         #[arg(long, default_value_t = 100)]
         tail: usize,
+        /// Show a compressed view through rtk, where it is installed. The
+        /// retained log itself is never altered.
+        #[arg(long, conflicts_with = "follow")]
+        compress: bool,
+    },
+    /// Show the retained log of one validation, as evidence or compressed
+    Validation {
+        /// The validation id, from `validate` or `validations`.
+        id: String,
+        /// Show a compressed view through rtk, where it is installed. The
+        /// retained log itself is never altered.
+        #[arg(long)]
+        compress: bool,
     },
     /// Report that an agent is alive.
     Heartbeat {
@@ -1046,6 +1075,36 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Command::Commit {
+            agent,
+            message,
+            all,
+            push,
+        } => {
+            let response = client
+                .call(&Request::Commit {
+                    agent,
+                    message,
+                    all,
+                    push,
+                })
+                .await?;
+            if let Response::Committed {
+                head,
+                branch,
+                files,
+                pushed,
+            } = response
+            {
+                let short: String = head.chars().take(7).collect();
+                let where_ = branch.unwrap_or_else(|| "a detached HEAD".to_owned());
+                println!(
+                    "{short} on {where_}, {files} file{}{}",
+                    if files == 1 { "" } else { "s" },
+                    if pushed { ", pushed" } else { "" }
+                );
+            }
+        }
         Command::WorktreeCreate {
             agent,
             path,
@@ -1507,20 +1566,54 @@ async fn main() -> Result<()> {
             agent,
             follow,
             tail,
+            compress,
         } => {
             let request = Request::Logs {
                 agent,
                 follow,
                 tail,
             };
+            // Collected before it is shown, when a view is wanted: a
+            // compressor needs the whole text, which is also why
+            // --compress and --follow cannot both be asked for.
+            let mut collected = String::new();
             client
                 .stream(&request, |response| {
                     if let Response::Log { line } = response {
-                        println!("{line}");
+                        if compress {
+                            collected.push_str(&line);
+                            collected.push('\n');
+                        } else {
+                            println!("{line}");
+                        }
                     }
                     Ok(true)
                 })
                 .await?;
+            if compress {
+                show(&rtk::view(&collected));
+            }
+        }
+        Command::Validation { id, compress } => {
+            let response = client
+                .call(&Request::Validations {
+                    agent: String::new(),
+                })
+                .await?;
+            let Response::Validations { validations } = response else {
+                bail!("unexpected response");
+            };
+            let found = validations
+                .iter()
+                .find(|v| v.id == id || v.id.starts_with(&id))
+                .with_context(|| format!("no validation matching {id}"))?;
+            let log = std::fs::read_to_string(&found.log)
+                .with_context(|| format!("cannot read {}", found.log.display()))?;
+            if compress {
+                show(&rtk::view(&log));
+            } else {
+                print!("{log}");
+            }
         }
         Command::Heartbeat { agent } => {
             client.call(&Request::Heartbeat { agent }).await?;
@@ -2482,6 +2575,18 @@ fn desktop_app() -> Option<PathBuf> {
                     .find(|candidate| candidate.is_file())
             })
         })
+}
+
+/// Print a view, and say what it is when that is not obvious. The note
+/// goes to stderr so a piped view is only the text.
+fn show(view: &rtk::View) {
+    print!("{}", view.text());
+    if !view.text().ends_with('\n') {
+        println!();
+    }
+    if let Some(note) = view.note() {
+        eprintln!("{note}");
+    }
 }
 
 fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {

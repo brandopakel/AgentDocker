@@ -37,6 +37,15 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    /// An agent committed its checkout through the daemon.
+    Committed {
+        agent: crate::AgentId,
+        head: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        files: usize,
+        pushed: bool,
+    },
     WorktreeCleanup {
         agent: crate::AgentId,
         path: std::path::PathBuf,

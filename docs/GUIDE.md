@@ -225,7 +225,8 @@ the flags.
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `inspect <agent>` | Everything known about one agent, as JSON |
-| `logs <agent>` | An agent's captured output; `-f` to follow |
+| `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
+| `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
 | `events` | The daemon's event stream |
 | `ping` | Check the daemon is reachable |
 
@@ -280,6 +281,7 @@ the flags.
 |---|---|
 | `worktree-create` | A new linked checkout and branch, without touching existing files |
 | `worktree-diff` | Tracked changes in an agent's checkout |
+| `commit` | Commit the agent's checkout, journaled and attributed to it |
 | `validate` | Run a check and retain its command, log and content fingerprints |
 | `validations` | Retained validation evidence |
 | `integrate` | Preview or prepare an uncommitted merge of validated source |
@@ -338,7 +340,8 @@ about us:
 `read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
 `overlap`
 
-`create_worktree` · `worktree_diff` · `integrate_worktree` · `validate`
+`create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
+`validate`
 
 `save_checkpoint` · `list_checkpoints` · `resume_checkpoint` · `handoff` ·
 `list_handoffs`
@@ -414,6 +417,43 @@ The receiving agent gets the checkpoint, the leases, what was read, what
 changed since, the diff, unread messages and the journal — not just a
 sentence about where things stand.
 
+### Commit an agent's work so the journal knows whose it was
+
+```sh
+agentdocker commit --as codex-27221 --all -m "rewrite the router"
+agentdocker journal --kind commit
+```
+
+The daemon commits the checkout and writes the journal entry itself, so
+the entry names the agent that asked and carries the message it wrote.
+Without this the watcher still notices HEAD moved and writes a `commit`
+entry — but it has to guess whose it was, from the only agent in the
+checkout or whoever holds the `branch:` lease, and it can only summarise
+a sha.
+
+Nothing goes into the commit itself. The git author is whoever git is
+configured as, and no trailer is added: it is your repository, and which
+agent typed it is our record to keep, not a change to your history.
+
+Add `--push` to push afterwards. A push that fails leaves the commit —
+losing the work to tidy up a failed push would be the wrong trade.
+
+### Read a long log without paying for all of it
+
+```sh
+agentdocker logs codex-27221 --compress
+agentdocker validation a1b2c3 --compress
+```
+
+Where [rtk](https://github.com/rtk-ai/rtk) is installed, this pipes a
+copy of the retained log through it and shows what came back. Where it
+is not — or where it fails — you get the whole log and a line saying
+why.
+
+The log on disk is never rewritten. A validation log is evidence:
+`integrate` refuses source that has not passed, and the log is how
+somebody checks that claim later. Evidence is kept whole.
+
 ### Replace the daemon without disturbing anything
 
 ```sh
@@ -442,6 +482,10 @@ Newest first. Only what changes how the product is used.
   raw stream.
 - `daemon reload` reports a replacement that cannot start, instead of
   waiting for it forever.
+- `agentdocker commit` — an agent commits its checkout through the
+  daemon, so the journal entry names it and carries its message.
+- `logs --compress` and `validation <id> --compress` — an rtk view of a
+  retained log, where rtk is installed. The log itself is untouched.
 - Agents are grouped and coloured by project throughout the app.
 - A Settings screen: terminal palette, text sizes, and row density,
   applied to the console and the agent terminal alike and remembered

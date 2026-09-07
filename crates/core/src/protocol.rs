@@ -50,6 +50,20 @@ pub enum Request {
     WorktreeDiff {
         agent: String,
     },
+    /// Commit an agent's checkout through the daemon, so the act is
+    /// journaled against the agent that asked for it rather than guessed
+    /// afterwards from a HEAD that moved.
+    Commit {
+        agent: String,
+        message: String,
+        /// Stage tracked modifications and deletions first, as `-a` does.
+        /// Without it only what is already staged is committed.
+        #[serde(default)]
+        all: bool,
+        /// Push the branch to its upstream once the commit is made.
+        #[serde(default)]
+        push: bool,
+    },
     Integrate {
         agent: String,
         source: String,
@@ -666,6 +680,17 @@ pub enum Response {
     },
     Diff {
         text: String,
+    },
+    Committed {
+        /// The commit that was made.
+        head: String,
+        /// The branch it was made on, when the checkout is on one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// How many paths it carries.
+        files: usize,
+        /// Whether the branch was pushed, which only `push` asks for.
+        pushed: bool,
     },
     Integration {
         source_head: String,

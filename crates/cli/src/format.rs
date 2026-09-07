@@ -252,6 +252,24 @@ pub fn event_line(event: &Event) -> String {
         EventKind::WorktreeCreated { agent, path } => {
             format!("{agent} created worktree {}", path.display())
         }
+        EventKind::Committed {
+            agent,
+            head,
+            branch,
+            files,
+            pushed,
+        } => {
+            let short: String = head.chars().take(7).collect();
+            format!(
+                "{agent} committed {short}{} ({files} file{}){}",
+                branch
+                    .as_ref()
+                    .map(|b| format!(" on {b}"))
+                    .unwrap_or_default(),
+                if *files == 1 { "" } else { "s" },
+                if *pushed { ", pushed" } else { "" }
+            )
+        }
         EventKind::WorktreeCleanup {
             agent,
             path,

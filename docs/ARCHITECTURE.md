@@ -169,6 +169,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 |---|---|---|
 | `worktree_create {agent, path, branch}` | `worktree {path, branch}` | host-only; new linked checkout at HEAD |
 | `worktree_diff {agent}` | `diff {text}` | host-only tracked diff |
+| `commit {agent, message, all?, push?}` | `committed {head, branch?, files, pushed}` | host-only; commits the agent's checkout and journals it against that agent. `all` stages tracked modifications first; `push` pushes afterwards. Nothing is written into the commit itself — the git author is unchanged and no trailer is added |
 | `integrate {agent, source, validation, apply?}` | `integration {source_head, applied, clean, text}` | validated source; apply leaves merge uncommitted and target lease held |
 | `grant_access {agent, container_root, ttl_secs?}` | `access {grant, token, socket, expires_at}` | host-only; TTL 1–86400 seconds, default 3600; CLI writes token privately and prints grant ID |
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
@@ -632,7 +633,7 @@ Registered, not supervised — that division is the whole design, and it decides
 
 Everything an agent reads from us costs it input tokens, and an agent reads `ps`, `journal`, `stale` and `channels` many times per session. [rtk](https://github.com/rtk-ai/rtk) compresses *shell* output before an agent sees it, which is real but orthogonal: our MCP results never pass through a shell, so nothing outside AgentDocker can shrink them. Measured on one developer machine, a single agent record is 709 bytes pretty-printed, 577 compact, and 418 carrying only the fields an agent uses.
 
-Row 26 therefore makes our own output lean, and the first half is done: MCP tool results are compact JSON rather than pretty-printed, and `whoami`, `inspect_agent`, `list_agents`, `list_leases` and `list_channels` answer with a projection — for an agent, its id, name, runtime, status, project and branch, not the pid, process group, host and four timestamps the daemon keeps for itself — with `verbose: true` to opt back into the whole record. Absent fields are omitted rather than sent as `null`. The CLI keeps its tables, which are for humans. Where we run somebody else's command (`validate`, worktree diffs) and rtk is installed, we can offer a compressed *view* of a retained log — never a compressed log, because a validation log is evidence and evidence is kept whole.
+Row 26 therefore makes our own output lean, and it is done: MCP tool results are compact JSON rather than pretty-printed, and `whoami`, `inspect_agent`, `list_agents`, `list_leases` and `list_channels` answer with a projection — for an agent, its id, name, runtime, status, project and branch, not the pid, process group, host and four timestamps the daemon keeps for itself — with `verbose: true` to opt back into the whole record. Absent fields are omitted rather than sent as `null`. The CLI keeps its tables, which are for humans. Where we run somebody else's command and rtk is installed, `logs --compress` and `validation <id> --compress` offer a compressed *view* of a retained log — never a compressed log, because a validation log is evidence and evidence is kept whole. The file on disk is not touched, and a host without rtk, or an rtk that fails, gets the whole log and a line saying why.
 
 #### Derived activity
 
@@ -661,7 +662,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 8 | ✅ durable content read sets (`observe`, `reads`, `stale`), notices, hook denial until reread | 3 | 7 |
 | 9a | ✅ change journal: entries, schema with FTS, release barrier and same-transaction write path, join/leave/commit/note entries, ring cache, `journal` CLI, `release --summary`, MCP `summary` and `journal_note` | 3 | 7 |
 | 9b | ✅ change journal: cursors seeded by name, digests with budgets, `SessionStart`/`UserPromptSubmit` injection, transcript-tail summaries on `Stop`, MCP `read_journal` | 3 | 9a |
-| 10 | 🔄 `run --isolate` ✅, `worktree-diff` ✅, `overlap` ✅; `commit` (an agent committing its worktree through the daemon, so the act is journaled and attributed) is not built | 4 | 7 |
+| 10 | ✅ `run --isolate`, `worktree-diff`, `overlap`, and `commit`: an agent commits its checkout through the daemon, so the entry names the agent that asked and carries the message it wrote, instead of the watcher guessing afterwards from a HEAD that moved. The checkout is marked while the commit is in flight so the watcher does not also write its own | 4 | 7 |
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | ✅ scoped tokens, Docker/Podman builds and supervision, authenticated workspaces, engine-volume relay and image-bound validation | 4 | 3 |
 | 13 | ✅ FIFO wait queue with RAII places, pure deadlock search over the lease and wait tables, `error(deadlock)` with the cycle, `waiting` | 5 | — |
@@ -680,9 +681,9 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | ✅ multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover`; `run --in-pane` starts an agent in a new tmux session and registers what tmux started, so the human attaches with the tool that owns the terminal | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said; both draw on a chosen terminal palette, with text sizes and row density, kept in `ui.json` per home | 5 | 19, 23 |
-| 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
+| 26 | ✅ token-lean output: compact MCP results with projections and a `verbose` opt-in; `logs --compress` and `validation <id> --compress` pipe a copy of a retained log through rtk where it is installed, and fall back to the whole log with a reason where it is not. The retained log is never rewritten | 5 | — |
 
-Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): correct the restore and privacy defects it lists, complete the local native trial and desktop packaging, then deliver Linux desktop and Windows parity. Policy and quotas (15), supervision policy (16) and the descriptor handoff (28) are now built; what remains after the trial is the `commit` half of 10, the rtk-compressed log view (26), Windows (20) and federation (17).
+Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): correct the restore and privacy defects it lists, complete the local native trial and desktop packaging, then deliver Linux desktop and Windows parity. Policy and quotas (15), supervision policy (16), the descriptor handoff (28), `commit` (10) and the rtk view (26) are now built. What remains is Windows (20) and federation (17), both of them platform work rather than product work: 20 is named pipes, a Windows service and process inspection, and 17 depends on it.
 
 ### Planned protocol and event additions
 

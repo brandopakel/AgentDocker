@@ -201,6 +201,11 @@ struct State {
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
+    /// Checkouts the daemon is committing in right now. The watcher polls
+    /// on its own schedule and will see HEAD move part-way through, so
+    /// without this it writes its own guessed-at entry for a commit the
+    /// daemon is about to record properly.
+    committing: std::collections::BTreeSet<PathBuf>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -780,6 +785,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 last_head: HashMap::new(),
+                committing: std::collections::BTreeSet::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
@@ -910,6 +916,12 @@ impl Daemon {
                 branch,
             } => self.worktree_create(&agent, path, branch).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
+            Request::Commit {
+                agent,
+                message,
+                all,
+                push,
+            } => self.commit(&agent, message, all, push).await,
             Request::Integrate {
                 agent,
                 source,
@@ -3264,6 +3276,12 @@ impl State {
             return;
         }
         self.last_head.insert(checkout.clone(), head.clone());
+        if self.committing.contains(&checkout) {
+            // The daemon is making this commit itself and will record it
+            // against the agent that asked. `last_head` is updated above,
+            // so the move is not noticed twice either.
+            return;
+        }
         if old.is_none() {
             return; // first observation, not a move
         }
@@ -6089,6 +6107,243 @@ deny = ["send:all"]
             })
             .await;
         assert!(matches!(response, Response::Lease { .. }), "{response:?}");
+    }
+
+    // ----- commit ----------------------------------------------------------
+
+    /// Set up a repository with one commit and an agent registered in
+    /// it, with a git identity local to the repository so the test does
+    /// not depend on the machine having one.
+    async fn repo_with_agent(dir: &TempDir, name: &str) -> (Arc<Daemon>, PathBuf) {
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "root"],
+        ] {
+            assert!(git(dir.path(), &repo, &args), "{args:?}");
+        }
+        let daemon = open(dir);
+        register_in(&daemon, name, &repo).await;
+        (daemon, repo)
+    }
+
+    async fn commit(daemon: &Arc<Daemon>, agent: &str, message: &str, all: bool) -> Response {
+        daemon
+            .handle(Request::Commit {
+                agent: agent.into(),
+                message: message.into(),
+                all,
+                push: false,
+            })
+            .await
+    }
+
+    /// The point of the whole request. The watcher already writes a
+    /// `commit` entry when it sees HEAD move, but it has to guess whose
+    /// it was and can only synthesise a summary from the sha. Going
+    /// through the daemon means the agent that asked is the agent
+    /// recorded, with the message it actually wrote.
+    #[tokio::test]
+    async fn a_commit_through_the_daemon_is_attributed_and_carries_its_message() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+
+        let Response::Committed {
+            head,
+            branch,
+            files,
+            pushed,
+        } = commit(&daemon, "writer", "teach the parser about dashes", false).await
+        else {
+            panic!("commit failed");
+        };
+        assert_eq!(files, 1);
+        assert!(!pushed, "nothing asked for a push");
+        assert_eq!(branch.as_deref(), Some("main"));
+        assert_eq!(head.len(), 40, "a full sha: {head}");
+
+        let Response::Journal { entries, .. } = daemon
+            .handle(Request::Journal {
+                project: repo.display().to_string(),
+                agent: Some("writer".into()),
+                since_seq: None,
+                until_seq: None,
+                branch: None,
+                kind: Some("commit".into()),
+                path: None,
+                grep: None,
+                limit: 10,
+                digest: None,
+            })
+            .await
+        else {
+            panic!("journal failed")
+        };
+        assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry.agent_name, "writer", "attributed, not guessed");
+        assert!(
+            entry.summary.contains("teach the parser about dashes"),
+            "the agent's own message, not a summary of the sha: {}",
+            entry.summary
+        );
+        assert_eq!(entry.head_after.as_ref(), Some(&head));
+        assert_eq!(entry.branch.as_deref(), Some("main"));
+        assert!(
+            daemon.recent_events(200).iter().any(|e| matches!(
+                &e.kind,
+                EventKind::Committed { agent, files: 1, .. } if agent.as_str() == entry.agent.as_ref().unwrap().as_str()
+            )),
+            "the state change is an event"
+        );
+    }
+
+    /// A watcher running alongside must not add a second `commit` entry
+    /// for the same move a moment later, attributed by guesswork.
+    #[tokio::test]
+    async fn the_watcher_does_not_double_up_on_a_commit_the_daemon_made() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_millis(50),
+        ));
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let Response::Committed { .. } = commit(&daemon, "writer", "one change", false).await
+        else {
+            panic!("commit failed");
+        };
+        // Long enough for the watcher to have looked several times.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let Response::Journal { entries, .. } = daemon
+            .handle(Request::Journal {
+                project: repo.display().to_string(),
+                agent: None,
+                since_seq: None,
+                until_seq: None,
+                branch: None,
+                kind: Some("commit".into()),
+                path: None,
+                grep: None,
+                limit: 10,
+                digest: None,
+            })
+            .await
+        else {
+            panic!("journal failed")
+        };
+        assert_eq!(entries.len(), 1, "one commit, one entry: {entries:?}");
+    }
+
+    #[tokio::test]
+    async fn a_commit_with_nothing_in_it_is_refused() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+
+        // Nothing at all.
+        let refused = commit(&daemon, "writer", "empty", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, .. } if *code == ErrorCode::Conflict),
+            "{refused:?}"
+        );
+
+        // Changed but unstaged is still nothing, without --all: an agent
+        // that meant to commit everything must say so.
+        std::fs::write(repo.join("kept.txt"), "changed\n").unwrap();
+        let refused = commit(&daemon, "writer", "unstaged", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, message, .. }
+                if *code == ErrorCode::Conflict && message.contains("--all")),
+            "{refused:?}"
+        );
+
+        // And with --all it goes in.
+        let Response::Committed { files, .. } = commit(&daemon, "writer", "with all", true).await
+        else {
+            panic!("commit failed");
+        };
+        assert_eq!(files, 1);
+    }
+
+    /// A message beginning with a dash is a message. Passing it as
+    /// `--message=<text>` or positionally would make git read it as a
+    /// flag and fail, or worse, succeed at something else.
+    #[tokio::test]
+    async fn a_message_that_looks_like_a_flag_is_still_a_message() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let Response::Committed { head, .. } =
+            commit(&daemon, "writer", "--amend is not what I meant", false).await
+        else {
+            panic!("commit failed");
+        };
+        let subject = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["log", "-1", "--format=%s", &head])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            "--amend is not what I meant"
+        );
+        // And it is one commit on top of the root, not an amended root.
+        let count = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    }
+
+    /// Committing is an action a policy can refuse, like any other.
+    #[tokio::test]
+    async fn a_policy_can_refuse_a_commit() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        std::fs::write(
+            dir.path().join("policy.toml"),
+            "[[rule]]\nname = \"no commits\"\ndeny = [\"commit:**\"]\n",
+        )
+        .unwrap();
+        daemon.reload_policies();
+        std::fs::write(repo.join("new.txt"), "two\n").unwrap();
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        let refused = commit(&daemon, "writer", "blocked", false).await;
+        assert!(
+            matches!(&refused, Response::Error { code, message, .. }
+                if *code == ErrorCode::Forbidden && message.contains("no commits")),
+            "{refused:?}"
+        );
     }
 
     // ----- daemon reload --------------------------------------------------
