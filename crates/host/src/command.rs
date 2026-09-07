@@ -140,11 +140,47 @@ mod tests {
 mod windows_tests {
     use super::*;
 
-    fn powershell() -> String {
-        Path::new(&std::env::var_os("SystemRoot").expect("Windows system directory"))
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe")
-            .to_string_lossy()
-            .into_owned()
+    fn fixture(name: &str) -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".into(),
+            format!("command::windows_tests::{name}"),
+            "--ignored".into(),
+            "--nocapture".into(),
+        ]
+    }
+
+    // These are child entry points invoked by the acceptance test below. They
+    // exercise native Rust process startup, independent of PowerShell cold start.
+    #[test]
+    #[ignore = "fixture subprocess, invoked by timeout_terminates_the_owned_descendant_and_output_is_bounded"]
+    fn job_descendant_fixture() {
+        if std::env::var_os("AGENTDOCKER_TEST_JOB_DESCENDANT").is_none() {
+            std::fs::write("phase", "entered").unwrap();
+            let argv = fixture("job_descendant_fixture");
+            let mut child = Command::new(&argv[0])
+                .args(&argv[1..])
+                .env("AGENTDOCKER_TEST_JOB_DESCENDANT", "1")
+                .spawn()
+                .unwrap();
+            std::fs::write("descendant.pid", child.id().to_string()).unwrap();
+            child.wait().unwrap();
+        } else {
+            std::fs::write("descendant-ready", "running").unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    #[test]
+    #[ignore = "fixture subprocess, invoked by timeout_terminates_the_owned_descendant_and_output_is_bounded"]
+    fn excessive_output_fixture() {
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(&vec![b'x'; 5 * 1024 * 1024])
+            .unwrap();
     }
 
     #[test]
@@ -152,19 +188,7 @@ mod windows_tests {
         let temporary = tempfile::tempdir().unwrap();
         let marker = temporary.path().join("descendant.pid");
         let phase = temporary.path().join("phase");
-        let script = format!(
-            "Set-Content -LiteralPath '{}' -Value entered; $ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep 30' -PassThru -NoNewWindow; Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep 30",
-            phase.display().to_string().replace('\'', "''"),
-            powershell().replace('\'', "''"),
-            marker.display().to_string().replace('\'', "''")
-        );
-        let argv = vec![
-            powershell(),
-            "-NoProfile".into(),
-            "-NonInteractive".into(),
-            "-Command".into(),
-            script,
-        ];
+        let argv = fixture("job_descendant_fixture");
         let result = run(temporary.path(), &argv, Duration::from_secs(5));
         match result {
             Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
@@ -173,7 +197,7 @@ mod windows_tests {
         let pid: u32 = std::fs::read_to_string(&marker)
             .unwrap_or_else(|error| {
                 panic!(
-                    "descendant marker unavailable: {error}; PowerShell phase={:?}",
+                    "descendant marker unavailable: {error}; native fixture phase={:?}",
                     std::fs::read_to_string(&phase)
                 )
             })
@@ -184,15 +208,13 @@ mod windows_tests {
             crate::procinfo::start_time(pid).is_none(),
             "owned job descendant survived cancellation"
         );
+        assert!(
+            temporary.path().join("descendant-ready").exists(),
+            "the descendant actually executed before cancellation"
+        );
         let output = run(
             temporary.path(),
-            &[
-                powershell(),
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                "[Console]::Out.Write('x' * (5 * 1024 * 1024))".into(),
-            ],
+            &fixture("excessive_output_fixture"),
             Duration::from_secs(10),
         );
         assert!(
