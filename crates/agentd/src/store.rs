@@ -19,7 +19,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 // v8 makes restore points durable launch intent (including Created records).
 // Older daemons must not reinterpret these records as failed initial launches.
-const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (

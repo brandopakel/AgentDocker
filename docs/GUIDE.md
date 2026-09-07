@@ -482,15 +482,14 @@ The log on disk is never rewritten. A validation log is evidence:
 `integrate` refuses source that has not passed, and the log is how
 somebody checks that claim later. Evidence is kept whole.
 
-### Replace the daemon without disturbing anything
+### Planned daemon replacement
 
-```sh
-agentdocker daemon reload
-```
-
-The running daemon starts its replacement, hands over the agents'
-terminals over a private socket, and leaves without stopping a single
-agent. Use it after an upgrade.
+`agentdocker daemon reload` currently returns `unavailable` and leaves the
+current daemon and agents running. The previous descriptor-only implementation
+killed real batch and PTY fixtures during runtime shutdown. Safe process and I/O
+transfer, successor readiness and upgrade-binary selection remain delivery
+blockers. Do not use ordinary daemon stop/start as a seamless upgrade: stopping
+terminates managed agents.
 
 ---
 
@@ -520,8 +519,8 @@ Newest first. Only what changes how the product is used.
   accumulates.
 - The Events screen is gone. `agentdocker events` is the place for the
   raw stream.
-- `daemon reload` reports a replacement that cannot start, instead of
-  waiting for it forever.
+- `daemon reload` refuses replacement until live process and I/O continuity
+  and successor readiness have passed actual daemon acceptance tests.
 - `agentdocker commit` — an agent commits its checkout through the
   daemon, so the journal entry names it and carries its message.
 - `logs --compress` and `validation <id> --compress` — an rtk view of a

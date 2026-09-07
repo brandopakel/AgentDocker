@@ -48,10 +48,11 @@ enum Screen {
     Journal,
     Leases,
     Settings,
+    Desktop,
 }
 
 impl Screen {
-    const ALL: [Screen; 8] = [
+    const ALL: [Screen; 9] = [
         Screen::Agents,
         Screen::Questions,
         Screen::Terminal,
@@ -60,6 +61,7 @@ impl Screen {
         Screen::Journal,
         Screen::Leases,
         Screen::Settings,
+        Screen::Desktop,
     ];
 
     fn title(self) -> &'static str {
@@ -72,6 +74,7 @@ impl Screen {
             Screen::Journal => "Journal",
             Screen::Leases => "Leases",
             Screen::Settings => "Settings",
+            Screen::Desktop => "Installation",
         }
     }
 }
@@ -92,6 +95,7 @@ enum Cmd {
     AdoptAll,
     Stop(String),
     Setup(Vec<String>),
+    Desktop(Vec<String>),
     /// Any `agentdocker` command, so the window is not limited to the
     /// few actions that have buttons.
     Console(String),
@@ -114,10 +118,12 @@ enum Msg {
     Disconnected(String),
     Status(String),
     Setup(Result<serde_json::Value, String>),
+    Desktop(Result<serde_json::Value, String>),
     Console(String),
 }
 
 pub struct App {
+    desktop: crate::desktop::Panel,
     smoke: Option<crate::smoke::Smoke>,
     setup_plan: Option<serde_json::Value>,
     setup_health: Option<serde_json::Value>,
@@ -202,6 +208,7 @@ impl App {
             let _ = cmd_tx.send(cmd);
         }
         Self {
+            desktop: Default::default(),
             tx: cmd_tx,
             rx: msg_rx,
             screen: Screen::Agents,
@@ -244,6 +251,7 @@ impl App {
     #[cfg(test)]
     fn bare(tx: Sender<Cmd>, rx: Receiver<Msg>) -> Self {
         Self {
+            desktop: Default::default(),
             tx,
             rx,
             screen: Screen::Agents,
@@ -350,6 +358,7 @@ impl App {
                 }
                 Msg::Disconnected(reason) => self.connected = Err(reason),
                 Msg::Status(text) => self.status = text,
+                Msg::Desktop(result) => self.desktop.receive(result),
                 Msg::Setup(result) => {
                     self.setup_busy = false;
                     match result {
@@ -1627,6 +1636,11 @@ impl eframe::App for App {
                     Screen::Journal => self.journal_screen(ui),
                     Screen::Leases => self.leases_screen(ui),
                     Screen::Settings => self.settings_screen(ui),
+                    Screen::Desktop => {
+                        if let Some(args) = self.desktop.show(ui) {
+                            self.send(Cmd::Desktop(args));
+                        }
+                    }
                 });
         });
         if let Some(smoke) = &mut self.smoke {
@@ -1678,7 +1692,16 @@ fn span(secs: i64) -> String {
 fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: egui::Context) {
     std::thread::spawn(move || {
         while let Ok(cmd) = rx.recv() {
-            let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_));
+            if let Cmd::Desktop(args) = cmd {
+                let tx = tx.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Msg::Desktop(desktop(&args)));
+                    ctx.request_repaint();
+                });
+                continue;
+            }
+            let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_) | Cmd::Desktop(_));
             let outcome = run(&client, cmd);
             let disconnected = outcome.is_err();
             let msg = match outcome {
@@ -1813,6 +1836,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             },
         ),
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
+        Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::Console(line) => Some(Msg::Console(console(&line))),
     })
 }
@@ -1911,6 +1935,24 @@ fn setup(args: &[String]) -> Result<serde_json::Value, String> {
         return Err(format!("Setup failed: {}", output.text.trim()));
     }
     serde_json::from_str(&output.stdout).map_err(|error| format!("Invalid setup reply: {error}"))
+}
+
+/// Copying and OS signature verification run separately from socket refreshes.
+fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
+    let cli = beside("agentdocker");
+    let mut argv = vec![
+        cli.to_str().ok_or("CLI path is not UTF-8")?.to_owned(),
+        "desktop".into(),
+    ];
+    argv.extend_from_slice(args);
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(600))
+        .map_err(|error| error.to_string())?;
+    if !output.success {
+        return Err(format!("Installation failed: {}", output.text.trim()));
+    }
+    serde_json::from_str(&output.stdout)
+        .map_err(|error| format!("Invalid installation reply: {error}"))
 }
 
 fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
