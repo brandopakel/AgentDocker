@@ -2824,11 +2824,12 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        // A failed liveness write must stop the operation before queue removal.
+        self.touch(&id);
         let messages = match self.read_inbox(&id, drain) {
             Ok(messages) => messages,
             Err(error) => return *error,
         };
-        self.touch(&id);
         Response::Messages { messages }
     }
 
@@ -5726,6 +5727,49 @@ mod tests {
                 assert!(events.try_recv().is_err());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn failed_inbox_touch_does_not_acknowledge_messages() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain after failed touch"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_agent_writes_for_test();
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Inbox {
+                agent: "receiver".into(),
+                drain: true,
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

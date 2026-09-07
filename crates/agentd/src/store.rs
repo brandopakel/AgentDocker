@@ -396,6 +396,16 @@ impl Store {
     }
 
     #[cfg(test)]
+    pub(crate) fn reject_agent_writes_for_test(&self) {
+        self.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_agent_write BEFORE INSERT ON agents
+            BEGIN SELECT RAISE(FAIL, 'injected agent write failure'); END;",
+            )
+            .unwrap();
+    }
+
+    #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
