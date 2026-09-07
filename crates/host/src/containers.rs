@@ -283,9 +283,20 @@ fn create_args(record: &AgentRecord) -> Vec<String> {
                     if w.read_only { ",readonly" } else { "" }
                 ),
             ]);
-            let directory = Path::new("/run/agentdocker-git").join(&g.directory);
+            // This is a Linux container path even when the host is Windows.
+            let relative = g
+                .directory
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            let directory = if relative.is_empty() {
+                "/run/agentdocker-git".to_owned()
+            } else {
+                format!("/run/agentdocker-git/{relative}")
+            };
             args.extend([
-                format!("--env=GIT_DIR={}", directory.display()),
+                format!("--env=GIT_DIR={directory}"),
                 "--env=GIT_COMMON_DIR=/run/agentdocker-git".into(),
                 "--env=GIT_WORK_TREE=/workspace".into(),
             ]);

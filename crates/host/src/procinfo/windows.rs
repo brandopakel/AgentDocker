@@ -139,7 +139,16 @@ mod tests {
         let first = start_time(pid).unwrap();
         assert_eq!(start_time(pid), Some(first));
         assert!(first <= Utc::now());
-        assert_eq!(inspect(pid).unwrap().pid, pid);
+        let (system, me) = snapshot(Some(pid)).expect("same-user snapshot");
+        let process = system.process(me).expect("own PID in snapshot");
+        assert!(
+            !process.cmd().is_empty(),
+            "own process fields: owner={}, executable={}, cwd={}",
+            process.user_id().is_some(),
+            process.exe().is_some(),
+            process.cwd().is_some()
+        );
+        assert_eq!(inspect(pid).expect("own command line available").pid, pid);
         assert!(
             processes()
                 .unwrap()
