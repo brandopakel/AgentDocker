@@ -84,6 +84,68 @@ fn rpc(socket: &Path, request: Value) -> std::io::Result<Value> {
 }
 
 #[test]
+fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
+    let tmp = tempfile::Builder::new()
+        .prefix("ad-reload-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let home = root.join("state");
+    let socket = root.join("host.sock");
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let mut daemon = RunningDaemon::start(&home, &socket);
+    let mut agents = Vec::new();
+    for tty in [false, true] {
+        let name = if tty { "terminal" } else { "batch" };
+        let script = format!(
+            "printf '{name}-before\\n'; while ! test -f {name}-go; do sleep 0.05; done; \
+             printf '{name}-after\\n'; printf survived > {name}-survived; exec sleep 30"
+        );
+        let response = rpc(
+            &socket,
+            json!({"op":"run", "spec": {
+                "name":name, "workdir":work, "tty":tty, "command":["sh", "-c", script]
+            }}),
+        )
+        .unwrap();
+        assert_eq!(response["type"], "agent", "{response}");
+        let id = response["agent"]["id"].as_str().unwrap().to_owned();
+        let log = home.join("logs").join(format!("{id}.log"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::fs::read_to_string(&log)
+            .is_ok_and(|text| text.contains(&format!("{name}-before")))
+        {
+            assert!(Instant::now() < deadline, "fixture never produced output");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        agents.push((name, id, response["agent"]["pid"].clone(), log));
+    }
+    let response = rpc(&socket, json!({"op":"reload"})).unwrap();
+    assert_eq!(response["type"], "error", "{response}");
+    assert_eq!(response["code"], "unavailable", "{response}");
+    assert!(daemon.child.try_wait().unwrap().is_none());
+    for (name, id, pid, log) in agents {
+        std::fs::write(work.join(format!("{name}-go")), b"").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !work.join(format!("{name}-survived")).exists()
+            || !std::fs::read_to_string(&log)
+                .is_ok_and(|text| text.contains(&format!("{name}-after")))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{name} lost execution or logging"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let inspected = rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap();
+        assert_eq!(inspected["agent"]["pid"], pid);
+        assert_eq!(inspected["agent"]["status"]["state"], "running");
+    }
+    daemon.stop();
+}
+
+#[test]
 fn restored_first_instruction_can_coordinate_and_its_first_edit_is_observed() {
     let tmp = tempfile::Builder::new()
         .prefix("ad-restore-")

@@ -214,7 +214,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `overlap {project, since_seq?, agent?}` | `overlap {overlaps: Overlap[]}` | paths changed in more than one physical checkout of the project, from the newest 50,000 ledger rows: per path, each checkout with the agents attributed there, the count, the last change and its HEAD; with `agent`, only overlaps involving its checkout, and an empty `project` means its own |
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
-| `reload` | `ok` | starts a replacement, hands it every terminal over `SCM_RIGHTS`, and exits without stopping any agent; the agents keep running and stay attachable |
+| `reload` | `unavailable` error | currently refuses replacement without changing the daemon or agents; safe live transfer remains unfinished |
 | `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
@@ -583,7 +583,7 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
 
-Terminal continuity depends on how the daemon ends. A **planned** replacement carries it: `agentdocker daemon reload` passes the pty masters to the successor over `SCM_RIGHTS`, and the outgoing daemon leaves every agent running, so both the process and its terminal survive an upgrade (row 28). An **unplanned** death does not: the master closes with the daemon, the child may exit with it, and being in a separate process group does not guarantee survival — an existing terminal cannot be reattached once its owning daemon is gone. `run --restore` is what brings an agent back from that, with a new terminal and its working set intact.
+Live terminal continuity through daemon replacement remains unfinished. `daemon reload` currently returns `unavailable` without touching the daemon or agents. An unplanned death closes the master with the daemon; the child may exit with it, and a separate process group does not guarantee survival. Snapshot restore creates a new process and terminal.
 
 Snapshot relaunch and transfer of live terminal descriptors are separate engineering tasks. The former restarts a stored command; the latter would preserve the running process during a planned upgrade. Neither automatically restores an LLM conversation.
 
@@ -597,21 +597,9 @@ What the agent is told arrives as a `restored` message, so it reaches the agent 
 
 What is still not restored is the terminal. A `--tty` agent comes back with a new one and an empty scrollback; the old master descriptor died with the old daemon. That is row 28.
 
-Row 28, the **descriptor handoff**, is done. `agentdocker daemon reload` replaces the daemon without disturbing a single agent.
+Row 28, **live daemon replacement**, remains blocked. Actual binary tests at integrated source `63c6fbf66dbd2668acda2da138f64744f66ad864` reproduced `reload` returning success, the old daemon exiting, and both a batch and a PTY agent dying before their next instruction. The earlier in-process test kept the Tokio runtime alive and did not test that boundary. The unsafe exit path has been removed; requests now return `unavailable` without mutation.
 
-A managed agent survives a restart on its own — it has its own process group and is reparented when its parent goes. Its *terminal* does not: a pty master is a descriptor, and a descriptor dies with the process holding it, so `attach` afterwards had nothing to reconnect to. `SCM_RIGHTS` is the fix and the only one: a Unix socket can carry an open descriptor to another process, and the receiver gets one referring to the *same* open file — the same pty, with the same agent still on the far end. Nothing is reopened, so nothing is lost.
-
-So a reload moves the descriptors rather than the processes. The daemon binds a private socket beside its own, starts the replacement pointed at it, sends every session's master with the scrollback alongside, and **exits without stopping anything**. That last part is the whole risk of the feature: an ordinary shutdown SIGTERMs every managed agent, and doing it here would kill what the reload exists to preserve, so a `handed_over` flag makes shutdown leave them alone and there is a test that says so.
-
-The order is forced by the lock. The replacement takes the terminals **before** trying for the daemon lock, because the daemon being replaced still holds it and only lets go once the descriptors are across; a replacement that reached for the lock first would find it held, exit, and leave the handoff waiting for a connection that never came. Having taken them it waits up to ten seconds for the lock, which its predecessor drops moments later.
-
-What the new daemon inherits is a terminal, not a child. It never forked those processes, so it cannot wait on them: they are watched by pid the way an adopted agent is, and stopped by signal. That is the honest shape of it, and it is what herdr's own documentation says about the same mechanism — it does not move the processes, it moves ownership of the terminals they are already attached to.
-
-A terminal for an agent this daemon does not know, or whose pid has changed, is closed rather than adopted: attaching a live pty to a record that is not about it would be worse than losing it. A handoff that fails entirely is not fatal either — the agents are still running, and what is lost is the ability to attach, which is exactly what the old daemon's exit would have cost anyway.
-
-Verified end to end: a `--tty` agent, a reload, and then `attach` reaching the same shell — same pid before and after, and the shell echoing back a command typed after the reload.
-
-Descriptor transfer needs its own planned-upgrade, interrupted-transfer and crash tests before it can be an availability guarantee.
+A complete replacement must preserve child ownership, batch stdout/stderr, PTY input/output and scrollback, append logging, process identities and protection. It must quiesce writes, select the intended installed binary, validate compatibility, and receive successor readiness before retiring the predecessor, with bounded failure recovery. Descriptor transfer alone proves none of these properties. The host's `SCM_RIGHTS` helper remains a mechanism, not delivery evidence.
 
 #### The app's terminal and command bar
 
@@ -683,7 +671,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 22 | ✅ contests: passing, provenance-matched `validate` evidence as the entry; a measure fixed before anyone starts, taken by the daemon where it can be; a declared noise floor, inside which the ranking refuses to decide and channel review settles it | 5 | 21, 14 |
 | 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
 | 27 | ✅ snapshot restore with transactional preparation, watcher/socket readiness and failed-launch cleanup: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
-| 28 | ✅ `daemon reload`: pty masters passed to a replacement over a private socket with `SCM_RIGHTS`, taken before the lock, with the outgoing daemon leaving every agent running, and a replacement that cannot start reported rather than waited on | 5 | 23 |
+| 28 | ⏳ live daemon replacement: requests fail without mutation pending process/I/O transfer, successor readiness and actual upgrade acceptance | 5 | 23 |
 | 24 | ✅ derived activity: working, idle, starting, finished, or blocked on a named resource held by named agents — from the working set, never from terminal output; `activity`, `ps` DOING, MCP `activity`, and the app's agent list | 5 | 13 |
 | 25 | ✅ multiplexer adapters: `tmux`/`screen`/`zellij`/herdr sessions recognised from the environment (reported first-hand at registration, since macOS does not expose another process's environment) or from ancestry, recorded on the agent and shown in `ps`/`discover`; `run --in-pane` starts an agent in a new tmux session and registers what tmux started, so the human attaches with the tool that owns the terminal | 5 | 18, 23 |
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said; both draw on a chosen terminal palette, with text sizes and row density, kept in `ui.json` per home | 5 | 19, 23 |
