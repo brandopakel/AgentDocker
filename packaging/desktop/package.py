@@ -128,31 +128,31 @@ def notarize(artifact, profile, report):
 def macos(args, stage, info):
     if sys.platform != "darwin":
         raise ValueError("macOS packaging requires a Mac build host")
-    app = stage / "agentdocker.app"
+    app = stage / "AgentDocker.app"
     contents = app / "Contents"
     copy_binaries(args, contents / "MacOS")
     resources = contents / "Resources"
     resources.mkdir()
     with tempfile.TemporaryDirectory(prefix="ad-icons-") as scratch:
-        generated = Path(scratch) / "png"
-        run("/usr/bin/swift", ROOT / "packaging/macos/icon.swift", generated)
-        icons = Path(scratch) / "agentdocker.iconset"
-        icons.mkdir()
-        for size in [16, 32, 128, 256, 512]:
-            shutil.copyfile(generated / f"{size}.png", icons / f"icon_{size}x{size}.png")
-            shutil.copyfile(generated / f"{size * 2}.png", icons / f"icon_{size}x{size}@2x.png")
-        run("/usr/bin/iconutil", "-c", "icns", icons, "-o", resources / "agentdocker.icns")
+        # One mark, from one place. This used to render its own icon in
+        # Swift while `scripts/bundle-macos.sh` rendered a different one
+        # in Python, so the app you installed from a release and the app
+        # this packaged wore different faces.
+        run(sys.executable, ROOT / "scripts/icon.py", scratch)
+        run("/usr/bin/iconutil", "-c", "icns",
+            Path(scratch) / "AgentDocker.iconset", "-o", resources / "AgentDocker.icns")
     version = re.split(r"[-+]", args.version)[0]
     plist = {
-        "CFBundleIdentifier": "dev.agentdocker.desktop", "CFBundleName": "agentdocker",
-        "CFBundleDisplayName": "agentdocker", "CFBundleExecutable": "agentdocker-ui",
+        "CFBundleIdentifier": "dev.agentdocker.desktop", "CFBundleName": "AgentDocker",
+        "CFBundleDisplayName": "AgentDocker", "CFBundleExecutable": "agentdocker-ui",
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
         "CFBundleVersion": str(args.build_number), "CFBundleInfoDictionaryVersion": "6.0",
-        "CFBundleIconFile": "agentdocker.icns", "NSHighResolutionCapable": True,
-        "CFBundleGetInfoString": f"agentdocker {args.version} ({args.source[:12]})",
+        "CFBundleIconFile": "AgentDocker.icns", "NSHighResolutionCapable": True,
+        "CFBundleGetInfoString": f"AgentDocker {args.version} ({args.source[:12]})",
         "AgentDockerSourceCommit": args.source,
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
+    (contents / "PkgInfo").write_text("APPL????")
     (resources / "build.json").write_text(json.dumps({key: value for key, value in info.items() if key != "notarized"}, indent=2) + "\n")
     identity = args.identity or "-"
     flags = ["--force", "--sign", identity]
@@ -182,7 +182,7 @@ def macos(args, stage, info):
     if args.dmg:
         with tempfile.TemporaryDirectory(prefix="ad-dmg-", dir=stage) as scratch:
             image_root = Path(scratch)
-            run("/usr/bin/ditto", app, image_root / "agentdocker.app")
+            run("/usr/bin/ditto", app, image_root / "AgentDocker.app")
             (image_root / "Applications").symlink_to("/Applications", target_is_directory=True)
             dmg = stage / f"agentdocker-desktop-{args.target}.dmg"
             run("/usr/bin/hdiutil", "create", "-volname", "agentdocker", "-srcfolder", image_root,

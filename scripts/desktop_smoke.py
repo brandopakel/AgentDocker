@@ -46,7 +46,15 @@ def check_no_tcp(processes, deadline):
             raise RuntimeError("native fixture has a TCP socket or its transport could not be checked")
 
 
-def wait_window(daemon, window, timeout=45):
+# The window gives up at WINDOW_DEADLINE and writes down what it was
+# still waiting for. This waits longer on purpose, so a run that fails
+# fails *there*, with a reason, rather than here, where all that is
+# known is that it never exited.
+WINDOW_DEADLINE = 60
+HARNESS_MARGIN = 30
+
+
+def wait_window(daemon, window, capture=None, timeout=WINDOW_DEADLINE + HARNESS_MARGIN):
     """Sample both owned processes through GUI readiness and capture, with one deadline."""
     started = time.monotonic()
     deadline = started + timeout
@@ -59,7 +67,16 @@ def wait_window(daemon, window, timeout=45):
         status = window.poll()
         if status is not None:
             if status != 0:
-                raise RuntimeError("graphical acceptance failed; inspect private window.log")
+                # The window wrote why before it exited; say it here
+                # rather than pointing at a file the reader may not have.
+                reason = "no report was written"
+                if capture is not None:
+                    try:
+                        report = json.loads((capture / "result.json").read_text())
+                        reason = report.get("error", reason)
+                    except (OSError, ValueError):
+                        pass
+                raise RuntimeError(f"graphical acceptance failed: {reason}")
             return {"samples": samples, "elapsed_seconds": time.monotonic() - started,
                     "method": "lsof polling through window exit; short-lived sockets between samples may be missed"}
         remaining = deadline - time.monotonic()
@@ -104,9 +121,10 @@ def smoke(binary_dir, output):
                         raise TimeoutError("fixture daemon did not become ready")
                     time.sleep(0.05)
                 window = subprocess.Popen([str(binary_dir / "agentdocker-ui"), "--smoke-test", str(output / "capture"),
-                                           "--expect-pid", str(fixture.pid)], cwd=project, env=env,
+                                           "--expect-pid", str(fixture.pid),
+                                           "--smoke-deadline", str(WINDOW_DEADLINE)], cwd=project, env=env,
                                           stdin=subprocess.DEVNULL, stdout=window_log, stderr=subprocess.STDOUT)
-                observation = wait_window(daemon, window)
+                observation = wait_window(daemon, window, output / "capture")
                 report = json.loads((output / "capture/result.json").read_text())
                 if report.get("result") != "passed" or not report.get("fixture_discovered"):
                     raise RuntimeError("graphical acceptance did not discover the fixture")
