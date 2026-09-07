@@ -121,7 +121,7 @@ fn entry(exe: &Path, runtime: &str) -> Value {
 
 /// Whether a JSON MCP server entry runs this binary: by the command it
 /// runs or an argument it passes, never by text that merely names us.
-fn runs_agentdocker(server: &Value) -> bool {
+fn runs_agentdocker(server: &Value, runtime: &str) -> bool {
     let command = server.get("command").and_then(Value::as_str);
     let args: Vec<_> = server
         .get("args")
@@ -134,7 +134,7 @@ fn runs_agentdocker(server: &Value) -> bool {
         .get("args")
         .and_then(Value::as_array)
         .is_some_and(|args| args.iter().all(Value::is_string))
-        && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
+        && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker", runtime)
         && server.get("disabled").and_then(Value::as_bool) != Some(true)
         && server.get("enabled").and_then(Value::as_bool) != Some(false)
 }
@@ -253,14 +253,17 @@ pub(super) fn json_edit(
     // Ours by key, or by what it runs: either way there is nothing to add,
     // and a second entry must never clobber a key that exists.
     if let Some(existing) = servers.get("agentdocker") {
-        if !runs_agentdocker(existing) {
+        if !runs_agentdocker(existing, runtime) {
             bail!(
                 "{}: reserved agentdocker entry is disabled or unverified; left unchanged",
                 path.display()
             );
         }
     }
-    if servers.values().any(runs_agentdocker) {
+    if servers
+        .values()
+        .any(|server| runs_agentdocker(server, runtime))
+    {
         return Ok(None);
     }
     servers.insert("agentdocker".to_owned(), entry(exe, runtime));
@@ -316,7 +319,12 @@ pub(super) fn toml_edit(
                 .and_then(|v| v.as_array())
                 .is_some_and(|args| args.iter().all(|arg| arg.is_str()))
                 && server.get("enabled").and_then(|v| v.as_bool()) != Some(false)
-                && agentdocker_host::runtimes::mcp_command_matches(command, &args, "agentdocker")
+                && agentdocker_host::runtimes::mcp_command_matches(
+                    command,
+                    &args,
+                    "agentdocker",
+                    runtime,
+                )
         };
         if servers
             .get("agentdocker")
@@ -395,6 +403,25 @@ fn register_with_claude_cli(cli: &Path, exe: &Path, dry_run: bool) -> Result<Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_refuses_reserved_registrations_attributed_to_another_runtime() {
+        let exe = Path::new("/fixture/agentdocker");
+        let json = r#"{"mcpServers":{"agentdocker":{"command":"agentdocker","args":["mcp","--runtime","codex"]}}}"#;
+        assert!(json_edit(Path::new("settings.json"), Some(json), exe, "gemini-cli").is_err());
+        let toml = "[mcp_servers.agentdocker]\ncommand = 'agentdocker'\nargs = ['mcp', '--runtime', 'gemini-cli']\n";
+        assert!(toml_edit(Path::new("config.toml"), Some(toml), exe, "codex").is_err());
+        assert!(
+            json_edit(Path::new("settings.json"), Some(json), exe, "codex")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            toml_edit(Path::new("config.toml"), Some(toml), exe, "gemini-cli")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn configuration_edits_detect_changes_preserve_links_and_keep_private_backups() {
