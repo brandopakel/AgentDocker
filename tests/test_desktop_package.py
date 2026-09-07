@@ -83,6 +83,17 @@ class DesktopPackaging(unittest.TestCase):
             PACKAGE.package(self.args)
         self.assertEqual((self.output / "previous").read_text(), "preserve me")
 
+    def test_schema_boundary_matches_installer(self):
+        self.manifest["state_schema"] = 0xFFFF_FFFF
+        self.save_manifest()
+        self.assertEqual(PACKAGE.package(self.args)["state_schema"], 0xFFFF_FFFF)
+        for value in [0x1_0000_0000, 0, -1, True, "8"]:
+            with self.subTest(value=value):
+                self.manifest["state_schema"] = value
+                self.save_manifest()
+                with self.assertRaisesRegex(ValueError, "state schema"):
+                    PACKAGE.validate_inputs(self.args)
+
     def test_wrong_source_and_version_are_refused(self):
         for field, value in [("source", "d" * 40), ("version", "0.2.0")]:
             with self.subTest(field=field):

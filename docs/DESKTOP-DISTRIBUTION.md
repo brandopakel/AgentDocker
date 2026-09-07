@@ -23,6 +23,10 @@ For Intel macOS, build with `--target x86_64-apple-darwin` and package from `tar
 
 Linux requires the system X11/Wayland client libraries, including `libxkbcommon-x11`, and a compatible Mesa or vendor graphics driver. Linux uses `--target x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`, built on a compatible Linux host. The archive contains three executables, a desktop entry, AppStream metadata and an SVG icon. Linux graphical acceptance runs the packaged executables under Xvfb with Mesa. The same acceptance driver uses a disposable home, socket, project and synthetic process; it verifies a real rendered PNG, connection, inventory and running process discovery. It checks for TCP sockets at startup. It does not prove provider message consumption or every GUI action. Local screenshots can include other discovered sessions: keep them private. CI captures only runner fixtures.
 
+Build metadata comes from the compiled `agentd --build-info` command, which prints JSON and exits before opening state or a socket. Cross builds must be executable on the build host (for example, Intel macOS through Rosetta), or provide `scripts/build_native.py --schema-runner 'qemu-aarch64 -L /target/sysroot'` with a suitable target runner. The runner receives an argument vector without shell evaluation. Reported version, architecture, OS and schema are checked before the build manifest is written.
+
+Linux launchers encode `Exec` and `Icon` separately according to the [Desktop Entry string rules](https://specifications.freedesktop.org/desktop-entry/latest/value-types.html) and [command quoting rules](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html). Control characters and equals signs in executable paths are refused.
+
 ## Public macOS signing
 
 Use a clean checkout, an installed **Developer ID Application** identity, and a local `notarytool` keychain profile:

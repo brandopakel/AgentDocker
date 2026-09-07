@@ -54,7 +54,7 @@ def validate_inputs(args):
         manifest = json.loads((directory / "native-build.json").read_text())
         if manifest.get("format") != 1 or manifest.get("source_commit") != args.source or manifest.get("version") != args.version:
             raise ValueError("build provenance does not match the requested source/version")
-        if type(manifest.get("state_schema")) is not int or manifest["state_schema"] < 1:
+        if type(manifest.get("state_schema")) is not int or not 1 <= manifest["state_schema"] <= 0xFFFF_FFFF:
             raise ValueError("build provenance lacks the daemon state schema; rebuild the binaries")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")
