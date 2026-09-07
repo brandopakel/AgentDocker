@@ -58,3 +58,8 @@ Native graphical failures record connection state, inventory count, whether the 
 Socket load reports connect/write/read/decode failures by operation and retains a bounded fixture-daemon log tail. All agents register before workers start; failure to create a worker cancels already-created waiting workers. Criterion stores each campaign's samples in a fresh `artifacts/criterion.*` directory, alongside source manifests, so cached baseline metadata without its samples cannot become an implicit comparison. The original 100-client Linux failure remains open until the labeled failure is reproduced and explained.
 
 Managed workspace and relay campaigns use a private `0077` umask. This reproduced a helper-image defect: copied relay source retained root-owned `0600`, preventing the workspace UID from reading it. The image recipe now explicitly makes its embedded source readable (`0444`); host fixtures and credentials remain private. The original recipe failed with permission denied and the corrected recipe reported readiness in a real Podman VM before the fix was applied. Both engine CI relay jobs must pass on the final source.
+
+CodeRabbit automatic review includes every base branch, including stacked
+fix/test/docs branches. A skipped or rate-limited review remains pending even
+when its status context is green. Draft PRs can run preliminary CI; final review
+and all applicable checks on the published head are required before integration.
