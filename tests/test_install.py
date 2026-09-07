@@ -281,6 +281,46 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
             self.assertTrue((app / "Contents/Resources/AgentDocker.icns").exists())
 
+    def test_the_cask_is_generated_only_with_real_desktop_archives(self):
+        """A cask pointing at a download that is not there is worse than
+        no cask, so a release without packaged desktop archives must
+        produce none rather than one with a placeholder in it."""
+        spec = importlib.util.spec_from_file_location(
+            "formula", ROOT / "packaging/homebrew/generate.py"
+        )
+        formula = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(formula)
+        with tempfile.TemporaryDirectory() as tmp:
+            sums = Path(tmp)
+            # The commands ship on four targets; the app on two.
+            for target in [
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+                "aarch64-unknown-linux-musl",
+                "x86_64-unknown-linux-musl",
+            ]:
+                (sums / f"agentdocker-{target}.tar.gz.sha256").write_text(
+                    "a" * 64 + f"  agentdocker-{target}.tar.gz\n"
+                )
+            # The formula is happy on its own.
+            self.assertIn("0.1.0", formula.generate("v0.1.0", sums))
+            # The cask is not, until the app archives are there.
+            with self.assertRaises(FileNotFoundError):
+                formula.generate_cask("v0.1.0", sums)
+            for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"]:
+                (sums / f"agentdocker-desktop-{target}.zip.sha256").write_text(
+                    "b" * 64 + f"  agentdocker-desktop-{target}.zip\n"
+                )
+            cask = formula.generate_cask("v0.1.0", sums)
+            self.assertIn('cask "agentdocker-app"', cask)
+            self.assertIn("b" * 64, cask)
+            self.assertNotIn("@", cask, "no placeholder survives")
+            self.assertIn(
+                "no-quarantine",
+                cask,
+                "an ad-hoc signed app says how to open it",
+            )
+
     def test_formula_requires_real_hashes_for_every_target(self):
         spec = importlib.util.spec_from_file_location("formula", ROOT / "packaging/homebrew/generate.py")
         module = importlib.util.module_from_spec(spec)
