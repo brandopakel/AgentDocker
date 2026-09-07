@@ -1,12 +1,14 @@
-//! Advisory file locks (`flock`).
+//! Advisory file locks (`flock` on Unix, `LockFileEx` on Windows).
 //!
-//! One lock lives beside each daemon socket. The daemon holds it for its
+//! A lock is scoped to each daemon endpoint in its private state directory. The daemon holds it for its
 //! lifetime, so a second daemon on the same socket exits at once; a client
 //! that cannot connect takes it for an instant to tell "no daemon" (it got
 //! the lock) from "one is starting" (it did not), and starts one only in
 //! the first case.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -50,12 +52,7 @@ pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
         Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx},
         System::IO::OVERLAPPED,
     };
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
+    let file = crate::dirs::private_file(path, true, false)?;
     // SAFETY: the synchronous file handle stays live; OVERLAPPED describes
     // byte zero and is valid for this nonblocking, synchronous lock call.
     let locked = unsafe {
