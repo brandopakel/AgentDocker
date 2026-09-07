@@ -155,6 +155,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -189,6 +190,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "toml",
  "uuid",
 ]
 
@@ -201,6 +203,7 @@ dependencies = [
  "criterion",
  "ignore",
  "libc",
+ "nix",
  "serde_json",
  "sha2",
  "shlex",
@@ -220,6 +223,7 @@ dependencies = [
  "eframe",
  "egui",
  "libc",
+ "serde",
  "serde_json",
  "tempfile",
  "vt100",
@@ -2429,6 +2433,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

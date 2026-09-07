@@ -6,9 +6,11 @@ mod client;
 mod format;
 mod hooks;
 mod mcp;
+mod rtk;
 mod service;
 mod setup;
 mod teams;
+mod top;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -79,6 +81,21 @@ enum Command {
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
+    },
+    /// Commit this agent's checkout, journaled and attributed to it
+    Commit {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+        agent: String,
+        #[arg(short, long)]
+        #[arg(help = "The commit message.")]
+        message: String,
+        #[arg(short, long)]
+        #[arg(help = "Stage tracked modifications and deletions first, as `git commit -a` does.")]
+        all: bool,
+        #[arg(long)]
+        #[arg(help = "Push the branch to its upstream once the commit is made.")]
+        push: bool,
     },
     /// Show tracked changes in this agent's checkout.
     WorktreeDiff {
@@ -398,6 +415,22 @@ enum Command {
         /// Lines to replay first; 0 for all.
         #[arg(long, default_value_t = 100)]
         tail: usize,
+        /// Show a compressed view through rtk, where it is installed. The
+        /// retained log itself is never altered.
+        #[arg(long, conflicts_with = "follow")]
+        compress: bool,
+    },
+    /// Show the retained log of one validation, as evidence or compressed
+    Validation {
+        /// The validation id, from `validate` or `validations`.
+        id: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        #[arg(help = "Agent whose validations to look in (defaults to this session).")]
+        agent: String,
+        /// Show a compressed view through rtk, where it is installed. The
+        /// retained log itself is never altered.
+        #[arg(long)]
+        compress: bool,
     },
     /// Report that an agent is alive.
     Heartbeat {
@@ -460,6 +493,9 @@ enum Command {
     },
     /// Claims waiting for a resource, oldest first.
     Waiting,
+    /// The fleet, live: who is running, what they are doing, what is
+    /// held and who is waiting. Redraws as the daemon reports changes.
+    Top,
     /// Contests: several agents attempt one task, ranked by a measure
     /// declared before any of them starts.
     Contest(ContestArgs),
@@ -612,6 +648,11 @@ struct RunArgs {
     /// there is no captured log and the agent ends when its command does.
     #[arg(long, conflicts_with_all = ["tty", "restore", "image_build"])]
     in_pane: bool,
+    /// When to start it again after it exits: `no` (the default),
+    /// `always`, `on-failure`, or `on-failure:<n>`. Stopping an agent on
+    /// purpose clears its policy, so it stays stopped.
+    #[arg(long, default_value = "no", conflicts_with = "in_pane")]
+    restart: String,
     /// Command to launch, after `--`.
     #[arg(required = true, last = true)]
     command: Vec<String>,
@@ -861,6 +902,11 @@ struct ClaimArgs {
     /// Seconds to wait for the resource to free up instead of failing at once.
     #[arg(long, default_value_t = 0)]
     wait: u64,
+    /// How much of a `quota:` resource to take. A quota is spent rather
+    /// than occupied, so several agents hold one at once and what
+    /// decides is whether the sum fits its capacity.
+    #[arg(long)]
+    amount: Option<u64>,
 }
 
 #[tokio::main]
@@ -1029,6 +1075,41 @@ async fn main() -> Result<()> {
             if !matches!(response, Response::Validation { passed: true, .. }) {
                 bail!(
                     "validation did not pass for unchanged content; inspect its log and evidence"
+                );
+            }
+        }
+        Command::Commit {
+            agent,
+            message,
+            all,
+            push,
+        } => {
+            let response = client
+                .call(&Request::Commit {
+                    agent,
+                    message,
+                    all,
+                    push,
+                })
+                .await?;
+            if let Response::Committed {
+                head,
+                branch,
+                files,
+                pushed,
+            } = response
+            {
+                // The id on stdout and nothing else, like every other
+                // command that makes something: `head=$(agentdocker
+                // commit -m …)` has to give a usable sha. What it did
+                // goes to stderr, where a person still sees it and a
+                // pipeline does not.
+                println!("{head}");
+                let where_ = branch.unwrap_or_else(|| "a detached HEAD".to_owned());
+                eprintln!(
+                    "on {where_}, {files} file{}{}",
+                    if files == 1 { "" } else { "s" },
+                    if pushed { ", pushed" } else { "" }
                 );
             }
         }
@@ -1366,20 +1447,9 @@ async fn main() -> Result<()> {
         }
         Command::Attach { agent } => attach::run(&client, &agent).await?,
         Command::Ui => {
-            let app = std::env::current_exe()
-                .ok()
-                .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
-                .filter(|sibling| sibling.is_file())
-                .or_else(|| {
-                    std::env::var_os("PATH").and_then(|path| {
-                        std::env::split_paths(&path)
-                            .map(|dir| dir.join("agentdocker-ui"))
-                            .find(|candidate| candidate.is_file())
-                    })
-                })
-                .context(
-                    "agentdocker-ui is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
-                )?;
+            let app = desktop_app().context(
+                "the desktop app is not installed beside agentdocker or on PATH; build it with `cargo install --path crates/ui --locked`",
+            )?;
             let mut child = std::process::Command::new(&app);
             // The app reads AGENTDOCKER_SOCKET; pass on whatever this
             // invocation was pointed at so both talk to one daemon.
@@ -1399,6 +1469,14 @@ async fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => std::env::current_dir()?,
             };
+            let restart =
+                agentdocker_core::RestartPolicy::parse(&args.restart).with_context(|| {
+                    format!(
+                        "`--restart {}` is not a policy; use no, always, on-failure, or \
+                         on-failure:<n>",
+                        args.restart
+                    )
+                })?;
             let spec = AgentSpec {
                 name: args.name.unwrap_or_default(),
                 runtime: args.runtime,
@@ -1412,6 +1490,8 @@ async fn main() -> Result<()> {
                 tty: args.tty,
                 restore: args.restore,
                 in_pane: args.in_pane,
+                restart,
+                depends_on: Vec::new(),
             };
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
@@ -1451,6 +1531,8 @@ async fn main() -> Result<()> {
                 tty: false,
                 restore: false,
                 in_pane: false,
+                restart: Default::default(),
+                depends_on: Vec::new(),
             };
             let request = Request::Register {
                 spec,
@@ -1492,20 +1574,54 @@ async fn main() -> Result<()> {
             agent,
             follow,
             tail,
+            compress,
         } => {
             let request = Request::Logs {
                 agent,
                 follow,
                 tail,
             };
+            // Collected before it is shown, when a view is wanted: a
+            // compressor needs the whole text, which is also why
+            // --compress and --follow cannot both be asked for.
+            let mut collected = String::new();
             client
                 .stream(&request, |response| {
                     if let Response::Log { line } = response {
-                        println!("{line}");
+                        if compress {
+                            collected.push_str(&line);
+                            collected.push('\n');
+                        } else {
+                            println!("{line}");
+                        }
                     }
                     Ok(true)
                 })
                 .await?;
+            if compress {
+                show(&rtk::view(&collected));
+            }
+        }
+        Command::Validation {
+            id,
+            agent,
+            compress,
+        } => {
+            let response = client.call(&Request::Validations { agent }).await?;
+            let Response::Validations { validations } = response else {
+                bail!("unexpected response");
+            };
+            let found = validations
+                .iter()
+                .find(|v| v.id == id || v.id.starts_with(&id))
+                .with_context(|| format!("no validation matching {id}"))?;
+            let log = std::fs::read_to_string(&found.log)
+                .with_context(|| format!("cannot read {}", found.log.display()))?;
+            if compress {
+                show(&rtk::view(&log));
+            } else {
+                print!("{log}");
+            }
         }
         Command::Heartbeat { agent } => {
             client.call(&Request::Heartbeat { agent }).await?;
@@ -1583,6 +1699,7 @@ async fn main() -> Result<()> {
                 print_activity(&client, &activity).await;
             }
         }
+        Command::Top => top::run(&client).await?,
         Command::Waiting => {
             if let Response::Waiting { waiting } = client.call(&Request::Waiting).await? {
                 if waiting.is_empty() {
@@ -1666,6 +1783,7 @@ async fn main() -> Result<()> {
             let request = Request::Claim {
                 agent: args.agent,
                 resource: resource_key(&args.resource),
+                amount: args.amount,
                 mode: if args.shared {
                     LeaseMode::Shared
                 } else {
@@ -2424,6 +2542,61 @@ fn named(names: &BTreeMap<String, String>, id: &agentdocker_core::AgentId) -> St
 }
 
 /// One row per known runtime; installed ones first.
+/// Where the desktop app is, preferring the bundle.
+///
+/// On macOS the same binary is called two different things depending on
+/// how it is started: run the file directly and the Dock, the app
+/// switcher and the menu bar all read `agentdocker-ui`, because a bare
+/// executable has no name but its own; run the copy inside
+/// `AgentDocker.app` and they read AgentDocker and draw its icon,
+/// because the bundle around it carries both. So the bundle is looked
+/// for first, and its inner executable is what gets started — `open`
+/// would work too, but it cannot pass the socket through.
+fn desktop_app() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundles = [
+            "Applications/AgentDocker.app",
+            "../Applications/AgentDocker.app",
+        ];
+        let roots = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(std::iter::once(PathBuf::from("/")));
+        for root in roots {
+            for bundle in bundles {
+                let inner = root.join(bundle).join("Contents/MacOS/AgentDocker");
+                if inner.is_file() {
+                    return Some(inner);
+                }
+            }
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
+        .filter(|sibling| sibling.is_file())
+        .or_else(|| {
+            std::env::var_os("PATH").and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("agentdocker-ui"))
+                    .find(|candidate| candidate.is_file())
+            })
+        })
+}
+
+/// Print a view, and say what it is when that is not obvious. The note
+/// goes to stderr so a piped view is only the text.
+fn show(view: &rtk::View) {
+    print!("{}", view.text());
+    if !view.text().ends_with('\n') {
+        println!();
+    }
+    if let Some(note) = view.note() {
+        eprintln!("{note}");
+    }
+}
+
 fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
     let mut sorted: Vec<&agentdocker_core::RuntimeInfo> = runtimes.iter().collect();
     sorted.sort_by_key(|r| !r.installed());

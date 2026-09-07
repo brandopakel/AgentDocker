@@ -15,7 +15,9 @@ pub mod project;
 pub mod protocol;
 pub mod registry;
 
-pub use agent::{AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, VcsState};
+pub use agent::{
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
+};
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
 pub use event::{Event, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
@@ -27,6 +29,9 @@ pub use project::{ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
+
+pub mod policy;
+pub use policy::{Policy, Ruling};
 
 pub mod multiplexer;
 

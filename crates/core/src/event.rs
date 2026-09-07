@@ -37,6 +37,15 @@ pub enum EventKind {
         agent: crate::AgentId,
         path: std::path::PathBuf,
     },
+    /// An agent committed its checkout through the daemon.
+    Committed {
+        agent: crate::AgentId,
+        head: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        files: usize,
+        pushed: bool,
+    },
     WorktreeCleanup {
         agent: crate::AgentId,
         path: std::path::PathBuf,
@@ -213,6 +222,21 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// The policy refused something. Carries what was asked and which
+    /// rule said no, so a refusal is explainable from the event stream
+    /// alone.
+    PolicyDenied {
+        agent: AgentId,
+        action: String,
+        rule: String,
+    },
+    /// A managed agent that exited was started again by its restart
+    /// policy, under its own identity. `attempt` counts from one.
+    AgentRestarted {
+        agent: AgentId,
+        pid: Option<u32>,
+        attempt: u32,
+    },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
     /// Durable restore intent and lease protection precede process launch.
@@ -318,6 +342,21 @@ pub enum EventKind {
     DaemonStopping {
         reason: String,
     },
+    /// An event this build has never heard of.
+    ///
+    /// The daemon and its clients are separate binaries and are
+    /// routinely at different versions: an upgrade replaces one before
+    /// the other, and `daemon reload` swaps the daemon underneath a
+    /// desktop window that is already open. Without this, the first new
+    /// event kind a newer daemon emits fails to deserialise in an older
+    /// client, the error takes the whole stream down, and the app shows
+    /// itself as disconnected from a daemon that is working perfectly.
+    ///
+    /// An old client should ignore what it does not understand, not
+    /// fall over. Nothing constructs this; serde produces it for a tag
+    /// that matches nothing else.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,6 +375,51 @@ impl Event {
             seq: 0,
             at: now,
             kind,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The failure this exists for, seen for real: a daemon was upgraded
+    /// under a desktop window that was already open, the window read an
+    /// event kind it had never heard of, and the parse error took the
+    /// whole stream down — so a working daemon showed as "disconnected
+    /// unknown variant `committed`".
+    #[test]
+    fn an_event_kind_from_a_newer_daemon_is_read_as_unknown_not_an_error() {
+        let from_the_future = r#"{"event":"something_invented_later","weight":3}"#;
+        let parsed: EventKind = serde_json::from_str(from_the_future)
+            .expect("an unfamiliar kind is a kind, not a broken frame");
+        assert_eq!(parsed, EventKind::Unknown);
+
+        // And in the envelope the stream actually carries.
+        let framed = r#"{"seq":7,"at":"2026-09-07T00:00:00Z","kind":{"event":"not_yet_designed"}}"#;
+        let event: Event = serde_json::from_str(framed).expect("the frame still reads");
+        assert_eq!(event.seq, 7);
+        assert_eq!(event.kind, EventKind::Unknown);
+    }
+
+    /// The catch-all must not swallow kinds this build does know: a
+    /// variant that quietly stopped matching would be worse than the
+    /// disconnect, because nothing would report it.
+    #[test]
+    fn known_kinds_still_round_trip() {
+        for kind in [
+            EventKind::DaemonStopping {
+                reason: "signal".to_owned(),
+            },
+            EventKind::WorktreeCreated {
+                agent: AgentId::from("a1b2c3"),
+                path: std::path::PathBuf::from("/tmp/w"),
+            },
+        ] {
+            let text = serde_json::to_string(&kind).unwrap();
+            let back: EventKind = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, kind, "{text}");
+            assert_ne!(back, EventKind::Unknown, "{text}");
         }
     }
 }

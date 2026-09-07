@@ -97,6 +97,102 @@ pub struct AgentSpec {
     /// no captured log, and it ends when its command does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub in_pane: bool,
+    /// When to start it again after it exits. Only a managed agent can
+    /// have one: the daemon has to own the process to restart it.
+    #[serde(default, skip_serializing_if = "RestartPolicy::is_no")]
+    pub restart: RestartPolicy,
+    /// Names that must be running before this one starts. Ordering for
+    /// `agentdocker up`, where a set of agents is started together and
+    /// one of them is a server the others talk to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+}
+
+/// When a managed agent that has exited should be started again.
+///
+/// The daemon watches its own children, so this is the one place that
+/// can act on an exit the moment it happens. The default is `No`:
+/// restarting is a decision, and a supervisor that restarts by default
+/// turns a command that fails immediately into a loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "policy", rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    /// Never. What exited stays exited.
+    #[default]
+    No,
+    /// Only when it failed, and only so many times. A command that is
+    /// broken rather than flaky should stop being retried.
+    OnFailure { max: u32 },
+    /// Whatever the exit code — a service that is meant to be up.
+    Always,
+}
+
+/// How many times `on-failure` retries when no number is given. Enough
+/// to ride out a flake, few enough that a genuinely broken command stops
+/// quickly and says so.
+pub const DEFAULT_RESTART_LIMIT: u32 = 3;
+
+impl RestartPolicy {
+    /// `no`, `always`, `on-failure`, `on-failure:5`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        match text {
+            "no" | "never" => Some(Self::No),
+            "always" => Some(Self::Always),
+            "on-failure" => Some(Self::OnFailure {
+                max: DEFAULT_RESTART_LIMIT,
+            }),
+            _ => {
+                let max = text.strip_prefix("on-failure:")?;
+                Some(Self::OnFailure {
+                    max: max.parse().ok()?,
+                })
+            }
+        }
+    }
+
+    /// Whether an agent that ended like this, having already been
+    /// restarted this many times, should be started again.
+    ///
+    /// `Failed` counts as a failure — it is how a spawn that never got
+    /// off the ground is recorded — and so does an exit with no code,
+    /// which is what a signal leaves behind.
+    pub fn restarts(&self, status: &AgentStatus, already: u32) -> bool {
+        match self {
+            Self::No => false,
+            Self::Always => true,
+            Self::OnFailure { max } => already < *max && failed(status),
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::No => "no".to_owned(),
+            Self::Always => "always".to_owned(),
+            Self::OnFailure { max } => format!("on-failure:{max}"),
+        }
+    }
+
+    pub fn is_no(&self) -> bool {
+        matches!(self, Self::No)
+    }
+}
+
+/// Whether an ending was a failure. A clean zero is the only success.
+fn failed(status: &AgentStatus) -> bool {
+    !matches!(status, AgentStatus::Exited { code: Some(0) })
+}
+
+/// How long to wait before the nth restart.
+///
+/// Doubling from a fifth of a second and capped at half a minute. The
+/// first restart is nearly immediate, because the common case is a
+/// process that died for a reason that has passed; the cap is there
+/// because the other case is a command that will fail every time, and
+/// the daemon should not spend a core discovering that.
+pub fn restart_delay(already: u32) -> std::time::Duration {
+    let millis = 200_u64.saturating_mul(1_u64 << already.min(8));
+    std::time::Duration::from_millis(millis.min(30_000))
 }
 
 /// Which branch and commit an agent's checkout is on, as last observed —
@@ -232,6 +328,11 @@ pub struct AgentRecord {
     /// which lives in the daemon's own terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::multiplexer::Session>,
+    /// How many times the daemon has started this agent again after an
+    /// exit. Kept on the record because `on-failure` counts, and because
+    /// a reader deserves to know an agent has died nine times.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub restarts: u32,
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
@@ -257,6 +358,7 @@ impl AgentRecord {
             spec,
             status: AgentStatus::Created,
             session: None,
+            restarts: 0,
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,
@@ -307,5 +409,109 @@ mod tests {
         let restored: AgentRecord = serde_json::from_value(json).unwrap();
         assert_eq!(restored, record);
         assert!(restored.container.is_none());
+    }
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    fn exited(code: i32) -> AgentStatus {
+        AgentStatus::Exited { code: Some(code) }
+    }
+
+    #[test]
+    fn policies_are_parsed_the_way_they_are_written() {
+        assert_eq!(RestartPolicy::parse("no"), Some(RestartPolicy::No));
+        assert_eq!(RestartPolicy::parse("never"), Some(RestartPolicy::No));
+        assert_eq!(RestartPolicy::parse("always"), Some(RestartPolicy::Always));
+        assert_eq!(
+            RestartPolicy::parse("on-failure"),
+            Some(RestartPolicy::OnFailure {
+                max: DEFAULT_RESTART_LIMIT
+            })
+        );
+        assert_eq!(
+            RestartPolicy::parse(" on-failure:5 "),
+            Some(RestartPolicy::OnFailure { max: 5 })
+        );
+        assert_eq!(RestartPolicy::parse("on-failure:x"), None);
+        assert_eq!(RestartPolicy::parse("sometimes"), None);
+        // And a policy round-trips through the text it prints.
+        for text in ["no", "always", "on-failure:3", "on-failure:0"] {
+            let parsed = RestartPolicy::parse(text).unwrap();
+            assert_eq!(parsed.describe(), text);
+        }
+    }
+
+    #[test]
+    fn no_never_restarts_and_always_always_does() {
+        let never = RestartPolicy::No;
+        assert!(!never.restarts(&exited(0), 0));
+        assert!(!never.restarts(&exited(1), 0));
+
+        let always = RestartPolicy::Always;
+        assert!(always.restarts(&exited(0), 0), "a clean exit too");
+        assert!(always.restarts(&exited(1), 99), "and however many times");
+    }
+
+    #[test]
+    fn on_failure_counts_and_only_counts_failures() {
+        let policy = RestartPolicy::OnFailure { max: 2 };
+        // A clean exit is the end of it, whatever the count.
+        assert!(!policy.restarts(&exited(0), 0));
+        // A failure restarts until the limit, then stops.
+        assert!(policy.restarts(&exited(1), 0));
+        assert!(policy.restarts(&exited(1), 1));
+        assert!(!policy.restarts(&exited(1), 2), "the limit is a limit");
+        // A signal leaves no code, and a spawn that never started is a
+        // failure too — both are things worth retrying.
+        assert!(policy.restarts(&AgentStatus::Exited { code: None }, 0));
+        assert!(policy.restarts(
+            &AgentStatus::Failed {
+                reason: "no such file".into()
+            },
+            0
+        ));
+        // Zero retries means the policy is on but spent immediately.
+        assert!(!RestartPolicy::OnFailure { max: 0 }.restarts(&exited(1), 0));
+    }
+
+    #[test]
+    fn the_delay_backs_off_and_then_stops_growing() {
+        assert_eq!(restart_delay(0), std::time::Duration::from_millis(200));
+        assert_eq!(restart_delay(1), std::time::Duration::from_millis(400));
+        assert_eq!(restart_delay(3), std::time::Duration::from_millis(1600));
+        // Capped, so a command that always fails costs a restart every
+        // half minute rather than a core.
+        assert_eq!(restart_delay(20), std::time::Duration::from_secs(30));
+        // And it never goes backwards.
+        let mut last = std::time::Duration::ZERO;
+        for n in 0..40 {
+            let delay = restart_delay(n);
+            assert!(delay >= last, "delay went backwards at {n}");
+            last = delay;
+        }
+    }
+
+    #[test]
+    fn a_policy_that_is_off_is_left_out_of_the_wire() {
+        let spec = AgentSpec::default();
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(!json.contains("restart"), "{json}");
+        let with = AgentSpec {
+            restart: RestartPolicy::Always,
+            ..AgentSpec::default()
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains(r#""policy":"always""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<AgentSpec>(&json).unwrap().restart,
+            RestartPolicy::Always
+        );
     }
 }

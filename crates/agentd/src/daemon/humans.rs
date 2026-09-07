@@ -207,6 +207,14 @@ impl Daemon {
         // Follow the person to wherever they are now. A human moves
         // between projects far more often than an agent does, and the
         // journal digest they are shown depends on which project it is.
+        //
+        // Except to nowhere. The filesystem root is what a client that
+        // has no working directory reports — an app started from a Dock
+        // or a launcher inherits it — and taking it at face value moves
+        // the person out of whatever project they were in and into a
+        // "project" that is the whole disk. Keeping the record they had
+        // is the better wrong answer of the two.
+        let workdir = workdir.filter(|dir| dir.parent().is_some());
         if let Some(workdir) = workdir {
             let project = self.project_for(Some(workdir.clone()), true).await;
             let vcs = Self::vcs_for(Some(workdir.clone())).await;
