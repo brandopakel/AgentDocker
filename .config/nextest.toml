@@ -1,14 +1,7 @@
 [profile.default]
 retries = 0
 flaky-result = "fail"
-# A leaked process holds the test's output pipe for ever, so any
-# timeout catches one. 500ms did not distinguish that from a process
-# that merely took a moment to tear down: with one test per core, a
-# tokio runtime and a SQLite handle closing under full load crossed it
-# often enough to fail roughly one run in five, always on a different
-# test. Two seconds still fails a real leak on the first run and does
-# not fail an honest one.
-leak-timeout = { period = "2s", result = "fail" }
+leak-timeout = { period = "500ms", result = "fail" }
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 # Stock nextest on Darwin can inherit a sibling test's output pipe during

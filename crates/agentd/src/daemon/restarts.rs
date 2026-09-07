@@ -33,6 +33,9 @@ impl Daemon {
     pub(crate) fn consider_restart(self: &Arc<Self>, id: &AgentId, status: &AgentStatus) {
         let record = {
             let state = lock(&self.state);
+            if state.storage_error.is_some() {
+                return;
+            }
             let Some(record) = state.registry.get(id) else {
                 return;
             };
@@ -77,7 +80,14 @@ impl Daemon {
         let record = {
             let state = lock(&self.state);
             match state.registry.get(id) {
-                Some(record) if !record.status.is_live() && !record.spec.restart.is_no() => {
+                Some(record)
+                    if state.storage_error.is_none()
+                        && !record.status.is_live()
+                        && record
+                            .spec
+                            .restart
+                            .restarts(&record.status, record.restarts) =>
+                {
                     record.clone()
                 }
                 _ => return,
@@ -98,30 +108,58 @@ impl Daemon {
                 if let Some(session) = spawned.session.clone() {
                     lock(&self.sessions).insert(id.clone(), session);
                 }
-                {
+                let persisted = {
                     let mut state = lock(&self.state);
+                    // The supervisor owns this child even if its durable transition fails.
                     state.supervised.insert(id.clone(), spawned.control.clone());
-                    if let Some(stored) = state.registry.get_mut(id) {
-                        stored.pid = Some(pid);
-                        stored.process_started_at = started_at;
-                        stored.process_group = Some(pid);
-                        stored.finished_at = None;
-                        stored.restarts = attempt;
+                    let current = state.registry.get(id).cloned();
+                    if let Some(mut running) = current.filter(|current| {
+                        !current.status.is_live()
+                            && current.spec.restart == record.spec.restart
+                            && current.restarts == record.restarts
+                    }) {
+                        running.pid = Some(pid);
+                        running.process_started_at = started_at;
+                        running.process_group = Some(pid);
+                        running.status = AgentStatus::Running;
+                        running.started_at = Some(Utc::now());
+                        running.finished_at = None;
+                        running.last_seen = Utc::now();
+                        running.restarts = attempt;
+                        let mut event = Event::new(
+                            EventKind::AgentRestarted {
+                                agent: id.clone(),
+                                pid: Some(pid),
+                                attempt,
+                            },
+                            Utc::now(),
+                        );
+                        event.seq = state.next_seq;
+                        state.persist("restart completion", |store| {
+                            store.agent_transition(&running, &event)
+                        });
+                        if state.storage_error.is_none() {
+                            *state
+                                .registry
+                                .get_mut(id)
+                                .expect("restart identity retained") = running;
+                            state.next_seq += 1;
+                            let _ = state.events.send(event);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
                     }
-                    if let Some(agent) =
-                        state
-                            .registry
-                            .set_status(id, AgentStatus::Running, Utc::now())
-                    {
-                        state.persist("agent", |store| store.upsert_agent(&agent));
-                    }
-                    state.emit(EventKind::AgentRestarted {
-                        agent: id.clone(),
-                        pid: Some(pid),
-                        attempt,
-                    });
+                };
+                if !persisted {
+                    spawned.control.send_replace(Some(true));
                 }
-                supervisor::supervise(self.clone(), id.clone(), spawned);
+                let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
+                if !persisted {
+                    let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
+                }
             }
             Err(err) => {
                 warn!(agent = %id.short(), %err, "restart failed");
@@ -132,19 +170,42 @@ impl Daemon {
                 let status = AgentStatus::Failed {
                     reason: format!("restart failed: {err:#}"),
                 };
-                let policy = {
+                {
                     let mut state = lock(&self.state);
-                    if let Some(stored) = state.registry.get_mut(id) {
-                        stored.restarts = attempt;
-                    }
-                    if let Some(agent) = state.registry.set_status(id, status.clone(), Utc::now()) {
-                        state.persist("agent", |store| store.upsert_agent(&agent));
-                        agent.spec.restart
-                    } else {
+                    if state.storage_error.is_some() {
                         return;
                     }
-                };
-                let _ = policy;
+                    let Some(mut failed) = state.registry.get(id).cloned().filter(|current| {
+                        !current.status.is_live()
+                            && current.spec.restart == record.spec.restart
+                            && current.restarts == record.restarts
+                    }) else {
+                        return;
+                    };
+                    failed.restarts = attempt;
+                    failed.status = status.clone();
+                    failed.finished_at = Some(Utc::now());
+                    let mut event = Event::new(
+                        EventKind::AgentExited {
+                            agent: id.clone(),
+                            status: status.clone(),
+                        },
+                        Utc::now(),
+                    );
+                    event.seq = state.next_seq;
+                    state.persist("failed restart", |store| {
+                        store.agent_transition(&failed, &event)
+                    });
+                    if state.storage_error.is_some() {
+                        return;
+                    }
+                    *state
+                        .registry
+                        .get_mut(id)
+                        .expect("restart identity retained") = failed;
+                    state.next_seq += 1;
+                    let _ = state.events.send(event);
+                }
                 self.consider_restart(id, &status);
             }
         }
@@ -164,5 +225,65 @@ impl Daemon {
         record.spec.restart = agentdocker_core::RestartPolicy::No;
         let record = record.clone();
         state.persist("agent", |store| store.upsert_agent(&record));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_restart_event_reaps_the_child_and_preserves_the_previous_record() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let mut previous = AgentRecord::new(
+            AgentSpec {
+                name: "restart-storage-fixture".into(),
+                command: vec!["sh".into(), "-c".into(), "exec sleep 30".into()],
+                restart: agentdocker_core::RestartPolicy::OnFailure { max: 1 },
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        previous.status = AgentStatus::Exited { code: Some(1) };
+        previous.finished_at = Some(Utc::now());
+        {
+            let mut state = lock(&daemon.state);
+            assert!(matches!(
+                state.insert_record(previous.clone()),
+                Response::Agent { .. }
+            ));
+            state.store.reject_event_for_test("agent_restarted");
+        }
+        daemon
+            .restart_now(&previous.id, std::time::Duration::ZERO)
+            .await;
+        let (controlled, durable, current, failed) = {
+            let state = lock(&daemon.state);
+            (
+                state.supervised.contains_key(&previous.id),
+                state.store.load_agents().unwrap()[0].clone(),
+                state.registry.get(&previous.id).unwrap().clone(),
+                state.storage_error.is_some(),
+            )
+        };
+        // Cleanup precedes assertions so the before-fix failure cannot leak a child.
+        daemon.stop_all().await;
+        assert!(failed, "the event fault must be reached");
+        assert!(
+            !controlled,
+            "failed restart persistence must finish owned cleanup"
+        );
+        assert_eq!(
+            durable.status, previous.status,
+            "status and restart event must commit together"
+        );
+        assert_eq!(
+            current.status, previous.status,
+            "failed persistence must not expose Running"
+        );
+        assert_eq!(durable.restarts, previous.restarts);
     }
 }

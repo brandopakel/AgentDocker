@@ -257,9 +257,8 @@ pub enum Request {
     },
     /// Ask the daemon to exit: managed agents get SIGTERM, as on Ctrl-C.
     Shutdown,
-    /// Replace this daemon with a fresh one, handing it the terminals of
-    /// every running agent so an upgrade does not disturb them. The
-    /// agents keep running throughout; only the daemon is replaced.
+    /// Request planned replacement. Currently returns Unavailable without
+    /// changing the daemon or agents while safe live transfer is unfinished.
     Reload,
 
     /// Publish a message. `to` uses [`crate::Destination::parse`] shorthand.
