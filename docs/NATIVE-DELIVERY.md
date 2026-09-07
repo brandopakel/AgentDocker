@@ -16,7 +16,7 @@ Implemented after the audit:
 
 Regression coverage includes lease/identity/event preparation faults with complete rollback, post-spawn failure cleanup, failed watcher attachment before the first edit, natural completion, conflicting leases, malformed recovery evidence, expired protection, and a crash between restore preparation and spawn. A real daemon/CLI restart test checks first-instruction communication, first-edit observation and private database/WAL/SHM/log modes.
 
-The local standard gate passed 390 Rust tests, five installer tests, doctests, formatting, strict Clippy, package checks and the release build on Apple Silicon macOS, with zero retries and the existing leak-failure threshold. One explicit manual benchmark test was skipped. Historical intermittent leak reports remain recorded in the audit; a passing run does not diagnose them.
+The historical restore/privacy gate for merged #46 source `a7531bec77bb673600ec83aa0070a9bc33e12c53` passed 392 Rust tests, five Python installer tests, separate doctests, formatting, strict Clippy, package checks and the release build on Apple Silicon macOS, with zero retries and 500 ms leak failure. One explicit manual benchmark test was skipped. This is evidence for that source; the [September 7 ledger](REVIEW-2026-09-07.md) records subsequent gates separately. Historical intermittent failures remain recorded; a passing run does not diagnose them.
 
 These changes do not provide a preserved terminal across daemon replacement, vendor conversation resumption, or enforcement against arbitrary same-user programs. The full trial and review gates still apply; v0.1.0 does not contain these fixes.
 
