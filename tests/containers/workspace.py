@@ -12,6 +12,9 @@ import socket
 import shutil
 import subprocess
 import time
+from evidence import reject_launch
+
+os.umask(0o077)
 
 p = argparse.ArgumentParser()
 for name in ['engine', 'daemon', 'cli', 'context', 'root', 'result']:
@@ -78,8 +81,7 @@ def launch(name,build,network='none'):
     command=['python3','-u','-c',WORKER]
     response=rpc({'op':'run_container','build':build['id'],'options':{'mount_checkout':True,'engine_relay':a.relay,'podman_machine':a.machine,'network':network},'spec':{'name':name,'workdir':str(checkout),'command':command}})
     if response['type']=='error':
-        remember(inspect(name))
-        raise AssertionError(response)
+        reject_launch(response, lambda: inspect(name), remember)
     record=remember(expect(response,'agent')['agent'])
     active_container = record['container']['id']
     return wait(lambda:inspect(record['id']),lambda r:r['status']['state']=='running')
@@ -325,9 +327,28 @@ print('concurrent relay passed')
         'client_version':build['client_version'],'server_version':build['server_version'],'scenarios':results}
     Path(a.result).write_text(json.dumps(payload,indent=2)+'\n')
     print(json.dumps(payload),flush=True)
-except BaseException:
+except BaseException as failure:
+    diagnostic_errors = []
     for target in owned:
-        subprocess.run([a.engine,'container','logs',target],stdout=(root/('container-'+target[:16]+'.log')).open('w'),stderr=subprocess.STDOUT,check=False)
+        try:
+            with (root/('container-'+target[:16]+'.log')).open('w') as output:
+                subprocess.run([a.engine,'container','logs',target],stdout=output,stderr=subprocess.STDOUT,check=False,timeout=30)
+        except (OSError, subprocess.SubprocessError) as error:
+            diagnostic_errors.append(str(error))
+    # CI uploads artifacts/, not the disposable root. Retain bounded daemon
+    # output and the failed phase without copying auth directories or databases.
+    try:
+        log.flush()
+        result = Path(a.result)
+        result.parent.mkdir(parents=True, exist_ok=True)
+        with (root/'daemon.log').open('rb') as source:
+            source.seek(max(0, source.seek(0, os.SEEK_END) - 2 * 1024 * 1024))
+            result.with_suffix('.daemon.log').write_bytes(source.read(2 * 1024 * 1024))
+        result.write_text(json.dumps({'result':'failed','engine':a.engine,'machine':a.machine,
+            'relay':a.relay,'scenarios_completed':results,'error':str(failure),
+            'diagnostic_errors':diagnostic_errors},indent=2)+'\n')
+    except OSError as error:
+        print('could not retain failure evidence: '+str(error),flush=True)
     raise
 finally:
     if daemon:

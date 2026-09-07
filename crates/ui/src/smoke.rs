@@ -111,8 +111,16 @@ impl Smoke {
         };
         if let Some(result) = completed {
             let success = result.is_ok() && connected && runtimes > 0 && fixture;
-            let report = result
+            let mut report = result
                 .unwrap_or_else(|error| json!({"result":"failed", "error":error.to_string()}));
+            // Preserve the unmet condition when CI cannot reach capture. Counts
+            // and fixture readiness carry no discovered commands or user paths.
+            report["connected"] = json!(connected);
+            report["runtime_rows"] = json!(runtimes);
+            report["fixture_discovered"] = json!(fixture);
+            report["screenshot_requested"] = json!(self.requested);
+            report["frames"] = json!(self.frames);
+            report["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
             let write = (|| -> anyhow::Result<()> {
                 use std::io::Write;
                 agentdocker_host::dirs::private_file(

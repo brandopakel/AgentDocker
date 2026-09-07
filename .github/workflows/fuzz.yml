@@ -31,3 +31,4 @@ jobs:
           path: |
             fuzz/artifacts/
             fuzz/corpus/
+            artifacts/fuzz-manifest*.json
