@@ -63,8 +63,12 @@ impl Daemon {
     /// Restore checks may have yielded while a stop, a storage failure or an
     /// expired/reassigned lease changed whether this writer can start.
     pub(crate) fn validate_native_launch(&self, expected: &AgentRecord) -> anyhow::Result<()> {
+        self.refresh_policy_for(expected.project.as_ref());
         let mut state = lock(&self.state);
         storage_ready(&state)?;
+        if let Some(response) = state.run_refusal(expected) {
+            return Err(policies::LaunchDenied(response).into());
+        }
         // The statuses a launch may legitimately start from: `created`
         // for a fresh `run`, and an ended one for a restart or a
         // restore, which start the same agent again under its own id.
@@ -278,7 +282,7 @@ impl Daemon {
             // Supervision must own even a child whose registration fails.
             state.supervised.insert(id.clone(), spawned.control.clone());
             let mut running = state.registry.get(&id).cloned().unwrap_or(record.clone());
-            let cancelled = !running.spec.restore;
+            let cancelled = !running.spec.restore || state.run_refusal(&record).is_some();
             running.pid = Some(pid);
             running.process_started_at = process_started_at;
             running.process_group = Some(pid);

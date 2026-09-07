@@ -1197,6 +1197,9 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "run needs a nonempty command");
         }
         let mut record = AgentRecord::new(spec, true, Utc::now());
+        if let Err(response) = self.admit_run(&mut record).await {
+            return *response;
+        }
         if record.spec.isolate {
             match self.isolate(&record).await {
                 Ok(path) => {
@@ -1237,6 +1240,7 @@ impl Daemon {
                 if let Some(session) = spawned.session.clone() {
                     lock(&self.sessions).insert(record.id.clone(), session);
                 }
+                let mut admission_error = None;
                 let updated = {
                     let mut state = lock(&self.state);
                     state
@@ -1247,7 +1251,10 @@ impl Daemon {
                         .get(&record.id)
                         .cloned()
                         .filter(|current| current.status == AgentStatus::Created);
-                    if let Some(mut running) = candidate {
+                    if let Some(error) = state.run_refusal(&record) {
+                        admission_error = Some(error);
+                        None
+                    } else if let Some(mut running) = candidate {
                         let now = Utc::now();
                         running.pid = Some(pid);
                         running.process_started_at = process_started_at;
@@ -1281,7 +1288,7 @@ impl Daemon {
                         None
                     }
                 };
-                let failed = lock(&self.state).storage_failure();
+                let failed = lock(&self.state).storage_failure().or(admission_error);
                 let activation_error = if failed.is_none() && updated.is_some() {
                     spawned.activate("launched").await.err()
                 } else {
@@ -1315,7 +1322,9 @@ impl Daemon {
                     },
                 );
                 self.cleanup_isolate(&record).await;
-                Response::error(ErrorCode::Internal, format!("{err:#}"))
+                err.downcast_ref::<policies::LaunchDenied>()
+                    .map(|denied| denied.0.clone())
+                    .unwrap_or_else(|| Response::error(ErrorCode::Internal, format!("{err:#}")))
             }
         }
     }
@@ -1337,6 +1346,7 @@ impl Daemon {
         let mut record = AgentRecord::new(spec, false, Utc::now());
         record.project = project;
         record.vcs = vcs;
+        self.refresh_policy_for(record.project.as_ref());
         record.pid = pid;
         record.process_started_at = pid.and_then(procinfo::start_time);
         record.status = AgentStatus::Running;

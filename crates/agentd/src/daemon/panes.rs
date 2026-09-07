@@ -52,6 +52,10 @@ impl Daemon {
                 return Response::error(ErrorCode::Invalid, "an agent in a pane needs a workdir");
             }
         };
+        let mut record = AgentRecord::new(spec.clone(), false, Utc::now());
+        if let Err(response) = self.admit_run(&mut record).await {
+            return *response;
+        }
         // Probing tmux runs a process and waits for it, so it does not
         // belong on a runtime worker. Asked before the record exists, so
         // "tmux is too old" is never reported as a failed agent.
@@ -68,7 +72,6 @@ impl Daemon {
 
         // The record first, so the child can be told its own id — the
         // same order `run` uses, and for the same reason.
-        let mut record = AgentRecord::new(spec.clone(), false, Utc::now());
         if record.spec.isolate {
             match self.isolate(&record).await {
                 Ok(path) => record.spec.workdir = Some(path),
@@ -120,6 +123,19 @@ impl Daemon {
         );
         let session = tmux::session_name(&record.spec.name);
         let command = record.spec.command.clone();
+
+        self.refresh_policy_for(record.project.as_ref());
+        let refused = lock(&self.state).run_refusal(&record);
+        if let Some(response) = refused {
+            self.mark_exited(
+                &record.id,
+                AgentStatus::Failed {
+                    reason: "tmux launch refused by admission policy".into(),
+                },
+            );
+            self.cleanup_isolate(&record).await;
+            return response;
+        }
 
         let pane = tokio::task::spawn_blocking(move || {
             tmux::new_session(&session, &workdir, &env, &command)

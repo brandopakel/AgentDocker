@@ -113,7 +113,9 @@ impl Daemon {
                     // The supervisor owns this child even if its durable transition fails.
                     state.supervised.insert(id.clone(), spawned.control.clone());
                     let current = state.registry.get(id).cloned();
-                    if let Some(mut running) = current.filter(|current| {
+                    if state.run_refusal(&record).is_some() {
+                        false
+                    } else if let Some(mut running) = current.filter(|current| {
                         !current.status.is_live()
                             && current.spec.restart == record.spec.restart
                             && current.restarts == record.restarts
@@ -236,6 +238,54 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn automatic_restart_obeys_new_run_policy_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("host.sock")).unwrap());
+        let marker = dir.path().join("executed");
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "denied-restart".into(),
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf executed > \"$1\"".into(),
+                    "fixture".into(),
+                    marker.to_string_lossy().into(),
+                ],
+                restart: agentdocker_core::RestartPolicy::OnFailure { max: 1 },
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Exited { code: Some(1) };
+        lock(&daemon.state).insert_record(record.clone());
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        daemon
+            .restart_now(&record.id, std::time::Duration::ZERO)
+            .await;
+        daemon.stop_all().await;
+        assert!(!marker.exists());
+        let current = lock(&daemon.state)
+            .registry
+            .get(&record.id)
+            .unwrap()
+            .clone();
+        assert_eq!(current.restarts, 1);
+        assert!(current.pid.is_none());
+        assert!(
+            matches!(&current.status, AgentStatus::Failed { reason } if reason.contains("run:denied-restart")),
+            "{:?}",
+            current.status
+        );
+    }
 
     #[tokio::test]
     async fn a_failed_restart_event_reaps_the_child_and_preserves_the_previous_record() {
