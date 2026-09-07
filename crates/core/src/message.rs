@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentId, ChannelId, ProjectId};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MessageId(String);
 
@@ -122,6 +122,49 @@ impl Envelope {
             payload,
             reply_to,
             sent_at: now,
+        }
+    }
+}
+
+/// The runtime of the agent that is a person rather than a program, and
+/// the name that agent is always registered under. Orchestration needs an
+/// escalation path, and it works best inside the same model as everything
+/// else: the human is an agent you can address, queue messages for, and
+/// ask.
+pub const HUMAN: &str = "user";
+pub const HUMAN_RUNTIME: &str = "human";
+
+/// A question waiting for an answer.
+///
+/// `ask` blocks its caller until the answer comes back, so the daemon has
+/// to keep the outstanding questions: an answer names the question by id,
+/// and only the question knows who to send the answer to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    pub id: MessageId,
+    /// Who is waiting, as an agent id.
+    pub from: String,
+    /// Who was asked.
+    pub to: Destination,
+    pub text: String,
+    pub asked_at: DateTime<Utc>,
+    /// When the asker gives up. An answer after this is still delivered as
+    /// an ordinary message; it just has nobody blocked on it.
+    pub expires_at: DateTime<Utc>,
+}
+
+impl Question {
+    pub fn expired(&self, now: DateTime<Utc>) -> bool {
+        now >= self.expires_at
+    }
+
+    /// Whether this question was put to `agent` — directly, or as one of
+    /// the recipients of a wider destination it belongs to.
+    pub fn addressed_to(&self, agent: &AgentId) -> bool {
+        match &self.to {
+            Destination::Agent(id) => id == agent,
+            Destination::Broadcast => true,
+            _ => false,
         }
     }
 }

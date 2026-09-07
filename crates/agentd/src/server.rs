@@ -147,6 +147,9 @@ async fn handle(daemon: Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
                 follow,
                 tail,
             } => return stream_logs(&daemon, &agent, follow, tail, &mut reader, &mut writer).await,
+            Request::Attach { agent, cols, rows } => {
+                return stream_attach(&daemon, &agent, cols, rows, &mut reader, &mut writer).await;
+            }
             unary => {
                 let response = if matches!(&unary, Request::Claim { .. }) {
                     tokio::select! {
@@ -257,6 +260,95 @@ async fn stream_events(
         }
     }
     Ok(())
+}
+
+/// Connect a client's terminal to a managed agent's. Output flows out,
+/// keystrokes and resizes flow in on the same connection, and closing it
+/// detaches without disturbing the agent — the terminal belongs to the
+/// daemon, not to whoever is looking at it.
+async fn stream_attach(
+    daemon: &Arc<Daemon>,
+    agent: &str,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    reader: &mut Reader,
+    writer: &mut OwnedWriteHalf,
+) -> io::Result<()> {
+    let id = match daemon.resolve(agent) {
+        Ok(id) => id,
+        Err(response) => return write(writer, &response).await,
+    };
+    let Some(session) = daemon.session(&id) else {
+        return write(
+            writer,
+            &Response::error(
+                ErrorCode::Invalid,
+                "that agent has no terminal; start it with `run --tty`",
+            ),
+        )
+        .await;
+    };
+    if let (Some(cols), Some(rows)) = (cols, rows) {
+        let _ = session.resize(cols, rows);
+    }
+    // What it printed already, and what it prints next, taken together so
+    // nothing falls between them or arrives twice.
+    let (seen, mut output) = session.attach();
+    write(writer, &Response::EventsReady).await?;
+    if !seen.is_empty() {
+        let frame = Response::Output {
+            data: agentdocker_core::protocol::encode_bytes(&seen),
+        };
+        write(writer, &frame).await?;
+    }
+    loop {
+        tokio::select! {
+            received = output.recv() => match received {
+                Ok(bytes) => {
+                    let frame = Response::Output {
+                        data: agentdocker_core::protocol::encode_bytes(&bytes),
+                    };
+                    write(writer, &frame).await?;
+                }
+                // A slow reader misses bytes rather than stalling the
+                // agent; say so instead of pretending the screen is whole.
+                Err(RecvError::Lagged(skipped)) => {
+                    write(writer, &Response::Lagged { skipped }).await?;
+                }
+                Err(RecvError::Closed) => break,
+            },
+            line = reader.next_line() => match line {
+                Ok(Some(line)) => match serde_json::from_str::<Request>(&line) {
+                    Ok(Request::AttachInput { data }) => {
+                        if let Some(bytes) = agentdocker_core::protocol::decode_bytes(&data)
+                            && session.input.send(bytes).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(Request::AttachResize { cols, rows }) => {
+                        let _ = session.resize(cols, rows);
+                    }
+                    // Anything else on an attached connection is a mistake
+                    // worth naming rather than ignoring.
+                    Ok(_) | Err(_) => {
+                        write(
+                            writer,
+                            &Response::error(
+                                ErrorCode::Invalid,
+                                "an attached connection carries attach_input and attach_resize only",
+                            ),
+                        )
+                        .await?;
+                    }
+                },
+                // The client detached, or the connection broke. The agent
+                // keeps running either way.
+                Ok(None) | Err(_) => break,
+            },
+        }
+    }
+    write(writer, &Response::End).await
 }
 
 async fn stream_logs(

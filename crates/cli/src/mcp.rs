@@ -37,6 +37,10 @@ const INTERNAL_ERROR: i64 = -32603;
 /// Upper bound on `wait_for_messages`: the server handles one request at a
 /// time, so a long wait blocks every other method for its duration.
 const MAX_MESSAGE_WAIT_SECS: u64 = 300;
+/// A person can take a while to look up. An hour is long enough to be
+/// worth waiting and short enough that a forgotten question is not
+/// forever.
+const MAX_ASK_SECS: u64 = 3600;
 /// Upper bound on `claim` waits, matching the daemon's own limit.
 const MAX_CLAIM_WAIT_SECS: u64 = 600;
 /// How long `wait_for_messages` sleeps between inbox polls.
@@ -159,6 +163,8 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         env: BTreeMap::new(),
         labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
         isolate: false,
+        tty: false,
+        restore: false,
     };
     match client
         .call(&Request::Register {
@@ -408,6 +414,32 @@ impl<B: Backend> McpServer<B> {
                 ))
                 .await
             }
+            "ask_human" => {
+                let args: AskArgs = parse(arguments)?;
+                self.forward(Request::Ask {
+                    from: me,
+                    to: agentdocker_core::HUMAN.to_owned(),
+                    question: args.question,
+                    timeout_secs: args.timeout_secs.min(MAX_ASK_SECS),
+                })
+                .await
+            }
+            "answer_question" => {
+                let args: AnswerArgs = parse(arguments)?;
+                self.forward(Request::Answer {
+                    from: Some(me),
+                    message: MessageId::from(args.message),
+                    text: args.text,
+                })
+                .await
+            }
+            "open_questions" => {
+                let args: OpenQuestionsArgs = parse(arguments)?;
+                self.forward(Request::Questions {
+                    agent: args.mine.then_some(me),
+                })
+                .await
+            }
             "claim" => {
                 let args: ClaimArgs = parse(arguments)?;
                 let response = self
@@ -587,6 +619,25 @@ struct WaitArgs {
 }
 
 #[derive(Deserialize)]
+struct AskArgs {
+    question: String,
+    #[serde(default = "default_ask")]
+    timeout_secs: u64,
+}
+
+#[derive(Deserialize)]
+struct AnswerArgs {
+    message: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct OpenQuestionsArgs {
+    #[serde(default = "default_true")]
+    mine: bool,
+}
+
+#[derive(Deserialize)]
 struct ClaimArgs {
     resource: String,
     #[serde(default)]
@@ -646,6 +697,10 @@ fn default_kind() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_ask() -> u64 {
+    300
 }
 
 fn default_wait() -> u64 {
@@ -789,6 +844,15 @@ fn render_whole(response: Response) -> Value {
             false,
         ),
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
+        Response::Answer {
+            message,
+            from,
+            text,
+        } => text_result(
+            &json!({ "answered": true, "message_id": message, "from": from, "text": text }),
+            false,
+        ),
+        Response::Questions { questions } => text_result(&json!({ "questions": questions }), false),
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
@@ -974,6 +1038,43 @@ fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "minimum": 0, "maximum": MAX_MESSAGE_WAIT_SECS, "default": 30 }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ask_human",
+            "description": "Ask the person at the keyboard a question and wait for their answer. Use it for a decision only they can make — an ambiguous requirement, a destructive step, a choice between approaches — not to narrate progress. Blocks until they answer or the timeout passes (at most 3600 s; nothing else is served meanwhile); on timeout, decide for yourself and say what you assumed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "One specific question. Include the options if there are options." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_ASK_SECS, "default": 300 }
+                },
+                "required": ["question"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "answer_question",
+            "description": "Answer a question somebody is waiting on, by its message id. Use it when read_inbox or wait_for_messages gave you a `question` message: the asker is blocked until it is answered.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "The question's message id." },
+                    "text": { "type": "string" }
+                },
+                "required": ["message", "text"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "open_questions",
+            "description": "Questions waiting for an answer, including the ones put to you.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mine": { "type": "boolean", "default": true, "description": "Only the questions put to this agent." }
                 },
                 "additionalProperties": false
             }
@@ -1267,6 +1368,9 @@ mod tests {
                 "send_message",
                 "read_inbox",
                 "wait_for_messages",
+                "ask_human",
+                "answer_question",
+                "open_questions",
                 "claim",
                 "renew",
                 "release",

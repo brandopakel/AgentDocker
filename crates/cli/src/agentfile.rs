@@ -55,6 +55,14 @@ pub struct AgentEntry {
     /// Give the agent its own linked worktree and branch when it runs.
     #[serde(default)]
     pub isolate: bool,
+    /// Give the agent a terminal rather than pipes, so an interactive
+    /// runtime works under `up` and `attach` can reach it.
+    #[serde(default)]
+    pub tty: bool,
+    /// Bring the agent back when `agentd` restarts, under the same
+    /// identity and in the same directory.
+    #[serde(default)]
+    pub restore: bool,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -139,6 +147,8 @@ impl Agentfile {
                     env: entry.env.clone(),
                     labels,
                     isolate: entry.isolate,
+                    tty: entry.tty,
+                    restore: entry.restore,
                 }
             })
             .collect();

@@ -79,6 +79,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
+    daemon.notify_desktop();
+    // Before the reaper: an agent that was running is still marked live,
+    // and its leases with it. Retiring it first would take them away.
+    daemon.restore_agents().await;
+
     let containers = daemon.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));

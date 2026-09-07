@@ -148,6 +148,15 @@ pub enum EventKind {
         agent: AgentId,
         pid: Option<u32>,
     },
+    /// A restarted daemon brought a managed agent back under its own
+    /// identity, so everything already recorded about it still applies.
+    AgentRestored {
+        agent: AgentId,
+        pid: Option<u32>,
+        /// Paths it had read that have changed since, so the reason to
+        /// look at the record is visible in the feed.
+        stale: usize,
+    },
     /// Stop requested; the process still owns its leases until observed exit.
     AgentStopping {
         agent: AgentId,

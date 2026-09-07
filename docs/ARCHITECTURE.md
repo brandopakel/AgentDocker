@@ -171,7 +171,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `ping` | `pong` | version, uptime, restricted endpoint while serving |
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
-| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` |
+| `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restore` brings it back under the same id after a daemon restart |
 | `run_container {spec, build, options?}` | `agent` | host-only; retained image with durable identity/intent; opt-in checkout/scoped endpoint mounts, Podman VM transport, and bridge networking |
 | `restart_container {agent}` | `agent` | host-only; new identity from same build after confirmed exit; `conflict` while exit is uncertain |
 | `register {spec, pid?}` | `agent` | external process; PID must be positive and fit i32; `spec.workdir` decides the project |
@@ -196,6 +196,9 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `import {agent, bundle}` | `handoff {bundle}` | a bundle exported on another host, re-homed to the agent's checkout and addressed to it, to accept with `resume` |
 | `validate {agent,command,timeout_secs?}` | `validation` | execute and retain code-specific evidence |
 | `validations {agent}` | `validations` | evidence for one session |
+| `attach {agent, cols?, rows?}` | `events_ready`, then a stream of `output {data}` | connects to a managed agent's terminal; the client then sends `attach_input` and `attach_resize` on the same connection, and closing it detaches without disturbing the agent |
+| `attach_input {data}` | — | keystrokes for an attached terminal, base64 because they are bytes |
+| `attach_resize {cols, rows}` | — | the attached window changed size, so the agent gets `SIGWINCH` |
 | `channels {project?, all?, agent?}` | `channels {channels: Channel[]}` | the rooms agents share in a project; open ones by default, `all` includes closed-but-unpruned, `agent` narrows to its own and lets `project` be empty |
 | `channel_open {agent, task, members?}` | `channel {channel}` | a room for a task; members default to every other live agent in the project |
 | `channel_close {agent, channel, resolution?}` | `channel {channel}` | the work is final; members are told and the journal says what it settled on |
@@ -209,6 +212,10 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | flushes the inbox first, then live until the client disconnects |
 | `inbox {agent, drain?}` | `messages` | |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
+| `me {workdir?}` | `agent` | register the person at the keyboard as the agent `user`, runtime `human`, or return the one already registered; `workdir` moves them to that project. No pid, so liveness never expires it |
+| `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout)` | sends a `question` message and holds the connection until an answer names it; timeout defaults to 300 s and is clamped to 1–86,400 |
+| `answer {from?, message, text}` | `sent` | reply to a waiting question by its id; who to reply to comes from the question, not the caller; `from` defaults to `user` |
+| `questions {agent?}` | `questions {questions: Question[]}` | what is still waiting, newest first; `agent` narrows to the ones put to that agent |
 | `claim {agent, resource, mode?, ttl_secs?, note?, wait_secs?}` | `lease` or `error(conflict)` | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) retries until the conflict clears |
 | `renew {agent, lease, ttl_secs?}` | `lease` | responses may include `change_seq`, the durable acquisition boundary; absent on legacy leases |
 | `release {agent, lease, summary?, summary_source?}` | `lease` | holder only; `summary` becomes the journal entry's text; `summary_source` is `explicit` (default) or `transcript` |
@@ -485,7 +492,7 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 
 #### Native desktop app *(done)*
 
-`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events. Desktop notifications for messages addressed to the human and for stale-context warnings are planned with the human-as-agent item below. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
+`agentdocker-ui` is a native window, not a web page: a Rust binary (`crates/ui`, egui/eframe) that talks to `agentd` over the same Unix socket as the CLI — a background thread for requests, one for the event stream — with nothing listening on HTTP. Screens: agents by project with status, branch, held leases and last activity; runtimes (installed, wired, running; adopt and set up from the app); the journal (per-project digest, follow); leases; events; the questions agents have put to you, each with the box you answer it in; a terminal, which is the same `attach` the CLI uses rendered by a vt100 emulator, so an interactive agent can be watched and typed at in the window, with the screen resized to the panel and scrollback replayed on attach; and a console that runs any `agentdocker` command and shows what it said, because the command line keeps growing and a window that mirrored it in widgets would always lag behind. Desktop notifications for messages addressed to the human, questions included, come from the daemon rather than the app, so they arrive whether or not the window is open. `agentdocker ui` launches it; it ships beside the CLI. Windows follows once the daemon runs there. A ready event subscription restores connectivity even when no new agent event arrives; reconnects refresh agent, lease, runtime, discovery and selected journal snapshots. Stream lag is reported and forces a reconnect. Setup status includes the CLI diagnostics on stderr, and its subprocess is bounded. The app resolves the canonical daemon home and validates private fallback socket directories before connecting, as the CLI does. `AGENTDOCKER_NO_AUTOSTART` disables its startup attempts. Otherwise the app passes the resolved home and socket to the daemon, reports early child exit, and kills/reaps only its own child on startup failure; successful children remain alive and are reaped on eventual exit.
 
 #### Wait queue and deadlock detection
 
@@ -494,9 +501,15 @@ Discovery is continuous: the daemon scans every five seconds with a bounded proc
 - **FIFO queue.** Core `WaitQueue` (pure) records waiting requests per resource in arrival order; when a lease clears, only the oldest waiter on an overlapping resource may take it, so a newcomer cannot starve someone already waiting. `lease_waiting {resource, requester, position}` is emitted when a request starts waiting and `lease_wait_timeout {resource, requester}` when it gives up (the response stays `error(conflict)` with the blocking leases, as now). Waiters remain connection-scoped and are never persisted: a daemon restart drops every waiting client, which reconnects and re-queues.
 - **Deadlock detection.** Waiters form a graph: an edge from each waiter to every holder of a blocking lease. Core `WaitGraph` (pure, tested) maintains it and, on every new wait, searches for a cycle through the requester. If one exists the claim is refused immediately with `ErrorCode::Deadlock` and `details.cycle` listing the agents and resources, and `lease_deadlock {cycle}` is emitted; the newcomer is always the victim, which is deterministic and needs no priorities. TTLs already bound how long a deadlock can last; detection makes it instant and explains it. Priority-based victim selection stays an open question.
 
-#### The human as an agent
+#### The human as an agent *(done)*
 
-Orchestration needs an escalation path, and it should live inside the same model rather than beside it. `agentdocker me` registers the human as a persistent agent named `user` with runtime `human` (the `from: user` convention already exists), never expired by liveness. `ask {from, to, question, timeout_secs}` sends `kind: question` and blocks the caller until an `answer` with a matching `reply_to` arrives or `ErrorCode::Timeout`; MCP exposes `ask_human`, hooks expose nothing (a model asks in prose). Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker answer <message id> "…"` replies, and the daemon raises a desktop notification (`osascript` / `terminal-notifier` on macOS, `notify-send` on Linux) for anything addressed to `user`, throttled to one per sender per minute.
+Orchestration needs an escalation path, and it lives inside the same model rather than beside it. `agentdocker me` registers the person at the keyboard as a persistent agent named `user` with runtime `human` (the `from: user` convention already existed) and prints its id, so `export AGENTDOCKER_AGENT_ID=$(agentdocker me)` is the whole of joining as yourself. It is idempotent — a second call returns the same record, and moves it to the project the shell is in — and the record has no pid, so the liveness sweep has nothing to check and never expires it. From then on a person is addressable like anything else: messages queue in their inbox, `watch --me` streams them, the journal keeps their cursor, and `ps` lists them.
+
+`ask {from, to, question, timeout_secs?}` sends a `question` message and holds the connection until an `answer` naming it arrives, or answers `error(timeout)`. The daemon keeps the outstanding questions in memory, because an answer names a question by id and only the question knows who is waiting on it; `answer {message, text}` is therefore a one-argument act whether a person or an agent does it. An answer is an ordinary message as well as the end of a wait, so it also reaches the asker's inbox: an `ask` that timed out still leaves the answer where the asker can read it. A question that nobody answers stays in the recipient's inbox after the asker gives up — a timeout is the asker giving up, not the message being withdrawn.
+
+Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker questions [--me]` lists what is waiting, `agentdocker answer <message id> "…"` replies, and the desktop app has a Questions screen where the question and the box you answer it in sit together. MCP exposes `ask_human`, `answer_question` and `open_questions`; hooks expose nothing, because a model asks in prose.
+
+The one thing genuinely different about a person is that they are not polling a socket, so the daemon raises a desktop notification for any message that reaches an agent whose runtime is `human` — `terminal-notifier` then `osascript` on macOS, `notify-send` on Linux — throttled to one per sender per minute. It is best-effort by design: a headless box has none of these tools, and that is not an error, because the message is still queued, still in the inbox, still on the event stream. Notifications are built under the state lock and posted on another thread, so a desktop that is slow to draw one never delays a coordination request.
 
 #### Admission policy and budgets
 
@@ -512,9 +525,41 @@ Budgets ride the lease primitive as a quantitative resource kind: `quota:<name>`
 
 `run` gives a managed agent pipes and captures them to a log. Two things follow, and both are wrong. An interactive agent cannot be run that way at all — `claude` and `codex` want a terminal, and a pipe is not one — so in practice agents are started by hand and only *adopted*. And nothing survives: if `agentd` restarts, the child lives on in its own process group but its output is gone, and there is no way back to it.
 
-Row 23 fixes both on our own terms. A managed agent gets a **PTY** rather than pipes, so interactive runtimes work under `run`. The daemon keeps a bounded scrollback per agent (the last N KB, in the store beside the log, pruned like the journal), so a client attaching late sees recent context rather than nothing. `agentdocker attach <agent>` connects a terminal to it: raw mode, window-size propagation, detach without killing. Because the child already runs in its own process group with a recorded `process_started_at`, a restarted daemon can re-adopt what is still alive and re-open its scrollback rather than orphan it.
+Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = true` in an `Agentfile.toml` entry) gives the agent a **pty** instead of pipes: `posix_openpt` in the daemon, and in the child, between `fork` and `exec`, `setsid` and `TIOCSCTTY` so the terminal is genuinely its controlling one. That replaces `process_group(0)` rather than joining it — `setsid` makes the child a process-group leader by itself, so signalling `-pid` still reaches its descendants, and doing both would fail. Everything the agent prints goes two ways: whole lines to the log, so `logs` reads exactly as before, and raw bytes to a broadcast for whoever is attached.
+
+`agentdocker attach <agent>` connects your terminal to it. The local terminal goes into raw mode under a guard that restores it however the command ends, `SIGWINCH` is forwarded as `attach_resize` so full-screen agents lay out correctly, and Ctrl-] detaches. Attaching and detaching are only a client coming and going: the terminal belongs to the daemon, so the agent neither notices nor stops. A slow reader is told it missed bytes rather than being allowed to stall the agent.
+
+Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
+
+What is **not** done is persistence across a restart of the daemon itself. The agent's process survives, as it always did — it has its own process group — but the master descriptor dies with `agentd`, so `attach` afterwards has nothing to reconnect to.
+
+**What herdr does about this, and what it means for us.** Worth knowing precisely, because the answer is less magical than the marketing suggests, and it sets our own target. Their server owns the terminals, so sessions survive client detach, sleep, and network loss — the same property we now have. When the *server itself* restarts, their own documentation is explicit that running processes are not preserved: "Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes." What is restored is structure — workspaces, tabs, panes, cwd, layout, focus — and panes "come back as new shells in their saved directories", optionally replaying recent screen contents, optionally letting an agent resume its own conversation if it reported a session reference. Only a *planned* upgrade preserves processes, behind an experimental `--handoff` flag: the old server duplicates its pty master descriptors and passes them to the new one over a private Unix socket with `SCM_RIGHTS`, so, in their words, it "does not move the child processes. It moves ownership of the terminals those processes are already attached to."
+
+So the target splits in two, and the second half is where we are better placed than they are.
+
+Row 27, the **snapshot restore**, is done. `run --restore` (or `restore = true` in an `Agentfile.toml`) marks a managed agent as one to bring back; opt-in, because starting a daemon should never spawn processes nobody asked it to, and `agentdocker ps` starts the daemon. On startup, before the liveness sweep can retire anything, such an agent is relaunched **under its own id**. That is the whole of it: the read set, the journal cursor, the checkpoints, the ledger attribution and the leases are all keyed by the agent id, so restoring the identity restores the working set with it rather than handing out a fresh shell in the right directory.
+
+Which records qualify does not depend on how the last daemon ended. A clean shutdown stops its agents, so their records read `exited`; a crash writes nothing, so they still read `running`. Either way the process is gone and the agent asked to come back. An agent whose process group is somehow still alive is left alone rather than started twice, and an agent stopped on purpose is not restored — `stop` clears the flag on the record, so the reason it will not come back is visible in `inspect` rather than hidden in the daemon.
+
+Leases need one extra step, because releasing them when an agent stops is correct: once nothing is working on a resource, the resource is free. So the daemon writes a **restore point** for each restorable agent immediately before its own shutdown stops them — the resources they hold, with the mode and note of each — and puts them back on restore, as new leases with fresh expiries. After a crash there is no restore point and none is needed: nothing released anything, so the lease table is still the truth. A restore point older than twelve hours is ignored, because a daemon that has been down for half a day is not resuming a session, and re-taking a stale lease would be claiming a resource for work nobody is doing.
+
+What the agent is told arrives as a `restored` message, so it reaches the agent by whatever route its runtime already reads — the inbox, a hook's injected context, `wait_for_messages`. It carries the checkpoint it last saved and the next steps it recorded, how many observations its read set holds and **which of those paths changed while it was down**, the leases it holds and which of them had to be put back, and where its journal reading had got to. That is the difference from restoring a multiplexer's layout: a restored agent resumes with evidence, not with a directory name. Every restore is announced as `agent_restored`, carrying how many paths went stale.
+
+What is still not restored is the terminal. A `--tty` agent comes back with a new one and an empty scrollback; the old master descriptor died with the old daemon. That is row 28.
+
+Row 28 is the **descriptor handoff**: `agentdocker daemon reload` passing pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade does not disturb a running agent. The same mechanism herdr uses, for the same reason, and worth having once upgrades are frequent enough to notice.
 
 This is the one place where [herdr](https://github.com/herdrdev/herdr) is ahead of us and worth learning from directly; see [Where AgentDocker sits](#where-agentdocker-sits).
+
+#### The app's terminal and command bar
+
+A window that can only look at things is half a product: everything the CLI can do has to be reachable from it. Two different needs, and they want different answers.
+
+**Attaching** needs a real terminal. Now that a managed agent has a pty and `attach` streams it, the app should render one: a terminal view per agent, driven by the same `attach` protocol the CLI uses, with a vt parser turning the byte stream into a screen and keystrokes going back the other way. That is row 29, and it is what turns the app from a dashboard into a console.
+
+**Everything else** should not be a form per command. The CLI is the complete surface and it keeps growing; hand-built widgets for each would always lag behind it, and every new row on this roadmap would mean a new dialogue. Instead the app gets a command bar that runs `agentdocker …` and renders the result, with buttons only for the handful of things done constantly — stop, adopt, set up a runtime, approve or block a review, close a channel. The buttons are shortcuts to the same commands, so there is one surface to keep correct rather than two.
+
+What the app must not become is a multiplexer: panes, layouts, and tiling are herdr's and tmux's ground, and building them here would spend our effort on their strength rather than ours.
 
 #### Terminal multiplexers
 
@@ -557,7 +602,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 11 | ✅ `handoff`, lease transfer, `export` / `import` | 4 | 9b, 10 |
 | 12 | 🔄 per-agent tokens ✅, Docker/Podman image builds ✅, container supervision ✅, authenticated workspaces ✅; engine-volume relay and image workspaces in review | 4 | 3 |
 | 13 | FIFO wait queue, wait graph, deadlock detection | 5 | — |
-| 14 | human agent, `ask` / `answer`, notifications | 5 | 2 |
+| 14 | ✅ human agent (`me`), `ask` / `answer` / `questions`, `watch --me`, MCP `ask_human`, desktop notifications, the app's Questions screen | 5 | 2 |
 | 15 | admission policy and quotas | 5 | 12 |
 | 16 | restart policies, `depends_on`, `top` | 5 | — |
 | 17 | federation | 6 | 11, 12, 20 |
@@ -566,12 +611,15 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 20 | Windows: named pipes, a Windows service, process inspection | 6 | 19 |
 | 21 | ✅ channels: a room per collision or task, membership-routed messages (`channel:<id>`), `review` verdicts as the tie-break, opened from the ledger, closed when everyone leaves, pruned | 5 | 10 |
 | 22 | contests: several agents attempt one task, each in its own worktree, each submitting passing `validate` evidence; ranked by a metric declared before they start, provenance-matched, ties settled by channel review | 5 | 21, 14 |
-| 23 | PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, bounded scrollback, `attach` and detach, re-adoption of survivors after a daemon restart | 5 | — |
+| 23 | ✅ PTY-backed sessions: a terminal per managed agent so interactive runtimes work under `run`, `attach` and detach, window size, scrollback on attach | 5 | — |
+| 27 | ✅ snapshot restore: `run --restore` brings an agent back under its own id after a daemon restart, with its leases re-taken from a restore point and a `restored` brief naming its checkpoint, what it had read, what changed while it was down, and its journal cursor | 5 | 23 |
+| 28 | `daemon reload`: pass pty masters to a replacement `agentd` over a private socket with `SCM_RIGHTS`, so a planned upgrade leaves running agents attached | 5 | 23 |
 | 24 | derived activity: working, idle, or blocked on a named resource held by a named agent, from the working set rather than from terminal heuristics | 5 | 13 |
 | 25 | multiplexer adapters: recognise agents living in `tmux` panes and herdr sessions, record and show it, `run --in-pane` | 5 | 18, 23 |
+| 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said | 5 | 19, 23 |
 | 26 | 🔄 token-lean output: compact MCP results with projections and a `verbose` opt-in ✅; an rtk-compressed view of retained logs where rtk is installed | 5 | — |
 
-Order from here: 23 (sessions, the one thing herdr has that we do not), 14 (the human as an agent, where the desktop app's notifications come from), 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, the `commit` half of 10, 20, and 17.
+Order from here: 24, 25, 22 (contests, which need 14's human arbiter), 13, 15, 16, 28, the `commit` half of 10, 20, and 17.
 
 ### Planned protocol and event additions
 
@@ -585,11 +633,10 @@ Listed here so the wire-protocol table above stays a description of what exists.
 | `commit {agent, message?, push?, pr?}` | `commit` | 4 |
 | `handoff {from, to, task?, note?, transfer_leases?}` | `handoff` | 4 |
 | `run` / `register` responses gain `token`; every request accepts `token?` | — | 4 |
-| `ask {from, to, question, timeout_secs}` | `message` (the answer) or `error(timeout)` | 5 |
 
-Shipped events include `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
+Shipped events include `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
-Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. New error codes: `Deadlock` (Phase 5) and `Timeout` (for `ask`).
+Planned events: `lease_waiting`, `lease_wait_timeout`, `lease_deadlock`, `policy_denied`. `Timeout` is shipped (`ask`); `Deadlock` follows with row 13.
 
 ## Open questions
 

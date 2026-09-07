@@ -268,6 +268,38 @@ pub enum Request {
         messages: Vec<MessageId>,
     },
 
+    /// Register the person at the keyboard as a persistent agent named
+    /// `user`, or return the one already registered. Idempotent, and the
+    /// record is never expired by liveness: there is no process to watch.
+    Me {
+        #[serde(default)]
+        workdir: Option<std::path::PathBuf>,
+    },
+    /// Ask a question and wait for the answer on the same connection.
+    /// Answers with `answer {…}`, or `error(timeout)` when nobody replies
+    /// in time. The question is delivered as an ordinary `question`
+    /// message, so an agent that is only watching still sees it.
+    Ask {
+        from: String,
+        to: String,
+        question: String,
+        #[serde(default = "default_ask_timeout")]
+        timeout_secs: u64,
+    },
+    /// Answer a question by its message id. The daemon knows who asked.
+    Answer {
+        #[serde(default)]
+        from: Option<String>,
+        message: MessageId,
+        text: String,
+    },
+    /// Questions still waiting for an answer, newest first; `agent`
+    /// narrows them to the ones put to that agent.
+    Questions {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+
     Claim {
         agent: String,
         resource: String,
@@ -409,6 +441,27 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
+    /// Attach a terminal to a managed agent that was given one. The reply
+    /// is a stream of `output`; the client may then send `attach_input`
+    /// and `attach_resize` on the same connection, and closing it detaches
+    /// without disturbing the agent.
+    Attach {
+        agent: String,
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
+    },
+    /// Keystrokes for an attached agent's terminal, base64 because they
+    /// are bytes and not text.
+    AttachInput {
+        data: String,
+    },
+    /// The attached window changed size.
+    AttachResize {
+        cols: u16,
+        rows: u16,
+    },
     /// Drop journal entries of a project below `before_seq`.
     JournalPrune {
         project: String,
@@ -449,6 +502,22 @@ fn default_tail() -> usize {
     100
 }
 
+/// Terminal bytes as a protocol frame carries them. Base64 rather than a
+/// string because a terminal emits escape sequences and partial UTF-8,
+/// and rather than an array of numbers because that is four times the
+/// size for the same bytes.
+pub fn encode_bytes(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The other direction; malformed input decodes to nothing rather than
+/// killing the stream.
+pub fn decode_bytes(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
+}
+
 /// Closed channels older than this are pruned by default: a fortnight,
 /// long enough to read back why something landed.
 fn default_channel_retention() -> u64 {
@@ -457,6 +526,13 @@ fn default_channel_retention() -> u64 {
 
 fn default_changes_limit() -> usize {
     50
+}
+
+/// Long enough for a person to notice a notification and type a reply,
+/// short enough that a forgotten question does not pin a connection open
+/// for the rest of the day.
+fn default_ask_timeout() -> u64 {
+    300
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +551,9 @@ pub enum ErrorCode {
     /// A part of the daemon is off — the restricted container endpoint
     /// could not be served — so what needs it is refused, not broken.
     Unavailable,
+    /// The caller waited as long as it asked to and the thing it waited
+    /// for did not happen. Nothing failed; nobody answered yet.
+    Timeout,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -578,6 +657,15 @@ pub enum Response {
     Messages {
         messages: Vec<Envelope>,
     },
+    /// The reply to an `ask`: what was said, and who said it.
+    Answer {
+        message: MessageId,
+        from: String,
+        text: String,
+    },
+    Questions {
+        questions: Vec<crate::Question>,
+    },
     Lease {
         lease: Lease,
     },
@@ -597,6 +685,10 @@ pub enum Response {
     },
     Channel {
         channel: crate::Channel,
+    },
+    /// Bytes an attached agent's terminal produced, base64 encoded.
+    Output {
+        data: String,
     },
     Channels {
         channels: Vec<crate::Channel>,
@@ -648,6 +740,16 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_bytes_survive_a_round_trip() {
+        let raw: Vec<u8> = vec![0x1b, b'[', b'2', b'J', 0xff, 0xfe, 0x00, b'h', b'i'];
+        let encoded = encode_bytes(&raw);
+        assert!(!encoded.contains('\n'), "one frame, one line");
+        assert_eq!(decode_bytes(&encoded).as_deref(), Some(raw.as_slice()));
+        assert_eq!(decode_bytes("not base64!!"), None);
+        assert_eq!(decode_bytes(""), Some(Vec::new()));
+    }
 
     #[test]
     fn requests_round_trip() {
