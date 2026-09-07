@@ -25,6 +25,10 @@ const EVENT_HISTORY: usize = 500;
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
+/// How long a console command may run. Long enough for anything that
+/// finishes, short enough that `watch` or `logs -f` — which never do —
+/// give the worker thread back.
+const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
@@ -92,6 +96,9 @@ enum Msg {
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Vec<JournalEntry>),
     Questions(Vec<Question>),
+    /// An answer came back: `Ok` means it was delivered, `Err` carries
+    /// why it was not, so what the person typed is not thrown away.
+    Answered(MessageId, Result<(), String>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
@@ -127,6 +134,9 @@ pub struct App {
     /// does not disturb another half-written answer.
     questions: Vec<Question>,
     answers: BTreeMap<MessageId, String>,
+    /// Answers on their way to the daemon, so the same one is not sent
+    /// twice while it is in flight.
+    sending: std::collections::BTreeSet<MessageId>,
 }
 
 impl App {
@@ -171,6 +181,7 @@ impl App {
             console_output: String::new(),
             questions: Vec::new(),
             answers: BTreeMap::new(),
+            sending: std::collections::BTreeSet::new(),
         }
     }
 
@@ -200,6 +211,7 @@ impl App {
             console_output: String::new(),
             questions: Vec::new(),
             answers: BTreeMap::new(),
+            sending: std::collections::BTreeSet::new(),
         }
     }
 
@@ -222,10 +234,26 @@ impl App {
                 }
                 Msg::Questions(questions) => {
                     // Forget drafts for questions nobody is waiting on any
-                    // more, so the map does not grow with the session.
-                    self.answers
-                        .retain(|id, _| questions.iter().any(|q| q.id == *id));
+                    // more, so the map does not grow with the session — but
+                    // not one still in flight, whose question the daemon
+                    // has already forgotten.
+                    self.answers.retain(|id, _| {
+                        self.sending.contains(id) || questions.iter().any(|q| q.id == *id)
+                    });
                     self.questions = questions;
+                }
+                Msg::Answered(id, result) => {
+                    self.sending.remove(&id);
+                    match result {
+                        Ok(()) => {
+                            self.answers.remove(&id);
+                            self.questions.retain(|q| q.id != id);
+                            self.status = "answered".to_owned();
+                        }
+                        // The draft stays exactly where it was, so nothing
+                        // typed is lost to a daemon that was not listening.
+                        Err(reason) => self.status = reason,
+                    }
                 }
                 Msg::Event(event) => self.on_event(*event),
                 Msg::Connected => {
@@ -493,6 +521,12 @@ impl App {
                     ui.label(RichText::new(format!("● {reason}")).color(Color32::GRAY));
                 }
             }
+            if terminal.scrolled_back() {
+                ui.label(RichText::new("· scrolled back").weak());
+                if ui.button("Jump to live").clicked() {
+                    terminal.scroll(i32::MIN / 2);
+                }
+            }
             if ui.button("Detach").clicked() {
                 detach = true;
             }
@@ -504,20 +538,23 @@ impl App {
             (space.x / CELL.0) as u16,
             ((space.y / CELL.1) as u16).saturating_sub(1),
         );
-        // Everything typed while this screen is up goes to the agent.
+        // Everything typed while this screen is up goes to the agent, and
+        // the wheel moves through the history the parser kept rather than
+        // through a scroll area that only ever holds one screen.
+        let (events, wheel) = ui.input(|i| (i.events.clone(), i.smooth_scroll_delta.y));
         if terminal.status() == Status::Attached {
-            let events = ui.input(|i| i.events.clone());
             let bytes = crate::terminal::keystrokes(&events);
             if !bytes.is_empty() {
                 terminal.send(bytes);
             }
         }
-        egui::ScrollArea::both()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                terminal.ui(ui);
-            });
+        if wheel.abs() >= 1.0 {
+            terminal.scroll((wheel / CELL.1).round() as i32);
+        }
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            terminal.ui(ui);
+        });
         if detach {
             self.terminal = None;
         }
@@ -548,6 +585,7 @@ impl App {
         let mut answered: Option<(MessageId, String)> = None;
         let questions = self.questions.clone();
         for question in &questions {
+            let in_flight = self.sending.contains(&question.id);
             let left = (question.expires_at - Utc::now()).num_seconds().max(0);
             ui.group(|ui| {
                 ui.horizontal(|ui| {
@@ -570,20 +608,23 @@ impl App {
                 if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     send = true;
                 }
-                if ui.button("Answer").clicked() {
+                if ui
+                    .add_enabled(!in_flight, egui::Button::new("Answer"))
+                    .clicked()
+                {
                     send = true;
                 }
-                if send && !draft.trim().is_empty() {
+                if send && !in_flight && !draft.trim().is_empty() {
                     answered = Some((question.id.clone(), draft.clone()));
                 }
             });
             ui.add_space(4.0);
         }
         if let Some((id, text)) = answered {
-            self.answers.remove(&id);
-            // Drop it from the list at once: the daemon forgets an
-            // answered question, and the next sweep would anyway.
-            self.questions.retain(|q| q.id != id);
+            // The draft and the question both stay until the daemon says
+            // it took the answer. Dropping them first would lose what was
+            // typed if the send failed.
+            self.sending.insert(id.clone());
             self.send(Cmd::Answer(id, text));
         }
     }
@@ -1015,16 +1056,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Questions { questions } => Some(Msg::Questions(questions)),
             _ => None,
         },
-        Cmd::Answer(message, text) => Some(
-            match client.call(&Request::Answer {
-                from: None,
-                message,
-                text,
-            }) {
-                Ok(_) => Msg::Status("answered".to_owned()),
-                Err(err) => Msg::Status(err.to_string()),
-            },
-        ),
+        Cmd::Answer(message, text) => Some(Msg::Answered(
+            message.clone(),
+            client
+                .call(&Request::Answer {
+                    from: None,
+                    message,
+                    text,
+                })
+                .map(|_| ())
+                .map_err(|err| err.to_string()),
+        )),
         Cmd::Adopt(pid) => Some(
             match client.call(&Request::Adopt {
                 pid,
@@ -1090,22 +1132,24 @@ fn console(line: &str) -> String {
         _ => words,
     };
     let cli = beside("agentdocker");
-    match std::process::Command::new(&cli).args(&args).output() {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            let errors = String::from_utf8_lossy(&output.stderr);
-            if !errors.trim().is_empty() {
-                if !text.is_empty() && !text.ends_with('\n') {
-                    text.push('\n');
-                }
-                text.push_str(&errors);
-            }
-            if text.trim().is_empty() {
-                text = format!("({})", output.status);
-            }
-            text
+    let Some(cli) = cli.to_str().map(str::to_owned) else {
+        return "the CLI path is not UTF-8".to_owned();
+    };
+    let argv: Vec<String> = std::iter::once(cli.clone()).chain(args).collect();
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => return err.to_string(),
+    };
+    // Bounded, because several commands never finish on their own:
+    // `watch`, `events` and `logs -f` stream until the connection closes.
+    // Without a limit the first one typed would take the worker thread
+    // with it and the window would stop answering.
+    match agentdocker_host::command::run(&cwd, &argv, CONSOLE_TIMEOUT) {
+        Ok(output) if output.text.trim().is_empty() => {
+            format!("(exit {})", if output.success { 0 } else { 1 })
         }
-        Err(err) => format!("cannot run {}: {err}", cli.display()),
+        Ok(output) => output.text,
+        Err(err) => format!("cannot run {cli}: {err}"),
     }
 }
 

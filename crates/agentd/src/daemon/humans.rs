@@ -23,7 +23,11 @@ use agentdocker_host::notify::{self, Notification};
 
 /// Enough outstanding questions that a busy fleet is never refused, few
 /// enough that a client looping on `ask` cannot grow the daemon without
-/// bound. Expired questions are dropped before this is consulted.
+/// bound. Expired questions are dropped before this is consulted, and a
+/// new question is refused rather than an old one evicted: every entry
+/// here has a caller blocked on it, and dropping one would leave that
+/// caller waiting out its whole timeout for an answer that can no longer
+/// be delivered.
 const MAX_QUESTIONS: usize = 512;
 
 /// One notification per sender per minute. A person being told something
@@ -73,24 +77,17 @@ impl State {
             .unwrap_or_else(|| from.to_owned())
     }
 
-    /// Remember a question so its answer can find the asker.
-    fn remember_question(&mut self, question: Question) {
+    /// Remember a question so its answer can find the asker. Refuses
+    /// rather than evicts when full, because every entry has somebody
+    /// blocked on it.
+    fn remember_question(&mut self, question: Question) -> bool {
         let now = question.asked_at;
         self.questions.retain(|_, q| !q.expired(now));
-        while self.questions.len() >= MAX_QUESTIONS {
-            // Drop the one that expires soonest: it is the closest to
-            // being nobody's business anyway.
-            let Some(soonest) = self
-                .questions
-                .values()
-                .min_by_key(|q| q.expires_at)
-                .map(|q| q.id.clone())
-            else {
-                break;
-            };
-            self.questions.remove(&soonest);
+        if self.questions.len() >= MAX_QUESTIONS {
+            return false;
         }
         self.questions.insert(question.id.clone(), question);
+        true
     }
 
     /// The questions still waiting, newest first.
@@ -185,7 +182,27 @@ impl Daemon {
             };
             // No pid: a person is not a process, so liveness has nothing
             // to check and the record is never expired.
-            return self.register(spec, None).await;
+            let registered = self.register(spec, None).await;
+            // Registering is not atomic with the look-up above — it does
+            // project discovery in between — so two `me` calls can both
+            // find nobody and both try. The second is refused for the
+            // name, and the right answer to an idempotent call is the
+            // record that won, not an error.
+            if matches!(
+                registered,
+                Response::Error {
+                    code: ErrorCode::NameTaken,
+                    ..
+                }
+            ) {
+                let state = lock(&self.state);
+                if let Some(record) = state.registry.live().find(|a| is_human(a)) {
+                    return Response::Agent {
+                        agent: record.clone(),
+                    };
+                }
+            }
+            return registered;
         };
         // Follow the person to wherever they are now. A human moves
         // between projects far more often than an agent does, and the
@@ -232,29 +249,60 @@ impl Daemon {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
+        // A question needs somebody who can answer it. A topic delivers
+        // only to whoever happens to be subscribed and queues for nobody,
+        // so a question put to one can sit unanswerable for its whole
+        // timeout without ever appearing in `questions`.
+        if !matches!(to, Destination::Agent(_) | Destination::Broadcast) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "ask needs one agent, or `all`; a question has to reach somebody who can answer it",
+            );
+        }
 
         // Subscribe before sending, so an answer that arrives while the
         // question is still being routed cannot be missed.
         let mut answers = lock(&self.state).bus.subscribe();
         let asked_at = Utc::now();
-        let sent = lock(&self.state).send(
+        // Built here rather than by `send`, so the question is recorded
+        // under its own id *before* it goes out. Publishing first would
+        // leave a window where a recipient answers a question the daemon
+        // has not heard of, and the asker waits out its timeout.
+        let envelope = Envelope::new(
             from.clone(),
             to.clone(),
-            "question".to_owned(),
+            "question",
             json!({ "text": question }),
             None,
-        );
-        let Response::Sent { message, .. } = sent else {
-            return sent;
-        };
-        lock(&self.state).remember_question(Question {
-            id: message.clone(),
-            from,
-            to,
-            text: question,
             asked_at,
-            expires_at: asked_at + Duration::from_std(timeout).unwrap_or_else(|_| Duration::zero()),
-        });
+        );
+        let message = envelope.id.clone();
+        let sent = {
+            let mut state = lock(&self.state);
+            if !state.remember_question(Question {
+                id: message.clone(),
+                from,
+                to,
+                text: question,
+                asked_at,
+                expires_at: asked_at
+                    + Duration::from_std(timeout).unwrap_or_else(|_| Duration::zero()),
+            }) {
+                return Response::error(
+                    ErrorCode::Unavailable,
+                    "too many questions are already waiting for an answer",
+                );
+            }
+            let sent = state.publish(envelope);
+            if !matches!(sent, Response::Sent { .. }) {
+                // Nothing went out, so nothing is waiting.
+                state.questions.remove(&message);
+            }
+            sent
+        };
+        if !matches!(sent, Response::Sent { .. }) {
+            return sent;
+        }
 
         let waited = tokio::time::timeout(timeout, async {
             loop {
@@ -323,5 +371,74 @@ impl Daemon {
         Response::Questions {
             questions: state.open_questions(agent.as_ref()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A daemon with nothing in it, for the pure parts of this module.
+    fn state(dir: &TempDir) -> Arc<Daemon> {
+        let home = dir.path().to_path_buf();
+        Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap())
+    }
+
+    fn question(seconds: i64) -> Question {
+        let now = Utc::now();
+        Question {
+            id: MessageId::generate(),
+            from: "asker".to_owned(),
+            to: Destination::Broadcast,
+            text: "?".to_owned(),
+            asked_at: now,
+            expires_at: now + Duration::seconds(seconds),
+        }
+    }
+
+    /// A full table refuses rather than evicts. Every entry has a caller
+    /// blocked on it, and dropping one would leave that caller waiting
+    /// out its whole timeout for an answer nobody can deliver.
+    #[test]
+    fn a_full_table_refuses_instead_of_dropping_somebody_elses_question() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let mut state = lock(&daemon.state);
+        for _ in 0..MAX_QUESTIONS {
+            assert!(state.remember_question(question(300)));
+        }
+        let refused = question(300);
+        assert!(!state.remember_question(refused.clone()));
+        assert_eq!(state.questions.len(), MAX_QUESTIONS);
+        assert!(!state.questions.contains_key(&refused.id));
+    }
+
+    /// Expired questions are nobody's business, so they make room.
+    #[test]
+    fn expired_questions_make_room_for_new_ones() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let mut state = lock(&daemon.state);
+        for _ in 0..MAX_QUESTIONS {
+            assert!(state.remember_question(question(-1)));
+        }
+        let fresh = question(300);
+        assert!(state.remember_question(fresh.clone()));
+        assert_eq!(state.questions.len(), 1);
+        assert!(state.questions.contains_key(&fresh.id));
+    }
+
+    #[test]
+    fn a_notification_title_says_what_kind_of_message_arrived() {
+        assert_eq!(title("alpha", "question"), "alpha asks");
+        assert_eq!(title("alpha", "stale"), "alpha: your context is stale");
+        assert_eq!(title("alpha", "chat"), "alpha says");
+    }
+
+    #[test]
+    fn message_text_prefers_the_conventional_field() {
+        assert_eq!(message_text(&json!({ "text": "hello" })), "hello");
+        assert_eq!(message_text(&json!({ "n": 1 })), r#"{"n":1}"#);
     }
 }

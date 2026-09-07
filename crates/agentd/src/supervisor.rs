@@ -153,15 +153,30 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             ));
             // One task reads the terminal into the log, the scrollback and
             // whoever is attached; another types into it.
-            let reader = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
+            //
+            // The child already exists, and dropping a `Child` does not
+            // kill it. Failing out of here with `?` would leave a process
+            // running that nothing supervises, so a failed clone stops it
+            // first — `kill` rather than `start_kill`, because it also
+            // reaps.
+            let (reader, writer) = match (master.try_clone(), master.try_clone()) {
+                (Ok(reader), Ok(writer)) => (reader, writer),
+                (reader, writer) => {
+                    let error = reader.err().or(writer.err()).expect("one of them failed");
+                    let _ = child.kill().await;
+                    return Err(error).context("cannot clone the agent's terminal");
+                }
+            };
             tokio::spawn(pump_terminal(
-                reader,
+                tokio::fs::File::from_std(std::fs::File::from(reader)),
                 tx,
                 output.clone(),
                 scrollback.clone(),
             ));
-            let writer = tokio::fs::File::from_std(std::fs::File::from(master.try_clone()?));
-            tokio::spawn(type_into_terminal(writer, keystrokes));
+            tokio::spawn(type_into_terminal(
+                tokio::fs::File::from_std(std::fs::File::from(writer)),
+                keystrokes,
+            ));
             Some(Session {
                 output,
                 input,

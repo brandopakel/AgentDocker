@@ -13,6 +13,14 @@
 use std::ffi::CStr;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::Mutex;
+
+/// `ptsname` returns a pointer into storage shared by the whole process,
+/// so two threads opening a terminal at once can read each other's answer.
+/// The daemon serves each connection in its own task, and two `run --tty`
+/// requests can therefore land together. One lock, held across the call
+/// and the copy, is the whole fix.
+static PTSNAME: Mutex<()> = Mutex::new(());
 
 /// A terminal pair: the daemon reads and writes `master`, the child gets
 /// `slave` as its standard streams and controlling terminal.
@@ -33,23 +41,36 @@ impl Pty {
                 return Err(io::Error::last_os_error());
             }
             let master = OwnedFd::from_raw_fd(master);
+            // The child is handed the slave, never the master. Without
+            // close-on-exec it would inherit the master too, and a
+            // terminal the daemon thinks it owns alone would stay open
+            // for as long as the agent's descendants live.
+            set_cloexec(master.as_raw_fd())?;
             if libc::grantpt(master.as_raw_fd()) < 0 || libc::unlockpt(master.as_raw_fd()) < 0 {
                 return Err(io::Error::last_os_error());
             }
-            // `ptsname` returns a pointer into static storage; copy it out
-            // before anything else can call it.
-            let name = libc::ptsname(master.as_raw_fd());
-            if name.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let name = CStr::from_ptr(name).to_owned();
+            let name = {
+                // Held across the call and the copy: the pointer is into
+                // storage the next caller overwrites.
+                let _serialised = PTSNAME.lock().unwrap_or_else(|e| e.into_inner());
+                let name = libc::ptsname(master.as_raw_fd());
+                if name.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                CStr::from_ptr(name).to_owned()
+            };
             let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
             if slave < 0 {
                 return Err(io::Error::last_os_error());
             }
+            let slave = OwnedFd::from_raw_fd(slave);
+            // The copies `Command` dup2s onto the child's standard streams
+            // are unaffected by this; it is the original that must not
+            // survive the exec as a stray descriptor.
+            set_cloexec(slave.as_raw_fd())?;
             Ok(Self {
                 master,
-                slave: Some(OwnedFd::from_raw_fd(slave)),
+                slave: Some(slave),
             })
         }
     }
@@ -74,6 +95,21 @@ impl Pty {
     pub fn into_master(self) -> OwnedFd {
         self.master
     }
+}
+
+/// Close-on-exec, so a descriptor the daemon owns does not become one
+/// every agent it starts also owns.
+fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    // SAFETY: `fd` is a valid descriptor we just opened.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above; only the close-on-exec bit is added.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// `TIOCSWINSZ` on any terminal descriptor.

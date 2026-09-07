@@ -3274,8 +3274,13 @@ impl State {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
-        let envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
+        self.publish(Envelope::new(from, to, kind, payload, reply_to, Utc::now()))
+    }
 
+    /// Route an envelope that is already built. `ask` needs the message
+    /// id before the message goes out — it has to record who is waiting
+    /// on the answer before an answer can arrive — so it builds its own.
+    fn publish(&mut self, envelope: Envelope) -> Response {
         let recipients: Vec<AgentId> = match &envelope.to {
             Destination::Agent(id) => vec![id.clone()],
             Destination::Broadcast => self
@@ -4076,6 +4081,94 @@ mod tests {
         );
         assert!(text.contains("You still hold"), "{text}");
         daemon.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_question_has_to_reach_somebody_who_can_answer_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        me(&daemon).await;
+        // A topic delivers only to live subscribers and queues for
+        // nobody, so a question put to one could wait out its whole
+        // timeout without ever appearing in `questions`.
+        let response = daemon
+            .handle(Request::Ask {
+                from: "user".into(),
+                to: "topic:reviews".into(),
+                question: "anyone?".into(),
+                timeout_secs: 1,
+            })
+            .await;
+        assert!(
+            matches!(
+                &response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "unexpected {response:?}"
+        );
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer with questions")
+        };
+        assert!(questions.is_empty(), "and nothing was left waiting");
+    }
+
+    /// The daemon has to know about a question before anyone can see it.
+    /// A recipient that answers the instant the message arrives must not
+    /// be told there is no such question.
+    #[tokio::test]
+    async fn an_answer_that_races_the_question_still_lands() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let human = me(&daemon).await;
+        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+
+        let mut messages = lock(&daemon.state).bus.subscribe();
+        let racing = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok(envelope) = messages.recv().await else {
+                        return None;
+                    };
+                    if envelope.kind == "question" {
+                        // No pause: whatever the daemon knows at the
+                        // moment the message goes out is all it knows.
+                        return Some(
+                            daemon
+                                .handle(Request::Answer {
+                                    from: Some(human.id.to_string()),
+                                    message: envelope.id,
+                                    text: "at once".to_owned(),
+                                })
+                                .await,
+                        );
+                    }
+                }
+            })
+        };
+
+        let response = daemon
+            .handle(Request::Ask {
+                from: asker.id.to_string(),
+                to: "user".into(),
+                question: "now?".into(),
+                timeout_secs: 10,
+            })
+            .await;
+        let answered = racing.await.unwrap().expect("the question was published");
+        assert!(
+            matches!(answered, Response::Sent { .. }),
+            "the answer found its question: {answered:?}"
+        );
+        let Response::Answer { text, .. } = response else {
+            panic!("unexpected {response:?}")
+        };
+        assert_eq!(text, "at once");
     }
 
     async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {

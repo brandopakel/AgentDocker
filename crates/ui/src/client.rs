@@ -60,6 +60,11 @@ impl Client {
     /// that then speaks a duplex protocol on it — `attach`.
     pub fn open(&self, request: &Request) -> Result<UnixStream> {
         let mut stream = self.connect()?;
+        // The read side stays unbounded — an attach is a long silence
+        // punctuated by output — but the write side must not be. Every
+        // keystroke goes down this socket from a thread of its own, and a
+        // daemon that stopped draining would block it there forever.
+        stream.set_write_timeout(Some(CALL_TIMEOUT))?;
         let mut line = serde_json::to_string(request)?;
         line.push('\n');
         stream.write_all(line.as_bytes())?;

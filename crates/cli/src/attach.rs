@@ -9,8 +9,7 @@ use std::os::fd::AsRawFd;
 
 use agentdocker_core::{Request, Response, protocol};
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::client::Client;
 
@@ -25,7 +24,7 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     let size = agentdocker_host::pty::window_size(stdin.as_raw_fd());
     let (cols, rows) = size.unzip();
 
-    let mut stream = client
+    let stream = client
         .open(&Request::Attach {
             agent: agent.to_owned(),
             cols,
@@ -33,9 +32,14 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
         })
         .await?;
 
+    // Split before the handshake, and keep the same reader afterwards.
+    // The daemon can write `events_ready` and the first screenful in one
+    // go; a reader built for the handshake and then dropped would take
+    // whatever it had buffered with it.
+    let (read_half, write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
     // The daemon acknowledges before the first byte, so a refusal arrives
     // as an error rather than as silence.
-    let mut reader = BufReader::new(&mut stream);
     let mut line = String::new();
     if tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await? == 0 {
         bail!("agentd closed the connection without attaching");
@@ -50,7 +54,14 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     // Raw mode from here, restored by the guard however this ends.
     let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
         .context("cannot put this terminal in raw mode")?;
-    let outcome = pump(stream, agent).await;
+    let outcome = pump(
+        reader,
+        write_half,
+        agent,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+    )
+    .await;
     // The guard restores the terminal as it drops; say goodbye on a fresh
     // line either way.
     eprint!("\r\n");
@@ -59,11 +70,19 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
 
 /// Keystrokes out, terminal bytes in, until the agent ends or the human
 /// detaches.
-async fn pump(stream: UnixStream, agent: &str) -> Result<()> {
-    let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
-    let mut keys = tokio::io::stdin();
-    let mut screen = tokio::io::stdout();
+async fn pump<R, W, K, S>(
+    mut reader: BufReader<R>,
+    mut write_half: W,
+    agent: &str,
+    mut keys: K,
+    mut screen: S,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    K: AsyncRead + Unpin,
+    S: AsyncWrite + Unpin,
+{
     let mut buffer = [0_u8; 4096];
     let mut line = String::new();
     let mut winch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
@@ -123,7 +142,7 @@ async fn pump(stream: UnixStream, agent: &str) -> Result<()> {
     Ok(())
 }
 
-async fn send_input(write_half: &mut tokio::net::unix::OwnedWriteHalf, bytes: &[u8]) -> Result<()> {
+async fn send_input(write_half: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> Result<()> {
     let frame = serde_json::to_string(&Request::AttachInput {
         data: protocol::encode_bytes(bytes),
     })?;
@@ -131,4 +150,54 @@ async fn send_input(write_half: &mut tokio::net::unix::OwnedWriteHalf, bytes: &[
         .write_all(format!("{frame}\n").as_bytes())
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whatever the daemon wrote before the handshake was read is still
+    /// the agent's output. A `BufReader` can pull `events_ready` and the
+    /// first screenful out of the socket in one read, so the reader the
+    /// handshake used has to be the one that carries on.
+    #[tokio::test]
+    async fn output_batched_with_the_handshake_is_not_lost() {
+        let ready = serde_json::to_string(&Response::EventsReady).unwrap();
+        let output = serde_json::to_string(&Response::Output {
+            data: protocol::encode_bytes(b"hello from the agent"),
+        })
+        .unwrap();
+        let end = serde_json::to_string(&Response::End).unwrap();
+
+        // One write: both frames land in the same buffer fill.
+        let (mut daemon, client) = tokio::io::duplex(4096);
+        daemon
+            .write_all(format!("{ready}\n{output}\n{end}\n").as_bytes())
+            .await
+            .unwrap();
+
+        let (read_half, write_half) = tokio::io::split(client);
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::EventsReady
+        ));
+
+        // Nothing is ever typed, so the keyboard side must not end the
+        // loop by reaching EOF; the far end of this pair stays open.
+        let (_typing, keys) = tokio::io::duplex(64);
+        let mut screen = Vec::new();
+        pump(reader, write_half, "agent", keys, &mut screen)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&screen),
+            "hello from the agent",
+            "the frame buffered behind the handshake still reached the screen"
+        );
+    }
 }
