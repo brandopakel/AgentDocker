@@ -420,10 +420,18 @@ mod tests {
             assert_eq!(server.read(&mut [0; 1]).await.unwrap(), 0);
             drop(server);
             drop(listener);
-            assert!(
-                Listener::bind(&path).is_ok(),
-                "closed instances release the name"
-            );
+            // Mio retains pending overlapped operations until their cancelled
+            // IOCP completions run. Dropping handles is not a synchronous name
+            // release; keep the surrounding ten-second bound while driving I/O.
+            loop {
+                match Listener::bind(&path) {
+                    Ok(_) => break,
+                    Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    Err(error) => panic!("closed pipe could not be rebound: {error}"),
+                }
+            }
         })
         .await
         .expect("pipe transfer is bounded");
