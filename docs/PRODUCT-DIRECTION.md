@@ -4,7 +4,7 @@ agentdocker is a native desktop application for discovering and orchestrating AI
 
 The target platforms are macOS, Linux and Windows. The selected GUI is Rust with egui/eframe, communicating with the local daemon through operating-system IPC. The current transport is a Unix socket. A browser, localhost HTTP server, container engine or cloud account is not required for native use. Windows needs its own transport, process, terminal, service, path and packaging adapters; a portable GUI toolkit alone does not supply those.
 
-The display name is **agentdocker**. macOS application bundles retain their underlying `.app` format with the extension hidden in normal Finder display. Packaging suffixes are not product names.
+The display name is **agentdocker**. macOS application bundles retain their underlying `.app` format; Finder preferences control extension display. Packaging suffixes are not product names. Packaging must not mutate the signed bundle to force an extension-display preference.
 
 ## Implemented foundation
 
@@ -21,7 +21,7 @@ These are implementation statements, not a claim that every path is hardened or 
 - Preserve separate identities for desktop applications and CLIs. Claude Desktop and Claude Code are separate; VS Code does not prove an agent extension is installed. The current Codex row also lists ChatGPT/Codex bundles; this must not be interpreted as shared integration health and needs clearer per-application capability reporting.
 - Report model/provider details only when a launch specification or integration supplies them. An agent's ability to speak the protocol makes the design vendor-neutral; it does not create an adapter for an unsupported tool.
 - Show what each adapter supports: inventory, discovery, messages, observation, hooks/MCP setup, launch/stop, terminal access and handoff. Generic adoption adds a registry record; it does not install hooks or cause an agent to read its inbox.
-- Guided setup should preview exact changes, retain private backups, verify the connection and offer scoped undo. The current CLI has `--dry-run` and backups; the GUI Set up action applies changes directly, and there is no guided health check or automatic undo yet.
+- Guided setup must preview exact changes, retain private backups, check the connection and offer scoped undo. The review stack implements saved preview/apply/undo plans and native controls; #53 adds bounded provider-configuration/executable diagnostics. See [GUIDED-SETUP.md](GUIDED-SETUP.md). These checks do not prove provider consumption; older main/release candidates may have only direct setup and backups.
 - Native coordination is cooperative. Claude hooks cover selected tools and fail open if coordination is unavailable; arbitrary shell writes and unrelated applications are not guarded by leases. Optional containers supply a stronger execution boundary when chosen explicitly.
 
 ## Platforms and distribution
@@ -30,7 +30,7 @@ These are implementation statements, not a claim that every path is hardened or 
 |---|---|---|
 | macOS arm64/Intel | Native bundle/DMG packaging and explicit per-user installation/activation/rollback implemented in the review stack; Apple Silicon and Rosetta graphical trials recorded | Public Developer ID signing/notarization, release publication, Intel hardware and longer upgrade trials |
 | Linux | Native desktop archive/launcher and x86-64 Xvfb/Mesa graphical CI; per-user installer implemented with CI acceptance in the review stack | Distribution packages, ARM64 graphical trials, and target-distribution acceptance |
-| Windows | Product scope only; current binaries depend on Unix APIs | Named pipes/access controls, process identity and termination, ConPTY, service/session lifecycle, paths, installer and Windows CI |
+| Windows | Partial core/host foundations and native CI in draft #54; shared named-pipe IPC under development. The full product still depends on Unix APIs | Complete process/IPC acceptance, ConPTY, service/session lifecycle, physical path semantics, installer and full native daemon/GUI CI |
 | GitHub and shell installer | [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), four archives and checksums; `install.sh` selects a target | Publish a newer verified release after trial blockers are fixed |
 | Homebrew | `packaging/homebrew/generate.py` writes a formula from the release's real per-target checksums, CI validates it with `ruby -c` and uploads it as a release asset. **No tap repository exists**, so nothing can install from it | Create and maintain the tap repository, publish the formula to it on release, and add a cask for the app once it is notarized. Do not advertise `brew install agentdocker` until the tap is real |
 | Cargo | Source installation from a pinned Git tag/commit or checkout | Registry publication has not been established as a supported install route |
@@ -39,11 +39,13 @@ The published release is source `52fd88d`, before sessions, human questions/noti
 
 ## Delivery order
 
+The [active delivery plan](DELIVERY-PLAN.md) adds a required review of recent commits, all open PRs and documentation, plus the complete testing-standard/local-trial crosswalk. Its [review ledger](REVIEW-2026-09-07.md) distinguishes implemented fixes, open work and evidence still needed.
+
 1. Fix the confirmed restore readiness/persistence defects and harden private state/log creation. Turn the fault probes into regression tests. Keep automatic restore off in the initial trial.
 2. Run a pinned native trial on this Mac in a disposable repository/private state directory. Exercise the GUI and protocol before configuring one test Claude Code session and one test Codex session. Preview configuration changes and verify message/observation round trips.
 3. Complete desktop onboarding, per-tool capability/health reporting, undo and packaging. Packaging specifically means: obtain a Developer ID, sign and notarize `AgentDocker.app` in the release workflow, and stand up the Homebrew tap so the generated formula has somewhere to go. Both are prerequisites for anyone else installing this, and neither is code. Publish the tested Mac candidate and run the independent second-Mac trial. Keep Bencher credentials outside the repository and GitHub; upload verified benchmark artifacts using private configuration.
 4. Deliver Linux desktop packaging/inventory and real GUI/service trials, then Windows host support with equivalent behavior and tests. Cross-platform desktop delivery takes priority over additional optional engine features or competitive benchmark features.
-5. Add admission policy/quotas, restart/backoff/dependencies, retention controls and planned daemon descriptor handoff as real usage identifies requirements. A daemon-attributed worktree commit command and optional compressed log views remain backlog items.
+5. Review and integrate admission policy/quotas, restart/backoff/dependencies, retention controls and planned daemon descriptor handoff in #45/#47/#50. That open stack also includes a daemon-attributed worktree commit command and bounded log views. Verify the combined implementation against restore, installation and upgrade contracts before treating these as delivered.
 6. Add authenticated federation only after the single-host product is dependable. Two installations currently have independent registries and leases; exported handoff files do not create a shared cluster.
 
 Historical phase numbers in the architecture are implementation dependency labels, not GitHub PR numbers or an override of this delivery order. Additional terminal managers, a cloud control plane and a required web dashboard are not prerequisites for the native desktop product.
