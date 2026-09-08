@@ -3158,6 +3158,133 @@ mod tests {
         assert_eq!(direct[0].id.as_str(), "m4");
     }
 
+    #[test]
+    fn channel_snapshots_keep_other_projects_and_refuse_departed_projects() {
+        use agentdocker_core::channel::{Channel, ChannelSubject};
+        use agentdocker_core::{AgentSpec, ChannelId, ProjectId};
+        let (commands, requests) = std::sync::mpsc::channel();
+        let (messages, results) = std::sync::mpsc::channel();
+        let mut app = App::bare(commands, results);
+        let mut agents = Vec::new();
+        for name in ["project-a", "project-a", "project-b"] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let mut project = ProjectRef::directory(format!("/fixture/{name}"));
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project);
+            agents.push(agent);
+        }
+        messages.send(Msg::Agents(agents.clone())).unwrap();
+        app.drain();
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|cmd| matches!(cmd, Cmd::Channels(_)))
+                .count(),
+            2
+        );
+        let channel = |project: &str, id: &str| Channel {
+            id: ChannelId::from(id),
+            project: ProjectId::from(project),
+            subject: ChannelSubject::Task {
+                task: "fixture".into(),
+            },
+            members: Vec::new(),
+            opened_by: None,
+            opened_at: Utc::now(),
+            closed_at: None,
+            resolution: None,
+            reviews: Vec::new(),
+        };
+        messages
+            .send(Msg::Channels(
+                "project-a".into(),
+                vec![channel("project-a", "a")],
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "b")],
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 2);
+        messages
+            .send(Msg::Channels("project-a".into(), Vec::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 1);
+        assert_eq!(app.channels[0].project.as_str(), "project-b");
+        agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
+        messages.send(Msg::Agents(agents)).unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "stale")],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.channels.is_empty());
+    }
+
+    #[test]
+    fn channel_request_uses_explicit_project_and_no_membership_filter() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing channel request");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "channels");
+            assert_eq!(request["project"], "fixture-project");
+            assert_eq!(request["all"], false);
+            assert!(request["agent"].is_null());
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"channels\",\"channels\":[]}\n")
+                .unwrap();
+        });
+        let response = run(
+            &Client::isolated(socket),
+            Cmd::Channels("fixture-project".into()),
+        );
+        server.join().unwrap();
+        assert!(
+            matches!(response.unwrap(), Some(Msg::Channels(project, channels))
+            if project == "fixture-project" && channels.is_empty())
+        );
+    }
+
     /// The status line stops being news.
     #[test]
     fn the_status_line_lets_go_of_what_is_no_longer_news() {
