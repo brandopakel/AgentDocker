@@ -299,3 +299,19 @@ be deferred. A separate verified checkout binding is needed when an agent's
 registered launch directory differs from the worktree used by its tools.
 The actual live coordination trial remains private; only sanitized findings
 and source-bound fixture results belong in GitHub.
+
+Integration of main through `d4fc464` found a broken channel request introduced
+by #85: an empty project with no member is rejected by the daemon. The exact
+request reproduced `Invalid` on the live daemon without changing state. The GUI
+now queries explicit unique projects from its registered-agent snapshots,
+preserves other projects when one refreshes, ignores departed-project replies,
+and coalesces channel/inbox refreshes. Wire-request, multi-project and burst
+regressions are added; integrated CI must validate this source. Channel/inbox
+response byte limits and durable message history remain separate open work.
+
+#86 adds handover protocol scaffolding while keeping reload refused. Its
+readiness timeout currently bounds individual blocking reads rather than the
+whole message, and suppresses timeout-setting errors. Absolute deadlines and
+descriptor/identity mapping validation remain required before production use;
+these findings were sent to the peer owning handover. No live-upgrade acceptance
+is implied by the scaffold's tests.
