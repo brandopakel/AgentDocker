@@ -4316,12 +4316,21 @@ impl State {
             [only] => Some(only.clone()),
             [] => None,
             many => {
-                warn!(
-                    count = many.len(), name = %record.spec.name,
-                    "this process holds more than one session and the registration names none, \
-                     so which it belongs to cannot be told; registering it separately"
+                // Refused, not resolved and not given a record of its
+                // own. A third sessionless record would be another
+                // wildcard: it names no session, so it would match every
+                // future session in this process too and breed more
+                // duplicates. The caller is told to name its session,
+                // because it is the only one that can know.
+                return Response::error(
+                    ErrorCode::Invalid,
+                    format!(
+                        "this process already has {} agents in different sessions and this \
+                         registration names none, so which one it belongs to cannot be told; \
+                         register with a session_id label",
+                        many.len()
+                    ),
                 );
-                None
             }
         };
         if let Some(id) = existing {
@@ -4709,26 +4718,50 @@ mod tests {
                 spec.labels
                     .insert("session_id".to_owned(), session.to_owned());
             }
-            match daemon
+            daemon
                 .handle(Request::Register {
                     spec,
                     pid: Some(me),
                     session: None,
                 })
                 .await
-            {
-                Response::Agent { agent } => agent,
-                other => panic!("unexpected {other:?}"),
-            }
         };
-        let a = register("claude-aaaa", Some("session-a")).await;
-        let b = register("claude-bbbb", Some("session-b")).await;
+        let named = async |r: Response| match r {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        };
+        let a = named(register("claude-aaaa", Some("session-a")).await).await;
+        let b = named(register("claude-bbbb", Some("session-b")).await).await;
         assert_ne!(a.id, b.id);
 
-        let unnamed = register("claude-code-45856", None).await;
-        assert_ne!(unnamed.id, a.id, "not silently filed under the first");
-        assert_ne!(unnamed.id, b.id, "nor the second");
-        assert_eq!(lock(&daemon.state).registry.live().count(), 3);
+        // Refused outright. Giving it a record of its own would be
+        // giving this process a third sessionless wildcard — one that
+        // matches every future session here and breeds more duplicates.
+        let refused = register("claude-code-45856", None).await;
+        let Response::Error { code, message, .. } = refused else {
+            panic!("a registration that cannot be placed must not be placed anyway")
+        };
+        assert_eq!(code, ErrorCode::Invalid);
+        assert!(message.contains("session_id"), "{message}");
+        assert_eq!(
+            lock(&daemon.state).registry.live().count(),
+            2,
+            "and no third record was created"
+        );
+
+        // The named sessions are untouched by the refusal and still
+        // resolve to themselves.
+        let Response::Agent { agent: a_again } = register("claude-aaaa", Some("session-a")).await
+        else {
+            panic!("a named session still knows which it is")
+        };
+        assert_eq!(a_again.id, a.id);
+        let Response::Agent { agent: b_again } = register("claude-bbbb", Some("session-b")).await
+        else {
+            panic!("and so does the other")
+        };
+        assert_eq!(b_again.id, b.id);
+        assert_eq!(lock(&daemon.state).registry.live().count(), 2);
     }
 
     /// Learning a session is written down before it is believed.

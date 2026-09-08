@@ -593,6 +593,13 @@ async fn found_by_pid<B: Backend>(
         return Ok(None);
     };
     let started = Some(started);
+    // Resolved once, and before the listing: canonicalising touches the
+    // filesystem, and doing it per candidate inside the comparison would
+    // make the check cost grow with the fleet.
+    let here = input.cwd.as_ref().and_then(|cwd| cwd.canonicalize().ok());
+    if here.is_none() {
+        return Ok(None);
+    }
     // The same predicate the daemon registers by, for the same reason:
     // this hook is about to release another agent's leases and
     // deregister it, so "shares a pid" is nowhere near enough. A
@@ -611,14 +618,25 @@ async fn found_by_pid<B: Backend>(
                 .get("session_id")
                 .filter(|id| !id.is_empty())
                 .is_none_or(|theirs| *theirs == input.session_id)
-            // The checkout, where both name one. A project spans its
-            // main checkout and every linked worktree, so narrowing the
-            // listing to the project is not the same as being in the
-            // same tree — two worktrees of one repository are one
-            // project and two different places to work.
-            && match (&agent.spec.workdir, &input.cwd) {
-                (Some(theirs), Some(mine)) => mine.starts_with(theirs) || theirs.starts_with(mine),
-                _ => true,
+            // The checkout, exactly, and only when both can be
+            // resolved. A project spans its main checkout and every
+            // linked worktree, so narrowing the listing to the project
+            // is not the same as being in the same tree.
+            //
+            // Exact roots, not prefixes: `/w` is a prefix of `/w/other`
+            // and a worktree nested inside another would match its
+            // parent, so a prefix test says yes to two different places
+            // to work. Canonical, because `/tmp` and `/private/tmp` are
+            // the same directory spelled two ways and a session that
+            // spells it the other way is still this session. Unresolved
+            // on either side is not a match: this answer releases leases
+            // and deregisters, and an unverified checkout authorises
+            // neither.
+            && match (&agent.spec.workdir, &here) {
+                (Some(theirs), Some(mine)) => {
+                    theirs.canonicalize().is_ok_and(|theirs| theirs == *mine)
+                }
+                _ => false,
             }
     };
     // The name is a hint, not proof. A session id prefix is eight
@@ -1143,6 +1161,11 @@ mod tests {
             let me = fixture_pid();
             record.pid = Some(me);
             record.process_started_at = agentdocker_host::procinfo::start_time(me);
+            // The checkout the fixture session is in. A live agent the
+            // lifecycle hooks will act on has to be verifiably in the
+            // same tree, so a fixture without one is not a live agent
+            // they would touch.
+            record.spec.workdir = Some(std::env::temp_dir());
         }
         record
     }
@@ -1510,7 +1533,10 @@ mod tests {
         // being in the same tree.
         let elsewhere = {
             let mut a = matching("claude-in-another-worktree");
-            a.spec.workdir = Some(std::path::PathBuf::from("/somewhere/else/entirely"));
+            // A real directory, so this tests the comparison rather than
+            // a path that fails to resolve for an unrelated reason.
+            a.spec.workdir = Some(std::env::temp_dir().join("another-worktree"));
+            std::fs::create_dir_all(a.spec.workdir.as_ref().unwrap()).unwrap();
             a
         };
         let backend = Mock::with(vec![
