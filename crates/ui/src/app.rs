@@ -5,7 +5,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+mod queue;
+use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
@@ -26,6 +29,9 @@ const REFRESH: Duration = Duration::from_secs(2);
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
 const CONSOLE_BYTES: usize = 256 * 1024;
+const MESSAGE_CAPACITY: usize = 64;
+const CONSOLE_HISTORY_COMMANDS: usize = 100;
+const CONSOLE_HISTORY_BYTES: usize = 64 * 1024;
 /// How long a console command may run. Long enough for anything that
 /// finishes, short enough that `watch` or `logs -f` — which never do —
 /// give the worker thread back.
@@ -83,6 +89,7 @@ impl Screen {
 }
 
 /// What the worker is asked to do.
+#[derive(Debug)]
 enum Cmd {
     Agents,
     Leases,
@@ -132,7 +139,7 @@ pub struct App {
     setup_health: Option<serde_json::Value>,
     setup_history: Vec<serde_json::Value>,
     setup_busy: bool,
-    tx: Sender<Cmd>,
+    tx: CommandSender,
     rx: Receiver<Msg>,
     screen: Screen,
     agents: Vec<AgentRecord>,
@@ -194,8 +201,8 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
-        let (cmd_tx, cmd_rx) = channel::<Cmd>();
-        let (msg_tx, msg_rx) = channel::<Msg>();
+        let (cmd_tx, cmd_rx) = queue::channel();
+        let (msg_tx, msg_rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
         spawn_events(client.clone(), msg_tx, cc.egui_ctx.clone());
         // The window is a person being present, so the person is an
@@ -254,7 +261,7 @@ impl App {
 
     /// The window's state without a window or a daemon, for tests.
     #[cfg(test)]
-    fn bare(tx: Sender<Cmd>, rx: Receiver<Msg>) -> Self {
+    fn bare(tx: CommandSender, rx: Receiver<Msg>) -> Self {
         Self {
             desktop: Default::default(),
             tx,
@@ -296,13 +303,28 @@ impl App {
         }
     }
 
-    fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
+    fn send(&mut self, cmd: Cmd) {
+        if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
+            match command {
+                Cmd::Answer(id, _) => {
+                    self.sending.remove(&id);
+                }
+                Cmd::Setup(_) => self.setup_busy = false,
+                Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
+                Cmd::Console(_) => self.append_console(&format!("Command not queued: {reason}\n")),
+                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
+                // Full queues may omit refreshes: events and periodic refresh
+                // request another snapshot. User actions get an explicit error.
+                _ => return,
+            }
+            self.status = reason.into();
+        }
     }
 
     /// Take everything the threads sent since the last frame.
     fn drain(&mut self) {
-        while let Ok(msg) = self.rx.try_recv() {
+        for _ in 0..MESSAGE_CAPACITY {
+            let Ok(msg) = self.rx.try_recv() else { break };
             match msg {
                 Msg::Agents(agents) => self.agents = agents,
                 Msg::Leases(leases) => self.leases = leases,
@@ -1063,12 +1085,25 @@ impl App {
         if run && !self.console_input.trim().is_empty() {
             let line = self.console_input.trim().to_owned();
             self.append_console(&format!("agentdocker {line}\n"));
-            if self.console_history.last() != Some(&line) {
-                self.console_history.push(line.clone());
-            }
-            self.console_recall = None;
+            self.remember_console_command(&line);
             self.console_input.clear();
             self.send(Cmd::Console(line));
+        }
+    }
+
+    fn remember_console_command(&mut self, line: &str) {
+        self.console_recall = None;
+        // Never save a truncated command for later execution.
+        if line.len() > CONSOLE_HISTORY_BYTES
+            || self.console_history.last().is_some_and(|last| last == line)
+        {
+            return;
+        }
+        self.console_history.push(line.to_owned());
+        let mut bytes: usize = self.console_history.iter().map(String::len).sum();
+        while self.console_history.len() > CONSOLE_HISTORY_COMMANDS || bytes > CONSOLE_HISTORY_BYTES
+        {
+            bytes -= self.console_history.remove(0).len();
         }
     }
 
@@ -1533,9 +1568,19 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Hidden windows still consume bounded replies and events, without
+        // depending on a rendered frame to release backend backpressure.
         self.drain();
-        ui.ctx().request_repaint_after(Duration::from_millis(500));
+        let delay = if ctx.input(|input| input.viewport().visible()) == Some(false) {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_millis(500)
+        };
+        ctx.request_repaint_after(delay);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_settings(ui.ctx());
 
         // The sidebar and the title bar sit on their own ground, the
@@ -1760,8 +1805,8 @@ fn span(secs: i64) -> String {
 
 fn spawn_worker(
     client: Arc<Client>,
-    rx: Receiver<Cmd>,
-    tx: Sender<Msg>,
+    rx: CommandReceiver,
+    tx: SyncSender<Msg>,
     ctx: egui::Context,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -2050,7 +2095,7 @@ fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("Invalid installation reply: {error}"))
 }
 
-fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
+fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: egui::Context) {
     std::thread::spawn(move || {
         loop {
             let tx_events = tx.clone();
@@ -2086,6 +2131,111 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_full_command_queue_preserves_drafts_and_releases_busy_controls() {
+        let (commands, requests) = queue::channel();
+        for _ in 0..queue::CAPACITY {
+            commands.send(Cmd::Stop("fixture".into())).unwrap();
+        }
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let id = MessageId::from("fixture-question".to_owned());
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        app.send(Cmd::Answer(id.clone(), "draft".into()));
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("queue is full"));
+        app.setup_busy = true;
+        app.send(Cmd::Setup(vec!["--health".into()]));
+        assert!(!app.setup_busy);
+        app.send(Cmd::Agents); // Rejected refresh must release its coalescing key.
+        assert_eq!(requests.try_iter().count(), queue::CAPACITY);
+        app.send(Cmd::Agents);
+        assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
+    }
+
+    #[test]
+    fn a_closed_command_worker_does_not_leave_an_answer_in_flight() {
+        let (commands, requests) = queue::channel();
+        drop(requests);
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let id = MessageId::from("fixture-question".to_owned());
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        app.send(Cmd::Answer(id.clone(), "draft".into()));
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("worker stopped"));
+    }
+
+    #[test]
+    fn command_recall_keeps_complete_recent_commands_with_count_and_byte_limits() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        for number in 0..150 {
+            app.remember_console_command(&format!("fixture {number}"));
+        }
+        assert_eq!(app.console_history.len(), CONSOLE_HISTORY_COMMANDS);
+        app.recall(true);
+        assert_eq!(app.console_input, "fixture 149");
+        for _ in 0..150 {
+            app.recall(true);
+        }
+        assert_eq!(app.console_input, "fixture 50");
+        app.remember_console_command(&"x".repeat(CONSOLE_HISTORY_BYTES + 1));
+        app.recall(true);
+        assert_eq!(
+            app.console_input, "fixture 149",
+            "oversized commands are never recalled in truncated form"
+        );
+        let mut latest = String::new();
+        for number in 0..100 {
+            latest = format!("{} {number}", "é".repeat(1000));
+            app.remember_console_command(&latest);
+        }
+        assert!(
+            app.console_history.iter().map(String::len).sum::<usize>() <= CONSOLE_HISTORY_BYTES
+        );
+        app.recall(true);
+        assert_eq!(app.console_input, latest);
+    }
+
+    #[test]
+    fn event_burst_coalesces_refresh_work_while_the_daemon_is_busy() {
+        let (tx, requests) = queue::channel();
+        let (_messages, results) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, results);
+        for _ in 0..10_000 {
+            app.on_event(Event::new(
+                EventKind::AgentRemoved {
+                    agent: "fixture".into(),
+                },
+                Utc::now(),
+            ));
+        }
+        let pending: Vec<_> = requests.try_iter().collect();
+        assert_eq!(
+            pending.len(),
+            1,
+            "one snapshot covers a burst of changes while queued"
+        );
+        assert!(matches!(pending[0], Cmd::Agents));
+        app.on_event(Event::new(
+            EventKind::AgentRemoved {
+                agent: "fixture".into(),
+            },
+            Utc::now(),
+        ));
+        assert_eq!(
+            requests.try_iter().count(),
+            1,
+            "a change after dispatch still refreshes"
+        );
+    }
+
     fn journal_entry(seq: u64) -> JournalEntry {
         serde_json::from_value(serde_json::json!({
             "project":"fixture-project", "seq":seq, "at":Utc::now(),
@@ -2097,8 +2247,8 @@ mod tests {
 
     #[test]
     fn history_live_journal_is_bounded_and_late_snapshot_keeps_newer_entries() {
-        let (commands, _requests) = channel();
-        let (messages, results) = channel();
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         app.journal_project = Some("fixture-project".into());
         for seq in 1..=1000 {
@@ -2131,8 +2281,8 @@ mod tests {
 
     #[test]
     fn history_late_journal_snapshot_does_not_replace_newer_live_entries() {
-        let (commands, _requests) = channel();
-        let (messages, results) = channel();
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         app.journal_project = Some("fixture-project".into());
         app.journal = (801..=1000).map(journal_entry).collect();
@@ -2150,8 +2300,8 @@ mod tests {
 
     #[test]
     fn history_empty_snapshot_respects_pruning_and_legacy_responses() {
-        let (commands, _requests) = channel();
-        let (messages, results) = channel();
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         app.journal_project = Some("fixture-project".into());
         app.journal = (801..=1001).map(journal_entry).collect();
@@ -2178,8 +2328,8 @@ mod tests {
 
     #[test]
     fn history_console_keeps_a_bounded_utf8_tail_across_large_and_repeated_replies() {
-        let (commands, _requests) = channel();
-        let (messages, results) = channel();
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         messages
             .send(Msg::Console(format!("{}\nLATEST", "🐋".repeat(200_000))))
@@ -2246,8 +2396,8 @@ mod tests {
                 }
             }
         });
-        let (commands, requests) = channel();
-        let (messages, results) = channel();
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let worker = spawn_worker(
             Arc::new(Client::isolated(socket)),
             requests,
@@ -2283,8 +2433,8 @@ mod tests {
                 .iter()
                 .any(|message| matches!(message, Msg::Disconnected(_)))
         );
-        let (commands, _requests) = channel();
-        let (messages, results) = channel();
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         app.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
@@ -2345,8 +2495,8 @@ mod tests {
     fn disconnected_command(cmd: Cmd) -> Vec<Msg> {
         let temp = tempfile::tempdir().unwrap();
         let client = Arc::new(Client::isolated(temp.path().join("missing.sock")));
-        let (commands, requests) = channel();
-        let (messages, results) = channel();
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let worker = spawn_worker(client, requests, messages, egui::Context::default());
         commands.send(cmd).unwrap();
         drop(commands);
@@ -2367,8 +2517,8 @@ mod tests {
     fn failed_answer_reports_transport_failure_and_keeps_the_draft() {
         let id = MessageId::from("owned-question".to_owned());
         let result = disconnected_command(Cmd::Answer(id.clone(), "draft answer".into()));
-        let (commands, _) = channel();
-        let (messages, results) = channel();
+        let (commands, _) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         app.answers.insert(id.clone(), "draft answer".into());
         app.sending.insert(id.clone());
@@ -2393,8 +2543,8 @@ mod tests {
 
     #[test]
     fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
-        let (tx, requests) = channel::<Cmd>();
-        let (messages, rx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         let rows: Vec<RuntimeInfo> = serde_json::from_value(serde_json::json!([{
             "name":"codex", "vendor":"OpenAI", "label":"Codex",
@@ -2432,8 +2582,8 @@ mod tests {
 
     #[test]
     fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
-        let (tx, requests) = channel::<Cmd>();
-        let (messages, rx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         app.connected = Err("offline".into());
         app.journal_project = Some("project-a".into());
@@ -2469,8 +2619,8 @@ mod tests {
             event.seq = seq;
             event
         };
-        let (tx, requests) = channel::<Cmd>();
-        let (_mtx, mrx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (_mtx, mrx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, mrx);
         app.on_event(stopping(1));
         app.on_event(stopping(2));
@@ -2504,7 +2654,11 @@ mod tests {
         app.on_event(live.clone());
         app.on_event(live);
         assert_eq!(app.last_seq, 3, "a live event does not move the cursor");
-        assert!(requests.try_iter().count() >= 2, "and each one is acted on");
+        assert_eq!(
+            requests.try_iter().count(),
+            1,
+            "live events coalesce into a fresh snapshot"
+        );
     }
 
     #[test]

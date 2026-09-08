@@ -170,9 +170,12 @@ newer live entries while a post-prune empty snapshot removes older rows. Older
 daemon responses retain their previous snapshot semantics. These are window
 history bounds; they do not delete the durable project journal.
 
-Source inspection also found unbounded GUI request/result channels and command
-recall history. Queue backpressure/coalescing, hidden-window behavior, command
-history budgets and actual 1/10/100-agent RSS/CPU/FD/soak measurements remain open
-T10/T11/L14 work. History fixes alone do not establish a runtime memory ceiling.
+The main GUI now admits at most 32 queued commands, coalesces duplicate snapshot
+refreshes, and buffers at most 64 replies/events. Hidden-window logic drains
+bounded batches; a full queue reports rejected user actions and preserves answer
+drafts. Command recall retains up to 100 complete commands within 64 KiB.
+Terminal input buffering and actual 1/10/100-agent RSS/CPU/FD/soak measurements
+remain open T10/T11/L14 work. Count/scrollback bounds do not establish a total
+runtime memory ceiling, especially for large protocol payloads.
 The storage guard's JSON and error output exclude private cache paths; raw
 compiler/provider logs still require sanitization before publication.
