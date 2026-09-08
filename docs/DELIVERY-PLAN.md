@@ -31,9 +31,11 @@ small necessary private evidence locally.
 
 Add these checks to the existing T04/T10/T11/T12 and L12/L14/L15 matrices:
 
-- Installed/compressed bytes per platform. The current three-binary Mac preview
-  at `9b08d82` occupies 36 MiB, with 49 MiB for app plus archive. This is a local
-  preview with an unresolved running-release pin defect, not release acceptance.
+- Installed/compressed bytes per platform. The three-binary Mac preview
+  at `509f746` occupies 36.9 MiB; its compressed archive is 13.5 MiB. Its
+  running-release pin fix passes nine packaged maintenance scenarios, using
+  synthetic generations of the same binaries. This is local preview evidence;
+  distinct-source updates and release acceptance remain open.
   Start with a 100 MiB per-architecture payload ceiling and measure universal
   artifacts separately; lower budgets when platform evidence permits.
 - Idle and loaded daemon/window RSS, CPU, thread and descriptor counts at
@@ -174,8 +176,41 @@ The main GUI now admits at most 32 queued commands, coalesces duplicate snapshot
 refreshes, and buffers at most 64 replies/events. Hidden-window logic drains
 bounded batches; a full queue reports rejected user actions and preserves answer
 drafts. Command recall retains up to 100 complete commands within 64 KiB.
-Terminal input buffering and actual 1/10/100-agent RSS/CPU/FD/soak measurements
+Terminal input buffering, repeated platform resource baselines and soaks
 remain open T10/T11/L14 work. Count/scrollback bounds do not establish a total
 runtime memory ceiling, especially for large protocol payloads.
 The storage guard's JSON and error output exclude private cache paths; raw
 compiler/provider logs still require sanitization before publication.
+
+### Native resource and cleanup checkpoint
+
+The [exact-source report](verification/2026-09-07-native-resources.json) records
+`509f746`: 569 Rust and 37 Python tests, nine packaged maintenance scenarios,
+the actual Mac window, and two short native resource observations. The first
+observed 0/1/10/100 owned sleeping processes; the second observed 100 after a
+10-second warmup. Both removed all 100 owned agents and their disposable state.
+No TCP sockets were observed on the fixture daemon/window during sampling.
+
+At 100 agents in the second observation, daemon RSS was 20.3–20.7 MiB and
+window RSS 108.4–109.2 MiB. Across the 24.5-second sample interval, process CPU
+time averaged 0.49% and 5.23% of one core respectively. The first trial's live
+state peaked at 4.4 MiB, including SQLite WAL; after clean shutdown the entire
+fixture occupied less than 0.7 MiB before removal. The sleeping children add
+their own memory; summed RSS is not unique physical memory. These are short
+observations on one Mac, not provider-load, leak, CPU-budget or soak acceptance.
+GUI CPU tuning, terminal queue/frame bounds and the remaining platform matrix
+stay explicit T10/T11/L14 work.
+
+Documentation measured 1.7 MiB and the actual Documents directory 11.3 MiB.
+Neither directory measurement is an accounting of Apple's System Data or
+Documents category. Previously recorded cleanup recovered 285.03 GiB; later
+completed storage/GUI review caches removed another 4.36/5.21 GiB of allocated
+output. Those allocation figures are separate from measured volume free-space
+changes. This campaign publishes sanitized evidence before pruning its cache
+and obsolete package previews. Raw captures and small failure diagnostics stay
+private; personal and unrelated application state is preserved.
+
+The review scope also includes newly merged #76 (`7d43ca6`) and open #77
+(`5ee565a` at inspection), which are not included in this measured candidate.
+Homebrew naming/payload/retention must agree with managed installation before
+release. A child-disown foundation does not complete live daemon transfer.
