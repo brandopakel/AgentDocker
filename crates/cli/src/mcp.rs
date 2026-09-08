@@ -146,11 +146,20 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
     }
 
     let host_pid = args.pid.unwrap_or_else(parent_id);
-    let requested = args
+    let name = args
         .name
         .clone()
         .unwrap_or_else(|| format!("{}-{host_pid}", args.runtime));
-    let name = requested.clone();
+    // Proof of who made this record, rather than a guess from its name.
+    //
+    // The daemon answers a registration for a process that already has
+    // an agent with that agent, so the reply alone cannot say whether it
+    // was created here or adopted. Comparing names is not enough: a
+    // second MCP server for the same host asks for the same name, would
+    // read the reply as its own work, and would deregister a still-live
+    // participant on the way out. Only the spec that was actually stored
+    // carries this nonce, so finding it back is proof.
+    let registrar = uuid::Uuid::new_v4().to_string();
     let workdir = std::env::current_dir()
         .ok()
         .map(|dir| dir.canonicalize().unwrap_or(dir));
@@ -162,7 +171,10 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         command: Vec::new(),
         workdir,
         env: BTreeMap::new(),
-        labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
+        labels: BTreeMap::from([
+            ("via".to_owned(), "mcp".to_owned()),
+            ("registrar".to_owned(), registrar.clone()),
+        ]),
         isolate: false,
         tty: false,
         restore: false,
@@ -183,12 +195,13 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         .await
         .context("failed to register with agentd")?
     {
-        // A register that comes back under a different name is the
-        // daemon saying this process already has an agent — the hooks
-        // adapter got here first. That identity is not ours to take
-        // away again, so shutdown must leave it alone.
+        // Our nonce coming back means the daemon stored the spec we
+        // sent, so this record is ours to remove again. Anything else
+        // is an identity that already existed — the hooks adapter got
+        // here first, or another MCP server did — and shutdown must
+        // leave it alone.
         Response::Agent { agent } => Ok(Identity {
-            registered_here: agent.spec.name == requested,
+            registered_here: agent.spec.labels.get("registrar") == Some(&registrar),
             id: agent.id.to_string(),
             name: agent.spec.name,
         }),
@@ -1825,5 +1838,39 @@ mod tests {
         );
         adopted.shutdown().await;
         assert!(adopted.backend.requests.lock().unwrap().is_empty());
+    }
+
+    /// Ownership of a registration is proved, not guessed from its name.
+    ///
+    /// The daemon answers a registration for a process that already has
+    /// an agent with that agent, so the reply alone cannot say whether
+    /// it was created here. A second MCP server for the same host asks
+    /// for the same name and would read that reply as its own work —
+    /// then deregister a still-live participant on the way out. Only
+    /// the spec that was actually stored carries the nonce.
+    #[test]
+    fn only_the_spec_we_stored_carries_our_nonce() {
+        let ours = "0f9c6a6a-2c4e-4a0f-9d3f-6d5f6a0b1c2d";
+        let mine = |registrar: &str| {
+            std::collections::BTreeMap::from([
+                ("via".to_owned(), "mcp".to_owned()),
+                ("registrar".to_owned(), registrar.to_owned()),
+            ])
+        };
+        let owned = |labels: &std::collections::BTreeMap<String, String>| {
+            labels.get("registrar") == Some(&ours.to_owned())
+        };
+        assert!(owned(&mine(ours)), "our own nonce came back: we made it");
+        assert!(
+            !owned(&mine("a-different-mcp-server")),
+            "another MCP server asking for the same name is not us"
+        );
+        assert!(
+            !owned(&std::collections::BTreeMap::from([(
+                "via".to_owned(),
+                "hook".to_owned()
+            )])),
+            "the hooks adapter got here first; not ours to remove"
+        );
     }
 }

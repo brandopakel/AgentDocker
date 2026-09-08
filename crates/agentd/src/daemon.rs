@@ -4156,14 +4156,32 @@ impl State {
         // permanently idle while the hooks-side row did the work, and
         // a message sent to one never reached the other.
         //
-        // The start time is checked with the pid because pids are
-        // reused: a dead agent's record and a new process that happens
-        // to land on its number are not the same process, and treating
-        // them as one would hand a stranger somebody else's identity.
+        // Four things have to agree, and each one is load-bearing.
+        //
+        // The start time goes with the pid because pids are reused: an
+        // old record and a new process that happens to land on its
+        // number are not the same process, and folding them would hand
+        // a stranger somebody else's identity. It must also be *known*
+        // — two unreadable start times are not evidence of anything,
+        // and `None == None` would have coalesced on no evidence at all.
+        //
+        // The runtime and the project go with them because sharing a
+        // process is not the same as being the same agent: a host that
+        // runs several sessions in one process would otherwise have
+        // them all collapse into whichever registered first. Project
+        // rather than workdir, because the two halves disagree about
+        // the workdir the moment a session changes directory — the
+        // hooks adapter reports where the session is now and the MCP
+        // server reports where it was launched — while both still
+        // resolve to the same project.
         let same_process = |a: &AgentRecord| {
             record.pid.is_some()
+                && record.process_started_at.is_some()
                 && a.pid == record.pid
                 && a.process_started_at == record.process_started_at
+                && a.spec.runtime == record.spec.runtime
+                && a.project.as_ref().map(ProjectRef::id)
+                    == record.project.as_ref().map(ProjectRef::id)
         };
         let adopted = record
             .spec
@@ -4346,6 +4364,60 @@ mod tests {
         assert_ne!(
             human.id, also_human.id,
             "no pid is not the same pid; two people are two agents"
+        );
+    }
+
+    /// Sharing a process is not the same as being the same agent.
+    ///
+    /// Every one of these was raised in review by the Codex session
+    /// working alongside, and every one of them coalesced before it was.
+    #[tokio::test]
+    async fn one_process_is_not_one_agent_on_the_pid_alone() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let mine = register(&daemon, "claude-2c79ae10", Some(me)).await;
+
+        // A different runtime in the same process is a different agent:
+        // a host that runs several kinds of session in one process would
+        // otherwise have them all collapse into whichever arrived first.
+        let elsewhere = {
+            let mut spec = spec("codex-in-the-same-process");
+            spec.runtime = "codex".to_owned();
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        assert_ne!(elsewhere.id, mine.id, "a different runtime is not us");
+
+        // And a birth time nobody could read is not evidence that two
+        // records are the same process. `None == None` is not proof.
+        let unreadable = |name: &str| {
+            let mut record = AgentRecord::new(spec(name), false, Utc::now());
+            record.pid = Some(424_242);
+            record.process_started_at = None;
+            record.status = AgentStatus::Running;
+            record
+        };
+        let first = match lock(&daemon.state).insert_record(unreadable("ghost-one")) {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        };
+        let second = match lock(&daemon.state).insert_record(unreadable("ghost-two")) {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_ne!(
+            first.id, second.id,
+            "two unreadable start times are not one process"
         );
     }
 
