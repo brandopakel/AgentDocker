@@ -193,6 +193,10 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
+        // Asked here because this is the only context macOS will
+        // register: a foreground app with a run loop. The one-shot
+        // poster the daemon runs inherits the answer.
+        crate::notify::request_permission();
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (msg_tx, msg_rx) = channel::<Msg>();
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
@@ -1975,11 +1979,23 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 }
 
 /// The named binary next to this one, else whatever is on `PATH`.
+/// The sibling tool of this name, or the bare name for `PATH` to
+/// resolve.
+///
+/// The identity check is the point. macOS volumes are case-insensitive
+/// by default, so a bundle whose executable is `AgentDocker` answers
+/// `is_file()` for `agentdocker` — and the window then runs *itself*
+/// with a CLI argument and reports "unknown argument: setup" from every
+/// button that shells out. Comparing against our own path costs one
+/// `canonicalize` and rules that out however the bundle is laid out.
 fn beside(name: &str) -> std::path::PathBuf {
-    agentdocker_host::procinfo::executable_path()
-        .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join(name)))
+    let me = agentdocker_host::procinfo::executable_path().ok();
+    let real = |path: &std::path::Path| path.canonicalize().ok();
+    me.as_deref()
+        .and_then(|me| me.parent())
+        .map(|dir| dir.join(name))
         .filter(|sibling| sibling.is_file())
+        .filter(|sibling| real(sibling) != me.as_deref().and_then(real))
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 

@@ -8,6 +8,7 @@
 mod app;
 mod client;
 mod desktop;
+mod notify;
 mod projects;
 mod smoke;
 mod terminal;
@@ -45,6 +46,25 @@ fn main() -> eframe::Result {
                         }),
                 );
             }
+            // One notification, then exit. The daemon runs this from
+            // inside the app bundle so the notification carries our
+            // icon; nothing else on macOS can.
+            Some("--notify") => {
+                let title = args
+                    .next()
+                    .unwrap_or_else(|| usage_error("--notify requires a title and a body"));
+                let body = args
+                    .next()
+                    .unwrap_or_else(|| usage_error("--notify requires a title and a body"));
+                let said = |value: std::ffi::OsString| value.to_string_lossy().into_owned();
+                return match notify::post(&said(title), &said(body)) {
+                    Ok(()) => Ok(()),
+                    Err(reason) => {
+                        eprintln!("{reason}");
+                        std::process::exit(1);
+                    }
+                };
+            }
             Some("--smoke-deadline") => {
                 smoke_deadline = Some(
                     args.next()
@@ -56,8 +76,8 @@ fn main() -> eframe::Result {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "agentdocker-ui [--version] [--smoke-test OUTPUT --expect-pid PID \
-                     --smoke-deadline SECONDS]"
+                    "agentdocker-ui [--version] [--notify TITLE BODY] \
+                     [--smoke-test OUTPUT --expect-pid PID --smoke-deadline SECONDS]"
                 );
                 return Ok(());
             }
