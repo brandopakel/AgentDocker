@@ -213,6 +213,9 @@ struct State {
     /// without this it writes its own guessed-at entry for a commit the
     /// daemon is about to record properly.
     committing: std::collections::BTreeSet<PathBuf>,
+    /// Duplicate pairs already announced, so a finding that lasts as
+    /// long as a session is said once rather than every sweep.
+    reported_duplicates: std::collections::BTreeSet<(AgentId, AgentId)>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -519,16 +522,30 @@ impl Daemon {
         found
     }
 
-    /// Say so, once per sweep, for anything already duplicated.
+    /// Say so once per pair, not once per sweep.
+    ///
+    /// The sweep runs for as long as the daemon does, and a duplicate
+    /// persists for the life of the session that has it — so warning on
+    /// every pass turns one finding into a log that grows without bound
+    /// and buries everything else. Each pair is announced when it
+    /// appears and then kept quiet; a pair that goes away and returns is
+    /// news again.
     fn report_duplicates(&self) {
-        for (kept, duplicate) in self.duplicates() {
+        let found = self.duplicates();
+        let mut state = lock(&self.state);
+        let current: std::collections::BTreeSet<_> = found.iter().cloned().collect();
+        for pair in &current {
+            if state.reported_duplicates.contains(pair) {
+                continue;
+            }
             warn!(
-                first = %kept, second = %duplicate,
+                first = %pair.0, second = %pair.1,
                 "two live records for one process, from before one process was one agent; \
                  both are left alone — retiring either can strand channel membership, \
                  pending questions or a journal cursor that no lease or inbox would show"
             );
         }
+        state.reported_duplicates = current;
     }
 
     pub fn check_liveness(&self) {
@@ -910,6 +927,7 @@ impl Daemon {
                 last_branch: HashMap::new(),
                 project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
+                reported_duplicates: std::collections::BTreeSet::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
@@ -4278,11 +4296,34 @@ impl State {
             .labels
             .get("adopted")
             .is_some_and(|v| v == "true");
-        let existing = self
+        // Every candidate, not the first one the map yields. A
+        // registration that names no session matches any session in the
+        // same process — that is what lets an MCP server join its hooks
+        // half — so once a process holds two sessions there are two
+        // candidates and no way to tell which this transport belongs
+        // to. Picking one by iteration order would hand it a different
+        // identity depending on the day. Two candidates means the
+        // question is unanswerable, so it gets its own record and the
+        // ambiguity is said out loud rather than resolved by luck.
+        let mut candidates = self
             .registry
             .live()
-            .find(|a| same_agent(a, &record))
-            .map(|a| a.id.clone());
+            .filter(|a| same_agent(a, &record))
+            .map(|a| a.id.clone())
+            .collect::<Vec<_>>();
+        candidates.sort();
+        let existing = match candidates.as_slice() {
+            [only] => Some(only.clone()),
+            [] => None,
+            many => {
+                warn!(
+                    count = many.len(), name = %record.spec.name,
+                    "this process holds more than one session and the registration names none, \
+                     so which it belongs to cannot be told; registering it separately"
+                );
+                None
+            }
+        };
         if let Some(id) = existing {
             if adopted {
                 return Response::error(ErrorCode::Invalid, "pid is already registered");
@@ -4305,13 +4346,37 @@ impl State {
                 .get("session_id")
                 .filter(|id| !id.is_empty())
                 .cloned();
-            if let Some(session) = learned
-                && let Some(agent) = self.registry.get_mut(&id)
-                && !agent.spec.labels.contains_key("session_id")
-            {
-                agent.spec.labels.insert("session_id".to_owned(), session);
-                let agent = agent.clone();
-                self.persist("agent", |store| store.upsert_agent(&agent));
+            let bound = learned.filter(|_| {
+                self.registry
+                    .get(&id)
+                    .is_some_and(|a| !a.spec.labels.contains_key("session_id"))
+            });
+            if let Some(session) = bound {
+                // Written down before it is believed. The record is
+                // built, stored, and only then published to memory — a
+                // storage failure here has to be an error the caller
+                // sees, not a success that memory and disk disagree
+                // about until the next restart quietly forgets which
+                // session this was.
+                let mut updated = self.registry.get(&id).cloned().expect("just found");
+                updated
+                    .spec
+                    .labels
+                    .insert("session_id".to_owned(), session.clone());
+                self.persist("agent", |store| store.upsert_agent(&updated));
+                if let Some(error) = self.storage_failure() {
+                    return error;
+                }
+                if let Some(agent) = self.registry.get_mut(&id) {
+                    agent
+                        .spec
+                        .labels
+                        .insert("session_id".to_owned(), session.clone());
+                }
+                self.emit(EventKind::AgentSessionBound {
+                    agent: id.clone(),
+                    session,
+                });
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent { agent };
@@ -4541,15 +4606,18 @@ mod tests {
         assert_eq!(again.id, first.id);
     }
 
-    /// A live session keeps its agent when an MCP server exits — through
-    /// the daemon, not a mock.
+    /// One identity survives both halves registering, and keeps what it
+    /// was given.
     ///
-    /// The mock test asserts that `shutdown` sends no request. This
-    /// asserts the thing that actually matters: after the real sequence
-    /// the record is still there, still live, and still holding what it
-    /// held.
+    /// Named for what it proves. It drives the daemon through the
+    /// registration order and asserts the record keeps its lease and its
+    /// inbox — it does **not** run `McpServer::shutdown`, which lives in
+    /// another crate and talks over a socket. That end-to-end trial
+    /// against the real adapter is still owed and is not claimed here;
+    /// what `shutdown` decides is covered separately, by unit test, in
+    /// `mcp.rs`.
     #[tokio::test]
-    async fn the_real_sequence_leaves_a_live_session_holding_everything() {
+    async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let me = std::process::id();
@@ -4588,13 +4656,32 @@ mod tests {
             Response::Lease { .. }
         ));
 
-        // The MCP server goes away. Its `shutdown` sees the host process
-        // still alive and sends nothing — so nothing here does either.
-        assert!(daemon.is_live(&mcp.id), "the session is still running");
+        // Something is sent to it, so there is state that a wrongly
+        // timed deregistration would strand.
+        let delivered = daemon
+            .handle(Request::Send {
+                from: hooks.id.to_string(),
+                to: mcp.id.to_string(),
+                kind: "chat".into(),
+                payload: json!({"text": "still here?"}),
+                reply_to: None,
+            })
+            .await;
+        assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
+
+        assert!(daemon.is_live(&mcp.id), "one identity, still running");
         assert_eq!(
             lock(&daemon.state).leases.by_holder(&mcp.id).len(),
             1,
-            "and still holds what it took"
+            "still holding what it took"
+        );
+        assert_eq!(
+            lock(&daemon.state)
+                .inboxes
+                .get(&mcp.id)
+                .map_or(0, VecDeque::len),
+            1,
+            "and still holding what it was sent"
         );
 
         // Only the process ending ends the agent.
@@ -4602,6 +4689,100 @@ mod tests {
         let _ = &ended;
         assert!(matches!(ended, Response::Agent { .. }));
         assert!(!daemon.is_live(&mcp.id));
+    }
+
+    /// A registration that names no session cannot pick between two.
+    ///
+    /// Absent-on-one-side is what lets an MCP server join its hooks
+    /// half. Once a process holds two sessions there are two candidates
+    /// and nothing to tell them apart, and taking the first the registry
+    /// yields would hand the same transport a different identity from
+    /// one run to the next.
+    #[tokio::test]
+    async fn an_unnamed_registration_refuses_to_guess_between_two_sessions() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let register = async |name: &str, session: Option<&str>| {
+            let mut spec = spec(name);
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let a = register("claude-aaaa", Some("session-a")).await;
+        let b = register("claude-bbbb", Some("session-b")).await;
+        assert_ne!(a.id, b.id);
+
+        let unnamed = register("claude-code-45856", None).await;
+        assert_ne!(unnamed.id, a.id, "not silently filed under the first");
+        assert_ne!(unnamed.id, b.id, "nor the second");
+        assert_eq!(lock(&daemon.state).registry.live().count(), 3);
+    }
+
+    /// Learning a session is written down before it is believed.
+    #[tokio::test]
+    async fn a_bound_session_is_stored_and_announced_before_it_is_answered() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let register = async |name: &str, session: Option<&str>| {
+            let mut spec = spec(name);
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+        };
+        register("claude-code-45856", None).await;
+        let joined = register("claude-aaaa", Some("session-a")).await;
+        let Response::Agent { agent } = joined else {
+            panic!("{joined:?}")
+        };
+
+        // On disk, not only in memory: a restart must not forget whose
+        // session this was and let the next one adopt it.
+        drop(daemon);
+        let daemon = open(&dir);
+        let reopened = lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            reopened.spec.labels.get("session_id").map(String::as_str),
+            Some("session-a")
+        );
+        // And it was announced, because every state change is.
+        assert!(
+            lock(&daemon.state)
+                .store
+                .recent_events(50)
+                .unwrap()
+                .iter()
+                .any(
+                    |e| matches!(&e.kind, EventKind::AgentSessionBound { session, .. }
+                    if session == "session-a")
+                ),
+            "binding a session is a state change and says so"
+        );
     }
 
     /// Duplicates that already exist are reported, not repaired.

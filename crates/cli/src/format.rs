@@ -437,6 +437,9 @@ pub fn event_line(event: &Event) -> String {
                 .unwrap_or_default();
             format!("agent created    {} ({name}){project}", agent.short())
         }
+        EventKind::AgentSessionBound { agent, session } => {
+            format!("agent bound      {} to session {session}", agent.short())
+        }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
             format!("agent started    {}{pid}", agent.short())

@@ -577,20 +577,22 @@ async fn found_by_pid<B: Backend>(
         };
     }
     let named = current_agent(backend, input).await?;
+    // Unverifiable ancestry authorises nothing.
+    //
+    // What this answer is used for is releasing an agent's leases and
+    // deregistering it. Without a pid, or without a birth time to tell a
+    // recycled pid from the original, there is nothing to check a record
+    // against — and a name is not proof: it outlives the session that
+    // chose it, and eight characters of session id is not much to
+    // collide. Ending nothing costs an expiry; ending the wrong agent
+    // costs somebody their work.
     let Some(pid) = pid else {
-        // Nothing to verify against, so a record found by name is all
-        // there is. It is still the record this session asked for by
-        // name, which is weaker than the check below and better than
-        // ending nothing at all.
-        return Ok(named);
+        return Ok(None);
     };
-    let started = agentdocker_host::procinfo::start_time(pid);
-    // A birth time nobody can read is not evidence of anything, and
-    // `None == None` would match every record that also failed to read
-    // one. Without it there is nothing to verify against.
-    if started.is_none() {
-        return Ok(named);
-    }
+    let Some(started) = agentdocker_host::procinfo::start_time(pid) else {
+        return Ok(None);
+    };
+    let started = Some(started);
     // The same predicate the daemon registers by, for the same reason:
     // this hook is about to release another agent's leases and
     // deregister it, so "shares a pid" is nowhere near enough. A
@@ -609,6 +611,15 @@ async fn found_by_pid<B: Backend>(
                 .get("session_id")
                 .filter(|id| !id.is_empty())
                 .is_none_or(|theirs| *theirs == input.session_id)
+            // The checkout, where both name one. A project spans its
+            // main checkout and every linked worktree, so narrowing the
+            // listing to the project is not the same as being in the
+            // same tree — two worktrees of one repository are one
+            // project and two different places to work.
+            && match (&agent.spec.workdir, &input.cwd) {
+                (Some(theirs), Some(mine)) => mine.starts_with(theirs) || theirs.starts_with(mine),
+                _ => true,
+            }
     };
     // The name is a hint, not proof. A session id prefix is eight
     // characters and a name outlives the session that chose it, so a
@@ -1477,25 +1488,44 @@ mod tests {
             "the name answered, but the process behind it did not match"
         );
 
-        // A birth time nobody can read is not evidence, so there is
-        // nothing to verify against and nothing is invented. The listing
-        // is not even asked for.
-        let backend = Mock::with(vec![Response::error(
-            agentdocker_core::ErrorCode::NotFound,
-            "no such agent",
-        )]);
+        // Unverifiable ancestry authorises nothing. A birth time nobody
+        // can read leaves nothing to check a record against, and this
+        // answer is used to release leases and deregister — so a record
+        // that answers to the right NAME is still refused, and no
+        // listing is even asked for.
+        let live_but_unverifiable = agent(&session_name(&input.session_id), true);
+        for pid in [None, Some(u32::MAX)] {
+            let backend = Mock::with(vec![Response::Agent {
+                agent: live_but_unverifiable.clone(),
+            }]);
+            assert!(
+                found_by_pid(&backend, &input, pid).await.unwrap().is_none(),
+                "a name is not proof when nothing can confirm the process"
+            );
+            assert_eq!(backend.requests().len(), 1, "and nothing is listed");
+        }
+
+        // A project spans its main checkout and every linked worktree,
+        // so narrowing the listing to the project is not the same as
+        // being in the same tree.
+        let elsewhere = {
+            let mut a = matching("claude-in-another-worktree");
+            a.spec.workdir = Some(std::path::PathBuf::from("/somewhere/else/entirely"));
+            a
+        };
+        let backend = Mock::with(vec![
+            Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
+            Response::Agents {
+                agents: vec![elsewhere],
+            },
+        ]);
         assert!(
-            found_by_pid(&backend, &input, Some(u32::MAX))
+            found_by_pid(&backend, &input, Some(me))
                 .await
                 .unwrap()
-                .is_none()
+                .is_none(),
+            "another worktree of the same project is another place to work"
         );
-        assert_eq!(
-            backend.requests().len(),
-            1,
-            "no listing without a birth time"
-        );
-
         // And the same session under the other half's name, with our own
         // session id on it, is us.
         let mut ours_by_id = matching("claude-code-4242");
