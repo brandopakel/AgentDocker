@@ -35,6 +35,12 @@ const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// has not gone stale.
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 
+/// How long an agent's last report stands before the window stops
+/// treating it as news. Past this the DOING column says what it knows —
+/// that it has not heard from the agent — rather than asserting a state
+/// nobody has confirmed since.
+const QUIET_AFTER: Duration = Duration::from_secs(15 * 60);
+
 /// How long the status line keeps saying the last thing that happened.
 /// Nothing lives only there — a failed setup keeps its plan, a lost
 /// socket has its own indicator — so letting it go is safe, and a line
@@ -566,6 +572,23 @@ impl App {
         }
     }
 
+    /// Runtimes that are heard from only when they choose to speak.
+    ///
+    /// A hooks adapter reports every turn of a session whether the agent
+    /// asks it to or not. A runtime without one — Codex is the one
+    /// people actually run — reaches the daemon only when it calls an
+    /// AgentDocker MCP tool, so "idle" for one of those means "has not
+    /// called us", not "is doing nothing". Reporting a session that is
+    /// at this moment editing files as idle is the sort of thing that
+    /// makes a reader stop believing the rest of the table.
+    fn mute(&self) -> std::collections::BTreeSet<String> {
+        self.runtimes
+            .iter()
+            .filter(|r| r.hooks == Wiring::Unsupported)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
     /// Runtimes with no way to tell the daemon what their agents are
     /// doing, by the name an agent registers under.
     fn unwired(&self) -> std::collections::BTreeSet<String> {
@@ -589,6 +612,7 @@ impl App {
     fn agents_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         let unwired = self.unwired();
+        let mute = self.mute();
         // Grouped by project id, not by name: two checkouts of one
         // repository share a name, and the id is what actually says they
         // are the same work.
@@ -677,19 +701,32 @@ impl App {
                     // What the project is doing, in the words a reader
                     // would use: "1 blocked" is worth colour, "all idle"
                     // is worth saying, and "0 working" is neither.
+                    // Only agents we have actually heard from lately
+                    // count towards "idle". A project whose sessions all
+                    // predate the setup, or whose runtime has no hooks
+                    // adapter, is not idle — it is unheard, and saying
+                    // the first is how the summary came to disagree with
+                    // what the person could see happening.
+                    let unheard = agents
+                        .iter()
+                        .filter(|agent| {
+                            mute.contains(&agent.spec.runtime)
+                                || (now - agent.last_seen)
+                                    .to_std()
+                                    .is_ok_and(|since| since > QUIET_AFTER)
+                        })
+                        .count();
                     if blocked > 0 {
-                        ui.label(
-                            RichText::new(format!("{blocked} blocked"))
-                                .color(Color32::from_rgb(200, 140, 60)),
-                        );
+                        ui.label(RichText::new(format!("{blocked} blocked")).color(UNVERIFIED));
                     } else if working > 0 && working == agents.len() {
-                        ui.label(
-                            RichText::new("all working").color(Color32::from_rgb(60, 170, 90)),
-                        );
+                        ui.label(RichText::new("all working").color(WIRED));
                     } else if working > 0 {
+                        ui.label(RichText::new(format!("{working} working")).color(WIRED));
+                    } else if unheard == agents.len() {
+                        ui.label(RichText::new("none heard from").color(UNVERIFIED));
+                    } else if unheard > 0 {
                         ui.label(
-                            RichText::new(format!("{working} working"))
-                                .color(Color32::from_rgb(60, 170, 90)),
+                            RichText::new(format!("{unheard} not heard from")).color(UNVERIFIED),
                         );
                     } else {
                         ui.label(RichText::new("all idle").weak());
@@ -738,15 +775,45 @@ impl App {
                                     );
                             }
                             Some(other) => {
-                                let label = ui.label(RichText::new(other.label()).weak());
-                                // "idle" is a real answer, and it is
-                                // also what an unwired runtime always
-                                // says. Which one this is belongs on
-                                // the cell, not in a paragraph under
-                                // the table.
+                                // "idle" is a claim about the agent.
+                                // "we have not heard from it" is a claim
+                                // about us, and saying the first when we
+                                // mean the second is how a table stops
+                                // being believed: a Codex session
+                                // editing files right now was reported
+                                // idle, because Codex has no way to say
+                                // otherwise unless it calls a tool.
+                                let quiet = (now - agent.last_seen)
+                                    .to_std()
+                                    .is_ok_and(|since| since > QUIET_AFTER);
+                                let mute = mute.contains(&agent.spec.runtime);
+                                let heard_from =
+                                    matches!(other, Activity::Idle { .. }) && !quiet && !mute;
+                                let label = ui.label(if heard_from {
+                                    RichText::new(other.label()).weak()
+                                } else {
+                                    RichText::new("not heard from").color(UNVERIFIED)
+                                });
                                 if unwired.contains(&agent.spec.runtime) {
                                     label.on_hover_text(
                                         "Not wired up, so it reports nothing — Runtimes.",
+                                    );
+                                } else if mute {
+                                    label.on_hover_text(format!(
+                                        "{} has no hooks adapter, so it is heard from only when \
+                                         it calls an AgentDocker tool. It may be busy; this says \
+                                         only that it has not called us.",
+                                        agent.spec.runtime
+                                    ));
+                                } else if quiet {
+                                    label.on_hover_text(
+                                        "Nothing since the time in SEEN. Hooks are loaded when a \
+                                         session starts, so a session older than your setup \
+                                         cannot report until it is restarted.",
+                                    );
+                                } else {
+                                    label.on_hover_text(
+                                        "Alive and quiet: between turns, or waiting on a person.",
                                     );
                                 }
                             }
@@ -2561,6 +2628,42 @@ mod tests {
             Screen::ALL[2],
             "three tabs and a return should land on {}",
             Screen::ALL[2].title()
+        );
+    }
+
+    /// An agent nobody has heard from is not reported as idle.
+    ///
+    /// This is the defect a person actually caught: a Codex session
+    /// editing files was shown as `idle`, because Codex has no hooks
+    /// adapter and reaches the daemon only when it calls a tool. The
+    /// table was asserting something about the agent when all it knew
+    /// was something about itself.
+    #[test]
+    fn an_agent_nobody_has_heard_from_is_not_reported_as_idle() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (_messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        app.runtimes = serde_json::from_value(serde_json::json!([{
+            "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
+            "cli":"/fixture/claude", "version":null, "apps":[], "config_dir":null,
+            "mcp":"wired", "hooks":"wired"
+        }, {
+            "name":"codex", "vendor":"OpenAI", "label":"Codex", "cli":"/fixture/codex",
+            "version":null, "apps":[], "config_dir":null,
+            "mcp":"wired", "hooks":"unsupported"
+        }]))
+        .unwrap();
+        let mute = app.mute();
+        assert!(mute.contains("codex"), "codex has no hooks adapter");
+        assert!(
+            !mute.contains("claude-code"),
+            "claude-code does, so its idle means idle"
+        );
+        // And neither is "unwired": both channels codex supports are
+        // wired, which is exactly why the old check missed it.
+        assert!(
+            !app.unwired().contains("codex"),
+            "codex is wired; it is simply unable to say more"
         );
     }
 
