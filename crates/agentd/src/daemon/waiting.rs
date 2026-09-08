@@ -139,7 +139,9 @@ impl State {
         {
             return Response::Ok;
         }
-        record.last_seen = now;
+        // Preserve the observation's age. Using receipt time here would let a
+        // delayed idle report fall back to "working" after its own expiry.
+        record.last_seen = record.last_seen.max(observation.observed_at);
         record.reported_activity = Some(observation.clone());
         let mut event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::AgentActivityReported {
@@ -210,12 +212,11 @@ impl State {
                 since: waiter.since,
             };
         }
-        if let Some(activity) = record
-            .reported_activity
-            .as_ref()
-            .and_then(|a| a.current(now))
+        if let Some(observation) = &record.reported_activity
+            && (record.last_seen <= observation.observed_at
+                || record.last_seen == record.created_at)
         {
-            return activity;
+            return observation.current(now).unwrap_or(Activity::Unknown);
         }
         // Adoption/registration proves presence, not work. Nor does silence
         // prove idleness: MCP calls are optional, and hooks may be disconnected.

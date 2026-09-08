@@ -86,7 +86,7 @@ pub struct ClaudeCodeArgs {
 pub struct InstallArgs {
     #[arg(value_enum)]
     pub host: Host,
-    /// Write to ~/.claude/settings.json instead of ./.claude/settings.json.
+    /// Use the provider's user configuration root instead of this project's.
     #[arg(long)]
     pub user: bool,
 }
@@ -955,11 +955,7 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     } else {
         PathBuf::from(".claude").join("settings.json")
     };
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(raw) => Some(raw),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
-    };
+    let existing = crate::setup::guided::read_config(&path)?;
     let mut settings: Value = match existing.as_deref() {
         Some(raw) => serde_json::from_str(raw)
             .with_context(|| format!("{} is not valid JSON", path.display()))?,

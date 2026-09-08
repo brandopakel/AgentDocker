@@ -52,7 +52,7 @@ impl Plan {
 }
 
 /// Read bounded UTF-8 configuration without hanging on a special file.
-fn read_config(path: &Path) -> Result<Option<String>> {
+pub(crate) fn read_config(path: &Path) -> Result<Option<String>> {
     let mut file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -569,8 +569,11 @@ mod tests {
         let hooks = alternate.join("hooks.json");
         let original = "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"my-check\"}]}]}}\n";
         std::fs::write(&hooks, original).unwrap();
-        let mut plan =
-            prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
+        // The nextest executable has a hash suffix; installed adapters are
+        // recognized by their actual `agentdocker` executable name.
+        let executable = tmp.path().join("agentdocker");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable).unwrap();
         assert_eq!(plan.changes.len(), 2);
         assert!(
             plan.changes
@@ -586,7 +589,7 @@ mod tests {
                 .contains("my-check")
         );
         assert!(
-            prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap())
+            prepare(&roots, &["codex".into()], &executable)
                 .unwrap()
                 .changes
                 .is_empty()

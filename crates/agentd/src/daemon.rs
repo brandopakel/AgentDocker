@@ -5408,7 +5408,7 @@ mod tests {
         assert!(matches!(
             response,
             Response::Error {
-                code: ErrorCode::Unavailable,
+                code: ErrorCode::StorageUnavailable,
                 ..
             }
         ));
@@ -5418,6 +5418,43 @@ mod tests {
         drop(state);
         assert_eq!(daemon.recent_events(100), before);
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn delayed_idle_report_cannot_become_work_when_it_expires() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "delayed-report", None).await;
+        let now = Utc::now();
+        let mut state = lock(&daemon.state);
+        let record = state.registry.get_mut(&agent.id).unwrap();
+        record.created_at = now - Duration::hours(1);
+        record.last_seen = record.created_at;
+        state.report_activity(
+            agent.id.as_str(),
+            agentdocker_core::ActivityObservation {
+                activity: agentdocker_core::ReportedActivity::Idle,
+                observed_at: now - Duration::seconds(299),
+            },
+            now,
+        );
+        let record = state.registry.get(&agent.id).unwrap();
+        assert!(matches!(
+            state.activity_of(record, now),
+            Activity::Idle { .. }
+        ));
+        assert_eq!(
+            state.activity_of(record, now + Duration::seconds(1)),
+            Activity::Unknown
+        );
+        state.registry.get_mut(&agent.id).unwrap().last_seen = now;
+        assert!(
+            matches!(
+                state.activity_of(state.registry.get(&agent.id).unwrap(), now),
+                Activity::Working { .. }
+            ),
+            "newer coordination supersedes the old idle observation"
+        );
     }
 
     #[tokio::test]

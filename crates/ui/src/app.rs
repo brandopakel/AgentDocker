@@ -490,8 +490,11 @@ impl App {
             | EventKind::AgentStopping { .. }
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
-            | EventKind::AgentVcsChanged { .. }
-            | EventKind::AgentActivityReported { .. } => self.send(Cmd::Agents),
+            | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
+            EventKind::AgentActivityReported { .. } => {
+                self.send(Cmd::Agents);
+                self.send(Cmd::Activity);
+            }
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }
