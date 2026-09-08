@@ -9167,7 +9167,7 @@ deny = ["send:all"]
         // The daemon holds its terminal, and what it prints reaches both a
         // watcher and the log.
         let session = eventually(async || daemon.session(&agent.id)).await;
-        let mut watching = session.output.subscribe();
+        let (_, mut watching) = session.attach();
         let printed = eventually(async || {
             let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap_or_default();
             log.contains("I_HAVE_A_TTY").then_some(log)
@@ -9231,6 +9231,24 @@ deny = ["send:all"]
             })
             .await;
         eventually(async || daemon.session(&agent.id).is_none().then_some(())).await;
+        // Keep the client's Session alive: it must not hold a sender that
+        // prevents an existing attachment from observing terminal EOF.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match live.recv().await {
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                }
+            }
+        })
+        .await
+        .expect("an attached terminal closes when its child exits");
+        let (final_history, mut ended) = session.attach();
+        assert!(!final_history.is_empty());
+        assert!(matches!(
+            ended.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ));
     }
 
     #[tokio::test]

@@ -609,6 +609,15 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
 
+Only the terminal-output reader owns the broadcast sender. Session handles hold
+weak references, so an attached client cannot keep its own output channel alive
+after EOF. An attach racing the reader's exit receives the retained tail and an
+already-closed receiver; the server sends `end` after queued output. The CLI
+reads an independently reopened, nonblocking terminal through Tokio readiness
+notifications. Dropping that read cancels it without a stranded stdin worker or
+changes to inherited descriptor flags. The existing raw-mode guard restores
+terminal settings on completion.
+
 Live terminal continuity through daemon replacement remains unfinished. `daemon reload` currently returns `unavailable` without touching the daemon or agents. An unplanned death closes the master with the daemon; the child may exit with it, and a separate process group does not guarantee survival. Snapshot restore creates a new process and terminal.
 
 Native launch uses a stateless host gate around `Command`: the forked child establishes its process group/terminal, reports its PID over an inherited private socket, and waits using only async-signal-safe syscalls. The daemon verifies its birth identity, commits the Running identity and event, then authorizes exec. Until authorization, EOF, cancellation or the 30-second child deadline denies exec. A worker completes Command's exec-error handshake; an owned child wrapper kills/reaps a launch whose asynchronous activation is dropped. No command, shell wrapper or helper application runs before the durable transaction. Normal exit supervision polls the owned child and drains its process group before releasing protection.
@@ -635,9 +644,13 @@ A complete replacement must preserve child ownership, batch stdout/stderr, PTY i
 
 A window that can only look at things is half a product: everything the CLI can do has to be reachable from it. Two different needs, and they want different answers.
 
-**Attaching** needs a real terminal. Now that a managed agent has a pty and `attach` streams it, the app should render one: a terminal view per agent, driven by the same `attach` protocol the CLI uses, with a vt parser turning the byte stream into a screen and keystrokes going back the other way. That is row 29, and it is what turns the app from a dashboard into a console.
+**Attaching** uses the managed agent's PTY and the same `attach` protocol as the CLI. The app renders its output through a VT parser and sends keystrokes and resizes back in order. Its input queue admits at most 32 messages and 64 KiB in total; a single input must also fit 64 KiB. Admission accepts the whole input or none, and rejection remains visible until dismissed. Adjacent resizes coalesce without crossing a keystroke. A rejected resize is deferred until a later UI pass; keystrokes are never automatically retried.
 
-**Everything else** should not be a form per command. The CLI is the complete surface and it keeps growing; hand-built widgets for each would always lag behind it, and every new row on this roadmap would mean a new dialogue. Instead the app gets a command bar that runs `agentdocker …` and renders the result, with buttons only for the handful of things done constantly — stop, adopt, set up a runtime, approve or block a review, close a channel. The buttons are shortcuts to the same commands, so there is one surface to keep correct rather than two.
+The terminal reader limits each newline-delimited response to 256 KiB, including the daemon's encoded 64 KiB replay. OSC control strings are separately limited to 64 KiB across responses: [vte's generic OSC bound](https://docs.rs/vte/0.15.0/vte/struct.Parser.html) does not apply with its default `std` feature. Accepted bytes reach the VT parser unchanged; malformed, incomplete or oversized output ends the attachment with a reason. These are attachment budgets, not a total process RSS ceiling or deletion of daemon logs.
+
+Closing remembers cancellation before a connection arrives, shuts down an installed socket and wakes the input worker without idle polling. Reader completion and writer failure use the same shutdown path; the background reader joins its writer while the UI remains responsive. A pending OS connection/open still inherits the client's transport and startup behavior; this is not a new deadline for a saturated listener or daemon autostart.
+
+**Other commands** run through the console, which invokes `agentdocker` and renders its result. Dedicated controls cover common actions such as stopping or adopting an agent, setup, installation maintenance and answers to questions. Console output and command recall have separate history budgets.
 
 What the app must not become is a multiplexer: panes, layouts, and tiling are herdr's and tmux's ground, and building them here would spend our effort on their strength rather than ours.
 

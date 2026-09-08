@@ -203,9 +203,7 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
-        // Asked here because this is the only context macOS will
-        // register: a foreground app with a run loop. The one-shot
-        // poster the daemon runs inherits the answer.
+        // Permission requests belong to the foreground app and its run loop.
         crate::notify::request_permission();
         let (cmd_tx, cmd_rx) = queue::channel();
         let (msg_tx, msg_rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
@@ -2081,7 +2079,6 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// The named binary next to this one, else whatever is on `PATH`.
 /// The sibling tool of this name, or the bare name for `PATH` to
 /// resolve.
 ///
@@ -2419,6 +2416,10 @@ mod tests {
                         Err(error) => panic!("fixture accept failed: {error}"),
                     }
                 };
+                // Darwin inherits O_NONBLOCK from the listener. The accept
+                // loop is polled, but this fixture's request reader uses the
+                // socket deadlines below and must wait for the request bytes.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

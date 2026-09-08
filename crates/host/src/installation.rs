@@ -119,6 +119,10 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join(".local/share/agentdocker/desktop");
+        // Match installation's private-state creation. On an elevated Windows
+        // runner, ordinary create_dir_all can assign Administrators ownership,
+        // which is intentionally refused for the final application state.
+        dirs::secure_state_dir(&root).unwrap();
         let executable = root
             .join("versions")
             .join("a".repeat(64))
