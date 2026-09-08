@@ -520,3 +520,9 @@ CI. Actual final integrated model trials, duplicate migration, automatic Codex
 inbox delivery, sustained-use bounds, safe live upgrades and platform/release
 acceptance remain open. One complete final review of the consolidated source
 can cover its component changes; skipped and rate-limited reviews cannot.
+
+The first combined head `2b76e46` failed test compilation because the main merge
+retained an identical older Channels regression beside its bounded-queue version.
+The obsolete copy is removed, preserving all assertions in the bounded version.
+The [original failure](verification/2026-09-08-final-candidate-compile.json) is
+retained; fresh corrected-source CI remains required.

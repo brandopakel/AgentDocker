@@ -1,0 +1,9 @@
+{
+  "source_commit": "2b76e461bfcaf7bea3ad50d17d4e096eea8f050e",
+  "workflow": "https://github.com/brandopakel/AgentDocker/actions/runs/34197542323",
+  "result": "failed",
+  "failure": "Merged Channels regression existed twice; earlier copy used std::sync::mpsc::Sender instead of bounded app::queue::Sender. Test compilation failed E0428/E0308 on Mac/Linux and coverage.",
+  "private_log_sha256": "baa79cf2b072ead40afb43855a9f9e519dd19f4eff626aab884b22adcc951102",
+  "fix": "Remove the identical old-queue copy; retain the bounded-queue regression with every original assertion. No production behavior changes.",
+  "retest": "Fresh corrected-source CI required; previous packaged acceptance is not proof the test suite passed."
+}
