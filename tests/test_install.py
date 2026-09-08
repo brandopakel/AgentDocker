@@ -258,14 +258,25 @@ class InstallerTests(unittest.TestCase):
             )
 
     @unittest.skipUnless(sys.platform == "darwin", "iconutil is macOS-only")
-    def test_bundle_names_the_app_for_macos(self):
-        """A bare executable is named after its file in the Dock and the
-        app switcher. The bundle is the only thing that changes that, so
-        what it says about itself is worth asserting."""
+    def test_bundle_names_the_app_without_shadowing_the_cli(self):
+        """The bundle carries the product's name; the executable keeps
+        its own.
+
+        Naming the executable `AgentDocker` looked tidier and broke every
+        window button that shells out. macOS volumes are case-insensitive
+        by default, so `Contents/MacOS/agentdocker` then resolved to the
+        *GUI*, and the app ran itself with a CLI argument: "unknown
+        argument: setup". The name belongs in CFBundleName, and the
+        commands have to be reachable beside it.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "agentdocker-ui"
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
+            for tool in ["agentdocker", "agentd"]:
+                beside = Path(tmp) / tool
+                beside.write_text(f"#!/bin/sh\necho {tool}\n")
+                beside.chmod(0o755)
             out = Path(tmp) / "dist"
             out.mkdir()
             subprocess.run(
@@ -274,12 +285,32 @@ class InstallerTests(unittest.TestCase):
                 capture_output=True,
             )
             app = out / "AgentDocker.app"
+            macos = app / "Contents/MacOS"
             plist = (app / "Contents/Info.plist").read_text()
-            for key in ["<string>AgentDocker</string>", "<string>9.9.9</string>"]:
-                self.assertIn(key, plist)
-            self.assertTrue((app / "Contents/MacOS/AgentDocker").exists())
-            self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
+            self.assertIn("<string>AgentDocker</string>", plist, "the bundle is named")
+            self.assertIn("<string>agentdocker-ui</string>", plist, "the executable is not")
+            self.assertIn("<string>9.9.9</string>", plist)
             self.assertTrue((app / "Contents/Resources/AgentDocker.icns").exists())
+            self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
+
+            for tool in ["agentdocker-ui", "agentdocker", "agentd"]:
+                self.assertTrue((macos / tool).exists(), f"{tool} ships in the bundle")
+
+            # The defect itself: on a case-insensitive volume two names
+            # that differ only in case are one file, so the window found
+            # itself when it went looking for the CLI.
+            names = sorted(entry.name for entry in macos.iterdir())
+            folded = [name.lower() for name in names]
+            self.assertEqual(
+                len(folded),
+                len(set(folded)),
+                f"no two executables differ only in case: {names}",
+            )
+            self.assertNotEqual(
+                (macos / "agentdocker").resolve(),
+                (macos / "agentdocker-ui").resolve(),
+                "looking for the CLI must not find the window",
+            )
 
     def test_the_cask_is_generated_only_with_real_desktop_archives(self):
         """A cask pointing at a download that is not there is worse than

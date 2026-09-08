@@ -133,7 +133,7 @@ def notarize(artifact, profile, report):
 def macos(args, stage, info):
     if sys.platform != "darwin":
         raise ValueError("macOS packaging requires a Mac build host")
-    app = stage / "agentdocker.app"
+    app = stage / "AgentDocker.app"
     contents = app / "Contents"
     copy_binaries(args, contents / "MacOS")
     resources = contents / "Resources"
@@ -187,7 +187,7 @@ def macos(args, stage, info):
     if args.dmg:
         with tempfile.TemporaryDirectory(prefix="ad-dmg-", dir=stage) as scratch:
             image_root = Path(scratch)
-            run("/usr/bin/ditto", app, image_root / "agentdocker.app")
+            run("/usr/bin/ditto", app, image_root / "AgentDocker.app")
             (image_root / "Applications").symlink_to("/Applications", target_is_directory=True)
             dmg = stage / f"agentdocker-desktop-{args.target}.dmg"
             run("/usr/bin/hdiutil", "create", "-volname", "agentdocker", "-srcfolder", image_root,
