@@ -55,6 +55,15 @@ fn may_spawn() -> bool {
 }
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn isolated(socket: PathBuf) -> Self {
+        Self {
+            home: socket.parent().unwrap().to_owned(),
+            socket,
+            autostart: false,
+        }
+    }
+
     pub fn from_env() -> Self {
         let home = dirs::home();
         Self {
