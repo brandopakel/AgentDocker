@@ -147,3 +147,9 @@ full debug information and unchanged release/benchmark optimization. Direct
 Cargo commands do not invoke the storage preflight; run
 `python3 scripts/build_storage.py` first. This bounds the campaign workflow,
 not all disk use by arbitrary programs.
+
+The [first state timing diagnostic campaign](verification/2026-09-07-state-timing-diagnostic.json)
+passed at `ef3fd7b` without reaching the 250 ms logging threshold. Its eight
+Bencher reports use a separate diagnostic testbed. The earlier integrated
+timeout remains unresolved; compare this campaign only with its recorded mode
+and shared-runner limitations in mind.

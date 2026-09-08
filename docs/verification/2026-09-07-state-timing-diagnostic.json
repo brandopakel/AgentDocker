@@ -1,0 +1,144 @@
+{
+  "format": 1,
+  "scope": "Separate opt-in state timing diagnostic campaign, not a diagnosis of the original failed campaign",
+  "head": "ef3fd7bb802ef847067052b910ffa91e3247730c",
+  "workflow": 34190929039,
+  "artifact": 10042235681,
+  "archive_sha256": "8c2c81b0cad62d651f8522dfa78450c3381fe72f20aec7807183eb568ed17d4e",
+  "manifest": {
+    "commit": "ef3fd7bb802ef847067052b910ffa91e3247730c",
+    "source_sha256": "f986a25378183ee8aaf947f3d231bdd367023f5409b813b64b7c56104304820b",
+    "dirty": false,
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "processor": "x86_64",
+    "cpu_count": 4,
+    "profile": "release",
+    "container_engine": null,
+    "workloads": {
+      "lease_counts": [
+        1,
+        100,
+        1000
+      ],
+      "fingerprint_files": 100,
+      "fingerprint_bytes_per_file": 4096,
+      "socket_clients": [
+        1,
+        10,
+        100
+      ],
+      "socket_checkout_kind": "plain-unwatched",
+      "socket_format": 2,
+      "socket_workloads": [
+        "shared",
+        "disjoint"
+      ],
+      "socket_state_timing": true,
+      "socket_outcomes": [
+        "claim_release",
+        "claim_conflict"
+      ],
+      "socket_iterations_per_client": 100
+    }
+  },
+  "before_after_equal": true,
+  "outcomes": [
+    {
+      "workload": "shared",
+      "clients": 1,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.0,
+        "elapsed-seconds": 0.130174261,
+        "sample-count": 100,
+        "throughput": 768.2010194012163
+      },
+      "metrics_sha256": "44a871a0f4eb975c4665257b181a00b8b8159bd2dd2cf34300f6264bc5277baf",
+      "diagnostic_log_bytes": 224
+    },
+    {
+      "workload": "disjoint",
+      "clients": 1,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.0,
+        "elapsed-seconds": 0.133460965,
+        "sample-count": 100,
+        "throughput": 749.2827584455126
+      },
+      "metrics_sha256": "e768786a8b77d28b44764ce568eb79d8eb8897034f886c5417dd517337620d4a",
+      "diagnostic_log_bytes": 226
+    },
+    {
+      "workload": "shared",
+      "clients": 10,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.873,
+        "elapsed-seconds": 0.352897764,
+        "sample-count": 1000,
+        "throughput": 2833.681881872167
+      },
+      "metrics_sha256": "7d5d76b83f29a9e6740b4e6daa9cbc7d38bdfbca3ff0b61bcabb322b74303a54",
+      "diagnostic_log_bytes": 228
+    },
+    {
+      "workload": "disjoint",
+      "clients": 10,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.0,
+        "elapsed-seconds": 0.653121816,
+        "sample-count": 1000,
+        "throughput": 1531.1079426567494
+      },
+      "metrics_sha256": "be4b1fac4143c84364f38728896b56cece59aab9e678217f8e1102ccae9fcfbc",
+      "diagnostic_log_bytes": 229
+    },
+    {
+      "workload": "shared",
+      "clients": 100,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.9853,
+        "elapsed-seconds": 2.855606143,
+        "sample-count": 10000,
+        "throughput": 3501.8834878588505
+      },
+      "metrics_sha256": "fe4a3287a92fae31f5145f46d6932d4883a4d50f2011f310e4be36971c3f79a4",
+      "diagnostic_log_bytes": 231
+    },
+    {
+      "workload": "disjoint",
+      "clients": 100,
+      "exit_code": 0,
+      "attempts": {
+        "conflict-ratio": 0.0,
+        "elapsed-seconds": 7.129843303,
+        "sample-count": 10000,
+        "throughput": 1402.5553683335977
+      },
+      "metrics_sha256": "39593307897087a24a3d144d5e6bdf300fc3c69c074b417623818f965d909134",
+      "diagnostic_log_bytes": 232
+    }
+  ],
+  "slow_state_records": 0,
+  "timing_threshold_ms": 250,
+  "maximum_records_per_daemon": 256,
+  "bencher": {
+    "project": "agentdocker",
+    "branch": "test/slow-state-diagnostics",
+    "testbed": "github-ubuntu-x86_64-state-timing",
+    "successful_reports": 8
+  },
+  "limits": [
+    "All six workloads passed with the existing five-second read timeout and no retries.",
+    "No state-lock wait or store operation reached the enabled 250 ms diagnostic threshold in this campaign.",
+    "The original e008831 disjoint-100 release-response timeout remains unexplained; passing on a different shared runner does not diagnose or waive it.",
+    "Diagnostic logging can affect measured timings; this campaign uses a separate Bencher testbed.",
+    "The source identity pins the measured candidate, not subsequent documentation commits."
+  ]
+}

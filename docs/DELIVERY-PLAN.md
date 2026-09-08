@@ -408,3 +408,10 @@ retains exact source and partial measurements; no successful rerun or passing
 correctness suite diagnoses it. An opt-in timing campaign now separates slow
 state-lock acquisition from slow store operations, with bounded diagnostic
 output. Keep benchmark acceptance open until the failure is understood.
+
+The separate opt-in campaign at `ef3fd7b` completed all six socket workloads
+with no state timing records at or above 250 ms. Its source-bound
+[diagnostic report](verification/2026-09-07-state-timing-diagnostic.json) records
+matching manifests and eight successful Bencher reports under a distinct
+`github-ubuntu-x86_64-state-timing` testbed. This did not reproduce the original
+`e008831` timeout and does not close its diagnosis or performance acceptance.
