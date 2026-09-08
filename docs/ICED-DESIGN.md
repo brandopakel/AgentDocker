@@ -39,10 +39,31 @@ they must not become a fabricated chat transcript or silently drained inbox.
 The later migration must retain these workflows even though their old sidebar
 items disappear.
 
-Projects are listed beneath the primary navigation. The default proposal is to
-restore the last selected project. A project with no sessions has a useful empty
-state, not an empty table. Whether an all-project overview should be the default
-remains a design decision for review.
+Projects are listed beneath the primary navigation. The agreed launch behavior
+is to restore the last selected project (confirmed September 8, 2026). This
+restores the view only; it does not restart agents. A project with no sessions
+has a useful empty state. If its folder is unavailable, preserve the selection
+and explain the missing location. First launch opens discovered projects or a
+useful empty state. Persistence is part of the operational migration; the
+current sample-only preview still starts from its in-memory fixture.
+
+### How projects enter the workspace
+
+Automatic discovery remains the primary path. The daemon recognizes supported
+agent processes and resolves their working directories to a Git repository,
+an `Agentfile.toml` root, or the directory itself. Linked worktrees retain their
+checkout identity beneath their repository project. Discovery is limited by
+adapter support and access to the process working directory; an installed
+desktop application does not establish which projects its sessions are using.
+
+Recommended addition: **Add project…** selects and pins an existing local
+folder, even when no agent is running there. Reuse the existing project identity
+rules so a manually pinned folder and a later discovered session join the same
+project. Keep recent/pinned projects visible when their sessions finish. Adding
+a folder does not launch an agent, alter provider configuration, or create a
+repository. Those remain separate explicit actions. Removing a pin does not
+delete files or stop sessions; live discovery can still surface that project.
+This folder-pinning workflow is a proposal, not an implemented capability.
 
 ## Visual direction
 
@@ -126,7 +147,9 @@ not a notarized public release.
 2. **Read-only operational view.** Extract the existing framework-independent
    client/snapshot boundary. Feed typed daemon observations into Iced away from
    the UI thread. Preserve physical project/session identity, bounded refreshes,
-   stale-state notices and rejection of replies for an old selection.
+   stale-state notices and rejection of replies for an old selection. Persist
+   the last project selection and support quiet/missing-folder launch states.
+   Add the proposed folder-pinning workflow without fabricating agent activity.
 3. **Actions and attention.** Port questions/answers, reviewed setup, adoption,
    stop confirmation and project channels with the current failure semantics.
    Keep effects separate from view construction and never infer success from a
@@ -185,7 +208,8 @@ full pointer/keyboard acceptance, or production performance.
 
 ## Decisions for the next discussion
 
-- Last project or an all-project overview on launch?
+- Should an optional all-project overview be available alongside restoring the
+  last project? The launch default is settled.
 - Inspector beside the list, or a full detail screen after selection?
 - Keep the proposed light default, or follow the operating system?
 - Is the main daily workflow monitoring several agents, or working closely
