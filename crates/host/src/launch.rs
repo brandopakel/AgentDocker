@@ -86,6 +86,30 @@ impl OwnedChild {
     pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
         self.child.stderr.take()
     }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Give up ownership: the process keeps running and this stops
+    /// being responsible for it.
+    ///
+    /// The default is the opposite, and deliberately so — dropping an
+    /// unreaped child kills its group, which is what stops a daemon
+    /// leaving orphans behind when it goes. There is exactly one case
+    /// where that is wrong: a handover, where the whole point is that
+    /// the agents outlive this daemon and belong to its successor.
+    /// Saying so explicitly is the difference between an agent that
+    /// survives a reload and one that is SIGKILLed by a `Drop` nobody
+    /// was thinking about.
+    ///
+    /// The caller takes on the reaping. After a handover that is the
+    /// successor, which watches by pid rather than by wait status,
+    /// because a process it did not fork is not its child to wait on.
+    pub fn disown(mut self) -> u32 {
+        self.reaped = true;
+        self.child.id()
+    }
 }
 
 impl Drop for OwnedChild {
@@ -244,6 +268,59 @@ mod tests {
         let error = pending.activate().err().unwrap();
         wait_gone(pid);
         assert_eq!(error.raw_os_error(), Some(libc::ECANCELED));
+    }
+
+    /// The property a handover rests on, and the one whose absence made
+    /// the first attempt kill the agents it existed to preserve.
+    ///
+    /// Dropping an unreaped `OwnedChild` SIGKILLs its process group.
+    /// That is right almost always — it is what stops a daemon leaving
+    /// orphans — and wrong exactly once, when the successor is meant to
+    /// inherit them. `disown` is that once, and this is the test that
+    /// says so with a real process rather than a flag.
+    #[test]
+    fn a_disowned_child_outlives_the_handle_that_owned_it() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]).process_group(0);
+        let pending = prepare(command).unwrap();
+        let child = pending.activate().unwrap();
+        let pid = child.disown();
+        assert!(alive(pid), "still running the moment we let go");
+        // Nothing holds it now. A `Drop` that killed would have killed
+        // it above, so this is about the absence of that.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(alive(pid), "and after the handle is gone");
+        // And the reaping really is ours now: `wait_gone` would spin on
+        // a zombie, because a killed child nobody waits on stays in the
+        // table. That is the contract `disown` hands over, so the test
+        // honours it the way the successor daemon has to.
+        // SAFETY: both calls name a pid this test started and owns.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+            let mut status = 0;
+            libc::waitpid(pid as i32, &mut status, 0);
+        }
+        assert!(!alive(pid), "reaped, not merely signalled");
+    }
+
+    /// The other half: without `disown`, dropping still kills. If this
+    /// ever stops being true a daemon shutdown starts leaving orphans,
+    /// which is the failure the kill exists to prevent.
+    #[test]
+    fn an_owned_child_is_still_killed_by_dropping_it() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]).process_group(0);
+        let pending = prepare(command).unwrap();
+        let child = pending.activate().unwrap();
+        let pid = child.id();
+        assert!(alive(pid));
+        drop(child);
+        wait_gone(pid);
+    }
+
+    fn alive(pid: u32) -> bool {
+        // SAFETY: signal zero probes only this recorded fixture PID.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 
     fn fixture(path: &std::path::Path) -> Command {
