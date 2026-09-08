@@ -6,12 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agentdocker_core::runtime::{
-    InstalledApp, McpWiring, RUNTIMES, RuntimeInfo, RuntimeSpec, Wiring,
-};
+use agentdocker_core::runtime::{McpWiring, RUNTIMES, RuntimeInfo, RuntimeSpec, Wiring};
 
 use crate::command;
 
+mod desktop;
 pub mod health;
 
 /// Where to look: injectable so tests can build a machine in a temp dir.
@@ -22,8 +21,11 @@ pub struct Roots {
     pub codex_home: Option<PathBuf>,
     /// `PATH`, split.
     pub path: Vec<PathBuf>,
-    /// Where desktop apps live: `/Applications` and `~/Applications` on
-    /// macOS, nothing elsewhere.
+    /// Standard installation directories, used for CLI inventory only.
+    pub install_dirs: Vec<PathBuf>,
+    /// Linux desktop-entry directories in XDG precedence order.
+    pub desktop_dirs: Vec<PathBuf>,
+    /// Where macOS app bundles live; injectable on other hosts for tests.
     pub app_dirs: Vec<PathBuf>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
@@ -33,7 +35,11 @@ impl Roots {
     pub fn from_env() -> Self {
         let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let path = std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).collect())
+            .map(|p| {
+                std::env::split_paths(&p)
+                    .filter(|p| p.is_absolute())
+                    .collect()
+            })
             .unwrap_or_default();
         let app_dirs = if cfg!(target_os = "macos") {
             vec![PathBuf::from("/Applications"), home.join("Applications")]
@@ -44,6 +50,16 @@ impl Roots {
             codex_home: std::env::var_os("CODEX_HOME")
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
+            install_dirs: desktop::install_dirs(&home, std::env::consts::OS),
+            desktop_dirs: if cfg!(target_os = "linux") {
+                desktop::xdg_dirs(
+                    &home,
+                    std::env::var_os("XDG_DATA_HOME").as_deref(),
+                    std::env::var_os("XDG_DATA_DIRS").as_deref(),
+                )
+            } else {
+                Vec::new()
+            },
             home,
             path,
             app_dirs,
@@ -58,47 +74,38 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Every known runtime, installed or not, with what was found of it.
 /// `marker` is what identifies AgentDocker in a registration — the
 /// binary's name — paired with the explicit MCP subcommand.
-pub fn inventory(roots: &Roots, marker: &str) -> Vec<RuntimeInfo> {
-    // Versions spawn processes; do them side by side.
+pub fn inventory(roots: &Roots, marker: &str) -> std::io::Result<Vec<RuntimeInfo>> {
+    // A failed scan must not become an apparently empty installation inventory.
     std::thread::scope(|scope| {
-        let handles: Vec<_> = RUNTIMES
+        let handles = RUNTIMES
             .iter()
-            .map(|spec| scope.spawn(move || inspect(spec, roots, marker)))
-            .collect();
+            .map(|spec| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || inspect(spec, roots, marker))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
         handles
             .into_iter()
-            .map(|h| h.join().expect("inventory thread"))
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| std::io::Error::other("runtime inventory worker failed"))?
+            })
             .collect()
     })
 }
 
-fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
-    let cli = spec.clis.iter().find_map(|name| which(roots, name));
+/// Inspect one selected runtime without consulting unrelated desktop entries.
+pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Result<RuntimeInfo> {
+    let cli = spec
+        .clis
+        .iter()
+        .find_map(|name| which(roots, name).or_else(|| which_in(&roots.install_dirs, name)));
     let version = cli
         .as_deref()
         .filter(|_| roots.versions)
         .and_then(|cli| version_of(cli, &roots.home));
-    let apps = spec
-        .apps
-        .iter()
-        .filter_map(|(bundle, label)| {
-            let path = roots
-                .app_dirs
-                .iter()
-                .map(|dir| dir.join(bundle))
-                .find(|p| p.is_dir())?;
-            let version = if roots.versions {
-                app_version(&path)
-            } else {
-                None
-            };
-            Some(InstalledApp {
-                label: (*label).to_owned(),
-                path,
-                version,
-            })
-        })
-        .collect();
+    let apps = desktop::apps(spec, roots)?;
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else {
@@ -106,7 +113,7 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
     }
     .or_else(|| spec.config_dir.map(|rel| roots.home.join(rel)))
     .filter(|dir| dir.is_dir());
-    RuntimeInfo {
+    Ok(RuntimeInfo {
         name: spec.name.to_owned(),
         vendor: spec.vendor.to_owned(),
         label: spec.label.to_owned(),
@@ -117,17 +124,28 @@ fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> RuntimeInfo {
         mcp: mcp_wiring(spec, roots, marker),
         hooks: hooks_wiring(spec, &roots.home, marker),
         running: 0,
+    })
+}
+
+fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return which_in(&[path.parent()?.to_owned()], path.file_name()?.to_str()?);
     }
+    if path.components().count() != 1 {
+        return None;
+    }
+    which_in(&roots.path, name)
 }
 
 /// The first executable file of that name on the path. A data file that
 /// happens to share the name is not a CLI.
 #[cfg(unix)]
-fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
+fn which_in(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    roots
-        .path
+    paths
         .iter()
+        .filter(|path| path.is_absolute())
         .map(|dir| dir.join(name))
         .find(|candidate| {
             std::fs::metadata(candidate)
@@ -138,7 +156,7 @@ fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
 /// Resolve common Windows CLI executables and npm command shims from PATH.
 /// Never implicitly search the working directory or execute a data-only file.
 #[cfg(windows)]
-fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
+fn which_in(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
     const EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat"];
     let names: Vec<_> = if let Some(extension) = Path::new(name).extension() {
         if !EXTENSIONS
@@ -154,9 +172,9 @@ fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
             .map(|extension| format!("{name}.{extension}"))
             .collect()
     };
-    roots
-        .path
+    paths
         .iter()
+        .filter(|path| path.is_absolute())
         .flat_map(|root| names.iter().map(move |name| root.join(name)))
         .find(|candidate| std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file()))
 }
@@ -367,7 +385,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    fn machine() -> (tempfile::TempDir, Roots) {
+    pub(super) fn machine() -> (tempfile::TempDir, Roots) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let bin = tmp.path().join("bin");
@@ -395,6 +413,8 @@ mod tests {
             codex_home: None,
             home,
             path: vec![bin],
+            install_dirs: vec![],
+            desktop_dirs: vec![],
             app_dirs: vec![apps],
             versions: false,
         };
@@ -431,7 +451,7 @@ mod tests {
         )
         .unwrap();
 
-        let all = inventory(&roots, "agentdocker");
+        let all = inventory(&roots, "agentdocker").unwrap();
         assert_eq!(all.len(), RUNTIMES.len());
         let by = |name: &str| all.iter().find(|r| r.name == name).unwrap().clone();
         let claude = by("claude-code");
@@ -462,6 +482,50 @@ mod tests {
             "a name outside command and args is not wiring"
         );
         assert_eq!(by("aider").mcp, Wiring::Unsupported);
+    }
+
+    #[test]
+    fn cli_and_desktop_identities_do_not_share_integration_health() {
+        let (_tmp, mut roots) = machine();
+        roots.install_dirs = std::mem::take(&mut roots.path);
+        for bundle in ["Codex.app", "ChatGPT.app"] {
+            std::fs::create_dir_all(roots.app_dirs[0].join(bundle)).unwrap();
+        }
+        std::fs::write(
+            roots.home.join(".codex/config.toml"),
+            "[mcp_servers.agentdocker]\ncommand = \"agentdocker\"\nargs = [\"mcp\"]\n",
+        )
+        .unwrap();
+        let all = inventory(&roots, "agentdocker").unwrap();
+        let codex = all.iter().find(|r| r.name == "codex").unwrap();
+        assert!(
+            codex.cli.is_some(),
+            "GUI inventory searches standard install locations"
+        );
+        assert!(codex.apps.is_empty());
+        assert_eq!(codex.mcp, Wiring::Wired);
+        for name in ["codex-desktop", "chatgpt"] {
+            let app = all.iter().find(|r| r.name == name).unwrap();
+            assert!(app.installed());
+            assert_eq!(app.apps.len(), 1);
+            assert!(app.cli.is_none());
+            assert!(app.config_dir.is_none());
+            assert_eq!(app.mcp, Wiring::Unsupported);
+        }
+        // Inventory's fallback must not certify a bare MCP executable against
+        // a PATH that the GUI/daemon did not inherit.
+        let helper = roots.install_dirs[0].join(if cfg!(windows) {
+            "agentdocker.cmd"
+        } else {
+            "agentdocker"
+        });
+        std::fs::copy(codex.cli.as_ref().unwrap(), helper).unwrap();
+        let check = health::inspect(
+            agentdocker_core::runtime::spec("codex").unwrap(),
+            &roots,
+            "agentdocker",
+        );
+        assert_eq!(check[0].status, health::Status::ExecutableMissing);
     }
 
     #[test]
@@ -570,6 +634,7 @@ mod tests {
         let (_tmp, mut roots) = machine();
         roots.versions = true;
         let claude = inventory(&roots, "agentdocker")
+            .unwrap()
             .into_iter()
             .find(|r| r.name == "claude-code")
             .unwrap();

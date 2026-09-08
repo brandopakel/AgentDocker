@@ -146,3 +146,6 @@ private credentials, reports and running release binaries were preserved.
 Project documentation totals **1.6 MiB**, not 10 GB. Other projects' raw recovery
 databases, personal files and application state require separate retention
 review; Apple storage-category labels alone are not deletion evidence.
+### Desktop discovery implementation checkpoint
+
+The desktop inventory follow-up separates Codex CLI, Codex desktop and ChatGPT, adds curated Linux desktop-entry inventory with XDG overrides, and adds standard CLI installation locations for native app launches with a minimal PATH. Inventory errors preserve the last GUI rows and connection state; explicit setup is isolated from unrelated invalid launchers. Focused fixtures cover hidden overrides, special/oversized/malformed files, symlink exports, non-executed launcher declarations and distinct integration attribution. Full integrated acceptance and target-distribution trials remain required for L03; this does not close Windows desktop inventory or universal provider support.

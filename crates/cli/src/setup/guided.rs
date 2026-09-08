@@ -80,9 +80,23 @@ fn read_config(path: &Path) -> Result<Option<String>> {
     ))
 }
 
+fn selected_inventory(roots: &Roots, names: &[String]) -> Result<Vec<RuntimeInfo>> {
+    if names.is_empty() {
+        return Ok(runtimes::inventory(roots, "agentdocker")?);
+    }
+    names
+        .iter()
+        .map(|name| {
+            let spec = agentdocker_core::runtime::spec(name)
+                .with_context(|| format!("unknown runtime `{name}`"))?;
+            Ok(runtimes::inspect(spec, roots, "agentdocker")?)
+        })
+        .collect()
+}
+
 /// Plan edits from injectable provider roots, without changing their files.
 fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
-    let inventory = runtimes::inventory(roots, "agentdocker");
+    let inventory = selected_inventory(roots, names)?;
     let targets: Vec<&RuntimeInfo> = if names.is_empty() {
         inventory
             .iter()
@@ -415,7 +429,7 @@ pub async fn run(
                 Ok(Err(error)) => (false, error.to_string()),
                 Err(_) => (false, "daemon connection timed out".to_owned()),
             };
-        let inventory = runtimes::inventory(&roots, "agentdocker");
+        let inventory = selected_inventory(&roots, names)?;
         for name in names {
             ensure!(
                 inventory.iter().any(|runtime| runtime.name == *name),
@@ -475,8 +489,25 @@ mod tests {
             codex_home: None,
             path: vec![],
             app_dirs: vec![],
+            install_dirs: vec![],
+            desktop_dirs: vec![],
             versions: false,
         }
+    }
+
+    #[test]
+    fn explicit_setup_is_not_blocked_by_an_unrelated_invalid_desktop_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut roots = roots(temp.path());
+        let applications = temp.path().join("applications");
+        std::fs::create_dir(&applications).unwrap();
+        std::fs::write(applications.join("code.desktop"), "invalid launcher").unwrap();
+        roots.desktop_dirs.push(applications);
+        assert!(selected_inventory(&roots, &[]).is_err());
+        let plan = prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].runtime, "codex");
+        assert!(selected_inventory(&roots, &["unknown-provider".into()]).is_err());
     }
 
     fn plan(root: &Path, names: &[&str]) -> Plan {

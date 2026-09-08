@@ -138,11 +138,13 @@ See [The console](#the-console).
 Every agent tool AgentDocker knows about, whether it is installed here,
 its version, and whether we are wired into it:
 
-- **MCP** — the runtime can call our tools.
-- **HOOKS** — the runtime tells us about its sessions and edits.
+- **MCP** — a supported registration is present in configuration. Check connections and a real tool call to verify it works.
+- **HOOKS** — the complete supported hooks configuration is present. A real session must still verify delivery.
 - **RUNNING** — processes of that runtime with no registered agent.
 
 **Set up** wires one in, the same as `agentdocker setup <runtime>`.
+
+Desktop applications and their CLIs have separate identities where their integration differs. Codex desktop and ChatGPT installation does not imply the Codex CLI MCP adapter is available inside those apps. Linux recognizes curated launcher IDs, including user overrides. A failed scan leaves the last displayed inventory visible with an error; those rows may be stale.
 
 ### Journal
 
