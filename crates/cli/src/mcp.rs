@@ -288,7 +288,12 @@ impl<B: Backend> McpServer<B> {
                  `read_inbox` to see messages other agents sent you and `send_message` to \
                  reply, hand off work, or announce what you are doing — `to: \"project\"` \
                  reaches everyone working in the same repository. `list_agents` shows who \
-                 else is running and which project each is in. Call `observe_paths` immediately before reading or searching, then `check_stale` before editing; reread changed content.",
+                 else is running and which project each is in. Call `observe_paths` immediately before reading or searching, then `check_stale` before editing; reread changed content. \
+                 Commit through `commit` rather than running git yourself: the journal then \
+                 records the commit against you with the message you wrote, instead of \
+                 saying `external` because all it saw was HEAD move. Nothing is written into \
+                 the commit itself. Use `journal_note` for a decision or a finding that no \
+                 commit will carry.",
                 self.identity.name, self.identity.id
             ),
         })
@@ -1838,6 +1843,38 @@ mod tests {
         );
         adopted.shutdown().await;
         assert!(adopted.backend.requests.lock().unwrap().is_empty());
+    }
+
+    /// The instructions name the tools an agent will otherwise not reach for.
+    ///
+    /// `commit` is the one that matters. An agent that runs git itself
+    /// leaves a journal entry attributed to `external`, because all the
+    /// watcher saw was HEAD move — which is exactly what every commit in
+    /// this project's own journal said until the tool was named here.
+    #[test]
+    fn the_instructions_name_the_tools_an_agent_would_not_find() {
+        let s = server(vec![]);
+        let text = s.initialize(&json!({"protocolVersion": "2025-06-18"}))["instructions"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for tool in [
+            "claim",
+            "release",
+            "read_inbox",
+            "send_message",
+            "list_agents",
+            "observe_paths",
+            "check_stale",
+            "commit",
+            "journal_note",
+        ] {
+            assert!(text.contains(tool), "instructions never mention `{tool}`");
+        }
+        assert!(
+            text.contains("external"),
+            "and say what goes wrong without `commit`, not just that it exists"
+        );
     }
 
     /// Ownership of a registration is proved, not guessed from its name.
