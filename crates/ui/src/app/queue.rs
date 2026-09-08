@@ -9,7 +9,9 @@ pub(super) const COMMAND_BYTES: usize = 64 * 1024;
 /// Bound retained command allocations as well as the number of commands.
 fn bytes(command: &Cmd) -> usize {
     match command {
-        Cmd::Journal(text) | Cmd::Stop(text) | Cmd::Console(text) => text.capacity(),
+        Cmd::Journal(text) | Cmd::Channels(text) | Cmd::Stop(text) | Cmd::Console(text) => {
+            text.capacity()
+        }
         Cmd::Answer(_, text) => text.capacity(),
         Cmd::Setup(args) | Cmd::Desktop(args) => args.iter().fold(
             args.capacity().saturating_mul(size_of::<String>()),
@@ -26,6 +28,8 @@ enum Key {
     Runtimes,
     Discovered,
     Journal(String),
+    Channels(String),
+    Inbox,
     Activity,
     Me,
     Questions,
@@ -38,6 +42,8 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Runtimes => Key::Runtimes,
         Cmd::Discovered => Key::Discovered,
         Cmd::Journal(project) => Key::Journal(project.clone()),
+        Cmd::Channels(project) => Key::Channels(project.clone()),
+        Cmd::Inbox => Key::Inbox,
         Cmd::Activity => Key::Activity,
         Cmd::Me => Key::Me,
         Cmd::Questions => Key::Questions,

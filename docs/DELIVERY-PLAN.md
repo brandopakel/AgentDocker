@@ -368,11 +368,33 @@ acceptance awaits an unlocked display. The driver now preserves explicit
 separate from the passing CI captures and historical undiagnosed timeouts.
 
 New main work #84/#85 adds channel visibility and distinguishes a person's
-queued inbox from a transcript. It still needs integration with this branch's
-bounded queues. #86 defines daemon handover messages and descriptor transfer
+queued inbox from a transcript. Their integration and a request-contract fix
+are recorded below. #86 defines daemon handover messages and descriptor transfer
 tests; actual reload still refuses. Neither that scaffold nor message queue
 acceptance completes safe upgrades or model delivery. Review of pushed #83
 `853dfd5` still finds separate session-row/event commits and missing physical
 workdir comparison at registration; a concrete transaction patch and failure
 test were sent to the authorized peer. Approval remains pending actual fixed
 source and verification.
+
+Integration of main through `d4fc464` found a broken channel request introduced
+by #85: an empty project with no member is rejected by the daemon. The exact
+request reproduced `Invalid` on the live daemon without changing state. The GUI
+now queries explicit unique projects from its registered-agent snapshots,
+preserves other projects when one refreshes, ignores departed-project replies,
+and coalesces channel/inbox refreshes. Wire-request, multi-project and burst
+regressions are added; integrated CI must validate this source. Channel/inbox
+response byte limits and durable message history remain separate open work.
+
+#86 adds handover protocol scaffolding while keeping reload refused. Its
+readiness timeout currently bounds individual blocking reads rather than the
+whole message, and suppresses timeout-setting errors. Absolute deadlines and
+descriptor/identity mapping validation remain required before production use;
+these findings were sent to the peer owning handover. No live-upgrade acceptance
+is implied by the scaffold's tests.
+
+Source review of #83 `38a047a` confirms the atomic session transition and empty-
+label fixes landed. The supplied normalization helper can still fall back to an
+unverified path, and a task failure silently discards the supplied directory.
+Fallible physical binding, an event-insert rollback test and a real MCP detach/
+reattach trial remain required; the peer is implementing the source follow-up.

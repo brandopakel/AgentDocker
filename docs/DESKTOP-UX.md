@@ -128,6 +128,21 @@ batches. Closing the window cancels queued jobs; a subprocess already running
 keeps its existing timeout and is joined off the UI thread. These bounds do not
 establish a total memory limit for all daemon responses.
 
+## Channels
+
+The window lists open channels for the projects of registered live agents,
+including channels the person at the keyboard has not joined. Requests name
+each project explicitly; omitting both a project and a member is rejected by
+the daemon. Each project's snapshot refreshes independently, and a late reply
+cannot restore a project that has disappeared from the agent list. Repeated
+channel and inbox polls coalesce while queued.
+
+Reviews show their explicit verdicts. Messages shown are still queued for the
+person at the keyboard; the window never drains that inbox. Agent-to-agent
+traffic is not a durable conversation history in this view. Message pagination,
+byte budgets and retained history remain to build before sustained-use
+acceptance; the existing queue-count limits do not cover response sizes.
+
 ## Runtimes
 
 The agent tools on this machine, what was found of each, and whether

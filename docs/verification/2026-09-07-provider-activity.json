@@ -984,7 +984,15 @@
     "local_cargo_cache_created": false,
     "provider_owned_descendants_remaining": 0,
     "current_package": "retained for local visual acceptance pending unlocked display",
-    "obsolete_packages": "publication and ownership checks precede pruning"
+    "obsolete_package_prune": {
+      "allocated_bytes_removed": 132296704,
+      "free_bytes_before": 312418603008,
+      "free_bytes_after": 312550862848,
+      "prior_report_publication_verified_commit": "078be589a164fe5800c9c887f99dafa231431b65",
+      "prior_report_sha256": "f425e5a95791426705f4c14603717b49d54cb665c875c14c61345031ffdeebc2",
+      "scope": "Obsolete extracted package and redundant owned download archives; no open files in retired package, current unpacked candidate and private failures retained",
+      "limit": "Free-space readings are host-wide and can also change with other activity"
+    }
   },
   "remaining": [
     "Automatic Codex inbox injection and acknowledgement at supported hook boundaries",

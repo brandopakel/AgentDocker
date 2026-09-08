@@ -3,7 +3,7 @@
 //! both hand results to the UI thread through a channel and ask for a
 //! repaint, so the window never blocks on the socket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
@@ -18,7 +18,7 @@ use agentdocker_core::{
     MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
 };
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use egui::{Color32, RichText};
 
 use crate::client::{Client, RemoteError};
@@ -64,6 +64,7 @@ const ACCENT: Color32 = Color32::from_rgb(0x2F, 0x6F, 0xED);
 enum Screen {
     Agents,
     Questions,
+    Channels,
     Terminal,
     Console,
     Runtimes,
@@ -74,9 +75,10 @@ enum Screen {
 }
 
 impl Screen {
-    const ALL: [Screen; 9] = [
+    const ALL: [Screen; 10] = [
         Screen::Agents,
         Screen::Questions,
+        Screen::Channels,
         Screen::Terminal,
         Screen::Console,
         Screen::Runtimes,
@@ -90,6 +92,7 @@ impl Screen {
         match self {
             Screen::Agents => "Agents",
             Screen::Questions => "Questions",
+            Screen::Channels => "Channels",
             Screen::Terminal => "Terminal",
             Screen::Console => "Console",
             Screen::Runtimes => "Runtimes",
@@ -109,6 +112,8 @@ enum Cmd {
     Runtimes,
     Discovered,
     Journal(String),
+    Channels(String),
+    Inbox,
     Activity,
     /// Register the person at the keyboard, so agents can address them.
     Me,
@@ -131,6 +136,8 @@ enum Msg {
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Option<u64>, Vec<JournalEntry>),
+    Channels(String, Vec<agentdocker_core::Channel>),
+    Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
@@ -180,6 +187,15 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
+    /// Open channels across the projects of registered live agents.
+    ///
+    /// The person at the keyboard is an agent like any other, so channel
+    /// messages arrive in their inbox — and until this screen existed
+    /// the window dropped every one of them on the floor. Read without
+    /// draining, because a window that polls must not consume what it
+    /// shows.
+    channels: Vec<agentdocker_core::Channel>,
+    inbox: Vec<agentdocker_core::Envelope>,
     connected: Result<(), String>,
     /// The highest event sequence taken, so a reconnect's replay is not
     /// shown or acted on twice. Live-only events carry `0` and always pass.
@@ -273,6 +289,8 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            channels: Vec::new(),
+            inbox: Vec::new(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -322,6 +340,8 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            channels: Vec::new(),
+            inbox: Vec::new(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -392,9 +412,30 @@ impl App {
         for _ in 0..MESSAGE_CAPACITY {
             let Ok(msg) = self.rx.try_recv() else { break };
             match msg {
-                Msg::Agents(agents) => self.agents = agents,
+                Msg::Agents(agents) => {
+                    self.agents = agents;
+                    let projects = self.channel_projects();
+                    self.channels
+                        .retain(|channel| projects.contains(&channel.project.to_string()));
+                    for project in projects {
+                        self.send(Cmd::Channels(project));
+                    }
+                }
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
+                Msg::Channels(project, channels) => {
+                    // A late reply for a project no longer on screen must not
+                    // restore it. Other projects keep their current snapshots.
+                    if self.channel_projects().contains(&project) {
+                        self.channels
+                            .retain(|channel| channel.project.as_str() != project);
+                        self.channels.extend(channels);
+                        self.channels.sort_by(|a, b| {
+                            a.opened_at.cmp(&b.opened_at).then_with(|| a.id.cmp(&b.id))
+                        });
+                    }
+                }
+                Msg::Inbox(inbox) => self.inbox = inbox,
                 Msg::Discovered(found) => self.discovered = found,
                 Msg::Journal(project, head_seq, entries) => {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
@@ -458,6 +499,7 @@ impl App {
                             Cmd::Runtimes,
                             Cmd::Questions,
                             Cmd::Activity,
+                            Cmd::Inbox,
                         ] {
                             self.send(cmd);
                         }
@@ -520,6 +562,7 @@ impl App {
                 Cmd::Discovered,
                 Cmd::Questions,
                 Cmd::Activity,
+                Cmd::Inbox,
             ] {
                 self.send(cmd);
             }
@@ -1143,6 +1186,172 @@ impl App {
             // typed if the send failed.
             self.sending.insert(id.clone());
             self.send(Cmd::Answer(id, text));
+        }
+    }
+
+    /// Every room in the project, and what is still queued for this
+    /// person in each.
+    ///
+    /// Two corrections to the obvious design, both of which this screen
+    /// got wrong first. A channel between two agents need not have the
+    /// human as a member — most will not — so listing only this person's
+    /// memberships shows an empty screen while agents talk. And an inbox
+    /// is a queue, not a transcript: a message an agent has taken is
+    /// gone from it, so what is here is what has not been delivered yet,
+    /// never the history of the room. Durable history needs somewhere to
+    /// keep it and a bound on how much; neither exists, so this does not
+    /// pretend otherwise.
+    fn channel_projects(&self) -> BTreeSet<String> {
+        self.agents
+            .iter()
+            .filter_map(|agent| agent.project.as_ref())
+            .map(|project| project.id().to_string())
+            .collect()
+    }
+
+    fn channels_screen(&mut self, ui: &mut egui::Ui) {
+        let now = Utc::now();
+        if self.channels.is_empty() {
+            ui.label(
+                RichText::new(
+                    "No channels. One opens when two checkouts change the same path, or when \
+                     an agent opens one for a task.",
+                )
+                .weak(),
+            );
+        } else {
+            ui.label(
+                RichText::new(
+                    "Open channels across your active projects. Messages shown are queued for \
+                     you — an inbox is not a transcript, and nothing is drained to draw this.",
+                )
+                .weak()
+                .small(),
+            );
+        }
+        let (said, direct) = by_room(&self.inbox);
+        let me = self
+            .agents
+            .iter()
+            .find(|a| a.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
+            .map(|a| a.id.clone());
+        for channel in &self.channels {
+            let id = channel.id.as_str().to_owned();
+            let mine = me.as_ref().is_some_and(|me| channel.has(me));
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    crate::projects::bullet(
+                        ui,
+                        if channel.is_open() {
+                            WIRED
+                        } else {
+                            ui.visuals().weak_text_color()
+                        },
+                    );
+                    ui.label(RichText::new(channel.title()).strong());
+                    ui.label(RichText::new(&id).weak().small());
+                    if !mine {
+                        ui.label(RichText::new("· not a member").weak().small())
+                            .on_hover_text(
+                                "Agents opened this between themselves. It is listed because it \
+                                 is part of this project's work, not because anything from it \
+                                 reaches you.",
+                            );
+                    }
+                    ui.label(
+                        RichText::new(format!(
+                            "· {} member{}",
+                            channel.members.len(),
+                            if channel.members.len() == 1 { "" } else { "s" }
+                        ))
+                        .weak(),
+                    );
+                    ui.label(RichText::new(format!("· {}", ago(now, channel.opened_at))).weak());
+                });
+                ui.label(
+                    RichText::new(
+                        channel
+                            .members
+                            .iter()
+                            .map(|m| self.name_of(m.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )
+                    .weak()
+                    .small(),
+                );
+                // A verdict is the point of a room like this, so it is
+                // not buried in the transcript with everything else.
+                for review in &channel.reviews {
+                    use agentdocker_core::channel::Verdict;
+                    let (word, colour) = match review.verdict {
+                        Verdict::Approve => ("approved", WIRED),
+                        Verdict::Changes => ("changes requested", UNVERIFIED),
+                        Verdict::Comment => ("commented", ui.visuals().text_color()),
+                    };
+                    ui.label(
+                        RichText::new(format!(
+                            "{word} by {} on {}'s work",
+                            review.by_name, review.of_name
+                        ))
+                        .color(colour),
+                    )
+                    .on_hover_text(&review.note);
+                }
+                if let Some(why) = &channel.resolution {
+                    ui.label(RichText::new(format!("closed: {why}")).weak());
+                }
+                ui.add_space(2.0);
+                // What can honestly be shown here is this person's own
+                // undelivered queue, and only where they are a member.
+                // An inbox is not a transcript: a message an agent has
+                // taken is gone from it, so what is missing below is not
+                // silence — it is everything that was already read.
+                // Durable history needs somewhere to keep it, and that
+                // does not exist yet.
+                match said.get(&id) {
+                    Some(messages) => {
+                        for message in messages.iter().rev().take(20).rev() {
+                            said_by(ui, now, &self.name_of(&message.from), message);
+                        }
+                        ui.label(
+                            RichText::new(
+                                "Queued for you, not the room's history — anything already \
+                                 delivered has left the queue.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    }
+                    None if mine => {
+                        ui.label(
+                            RichText::new("Nothing waiting for you here.")
+                                .weak()
+                                .small(),
+                        );
+                    }
+                    // Not a member, so none of it was ever going to
+                    // arrive. Saying "nothing said here" would be a
+                    // claim about the room; this is a claim about us.
+                    None => {
+                        ui.label(
+                            RichText::new(
+                                "You are not in this room, so nothing reaches you from it.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
+        if !direct.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new("Sent to you directly").strong());
+            for message in direct.iter().rev().take(30).rev() {
+                said_by(ui, now, &self.name_of(&message.from), message);
+            }
         }
     }
 
@@ -2112,6 +2321,7 @@ impl App {
                 .show(ui, |ui| match self.screen {
                     Screen::Agents => self.agents_screen(ui),
                     Screen::Questions => self.questions_screen(ui),
+                    Screen::Channels => self.channels_screen(ui),
                     Screen::Console => self.console_screen(ui),
                     Screen::Terminal => {}
                     Screen::Runtimes => self.runtimes_screen(ui),
@@ -2164,6 +2374,69 @@ fn launched_in() -> Option<std::path::PathBuf> {
 /// A health check's status in the colour the runtimes table gives the
 /// same thing, so the two panels above and below the separator do not
 /// say it two different ways.
+/// The inbox split into rooms and everything else.
+///
+/// A channel message carries the room it was sent to in its payload, so
+/// the conversation can be put back under the room it happened in.
+/// Anything without one was sent to this person directly and belongs on
+/// its own, not silently filed under whichever room sorts first.
+type Grouped<'a> = (
+    BTreeMap<String, Vec<&'a agentdocker_core::Envelope>>,
+    Vec<&'a agentdocker_core::Envelope>,
+);
+
+fn by_room(inbox: &[agentdocker_core::Envelope]) -> Grouped<'_> {
+    let mut said: BTreeMap<String, Vec<&agentdocker_core::Envelope>> = BTreeMap::new();
+    let mut direct = Vec::new();
+    for message in inbox {
+        match message.payload["channel"].as_str() {
+            Some(room) => said.entry(room.to_owned()).or_default().push(message),
+            None => direct.push(message),
+        }
+    }
+    (said, direct)
+}
+
+/// What the window asks for when it reads the conversation.
+///
+/// Named so the one thing that matters about it can be asserted: a
+/// window that polls every couple of seconds must never drain the inbox
+/// it is showing, or it deletes the conversation out from under whoever
+/// is reading it.
+fn inbox_request() -> Request {
+    Request::Inbox {
+        agent: agentdocker_core::HUMAN.to_owned(),
+        drain: false,
+    }
+}
+
+/// One line of a conversation: who, when, and what they actually said.
+///
+/// A message's payload is whatever the sender put there, so `text` is
+/// taken when it is there and the rest is shown as it came rather than
+/// dropped — an agent that sends a structured payload is still saying
+/// something.
+fn said_by(
+    ui: &mut egui::Ui,
+    now: DateTime<Utc>,
+    from: &str,
+    message: &agentdocker_core::Envelope,
+) {
+    ui.horizontal_top(|ui| {
+        ui.label(RichText::new(from).strong());
+        ui.label(RichText::new(ago(now, message.sent_at)).weak().small());
+        if message.kind != "chat" {
+            ui.label(RichText::new(&message.kind).weak().small());
+        }
+    });
+    let body = match message.payload["text"].as_str() {
+        Some(text) => text.to_owned(),
+        None => message.payload.to_string(),
+    };
+    ui.label(body);
+    ui.add_space(2.0);
+}
+
 fn health_colour(ui: &egui::Ui, status: &str) -> Color32 {
     match status {
         "executable_available" => WIRED,
@@ -2385,6 +2658,25 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             all: false,
         })? {
             Response::Activity { activity } => Some(Msg::Activity(activity)),
+            _ => None,
+        },
+        // Every room in the named project, not only the ones this person is
+        // in. A channel between two agents need not have the human as a
+        // member — most will not — and a window that listed only its
+        // own memberships would show nothing while agents talked.
+        Cmd::Channels(project) => match client.call(&Request::Channels {
+            project: project.clone(),
+            all: false,
+            agent: None,
+        })? {
+            Response::Channels { channels } => Some(Msg::Channels(project, channels)),
+            _ => None,
+        },
+        // Never drained: this is a window looking, not a consumer
+        // taking. Draining here would delete the conversation out from
+        // under whoever is reading it.
+        Cmd::Inbox => match client.call(&inbox_request())? {
+            Response::Messages { messages } => Some(Msg::Inbox(messages)),
             _ => None,
         },
         Cmd::Questions => match client.call(&Request::Questions {
@@ -2657,6 +2949,35 @@ mod tests {
                 {"runtime":"claude-code", "channel":"mcp", "path":"/fixture/.claude.json",
                  "action":"register through `claude mcp add`"}],
             "notes": ["Restart the selected provider session after applying."]}));
+        app.channels = serde_json::from_value(serde_json::json!([{
+            "id": "1ff5d0b3d5ec", "project": "p1",
+            "subject": {"kind": "task", "task": "Agent identity and activity reporting"},
+            "members": ["aaaa", "bbbb"], "opened_by": "aaaa",
+            "opened_at": "2026-09-08T03:23:43Z",
+            "reviews": [{"by": "bbbb", "by_name": "codex-27221", "of": "aaaa",
+                         "of_name": "claude-code-45856", "verdict": "changes",
+                         "note": "three remaining blockers", "at": "2026-09-08T03:43:28Z"}]
+        }, {
+            "id": "ee3cbc67d8b7", "project": "p1",
+            "subject": {"kind": "contested", "paths": ["/x/mcp.rs"]},
+            "members": ["aaaa"], "opened_at": "2026-09-08T03:27:37Z",
+            "closed_at": "2026-09-08T03:40:00Z", "resolution": "everyone left"
+        }]))
+        .unwrap();
+        app.inbox = serde_json::from_value(serde_json::json!([{
+            "id": "m1", "from": "bbbb", "to": {"kind": "channel", "value": "1ff5d0b3d5ec"},
+            "kind": "coordination", "payload": {"channel": "1ff5d0b3d5ec", "text": "in the room"},
+            "sent_at": "2026-09-08T03:24:46Z"
+        }, {
+            "id": "m2", "from": "bbbb", "to": {"kind": "agent", "value": "aaaa"},
+            "kind": "chat", "payload": {"text": "and one straight to you"},
+            "sent_at": "2026-09-08T03:25:00Z"
+        }, {
+            "id": "m3", "from": "bbbb", "to": {"kind": "agent", "value": "aaaa"},
+            "kind": "notice", "payload": {"structured": "no text field at all"},
+            "sent_at": "2026-09-08T03:26:00Z"
+        }]))
+        .unwrap();
         app.console_output = "agentdocker ps\nno agents\n".to_owned();
         app.console_running = 1;
         app.status = "something happened".to_owned();
@@ -2798,6 +3119,45 @@ mod tests {
         }
     }
 
+    /// The window looks at the conversation; it does not consume it.
+    ///
+    /// Channel messages reach the person at the keyboard because they
+    /// are an agent like any other, and their inbox is where those
+    /// messages sit. Reading it with `drain: true` would delete the
+    /// conversation out from under whoever is reading the screen — and
+    /// this screen polls, so it would do it every couple of seconds.
+    #[test]
+    fn the_conversation_is_read_without_being_taken_and_kept_in_its_room() {
+        assert!(
+            matches!(inbox_request(), Request::Inbox { drain: false, .. }),
+            "a window that polls must never drain what it shows"
+        );
+
+        let inbox: Vec<agentdocker_core::Envelope> = serde_json::from_value(serde_json::json!([
+            {"id": "m1", "from": "a", "to": {"kind": "channel", "value": "room-one"},
+             "kind": "chat", "payload": {"channel": "room-one", "text": "first"},
+             "sent_at": "2026-09-08T03:00:00Z"},
+            {"id": "m2", "from": "b", "to": {"kind": "channel", "value": "room-two"},
+             "kind": "chat", "payload": {"channel": "room-two", "text": "elsewhere"},
+             "sent_at": "2026-09-08T03:01:00Z"},
+            {"id": "m3", "from": "a", "to": {"kind": "channel", "value": "room-one"},
+             "kind": "chat", "payload": {"channel": "room-one", "text": "second"},
+             "sent_at": "2026-09-08T03:02:00Z"},
+            {"id": "m4", "from": "b", "to": {"kind": "agent", "value": "user"},
+             "kind": "chat", "payload": {"text": "just to you"},
+             "sent_at": "2026-09-08T03:03:00Z"}
+        ]))
+        .unwrap();
+        let (said, direct) = by_room(&inbox);
+        assert_eq!(said["room-one"].len(), 2, "kept together and in order");
+        assert_eq!(said["room-one"][0].id.as_str(), "m1");
+        assert_eq!(said["room-two"].len(), 1);
+        // A message with no room is not filed under whichever room
+        // happens to sort first.
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].id.as_str(), "m4");
+    }
+
     /// The status line stops being news.
     #[test]
     fn the_status_line_lets_go_of_what_is_no_longer_news() {
@@ -2927,6 +3287,100 @@ mod tests {
             1,
             "a change after dispatch still refreshes"
         );
+    }
+
+    #[test]
+    fn channel_and_inbox_refreshes_coalesce_without_losing_other_projects() {
+        let (commands, requests) = queue::channel();
+        for _ in 0..10_000 {
+            commands.send(Cmd::Channels("project-a".into())).unwrap();
+            commands.send(Cmd::Channels("project-b".into())).unwrap();
+            commands.send(Cmd::Inbox).unwrap();
+        }
+        let pending: Vec<_> = requests.try_iter().collect();
+        assert_eq!(pending.len(), 3);
+        assert!(matches!(&pending[0], Cmd::Channels(project) if project == "project-a"));
+        assert!(matches!(&pending[1], Cmd::Channels(project) if project == "project-b"));
+        assert!(matches!(&pending[2], Cmd::Inbox));
+        commands.send(Cmd::Channels("project-a".into())).unwrap();
+        commands.send(Cmd::Inbox).unwrap();
+        assert_eq!(requests.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn channel_snapshots_keep_other_projects_and_refuse_departed_projects() {
+        use agentdocker_core::channel::{Channel, ChannelSubject};
+        use agentdocker_core::{AgentSpec, ChannelId, ProjectId};
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut agents = Vec::new();
+        for name in ["project-a", "project-a", "project-b"] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let mut project = ProjectRef::directory(format!("/fixture/{name}"));
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project);
+            agents.push(agent);
+        }
+        messages.send(Msg::Agents(agents.clone())).unwrap();
+        app.drain();
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|cmd| matches!(cmd, Cmd::Channels(_)))
+                .count(),
+            2
+        );
+        let channel = |project: &str, id: &str| Channel {
+            id: ChannelId::from(id),
+            project: ProjectId::from(project),
+            subject: ChannelSubject::Task {
+                task: "fixture".into(),
+            },
+            members: Vec::new(),
+            opened_by: None,
+            opened_at: Utc::now(),
+            closed_at: None,
+            resolution: None,
+            reviews: Vec::new(),
+        };
+        messages
+            .send(Msg::Channels(
+                "project-a".into(),
+                vec![channel("project-a", "a")],
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "b")],
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 2);
+        messages
+            .send(Msg::Channels("project-a".into(), Vec::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 1);
+        assert_eq!(app.channels[0].project.as_str(), "project-b");
+        agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
+        messages.send(Msg::Agents(agents)).unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "stale")],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.channels.is_empty());
     }
 
     fn journal_entry(seq: u64) -> JournalEntry {
@@ -3107,6 +3561,21 @@ mod tests {
         worker.join().unwrap();
         server.join().unwrap();
         results.try_iter().collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn channel_requests_name_a_project_without_filtering_to_human_membership() {
+        use serde_json::json;
+        let replies = command_with_replies(
+            Cmd::Channels("fixture-project".into()),
+            vec![(
+                json!({"op":"channels", "project":"fixture-project", "all":false, "agent":null}),
+                Some(json!({"type":"channels", "channels":[]})),
+            )],
+        );
+        assert!(replies.iter().any(|reply| matches!(reply,
+            Msg::Channels(project, channels) if project == "fixture-project" && channels.is_empty())));
     }
 
     #[cfg(unix)]
@@ -3409,7 +3878,7 @@ mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 8);
+        assert_eq!(received.len(), 9);
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Activity)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
