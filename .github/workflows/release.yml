@@ -120,8 +120,22 @@ jobs:
           # took `publish` with it, so a stale secret stopped the release
           # assets from being uploaded at all. The formula and the cask
           # are attached to this run either way.
-          if ! git clone --depth 1 \
-            "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPOSITORY}.git" tap; then
+          # The token reaches git through a helper that reads it from
+          # the environment, so it is in neither the process arguments
+          # nor `tap/.git/config`. A URL carrying it is in both, and the
+          # second outlives the step.
+          #
+          # The empty `credential.helper` first is not decoration: `-c`
+          # *appends* to the helper list, so without the reset any
+          # helper already configured is asked as well and may answer
+          # with different credentials than the ones this step was
+          # given. An empty value clears the list.
+          HELPER='!f() { printf "username=x-access-token\npassword=%s\n" "$TAP_TOKEN"; }; f'
+          tap_git() {
+            git -c credential.helper= -c "credential.helper=$HELPER" "$@"
+          }
+          if ! tap_git clone --depth 1 \
+            "https://github.com/${TAP_REPOSITORY}.git" tap; then
             echo "::warning::cannot read ${TAP_REPOSITORY}; is HOMEBREW_TAP_TOKEN still valid?"
             echo "The formula and cask are attached to this run; copy them across by hand."
             exit 0
@@ -135,7 +149,7 @@ jobs:
           git add Formula Casks
           git diff --cached --quiet && { echo "tap already current"; exit 0; }
           git commit -m "agentdocker ${RELEASE_TAG}"
-          if ! git push; then
+          if ! tap_git push; then
             echo "::warning::cannot write to ${TAP_REPOSITORY}; does HOMEBREW_TAP_TOKEN still"
             echo "have Contents: read and write? The formula and cask are attached to this run."
             exit 0
