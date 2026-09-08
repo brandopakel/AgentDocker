@@ -1,0 +1,22 @@
+[package]
+name = "agentdocker-design"
+description = "Interactive Iced design preview for the AgentDocker desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.88"
+publish = false
+
+# Explicit opt-in keeps the design preview out of normal application builds.
+[[bin]]
+name = "agentdocker-design"
+path = "src/main.rs"
+required-features = ["preview"]
+
+[features]
+preview = ["dep:iced", "dep:png"]
+
+[dependencies]
+iced = { workspace = true, optional = true }
+png = { workspace = true, optional = true }

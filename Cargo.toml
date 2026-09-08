@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 exclude = ["fuzz"]
-members = ["crates/core", "crates/host", "crates/agentd", "crates/cli", "crates/ui"]
+members = ["crates/core", "crates/host", "crates/agentd", "crates/cli", "crates/ui", "crates/ui-iced"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,6 +20,8 @@ criterion = "0.5.1"
 eframe = "0.36"
 vt100 = "0.16"
 egui = "0.36"
+iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "crisp", "tokio", "image-without-codecs", "x11", "wayland"] }
+png = "0.18"
 proptest = "1.6"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
