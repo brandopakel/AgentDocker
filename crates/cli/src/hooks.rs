@@ -1531,12 +1531,15 @@ mod tests {
         // A project spans its main checkout and every linked worktree,
         // so narrowing the listing to the project is not the same as
         // being in the same tree.
+        // Owned, not a shared path under the system temp directory:
+        // tests run in parallel and a fixed name is a fixture two of
+        // them can fight over.
+        let other_tree = tempfile::tempdir().unwrap();
         let elsewhere = {
             let mut a = matching("claude-in-another-worktree");
             // A real directory, so this tests the comparison rather than
             // a path that fails to resolve for an unrelated reason.
-            a.spec.workdir = Some(std::env::temp_dir().join("another-worktree"));
-            std::fs::create_dir_all(a.spec.workdir.as_ref().unwrap()).unwrap();
+            a.spec.workdir = Some(other_tree.path().to_path_buf());
             a
         };
         let backend = Mock::with(vec![

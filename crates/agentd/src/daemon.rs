@@ -349,6 +349,15 @@ fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
         && a.process_started_at == b.process_started_at
         && a.spec.runtime == b.spec.runtime
         && a.project.as_ref().map(ProjectRef::id) == b.project.as_ref().map(ProjectRef::id)
+        // The physical checkout, not only the project. A project spans
+        // its main checkout and every linked worktree, so two agents in
+        // two worktrees of one repository agree on the project and are
+        // still in two different trees — matching on the project alone
+        // would collapse them into one identity. Compared as recorded:
+        // the daemon resolves a workdir when it registers one, so by
+        // here both are already canonical, and touching the filesystem
+        // under the state mutex is not something this may do.
+        && a.spec.workdir == b.spec.workdir
         && match (session_of(a), session_of(b)) {
             (Some(one), Some(other)) => one == other,
             _ => true,
@@ -1457,6 +1466,19 @@ impl Daemon {
                 ErrorCode::Invalid,
                 "pid must be a positive process id within i32 range",
             );
+        }
+        // Resolved here, off the state thread and before the record
+        // exists: identity compares the physical checkout, and `/tmp`
+        // and `/private/tmp` are one directory spelled two ways. Two
+        // halves of a session that spell it differently are still one
+        // session, and two worktrees that resolve apart are still two.
+        // Touching the filesystem is not something the comparison may
+        // do — it runs under the state mutex — so it happens once, now.
+        let mut spec = spec;
+        if let Some(workdir) = spec.workdir.take() {
+            spec.workdir = tokio::task::spawn_blocking(move || project::canonical(&workdir))
+                .await
+                .ok();
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
@@ -4355,37 +4377,48 @@ impl State {
                 .get("session_id")
                 .filter(|id| !id.is_empty())
                 .cloned();
+            // An empty label is an absent one. A record carrying
+            // `session_id: ""` would otherwise count as already knowing
+            // whose it is and never learn, leaving the wildcard open.
             let bound = learned.filter(|_| {
-                self.registry
-                    .get(&id)
-                    .is_some_and(|a| !a.spec.labels.contains_key("session_id"))
+                self.registry.get(&id).is_some_and(|a| {
+                    a.spec
+                        .labels
+                        .get("session_id")
+                        .is_none_or(|existing| existing.is_empty())
+                })
             });
             if let Some(session) = bound {
-                // Written down before it is believed. The record is
-                // built, stored, and only then published to memory — a
-                // storage failure here has to be an error the caller
-                // sees, not a success that memory and disk disagree
-                // about until the next restart quietly forgets which
-                // session this was.
+                // One commit, then memory. The row and the event that
+                // announces it go into a single transaction — written
+                // separately there is a window where the record says one
+                // thing and the log another, and a crash inside it lets
+                // the next restart decide which. Memory is updated only
+                // once the store has taken both, so a storage failure is
+                // an error the caller sees rather than a divergence that
+                // is resolved later by forgetting whose session this was.
                 let mut updated = self.registry.get(&id).cloned().expect("just found");
                 updated
                     .spec
                     .labels
                     .insert("session_id".to_owned(), session.clone());
-                self.persist("agent", |store| store.upsert_agent(&updated));
+                let mut event = Event::new(
+                    EventKind::AgentSessionBound {
+                        agent: id.clone(),
+                        session,
+                    },
+                    Utc::now(),
+                );
+                event.seq = self.next_seq;
+                self.persist("session binding", |store| {
+                    store.agent_transition(&updated, &event)
+                });
                 if let Some(error) = self.storage_failure() {
                     return error;
                 }
-                if let Some(agent) = self.registry.get_mut(&id) {
-                    agent
-                        .spec
-                        .labels
-                        .insert("session_id".to_owned(), session.clone());
-                }
-                self.emit(EventKind::AgentSessionBound {
-                    agent: id.clone(),
-                    session,
-                });
+                *self.registry.get_mut(&id).expect("just found") = updated;
+                self.next_seq += 1;
+                let _ = self.events.send(event);
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
             return Response::Agent { agent };
@@ -4818,6 +4851,117 @@ mod tests {
         );
     }
 
+    /// A binding that cannot be stored is not answered as if it were.
+    ///
+    /// The row and the event announcing it are one transaction, so a
+    /// storage failure takes both or neither. What must never happen is
+    /// the third outcome: memory saying the record has a session, the
+    /// store saying it does not, and a restart picking whichever it
+    /// reads first — at which point the next session in this process
+    /// adopts an identity that is already spoken for.
+    ///
+    /// This test is here because the claim that it was one transaction
+    /// was made before it was true, and nothing failed.
+    #[tokio::test]
+    async fn a_binding_that_cannot_be_stored_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let register = async |name: &str, session: Option<&str>| {
+            let mut spec = spec(name);
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+        };
+        let Response::Agent { agent: mcp } = register("claude-code-45856", None).await else {
+            panic!("the first half registers")
+        };
+        let events_before = daemon.recent_events(200).len();
+
+        lock(&daemon.state).store.reject_writes_for_test();
+        let refused = register("claude-aaaa", Some("session-a")).await;
+        assert!(
+            matches!(
+                refused,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+
+        // Memory did not move ahead of the store.
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&mcp.id)
+                .is_some_and(|a| !a.spec.labels.contains_key("session_id")),
+            "the binding was not published to memory"
+        );
+        assert_eq!(
+            daemon.recent_events(200).len(),
+            events_before,
+            "and nothing was announced"
+        );
+
+        // Nor to disk: reopening finds the record exactly as it was, so
+        // the next session in this process is still free to claim it.
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&mcp.id)
+                .is_some_and(|a| !a.spec.labels.contains_key("session_id")),
+            "and the store never took it either"
+        );
+    }
+
+    /// An empty session label is an absent one.
+    ///
+    /// A record carrying `session_id: ""` would otherwise count as
+    /// already knowing whose it is and never learn, leaving the wildcard
+    /// open for the next session in the process.
+    #[tokio::test]
+    async fn an_empty_session_label_is_treated_as_no_session_at_all() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let register = async |name: &str, session: &str| {
+            let mut spec = spec(name);
+            spec.labels
+                .insert("session_id".to_owned(), session.to_owned());
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let blank = register("claude-code-45856", "").await;
+        let joined = register("claude-aaaa", "session-a").await;
+        assert_eq!(joined.id, blank.id, "the empty label did not block joining");
+        assert_eq!(
+            joined.spec.labels.get("session_id").map(String::as_str),
+            Some("session-a"),
+            "and the empty label was replaced rather than kept"
+        );
+    }
+
     /// Duplicates that already exist are reported, not repaired.
     ///
     /// The obvious repair — retire the half with no leases and an empty
@@ -4973,6 +5117,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let workdir = dir.path().to_path_buf();
+        // What the daemon stores is the resolved path, because identity
+        // compares physical checkouts and `/var/folders` and
+        // `/private/var/folders` are one directory spelled two ways.
+        let resolved = project::canonical(&workdir);
 
         let Response::Agent { agent } = daemon
             .handle(Request::Me {
@@ -4982,7 +5130,7 @@ mod tests {
         else {
             panic!("me failed")
         };
-        assert_eq!(agent.spec.workdir, Some(workdir.clone()));
+        assert_eq!(agent.spec.workdir, Some(resolved.clone()));
 
         // The same person, reported from nowhere.
         let Response::Agent { agent } = daemon
@@ -4995,7 +5143,7 @@ mod tests {
         };
         assert_eq!(
             agent.spec.workdir,
-            Some(workdir),
+            Some(resolved.clone()),
             "the record they had is kept, not replaced with the root"
         );
 
