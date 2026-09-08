@@ -2788,6 +2788,75 @@
       "fixture": "bulk_adoption_preserves_partial_progress_and_distinguishes_remote_failure",
       "original_log_sha256": "0c51c5c1a5fd2f0d9047b06a1a26c9022e9ad5190b9ad6c65be0904040cccf45",
       "reason": "Darwin accepted socket inherited O_NONBLOCK; existing read timeout did not apply"
+    },
+    "linux_ci": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Linux",
+      "os_version": "6.17.0-1022-azure",
+      "architecture": "x86_64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 15602816,
+          "sha256": "817e397f946a3d6285d2ac5f9dc07a271ac6c69c1a17ad72a76961ae8bc5598f"
+        },
+        "agentdocker": {
+          "bytes": 9321648,
+          "sha256": "0f98933d585870ac15808e2214c8b14bc223983c06bdf941961c95bb192cd02a"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.2523287049999965,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "linux_package_manifest": {
+      "format": 1,
+      "product": "agentdocker",
+      "version": "0.1.0",
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "target": "x86_64-unknown-linux-gnu",
+      "display_name": "agentdocker",
+      "signing": "checksum",
+      "notarized": false,
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "source_dirty": false,
+      "state_schema": 8,
+      "installation_lock": 1,
+      "binary_sha256": {
+        "agentdocker": "0f98933d585870ac15808e2214c8b14bc223983c06bdf941961c95bb192cd02a",
+        "agentd": "817e397f946a3d6285d2ac5f9dc07a271ac6c69c1a17ad72a76961ae8bc5598f",
+        "agentdocker-ui": "c0001adf037dab473a3b6f317092bd4fa22e5a4711022542bdfe05f3aae02c29"
+      },
+      "artifacts": {
+        "agentdocker-desktop-x86_64-unknown-linux-gnu.tar.gz": "49b25cf92cd3920e13e0cf7e9bb65645de5eb2da5b0b7f5cbbd17fbb55af33f3"
+      }
+    },
+    "linux_verification": {
+      "head": "865b05487611def29de9991c900a09ce07078535",
+      "tested_merge": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "artifact": 10038191730,
+      "workflow_run": 34178775442,
+      "archive_sha256": "5aaecd43e0269c4a8b964f37c4fdce9ec398366b7c55cf6e51167dc27af30936",
+      "checks": "merge parents, identical source tree, driver blob hash, binary/report identities, package archive hash",
+      "source_input_matches_retained_mac_campaign": true
     }
   },
   "cleanup_after_publication": {
