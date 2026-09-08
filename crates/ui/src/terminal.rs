@@ -247,6 +247,26 @@ fn spawn_session(
     outbound: Receiver<Outbound>,
     ctx: egui::Context,
 ) {
+    spawn_connected(
+        move || {
+            client.open(&Request::Attach {
+                agent,
+                cols: Some(size.0),
+                rows: Some(size.1),
+            })
+        },
+        shared,
+        outbound,
+        ctx,
+    );
+}
+
+fn spawn_connected(
+    connect: impl FnOnce() -> anyhow::Result<agentdocker_host::ipc::BlockingStream> + Send + 'static,
+    shared: Shared,
+    outbound: Receiver<Outbound>,
+    ctx: egui::Context,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let Shared {
             parser,
@@ -257,11 +277,7 @@ fn spawn_session(
             *lock(&status) = Status::Ended(reason);
             ctx.request_repaint();
         };
-        let stream = match client.open(&Request::Attach {
-            agent: agent.clone(),
-            cols: Some(size.0),
-            rows: Some(size.1),
-        }) {
+        let stream = match connect() {
             Ok(stream) => stream,
             Err(err) => return ended(err.to_string()),
         };
@@ -321,7 +337,7 @@ fn spawn_session(
                 Err(err) => return ended(err.to_string()),
             }
         }
-    });
+    })
 }
 
 /// The byte a key produces while Ctrl is held, from the key itself.
@@ -417,6 +433,81 @@ pub fn keystrokes(events: &[egui::Event]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unserved_terminal() -> (Terminal, Receiver<Outbound>) {
+        let (input, outbound) = channel();
+        (
+            Terminal {
+                agent: "owned-fixture".into(),
+                shared: Shared {
+                    parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, SCROLLBACK))),
+                    status: Arc::new(Mutex::new(Status::Attached)),
+                    connection: Arc::new(Mutex::new(None)),
+                },
+                input,
+                size: DEFAULT_SIZE,
+                scrollback: 0,
+            },
+            outbound,
+        )
+    }
+
+    #[test]
+    fn terminal_input_burst_has_bounded_admission() {
+        let (terminal, outbound) = unserved_terminal();
+        for _ in 0..10_000 {
+            terminal.send(vec![b'x']);
+        }
+        assert!(outbound.try_iter().count() <= 32);
+    }
+
+    #[test]
+    fn terminal_input_has_a_total_byte_budget() {
+        let (terminal, outbound) = unserved_terminal();
+        for _ in 0..5 {
+            terminal.send(vec![b'x'; 16 * 1024]);
+        }
+        let retained: usize = outbound
+            .try_iter()
+            .map(|message| match message {
+                Outbound::Keys(bytes) => bytes.len(),
+                Outbound::Frame(frame) => frame.len(),
+            })
+            .sum();
+        assert!(retained <= 64 * 1024, "retained {retained} input bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detaching_while_connecting_closes_the_late_connection() {
+        use std::io::Read;
+        use std::time::Duration;
+        let (terminal, outbound) = unserved_terminal();
+        let shared = terminal.shared.clone();
+        let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let (resume, blocked) = std::sync::mpsc::sync_channel(0);
+        let session = spawn_connected(
+            move || {
+                ready.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(3)).unwrap();
+                Ok(stream)
+            },
+            shared,
+            outbound,
+            egui::Context::default(),
+        );
+        started.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(terminal);
+        resume.send(()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let observed = peer.read(&mut [0]);
+        // Clean up the original failing behavior before asserting its result.
+        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        session.join().unwrap();
+        assert!(matches!(observed, Ok(0)), "late connection: {observed:?}");
+    }
 
     fn key(key: egui::Key, ctrl: bool) -> egui::Event {
         egui::Event::Key {

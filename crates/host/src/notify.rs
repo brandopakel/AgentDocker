@@ -2,8 +2,21 @@
 //!
 //! An agent that asks a person something and gets no answer is stuck, and
 //! a person cannot answer a question they never saw. The daemon has no
-//! window of its own, so it borrows the desktop's: `terminal-notifier` or
-//! `osascript` on macOS, `notify-send` on Linux.
+//! window of its own, so it borrows one.
+//!
+//! On macOS it prefers AgentDocker.app's own executable, in its
+//! one-shot `--notify` mode, because a notification wears the icon of
+//! the bundle that posted it and that is the only bundle that is ours.
+//! Every alternative is closed: the `UserNotifications` framework
+//! refuses a spoofed sender, which is why `terminal-notifier` withdrew
+//! `-sender`, and an `osascript` notification belongs to Script Editor.
+//!
+//! That path needs the app to be signed with a real identity —
+//! `UNUserNotificationCenter` will not register an ad-hoc signed bundle
+//! and answers `Notifications are not allowed for this application`. So
+//! `osascript` remains behind it: the wrong icon beats no notification,
+//! and the ordering means the right icon arrives the day the signature
+//! does, with nothing here to change.
 //!
 //! Best-effort by design. A headless box has none of these, and that is
 //! not an error — the message is still queued, still in the inbox, still
@@ -46,20 +59,21 @@ pub fn post(notification: &Notification) -> bool {
 fn candidates(notification: &Notification) -> Vec<Vec<String>> {
     let Notification { title, body } = notification;
     if cfg!(target_os = "macos") {
-        vec![
-            vec![
-                "terminal-notifier".into(),
-                "-title".into(),
+        let mut tried = Vec::new();
+        if let Some(app) = desktop_app() {
+            tried.push(vec![
+                app.to_string_lossy().into_owned(),
+                "--notify".into(),
                 title.clone(),
-                "-message".into(),
                 body.clone(),
-                // Grouping by a fixed id replaces our previous notification
-                // rather than stacking a column of them.
-                "-group".into(),
-                "dev.agentdocker".into(),
-            ],
-            vec!["osascript".into(), "-e".into(), applescript(title, body)],
-        ]
+            ]);
+        }
+        tried.push(vec![
+            "osascript".into(),
+            "-e".into(),
+            applescript(title, body),
+        ]);
+        tried
     } else {
         vec![vec![
             "notify-send".into(),
@@ -68,6 +82,28 @@ fn candidates(notification: &Notification) -> Vec<Vec<String>> {
             body.clone(),
         ]]
     }
+}
+
+/// The desktop app's own executable, if it is installed.
+///
+/// Looked up rather than configured: the daemon and the app are
+/// installed together by every route we ship, and a notification is not
+/// worth a setting.
+fn desktop_app() -> Option<std::path::PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let roots = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain(std::iter::once(std::path::PathBuf::from("/")));
+    for root in roots {
+        let inner = root.join("Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui");
+        if inner.is_file() {
+            return Some(inner);
+        }
+    }
+    None
 }
 
 /// AppleScript has no parameters, so the text goes into the source. Quote
@@ -158,7 +194,23 @@ mod tests {
         assert!(!candidates.is_empty());
         let first = &candidates[0][0];
         if cfg!(target_os = "macos") {
-            assert_eq!(first, "terminal-notifier");
+            // The app when it is installed, `osascript` otherwise, and
+            // never anything a person has to install first.
+            let last = candidates.last().unwrap();
+            assert_eq!(last[0], "osascript", "the fallback is always there");
+            if desktop_app().is_some() {
+                assert!(
+                    first.ends_with("AgentDocker.app/Contents/MacOS/agentdocker-ui"),
+                    "our own bundle leads, so the notification wears our icon: {first}"
+                );
+                assert_eq!(candidates[0][1], "--notify");
+            } else {
+                assert_eq!(first, "osascript");
+            }
+            assert!(
+                !candidates.iter().any(|argv| argv[0] == "terminal-notifier"),
+                "nothing that has to be installed separately"
+            );
         } else {
             assert_eq!(first, "notify-send");
         }
