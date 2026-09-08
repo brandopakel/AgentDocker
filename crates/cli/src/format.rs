@@ -151,6 +151,13 @@ pub fn activity_cell(activity: &Activity) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::AgentActivityReported { agent, observation } => {
+            format!(
+                "activity reported   {} {:?}",
+                agent.short(),
+                observation.activity
+            )
+        }
         EventKind::ContestOpened {
             contest,
             task,
@@ -436,6 +443,9 @@ pub fn event_line(event: &Event) -> String {
                 .map(|p| format!(" in {}", p.short()))
                 .unwrap_or_default();
             format!("agent created    {} ({name}){project}", agent.short())
+        }
+        EventKind::AgentSessionBound { agent, session } => {
+            format!("agent bound      {} to session {session}", agent.short())
         }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();

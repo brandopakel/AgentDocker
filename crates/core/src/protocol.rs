@@ -239,6 +239,12 @@ pub enum Request {
         #[serde(default)]
         vcs: Option<VcsState>,
     },
+    /// A provider lifecycle observation, separate from process liveness.
+    /// Older observations are ignored; observations expire after five minutes.
+    ReportActivity {
+        agent: String,
+        observation: crate::ActivityObservation,
+    },
     /// Ledger entries for a project: newest `limit`, oldest first.
     Changes {
         /// A project id (any unique prefix), or an absolute path inside it.
@@ -322,7 +328,7 @@ pub enum Request {
         #[serde(default)]
         agent: Option<String>,
     },
-    /// What each agent is doing: working, idle, blocked on a named
+    /// What each agent is doing: unknown, working, idle, blocked on a named
     /// resource held by named agents, starting, or finished. Derived
     /// from the working set, never from terminal output.
     Activity {
@@ -803,6 +809,10 @@ pub enum Response {
     Journal {
         project: crate::ProjectId,
         entries: Vec<JournalEntry>,
+        /// Durable project head at the same snapshot, including pruned entries.
+        /// Absent on older daemons; readers must not infer it from an empty list.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head_seq: Option<u64>,
     },
     JournalEntry {
         entry: JournalEntry,
@@ -868,6 +878,23 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_snapshot_head_is_optional_for_older_daemons() {
+        let legacy = serde_json::json!({"type":"journal", "project":"fixture", "entries":[]});
+        let response: Response = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(response, Response::Journal { head_seq: None, .. }));
+        assert_eq!(serde_json::to_value(response).unwrap(), legacy);
+        let current = Response::Journal {
+            project: "fixture".into(),
+            entries: vec![],
+            head_seq: Some(1000),
+        };
+        assert_eq!(
+            serde_json::from_value::<Response>(serde_json::to_value(&current).unwrap()).unwrap(),
+            current
+        );
+    }
 
     #[test]
     fn terminal_bytes_survive_a_round_trip() {

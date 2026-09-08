@@ -17,9 +17,74 @@ use std::process::Command;
 
 use chrono::{DateTime, Utc};
 
+/// The executable loaded by this process, independent of a mutable launch link.
+/// macOS `current_exe` can return the original symlink spelling. Resolving that
+/// spelling after activation could select another release, so ask the kernel.
+pub fn executable_path() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // PROC_PIDPATHINFO_MAXSIZE in the macOS SDK is 4 * MAXPATHLEN.
+        let mut buffer = [0_u8; 4096];
+        // SAFETY: getpid takes no arguments; proc_pidpath receives the writable
+        // buffer and its exact capacity, and cannot write past it.
+        let written = unsafe {
+            libc::proc_pidpath(
+                libc::getpid(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+            )
+        };
+        if written <= 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let path = CStr::from_bytes_until_nul(&buffer)
+            .map_err(|_| std::io::Error::other("kernel executable path is not terminated"))?;
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes()));
+        if !path.is_absolute() {
+            return Err(std::io::Error::other(
+                "kernel executable path is not absolute",
+            ));
+        }
+        Ok(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    std::env::current_exe()
+}
+
 /// When the process with this pid started, if the platform can tell us.
 pub fn start_time(pid: u32) -> Option<DateTime<Utc>> {
     imp::start_time(pid)
+}
+
+/// Whether a process with this pid exists at all.
+///
+/// Only that. It says nothing about *which* process — a recycled pid
+/// exists just as convincingly as the one that registered it, which is
+/// what [`start_time`] is for. Signal zero is the portable way to ask:
+/// it performs the permission checks and reaches the process without
+/// delivering anything, so `EPERM` is a yes.
+#[cfg(unix)]
+pub fn alive(pid: u32) -> bool {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    if raw <= 0 {
+        return false;
+    }
+    // SAFETY: kill only reads its scalar arguments, and signal zero
+    // delivers nothing.
+    if unsafe { libc::kill(raw, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+pub fn alive(_pid: u32) -> bool {
+    false
 }
 
 /// The current working directory of another process of ours.

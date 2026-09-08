@@ -5,7 +5,6 @@
 //! back the other way. Detaching is closing the connection, so the agent
 //! neither notices nor stops.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use agentdocker_core::{Request, Response, protocol};
@@ -15,6 +14,10 @@ use egui::{Color32, FontId, TextFormat};
 use crate::client::Client;
 use crate::theme::Palette;
 
+mod control;
+mod input;
+use input::{Input, Outbound};
+
 /// Cells wide and tall a terminal starts at, until the view says otherwise.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
@@ -23,13 +26,8 @@ const DEFAULT_SIZE: (u16, u16) = (80, 24);
 /// lines that fit.
 const SCROLLBACK: usize = 2_000;
 
-/// What the window sends the agent. Keystrokes are raw bytes and a resize
-/// is a protocol frame; they travel together and must not be told apart
-/// by looking at them — a typed `{` is not a JSON request.
-enum Outbound {
-    Keys(Vec<u8>),
-    Frame(String),
-}
+// Includes the encoded 64 KiB replay, protocol fields and terminating newline.
+const MAX_FRAME_BYTES: usize = 256 * 1024;
 
 /// What the window and the reader thread both hold: the screen one
 /// writes and the other draws, whether the session is still up, and the
@@ -38,14 +36,59 @@ enum Outbound {
 struct Shared {
     parser: Arc<Mutex<vt100::Parser>>,
     status: Arc<Mutex<Status>>,
-    connection: Arc<Mutex<Option<agentdocker_host::ipc::BlockingStream>>>,
+    connection: Arc<Mutex<Connection>>,
+    input: Arc<Input>,
+}
+
+#[derive(Default)]
+struct Connection {
+    closed: bool,
+    stream: Option<agentdocker_host::ipc::BlockingStream>,
+}
+
+impl Connection {
+    fn install(&mut self, stream: agentdocker_host::ipc::BlockingStream) -> bool {
+        if self.closed {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return false;
+        }
+        self.stream = Some(stream);
+        true
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+        if let Some(stream) = self.stream.take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Shared {
+    fn close(&self) {
+        // Closing is remembered even before the connection has been installed.
+        lock(&self.connection).close();
+        self.input.close();
+    }
+
+    fn ended(&self, reason: String, ctx: &egui::Context) {
+        {
+            let mut status = lock(&self.status);
+            // Preserve the writer's original error when shutdown wakes a reader.
+            if *status == Status::Attached {
+                *status = Status::Ended(reason);
+            }
+        }
+        self.close();
+        ctx.request_repaint();
+    }
 }
 
 /// One attached agent.
 pub struct Terminal {
     pub agent: String,
     shared: Shared,
-    input: Sender<Outbound>,
+    input_notice: Option<&'static str>,
     size: (u16, u16),
     /// How far above the live screen the view is scrolled.
     scrollback: usize,
@@ -53,12 +96,7 @@ pub struct Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // Shutting the socket down makes the reader's blocking `read_line`
-        // return `Ok(0)`, which ends its loop; the writer thread ends when
-        // this `Sender` drops.
-        if let Some(stream) = lock(&self.shared.connection).take() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
+        self.shared.close();
     }
 }
 
@@ -75,21 +113,14 @@ impl Terminal {
         let shared = Shared {
             parser: Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK))),
             status: Arc::new(Mutex::new(Status::Attached)),
-            connection: Arc::new(Mutex::new(None)),
+            connection: Arc::new(Mutex::new(Connection::default())),
+            input: Arc::new(Input::default()),
         };
-        let (input, outbound) = channel::<Outbound>();
-        spawn_session(
-            client,
-            agent.clone(),
-            (cols, rows),
-            shared.clone(),
-            outbound,
-            ctx,
-        );
+        spawn_session(client, agent.clone(), (cols, rows), shared.clone(), ctx);
         Self {
             agent,
             shared,
-            input,
+            input_notice: None,
             size: (cols, rows),
             scrollback: 0,
         }
@@ -99,9 +130,22 @@ impl Terminal {
         lock(&self.shared.status).clone()
     }
 
-    /// Send bytes to the agent; a closed session simply drops them.
-    pub fn send(&self, bytes: Vec<u8>) {
-        let _ = self.input.send(Outbound::Keys(bytes));
+    /// Admit all bytes together or report rejection; never replay partial input.
+    pub fn send(&mut self, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let admitted = if bytes.len() > input::MAX_BYTES {
+            Err(input::Rejected::TooLarge)
+        } else {
+            self.shared
+                .input
+                .push(Outbound::Keys(bytes.into_boxed_slice()))
+        };
+        if let Err(error) = admitted {
+            // Keep the notice until dismissed, even if later input is accepted.
+            self.input_notice = Some(error.message());
+        }
     }
 
     /// Move the view through the history the parser kept. Scrolling up
@@ -130,15 +174,29 @@ impl Terminal {
         if (cols, rows) == self.size {
             return;
         }
-        self.size = (cols, rows);
-        lock(&self.shared.parser).screen_mut().set_size(rows, cols);
-        if let Ok(frame) = serde_json::to_string(&Request::AttachResize { cols, rows }) {
-            let _ = self.input.send(Outbound::Frame(frame));
+        if self
+            .shared
+            .input
+            .push(Outbound::Resize { cols, rows })
+            .is_ok()
+        {
+            self.size = (cols, rows);
+            lock(&self.shared.parser).screen_mut().set_size(rows, cols);
         }
+        // A rejected resize leaves size unchanged so the next UI pass retries
+        // that desired size. Keystrokes are never retried automatically.
     }
 
     /// Draw the screen as it stands.
-    pub fn ui(&self, ui: &mut egui::Ui, palette: &Palette, size: f32) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, palette: &Palette, size: f32) {
+        if let Some(reason) = self.input_notice {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(Color32::from_rgb(200, 80, 60), reason);
+                if ui.button("Dismiss").clicked() {
+                    self.input_notice = None;
+                }
+            });
+        }
         let parser = lock(&self.shared.parser);
         let screen = parser.screen();
         let (rows, cols) = screen.size();
@@ -244,84 +302,144 @@ fn spawn_session(
     agent: String,
     size: (u16, u16),
     shared: Shared,
-    outbound: Receiver<Outbound>,
     ctx: egui::Context,
 ) {
-    std::thread::spawn(move || {
-        let Shared {
-            parser,
-            status,
-            connection,
-        } = shared;
-        let ended = |reason: String| {
-            *lock(&status) = Status::Ended(reason);
-            ctx.request_repaint();
-        };
-        let stream = match client.open(&Request::Attach {
-            agent: agent.clone(),
-            cols: Some(size.0),
-            rows: Some(size.1),
-        }) {
-            Ok(stream) => stream,
-            Err(err) => return ended(err.to_string()),
-        };
-        let mut writer = match stream.try_clone() {
-            Ok(writer) => writer,
-            Err(err) => return ended(err.to_string()),
-        };
-        // Kept where `Terminal::drop` can reach it, so detaching wakes the
-        // blocking read below instead of leaving this thread behind.
-        match stream.try_clone() {
-            Ok(handle) => *lock(&connection) = Some(handle),
-            Err(err) => return ended(err.to_string()),
-        }
-        // Typing runs on its own thread; the reader owns this one.
-        std::thread::spawn(move || {
-            use std::io::Write;
-            while let Ok(message) = outbound.recv() {
-                let frame = match message {
-                    Outbound::Frame(frame) => frame,
-                    Outbound::Keys(bytes) => {
-                        match serde_json::to_string(&Request::AttachInput {
-                            data: protocol::encode_bytes(&bytes),
-                        }) {
-                            Ok(frame) => frame,
-                            Err(_) => continue,
-                        }
-                    }
-                };
-                if writer.write_all(format!("{frame}\n").as_bytes()).is_err()
-                    || writer.flush().is_err()
-                {
-                    return;
-                }
-            }
-        });
+    let close = shared.clone();
+    let on_error = ctx.clone();
+    if let Err(error) = spawn_connected(
+        move || {
+            client.open(&Request::Attach {
+                agent,
+                cols: Some(size.0),
+                rows: Some(size.1),
+            })
+        },
+        shared,
+        ctx,
+    ) {
+        close.ended(
+            format!("cannot start terminal connection: {error}"),
+            &on_error,
+        );
+    }
+}
 
-        use std::io::BufRead;
-        let mut reader = std::io::BufReader::new(stream);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => return ended("the connection closed".to_owned()),
-                Ok(_) => {}
-                Err(err) => return ended(err.to_string()),
-            }
-            match serde_json::from_str::<Response>(&line) {
-                Ok(Response::Output { data }) => {
-                    if let Some(bytes) = protocol::decode_bytes(&data) {
-                        lock(&parser).process(&bytes);
-                        ctx.request_repaint();
+fn spawn_connected(
+    connect: impl FnOnce() -> anyhow::Result<agentdocker_host::ipc::BlockingStream> + Send + 'static,
+    shared: Shared,
+    ctx: egui::Context,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("agentdocker-terminal".into())
+        .spawn(move || {
+            let stream = match connect() {
+                Ok(stream) => stream,
+                Err(err) => return shared.ended(err.to_string(), &ctx),
+            };
+            let writer = match stream.try_clone() {
+                Ok(writer) => writer,
+                Err(err) => return shared.ended(err.to_string(), &ctx),
+            };
+            match stream.try_clone() {
+                Ok(handle) => {
+                    if !lock(&shared.connection).install(handle) {
+                        return;
                     }
                 }
-                Ok(Response::End) => return ended("the agent ended".to_owned()),
-                Ok(Response::Error { message, .. }) => return ended(message),
-                Ok(_) => {}
-                Err(err) => return ended(err.to_string()),
+                Err(err) => return shared.ended(err.to_string(), &ctx),
             }
+            let writer_state = shared.clone();
+            let writer_ctx = ctx.clone();
+            let writer = match std::thread::Builder::new()
+                .name("agentdocker-terminal-input".into())
+                .spawn(move || {
+                    run_writer(writer, &writer_state, &writer_ctx);
+                }) {
+                Ok(writer) => writer,
+                Err(error) => {
+                    return shared.ended(format!("cannot start terminal input: {error}"), &ctx);
+                }
+            };
+            let reason = read_output(stream, &shared, &ctx);
+            shared.ended(reason, &ctx);
+            // Close wakes an idle writer as well as one blocked on the socket.
+            // Only this background thread waits for its owned writer to finish.
+            let _ = writer.join();
+        })
+}
+
+fn run_writer(writer: impl std::io::Write, shared: &Shared, ctx: &egui::Context) {
+    if let Err(error) = write_input(writer, &shared.input) {
+        shared.ended(format!("terminal input failed: {error}"), ctx);
+    }
+}
+
+fn write_input(mut writer: impl std::io::Write, input: &Input) -> std::io::Result<()> {
+    while let Some(message) = input.recv() {
+        let request = match message {
+            Outbound::Keys(bytes) => Request::AttachInput {
+                data: protocol::encode_bytes(&bytes),
+            },
+            Outbound::Resize { cols, rows } => Request::AttachResize { cols, rows },
+        };
+        let mut frame = serde_json::to_string(&request).map_err(std::io::Error::other)?;
+        frame.push('\n');
+        writer.write_all(frame.as_bytes())?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+fn read_frame(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io::Result<usize> {
+    use std::io::{BufRead, Read};
+    line.clear();
+    let read = reader.take((MAX_FRAME_BYTES + 1) as u64).read_line(line)?;
+    if read > MAX_FRAME_BYTES {
+        return Err(std::io::Error::other(
+            "terminal output frame exceeds 256 KiB",
+        ));
+    }
+    if read > 0 && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "incomplete terminal output frame",
+        ));
+    }
+    Ok(read)
+}
+
+fn read_output(
+    stream: agentdocker_host::ipc::BlockingStream,
+    shared: &Shared,
+    ctx: &egui::Context,
+) -> String {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut line = String::new();
+    let mut control = control::ControlBudget::default();
+    loop {
+        match read_frame(&mut reader, &mut line) {
+            Ok(0) => return "the connection closed".to_owned(),
+            Ok(_) => {}
+            Err(error) => return error.to_string(),
         }
-    });
+        match serde_json::from_str::<Response>(&line) {
+            Ok(Response::Output { data }) => {
+                if let Some(bytes) = protocol::decode_bytes(&data) {
+                    if let Err(reason) = control.check(&bytes) {
+                        return reason.to_owned();
+                    }
+                    lock(&shared.parser).process(&bytes);
+                    ctx.request_repaint();
+                } else {
+                    return "invalid terminal output encoding".to_owned();
+                }
+            }
+            Ok(Response::End) => return "the agent ended".to_owned(),
+            Ok(Response::Error { message, .. }) => return message,
+            Ok(_) => {}
+            Err(error) => return error.to_string(),
+        }
+    }
 }
 
 /// The byte a key produces while Ctrl is held, from the key itself.
@@ -417,6 +535,274 @@ pub fn keystrokes(events: &[egui::Event]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn close_peer(peer: &agentdocker_host::ipc::BlockingStream) {
+        // Darwin reports ENOTCONN when the successful test already closed its
+        // peer; cleanup is complete in that case, rather than a test failure.
+        if let Err(error) = peer.shutdown(std::net::Shutdown::Both) {
+            assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
+        }
+    }
+
+    fn unserved_terminal() -> Terminal {
+        Terminal {
+            agent: "owned-fixture".into(),
+            shared: Shared {
+                parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, SCROLLBACK))),
+                status: Arc::new(Mutex::new(Status::Attached)),
+                connection: Arc::new(Mutex::new(Connection::default())),
+                input: Arc::new(Input::default()),
+            },
+            input_notice: None,
+            size: DEFAULT_SIZE,
+            scrollback: 0,
+        }
+    }
+
+    #[test]
+    fn terminal_input_burst_has_bounded_admission() {
+        let mut terminal = unserved_terminal();
+        for _ in 0..10_000 {
+            terminal.send(vec![b'x']);
+        }
+        assert!(terminal.shared.input.retained().0 <= 32);
+        assert_eq!(terminal.input_notice, Some(input::Rejected::Full.message()));
+    }
+
+    #[test]
+    fn terminal_input_has_a_total_byte_budget() {
+        let mut terminal = unserved_terminal();
+        for _ in 0..5 {
+            terminal.send(vec![b'x'; 16 * 1024]);
+        }
+        let retained = terminal.shared.input.retained().1;
+        assert!(retained <= 64 * 1024, "retained {retained} input bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detaching_while_connecting_closes_the_late_connection() {
+        use std::io::Read;
+        use std::time::Duration;
+        let terminal = unserved_terminal();
+        let shared = terminal.shared.clone();
+        let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let (resume, blocked) = std::sync::mpsc::sync_channel(0);
+        let session = spawn_connected(
+            move || {
+                ready.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(3)).unwrap();
+                Ok(stream)
+            },
+            shared,
+            egui::Context::default(),
+        )
+        .unwrap();
+        started.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(terminal);
+        resume.send(()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let observed = peer.read(&mut [0]);
+        // Clean up the original failing behavior before asserting its result.
+        close_peer(&peer);
+        session.join().unwrap();
+        assert!(matches!(observed, Ok(0)), "late connection: {observed:?}");
+    }
+
+    #[test]
+    fn rejected_input_remains_visible_and_resize_waits_for_capacity() {
+        let mut terminal = unserved_terminal();
+        terminal.send(vec![b'x'; input::MAX_BYTES + 1]);
+        assert_eq!(
+            terminal.input_notice,
+            Some(input::Rejected::TooLarge.message())
+        );
+        assert_eq!(terminal.shared.input.retained(), (0, 0));
+        terminal.send(vec![b'x'; input::MAX_BYTES]);
+        // A later successful key does not erase evidence of previously lost input.
+        assert_eq!(
+            terminal.input_notice,
+            Some(input::Rejected::TooLarge.message())
+        );
+        terminal.resize(120, 30);
+        assert_eq!(terminal.size, DEFAULT_SIZE);
+        assert_eq!(lock(&terminal.shared.parser).screen().size(), (24, 80));
+        assert!(matches!(
+            terminal.shared.input.recv(),
+            Some(Outbound::Keys(_))
+        ));
+        terminal.resize(120, 30);
+        assert_eq!(terminal.size, (120, 30));
+        assert_eq!(lock(&terminal.shared.parser).screen().size(), (30, 120));
+        terminal.shared.close();
+        terminal.send(b"closed".to_vec());
+        assert_eq!(
+            terminal.input_notice,
+            Some(input::Rejected::Closed.message())
+        );
+    }
+
+    #[test]
+    fn terminal_frames_are_bounded_and_keep_the_next_frame() {
+        use std::io::{BufReader, Cursor};
+        // The daemon's largest replay still fits after protocol encoding.
+        let response = Response::Output {
+            data: protocol::encode_bytes(&vec![b'x'; 64 * 1024]),
+        };
+        let replay = serde_json::to_string(&response).unwrap() + "\n";
+        let mut reader = BufReader::new(Cursor::new(replay.clone() + "{\"type\":\"end\"}\n"));
+        let mut line = String::new();
+        assert_eq!(read_frame(&mut reader, &mut line).unwrap(), replay.len());
+        assert_eq!(line, replay);
+        read_frame(&mut reader, &mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::End
+        );
+        let mut huge = BufReader::new(Cursor::new(vec![b'x'; MAX_FRAME_BYTES * 2]));
+        assert!(
+            read_frame(&mut huge, &mut line)
+                .unwrap_err()
+                .to_string()
+                .contains("256 KiB")
+        );
+        assert_eq!(line.len(), MAX_FRAME_BYTES + 1);
+        let mut incomplete = Cursor::new(b"{\"type\":\"end\"}");
+        assert_eq!(
+            read_frame(&mut incomplete, &mut line).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_end_joins_an_idle_writer_without_dropping_the_window_handle() {
+        use std::io::Write;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let terminal = unserved_terminal();
+        let shared = terminal.shared.clone();
+        let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        let session =
+            spawn_connected(move || Ok(stream), shared, egui::Context::default()).unwrap();
+        peer.write_all(b"{\"type\":\"end\"}\n").unwrap();
+        let (finished, done) = mpsc::channel();
+        let waiter = std::thread::spawn(move || finished.send(session.join()).unwrap());
+        let observed = done.recv_timeout(Duration::from_secs(3));
+        // A failing implementation must still release its fixture threads.
+        terminal.shared.close();
+        close_peer(&peer);
+        waiter.join().unwrap();
+        assert!(observed.unwrap().is_ok());
+        assert_eq!(terminal.status(), Status::Ended("the agent ended".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_failure_closes_the_reader_and_preserves_its_reason() {
+        use std::io::{self, Write};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        struct FailedWriter;
+        impl Write for FailedWriter {
+            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected write failure",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut terminal = unserved_terminal();
+        let shared = terminal.shared.clone();
+        let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
+        let (finished, done) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let ctx = egui::Context::default();
+            let reason = read_output(stream, &shared, &ctx);
+            shared.ended(reason, &ctx);
+            finished.send(()).unwrap();
+        });
+        // Inject an error while a real socket reader waits with an open peer.
+        // SHUT_RD alone does not force an immediate EPIPE on Darwin.
+        terminal.send(b"owned fixture".to_vec());
+        run_writer(FailedWriter, &terminal.shared, &egui::Context::default());
+        let observed = done.recv_timeout(Duration::from_secs(3));
+        terminal.shared.close();
+        close_peer(&peer);
+        reader.join().unwrap();
+        observed.unwrap();
+        assert!(
+            matches!(terminal.status(), Status::Ended(reason) if reason.starts_with("terminal input failed:"))
+        );
+    }
+
+    #[test]
+    fn terminal_writer_preserves_input_and_resize_order() {
+        use std::io::Write;
+        struct Capture<'a> {
+            frames: &'a mut Vec<u8>,
+            input: &'a Input,
+            flushes: usize,
+        }
+        impl Write for Capture<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.frames.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                if self.flushes == 3 {
+                    self.input.close();
+                }
+                Ok(())
+            }
+        }
+        let input = Input::default();
+        input.push(Outbound::Keys(Box::from(*b"{\0\xff"))).unwrap();
+        input
+            .push(Outbound::Resize {
+                cols: 120,
+                rows: 30,
+            })
+            .unwrap();
+        input.push(Outbound::Keys(Box::from(*b"\r"))).unwrap();
+        let mut frames = Vec::new();
+        write_input(
+            Capture {
+                frames: &mut frames,
+                input: &input,
+                flushes: 0,
+            },
+            &input,
+        )
+        .unwrap();
+        let requests: Vec<Request> = String::from_utf8(frames)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            requests,
+            [
+                Request::AttachInput {
+                    data: protocol::encode_bytes(b"{\0\xff")
+                },
+                Request::AttachResize {
+                    cols: 120,
+                    rows: 30
+                },
+                Request::AttachInput {
+                    data: protocol::encode_bytes(b"\r")
+                }
+            ]
+        );
+    }
 
     fn key(key: egui::Key, ctrl: bool) -> egui::Event {
         egui::Event::Key {

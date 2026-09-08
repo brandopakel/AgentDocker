@@ -1,0 +1,206 @@
+{
+  "format": 1,
+  "head": "a65d956",
+  "workflow": 34195804495,
+  "artifact": 10043902952,
+  "manifest": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "c5b76fa71a5ecbb353e94c17bd9ed212f1286907",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "e3fdb494fb34c0064e59d9ab5a95889ca8bf5da1",
+    "source_input_sha256": "ee3ef1bcac5eae1eaac08fe9e132fbb1d949ba80cdfb65dea91b50e69c77be7d",
+    "source_dirty": false,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "aa68837899109874140d2793fc6a461342ea3deb028313311a8a8785759557c8",
+      "agentd": "383c4cb94fbe03508c2f200f0a352da427ba719b0f141d8b909630bafd837f20",
+      "agentdocker-ui": "885c304758e44ae0b15651e7c39635d6eb7063dbb6fc30172ac871308eb294c1"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "cf2604d0a1fa7f213d99f789da2106e04be023d1d0eb0670afec021042d9375b",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "bbb115066c991327dc77781e760f90df4bf94cc289e010da3faf5a074b9f6cf4"
+    }
+  },
+  "provenance": {
+    "outer_archive_verified": true,
+    "inner_archive_verified": true,
+    "cli_binary_verified": true,
+    "head_and_tree_verified": true,
+    "git_blob_input_hash_verified": true,
+    "only_cli_extracted": true
+  },
+  "outer_archive_sha256": "91aeb4ecbc4dacba7c5d40125536c086104ba794117f1f3200329eb5cb10c111",
+  "attempts": [
+    {
+      "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+      "source_commit": "c5b76fa71a5ecbb353e94c17bd9ed212f1286907",
+      "source_tree": "e3fdb494fb34c0064e59d9ab5a95889ca8bf5da1",
+      "binary_sha256": "aa68837899109874140d2793fc6a461342ea3deb028313311a8a8785759557c8",
+      "driver_sha256": "7eb790da9f739d566de1c596d158060b1a9c49cfc34e0a43df1428e4da0f5b1c",
+      "checks": [
+        "preview selects profile A for hooks and MCP",
+        "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+        "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+        "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+        "changed environment refuses undo before hooks or provider entry are changed",
+        "malformed provider state refuses apply before hook edits"
+      ],
+      "calls": [
+        {
+          "name": "preview-a",
+          "exit": 0,
+          "elapsed_seconds": 0.3028662920696661
+        },
+        {
+          "name": "apply-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.1665472909808159
+        },
+        {
+          "name": "health-a",
+          "exit": 0,
+          "elapsed_seconds": 0.005469292053021491
+        },
+        {
+          "name": "undo-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.16023954201955348
+        },
+        {
+          "name": "preview-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.012881667003966868
+        },
+        {
+          "name": "apply-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.15390816691797227
+        },
+        {
+          "name": "refuse-changed-entry",
+          "exit": 1,
+          "elapsed_seconds": 0.006793083972297609
+        },
+        {
+          "name": "undo-restored-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.14942837494891137
+        },
+        {
+          "name": "preview-malformed-state",
+          "exit": 0,
+          "elapsed_seconds": 0.011714874999597669
+        },
+        {
+          "name": "refuse-malformed-state",
+          "exit": 1,
+          "elapsed_seconds": 0.006109582958742976
+        },
+        {
+          "name": "close-unused-plan",
+          "exit": 0,
+          "elapsed_seconds": 0.01258812507148832
+        }
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.9918258750112727,
+      "cleanup": {
+        "scratch_removed": true,
+        "user_configuration_hashes_unchanged": true,
+        "model_invoked": false
+      }
+    },
+    {
+      "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+      "source_commit": "c5b76fa71a5ecbb353e94c17bd9ed212f1286907",
+      "source_tree": "e3fdb494fb34c0064e59d9ab5a95889ca8bf5da1",
+      "binary_sha256": "aa68837899109874140d2793fc6a461342ea3deb028313311a8a8785759557c8",
+      "driver_sha256": "4d43d3b1e1539b1abfef2186ae4eb9e2bf1bc0c9066392e5a9b559dd479b6cf6",
+      "checks": [
+        "preview selects profile A for hooks and MCP",
+        "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+        "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+        "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+        "changed environment refuses undo before hooks or provider entry are changed",
+        "malformed provider state refuses apply before hook edits"
+      ],
+      "calls": [
+        {
+          "name": "preview-a",
+          "exit": 0,
+          "elapsed_seconds": 0.014284124947153032
+        },
+        {
+          "name": "apply-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.16278337500989437
+        },
+        {
+          "name": "health-a",
+          "exit": 0,
+          "elapsed_seconds": 0.005394708015955985
+        },
+        {
+          "name": "undo-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.15257512498646975
+        },
+        {
+          "name": "preview-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.013730415957979858
+        },
+        {
+          "name": "apply-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.16126020799856633
+        },
+        {
+          "name": "refuse-changed-entry",
+          "exit": 1,
+          "elapsed_seconds": 0.006866208044812083
+        },
+        {
+          "name": "undo-restored-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.15506066707894206
+        },
+        {
+          "name": "preview-malformed-state",
+          "exit": 0,
+          "elapsed_seconds": 0.011753040947951376
+        },
+        {
+          "name": "refuse-malformed-state",
+          "exit": 1,
+          "elapsed_seconds": 0.0060688749654218554
+        },
+        {
+          "name": "close-unused-plan",
+          "exit": 0,
+          "elapsed_seconds": 0.012672666925936937
+        }
+      ],
+      "result": "passed",
+      "provider_version": "2.1.263 (Claude Code)",
+      "elapsed_seconds": 0.7136252500349656,
+      "cleanup": {
+        "scratch_removed": true,
+        "user_configuration_hashes_unchanged": true,
+        "model_invoked": false
+      }
+    }
+  ],
+  "limits": [
+    "These are real provider configuration-CLI operations, not model turns or automatic message consumption.",
+    "The packaged binaries are pinned to manifest.source_commit c5b76fa71a5ecbb353e94c17bd9ed212f1286907; a65d956 is a later driver/publication head and requires its own CI.",
+    "Concurrent independent provider writes still lack compare-and-swap semantics.",
+    "Fixture directories were removed; private command outputs contain only the disposable profiles and remain outside the repository."
+  ]
+}

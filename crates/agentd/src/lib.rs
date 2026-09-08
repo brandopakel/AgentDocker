@@ -67,10 +67,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
                 "state_schema": store::SCHEMA_VERSION,
+                "installation_lock": agentdocker_host::installation::LOCK_FORMAT,
             })
         );
         return Ok(());
     }
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

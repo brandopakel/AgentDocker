@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 
 use agentdocker_host::{command, dirs, project};
 
+mod maintenance;
+
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
 
 /// How many times to re-follow the `current` pointer when a read of it
@@ -24,7 +26,7 @@ const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Use the managed command link for provider setup so registrations survive
 /// activation of another release. Refuse setup from an obsolete running copy.
 pub fn setup_executable() -> Result<PathBuf> {
-    stable_executable(&std::env::current_exe()?)
+    stable_executable(&agentdocker_host::procinfo::executable_path()?)
 }
 
 fn stable_executable(executable: &Path) -> Result<PathBuf> {
@@ -103,6 +105,27 @@ enum DesktopCommand {
         #[arg(long)]
         expect_current: Option<String>,
     },
+    /// Remove owned launchers and deactivate this installation; preserve running sessions and settings.
+    Uninstall {
+        /// Print the removal plan without changing the installation.
+        #[arg(long)]
+        preview: bool,
+        /// Refuse changes since the reviewed maintenance plan.
+        #[arg(long)]
+        expect_plan: Option<String>,
+    },
+    /// Remove unused retained versions, keeping the active and rollback versions.
+    Prune {
+        /// Keep this many additional inactive versions, newest first.
+        #[arg(long, default_value_t = 0)]
+        keep: usize,
+        /// Print the retention plan without removing any versions.
+        #[arg(long)]
+        preview: bool,
+        /// Refuse changes since the reviewed maintenance plan.
+        #[arg(long)]
+        expect_plan: Option<String>,
+    },
     /// Show the active and previous retained versions without starting the daemon.
     Status,
 }
@@ -115,6 +138,8 @@ struct Release {
     state_schema: u32,
     target: String,
     tree_sha256: String,
+    #[serde(default)]
+    installation_lock: u32,
     payload: String,
 }
 
@@ -637,6 +662,10 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
             .and_then(|number| u32::try_from(number).ok())
             .context("missing state schema")?,
         target: target.to_owned(),
+        installation_lock: value["installation_lock"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
         payload: payload_name.to_owned(),
     };
     validate_release(&release)?;
@@ -688,6 +717,19 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     let active = layout.active()?;
     let (source, candidate, preview, local_preview, expect_release, expect_current) =
         match args.command {
+            DesktopCommand::Uninstall {
+                preview,
+                expect_plan,
+            } => {
+                return maintenance::run(&layout, None, preview, expect_plan.as_deref());
+            }
+            DesktopCommand::Prune {
+                keep,
+                preview,
+                expect_plan,
+            } => {
+                return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
+            }
             DesktopCommand::Status => {
                 println!(
                     "{}",
@@ -815,7 +857,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn release(layout: &Layout, marker: &str) -> Release {
+    pub(super) fn release(layout: &Layout, marker: &str) -> Release {
         let id = format!("{:x}", Sha256::digest(marker.as_bytes()));
         let release = Release {
             id: id.clone(),
@@ -824,6 +866,7 @@ mod tests {
             state_schema: 8,
             target: "fixture".into(),
             tree_sha256: id,
+            installation_lock: agentdocker_host::installation::LOCK_FORMAT,
             payload: if cfg!(target_os = "macos") {
                 "AgentDocker.app"
             } else {

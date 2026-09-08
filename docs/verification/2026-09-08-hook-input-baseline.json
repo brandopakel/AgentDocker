@@ -1,0 +1,15 @@
+{
+  "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+  "pr_head": "10e3067e40c51b4e3e38e21030b4e55b369526eb",
+  "binary_sha256": "2b149e16fc95e1c344d73f4b22cbf388dec56c69a4877010fd0da1aa9b16f693",
+  "scenario": "empty stdin pipe held open by owned fixture; no daemon socket exists and autostart disabled",
+  "remained_blocked_after_seconds": 1.5,
+  "remained_blocked": true,
+  "exit_after_writer_closed": 0,
+  "elapsed_seconds": 1.5116215830203146,
+  "stdout_bytes": 0,
+  "stderr_bytes": 102,
+  "result": "reproduced Claude stdin wait with no timeout within the 1.5 s observation window",
+  "cleanup": "owned hook exited after fixture writer closed; scratch removed; no provider or production daemon invoked",
+  "remediation": "crates/cli/src/hooks/input.rs enforces an absolute read deadline and a 1 MiB input cap; its trickling-writer regression verifies that successive bytes cannot restart the deadline."
+}

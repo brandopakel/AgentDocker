@@ -1,0 +1,362 @@
+{
+  "format": 1,
+  "scope": "Original failed integrated benchmark; not a completed performance acceptance campaign",
+  "pr": 82,
+  "head": "e0088317ba7f24e86e1e509d30cf014294382b5a",
+  "tested_merge": "20cd544ca59c7924bd516caa06a4b1c19ad117b3",
+  "tree": "17b3994461e0ffce8a4338d79be25a4bd6550a92",
+  "workflow": 34189965676,
+  "artifact": 10041954320,
+  "archive_sha256": "17ffd6306a1ab22001691e9721dc1d2d88b327db8f0d815d4835767f73f66e8c",
+  "manifest": {
+    "commit": "20cd544ca59c7924bd516caa06a4b1c19ad117b3",
+    "source_sha256": "304734c5c9993759128f42bf1c095d128ae48c3f8ab121b00cfeaec1f665ac0a",
+    "dirty": false,
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "processor": "x86_64",
+    "cpu_count": 4,
+    "profile": "release",
+    "container_engine": null,
+    "workloads": {
+      "lease_counts": [
+        1,
+        100,
+        1000
+      ],
+      "fingerprint_files": 100,
+      "fingerprint_bytes_per_file": 4096,
+      "socket_clients": [
+        1,
+        10,
+        100
+      ],
+      "socket_checkout_kind": "plain-unwatched",
+      "socket_format": 2,
+      "socket_workloads": [
+        "shared",
+        "disjoint"
+      ],
+      "socket_outcomes": [
+        "claim_release",
+        "claim_conflict"
+      ],
+      "socket_iterations_per_client": 100
+    }
+  },
+  "before_after_equal": true,
+  "outcomes": [
+    {
+      "workload": "shared",
+      "clients": 1,
+      "exit_code": 0
+    },
+    {
+      "workload": "disjoint",
+      "clients": 1,
+      "exit_code": 0
+    },
+    {
+      "workload": "shared",
+      "clients": 10,
+      "exit_code": 0
+    },
+    {
+      "workload": "disjoint",
+      "clients": 10,
+      "exit_code": 0
+    },
+    {
+      "workload": "shared",
+      "clients": 100,
+      "exit_code": 0
+    },
+    {
+      "workload": "disjoint",
+      "clients": 100,
+      "exit_code": 1
+    }
+  ],
+  "failure": {
+    "workload": "disjoint",
+    "clients": 100,
+    "operation": "release",
+    "phase": "read response",
+    "errno": 11,
+    "per_read_timeout_seconds": 5,
+    "daemon_log_tail": "empty",
+    "original_log_sha256": "f95f230a7923a10a83aa6306d6d31e511df79b6ccad7105cdec7552c9b21d4a4",
+    "diagnosis": "unresolved; other gates passing and shared-runner variation do not explain or waive this failure"
+  },
+  "partial_metrics": {
+    "socket-disjoint-1": {
+      "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+        "conflict-ratio": {
+          "value": 0.0
+        },
+        "elapsed-seconds": {
+          "value": 1.6705566950000001
+        },
+        "sample-count": {
+          "value": 100
+        },
+        "throughput": {
+          "value": 59.860285077005415
+        }
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+        "sample-count": {
+          "value": 0
+        },
+        "throughput": {
+          "value": 0.0
+        }
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+        "sample-count": {
+          "value": 100
+        },
+        "throughput": {
+          "value": 59.860285077005415
+        }
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+        "latency": {
+          "value": 1828512.0
+        }
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+        "latency": {
+          "value": 150758776.0
+        }
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+        "latency": {
+          "value": 286465316.0
+        }
+      }
+    },
+    "socket-disjoint-10": {
+      "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+        "conflict-ratio": {
+          "value": 0.0
+        },
+        "elapsed-seconds": {
+          "value": 11.500431093
+        },
+        "sample-count": {
+          "value": 1000
+        },
+        "throughput": {
+          "value": 86.95326217889979
+        }
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+        "sample-count": {
+          "value": 0
+        },
+        "throughput": {
+          "value": 0.0
+        }
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+        "sample-count": {
+          "value": 1000
+        },
+        "throughput": {
+          "value": 86.95326217889979
+        }
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+        "latency": {
+          "value": 28967391.0
+        }
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+        "latency": {
+          "value": 448022798.0
+        }
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+        "latency": {
+          "value": 813242369.0
+        }
+      }
+    },
+    "socket-shared-1": {
+      "socket_v2/shared/1_clients/100_iterations/attempts": {
+        "conflict-ratio": {
+          "value": 0.0
+        },
+        "elapsed-seconds": {
+          "value": 1.02294418
+        },
+        "sample-count": {
+          "value": 100
+        },
+        "throughput": {
+          "value": 97.75704476856204
+        }
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+        "sample-count": {
+          "value": 0
+        },
+        "throughput": {
+          "value": 0.0
+        }
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release": {
+        "sample-count": {
+          "value": 100
+        },
+        "throughput": {
+          "value": 97.75704476856204
+        }
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+        "latency": {
+          "value": 2224177.0
+        }
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+        "latency": {
+          "value": 78847650.0
+        }
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+        "latency": {
+          "value": 196491730.0
+        }
+      }
+    },
+    "socket-shared-10": {
+      "socket_v2/shared/10_clients/100_iterations/attempts": {
+        "conflict-ratio": {
+          "value": 0.878
+        },
+        "elapsed-seconds": {
+          "value": 5.17055433
+        },
+        "sample-count": {
+          "value": 1000
+        },
+        "throughput": {
+          "value": 193.4028609269057
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+        "sample-count": {
+          "value": 878
+        },
+        "throughput": {
+          "value": 169.80771189382318
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+        "latency": {
+          "value": 7785102.0
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+        "latency": {
+          "value": 245272291.0
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+        "latency": {
+          "value": 511523470.0
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release": {
+        "sample-count": {
+          "value": 122
+        },
+        "throughput": {
+          "value": 23.595149033082492
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+        "latency": {
+          "value": 20458827.0
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+        "latency": {
+          "value": 355596915.0
+        }
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+        "latency": {
+          "value": 487046665.0
+        }
+      }
+    },
+    "socket-shared-100": {
+      "socket_v2/shared/100_clients/100_iterations/attempts": {
+        "conflict-ratio": {
+          "value": 0.9851
+        },
+        "elapsed-seconds": {
+          "value": 44.326149168
+        },
+        "sample-count": {
+          "value": 10000
+        },
+        "throughput": {
+          "value": 225.60046806906507
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+        "sample-count": {
+          "value": 9851
+        },
+        "throughput": {
+          "value": 222.239021094836
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+        "latency": {
+          "value": 265838825.0
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+        "latency": {
+          "value": 1307733564.0
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+        "latency": {
+          "value": 2148462574.0
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release": {
+        "sample-count": {
+          "value": 149
+        },
+        "throughput": {
+          "value": 3.36144697422907
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+        "latency": {
+          "value": 509925329.0
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+        "latency": {
+          "value": 1884845435.0
+        }
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+        "latency": {
+          "value": 2979738260.0
+        }
+      }
+    }
+  },
+  "bencher_upload": "not uploaded as a passing campaign",
+  "next": "Separate opt-in diagnostic campaign records slow state-lock waits/store operations; unchanged five-second read limit and no retries"
+}

@@ -19,6 +19,8 @@ pub struct Roots {
     pub home: PathBuf,
     /// Explicit Codex host configuration root, when set by the caller.
     pub codex_home: Option<PathBuf>,
+    /// Explicit Claude Code configuration profile, separate from its default home.
+    pub claude_config_dir: Option<PathBuf>,
     /// `PATH`, split.
     pub path: Vec<PathBuf>,
     /// Standard installation directories, used for CLI inventory only.
@@ -50,6 +52,9 @@ impl Roots {
             codex_home: std::env::var_os("CODEX_HOME")
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
+            claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|p| !p.is_empty())
+                .map(|path| crate::project::canonical(&PathBuf::from(path))),
             install_dirs: desktop::install_dirs(&home, std::env::consts::OS),
             desktop_dirs: if cfg!(target_os = "linux") {
                 desktop::xdg_dirs(
@@ -108,6 +113,8 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
     let apps = desktop::apps(spec, roots)?;
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
+    } else if spec.name == "claude-code" {
+        roots.claude_config_dir.clone()
     } else {
         None
     }
@@ -122,7 +129,7 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         apps,
         config_dir,
         mcp: mcp_wiring(spec, roots, marker),
-        hooks: hooks_wiring(spec, &roots.home, marker),
+        hooks: hooks_wiring_file(spec, &hook_config_path(spec, roots), marker),
         running: 0,
     })
 }
@@ -209,7 +216,7 @@ fn app_version(bundle: &Path) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve a configuration file from injectable roots, including CODEX_HOME.
+/// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
         McpWiring::None => None,
@@ -217,6 +224,11 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
             if spec.name == "codex" {
                 if let Some(home) = &roots.codex_home {
                     return Some(home.join("config.toml"));
+                }
+            }
+            if spec.name == "claude-code" {
+                if let Some(directory) = &roots.claude_config_dir {
+                    return Some(directory.join(".claude.json"));
                 }
             }
             Some(roots.home.join(file))
@@ -298,45 +310,94 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
 /// Recognize the direct adapter invocation, including a quoted executable path.
 /// Mentions and arbitrary shell wrappers remain unverified.
 pub fn hook_command_matches(command: &str, marker: &str) -> bool {
+    hook_command_matches_for(command, marker, "claude-code")
+}
+
+pub fn hook_command_matches_for(command: &str, marker: &str, runtime: &str) -> bool {
     let Some(words) = shlex::split(command) else {
         return false;
     };
     words.len() == 3
         && Path::new(&words[0]).file_name().and_then(|n| n.to_str()) == Some(marker)
         && words[1] == "hook"
-        && words[2] == "claude-code"
+        && words[2] == runtime
 }
 
 /// Render the executable as one shell argument, including spaces and quotes.
 pub fn claude_hook_command(exe: &Path) -> std::io::Result<String> {
+    hook_command(exe, "claude-code")
+}
+
+pub fn hook_command(exe: &Path, runtime: &str) -> std::io::Result<String> {
     let exe = exe
         .to_str()
         .ok_or_else(|| std::io::Error::other("hook executable path is not UTF-8"))?;
-    shlex::try_join([exe, "hook", "claude-code"])
+    shlex::try_join([exe, "hook", runtime])
         .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 /// Whether the runtime's user-level hooks run AgentDocker's adapter.
 pub fn hooks_wiring(spec: &RuntimeSpec, home: &Path, marker: &str) -> Wiring {
+    let file = home.join(if spec.name == "codex" {
+        ".codex/hooks.json"
+    } else {
+        ".claude/settings.json"
+    });
+    hooks_wiring_file(spec, &file, marker)
+}
+
+pub fn hook_config_path(spec: &RuntimeSpec, roots: &Roots) -> PathBuf {
+    if spec.name == "codex" {
+        roots
+            .codex_home
+            .clone()
+            .unwrap_or_else(|| roots.home.join(".codex"))
+            .join("hooks.json")
+    } else {
+        roots
+            .claude_config_dir
+            .clone()
+            .unwrap_or_else(|| roots.home.join(".claude"))
+            .join("settings.json")
+    }
+}
+
+pub fn hook_events(runtime: &str) -> &'static [(&'static str, Option<&'static str>)] {
+    if runtime == "codex" {
+        agentdocker_core::runtime::CODEX_ACTIVITY_HOOKS
+    } else {
+        agentdocker_core::runtime::CLAUDE_CODE_HOOKS
+    }
+}
+
+fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
     if !spec.hooks {
         return Wiring::Unsupported;
     }
-    let file = home.join(".claude/settings.json");
-    let Ok(raw) = health::read_configuration(&file) else {
-        return Wiring::Missing;
+    let raw = match health::read_configuration(file) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Wiring::Missing,
+        Err(_) => return Wiring::Unverified,
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Wiring::Missing;
+        return Wiring::Unverified;
     };
-    if hooks_configuration_matches(&value, marker) {
-        Wiring::Wired
+    if !value.is_object() || value.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+        return Wiring::Unverified;
+    }
+    if hooks_configuration_matches_for(&value, marker, spec.name) {
+        if spec.name == "codex" {
+            Wiring::Unverified
+        } else {
+            Wiring::Wired
+        }
     } else {
         Wiring::Missing
     }
 }
 
 /// Every required event must include our command with the full matcher.
-fn hooks_configuration_matches(value: &serde_json::Value, marker: &str) -> bool {
+fn hooks_configuration_matches_for(value: &serde_json::Value, marker: &str, runtime: &str) -> bool {
     if value["disableAllHooks"] == true {
         return false;
     }
@@ -344,38 +405,36 @@ fn hooks_configuration_matches(value: &serde_json::Value, marker: &str) -> bool 
         .get("hooks")
         .and_then(|h| h.as_object())
         .is_some_and(|events| {
-            agentdocker_core::runtime::CLAUDE_CODE_HOOKS
-                .iter()
-                .all(|(event, matcher)| {
-                    events
-                        .get(*event)
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|entries| {
-                            entries.iter().any(|entry| {
-                                let actual = entry.get("matcher").and_then(|v| v.as_str());
-                                let covers = actual == Some("*")
-                                    || match matcher {
-                                        Some(expected) => actual == Some(*expected),
-                                        None => actual.is_none() || actual == Some(""),
-                                    };
-                                covers
-                                    && entry.get("hooks").and_then(|h| h.as_array()).is_some_and(
-                                        |hooks| {
-                                            hooks.iter().any(|hook| {
-                                                hook.get("type").and_then(|v| v.as_str())
-                                                    == Some("command")
-                                                    && hook
-                                                        .get("command")
-                                                        .and_then(|v| v.as_str())
-                                                        .is_some_and(|c| {
-                                                            hook_command_matches(c, marker)
-                                                        })
-                                            })
-                                        },
-                                    )
-                            })
+            hook_events(runtime).iter().all(|(event, matcher)| {
+                events
+                    .get(*event)
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            let actual = entry.get("matcher").and_then(|v| v.as_str());
+                            let covers = actual == Some("*")
+                                || match matcher {
+                                    Some(expected) => actual == Some(*expected),
+                                    None => actual.is_none() || actual == Some(""),
+                                };
+                            covers
+                                && entry.get("hooks").and_then(|h| h.as_array()).is_some_and(
+                                    |hooks| {
+                                        hooks.iter().any(|hook| {
+                                            hook.get("type").and_then(|v| v.as_str())
+                                                == Some("command")
+                                                && hook
+                                                    .get("command")
+                                                    .and_then(|v| v.as_str())
+                                                    .is_some_and(|c| {
+                                                        hook_command_matches_for(c, marker, runtime)
+                                                    })
+                                        })
+                                    },
+                                )
                         })
-                })
+                    })
+            })
         })
 }
 
@@ -384,6 +443,30 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn invalid_hook_files_are_unverified_instead_of_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("hooks.json");
+        let spec = agentdocker_core::runtime::spec("codex").unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Missing
+        );
+        for raw in ["{broken", "[]", "null", r#"{"hooks":[]}"#] {
+            std::fs::write(&file, raw).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+        }
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Unverified
+        );
+    }
 
     pub(super) fn machine() -> (tempfile::TempDir, Roots) {
         let tmp = tempfile::tempdir().unwrap();
@@ -411,6 +494,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("Claude.app/Contents")).unwrap();
         let roots = Roots {
             codex_home: None,
+            claude_config_dir: None,
             home,
             path: vec![bin],
             install_dirs: vec![],
@@ -473,7 +557,7 @@ mod tests {
         let codex = by("codex");
         assert!(codex.installed());
         assert_eq!(codex.mcp, Wiring::Wired);
-        assert_eq!(codex.hooks, Wiring::Unsupported);
+        assert_eq!(codex.hooks, Wiring::Missing);
         let gemini = by("gemini-cli");
         assert!(!gemini.installed(), "a non-executable file is not a CLI");
         assert_eq!(

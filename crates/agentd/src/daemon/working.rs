@@ -5,6 +5,36 @@ use agentdocker_core::{ReadMark, StalePath};
 use agentdocker_host::content;
 
 impl Daemon {
+    /// Resolve a running writer and its registered working directory under one
+    /// guard. Unlike a read, a commit must not fall back to another directory
+    /// when the agent registered no workdir. Policy keys use the checkout root
+    /// separately, so registering from a subdirectory does not change them.
+    pub(super) fn writer_checkout(
+        &self,
+        reference: &str,
+    ) -> Result<(AgentId, PathBuf, Option<String>), Box<Response>> {
+        let mut state = lock(&self.state);
+        let id = state.resolve(reference)?;
+        let record = state.registry.get(&id).unwrap();
+        if record.status != AgentStatus::Running {
+            return Err(Box::new(Response::error(
+                ErrorCode::Forbidden,
+                "commits require a running agent",
+            )));
+        }
+        let workdir = record.spec.workdir.clone().ok_or_else(|| {
+            Box::new(Response::error(
+                ErrorCode::Invalid,
+                "this agent registered no working directory, so there is no checkout of its own to commit; commit with git, or re-register from the checkout you are in",
+            ))
+        })?;
+        Ok((
+            id,
+            project::canonical(&workdir),
+            record.vcs.as_ref().and_then(|v| v.head.clone()),
+        ))
+    }
+
     pub(super) fn reader_checkout(
         &self,
         reference: &str,

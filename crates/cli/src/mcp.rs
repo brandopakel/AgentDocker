@@ -69,8 +69,14 @@ pub struct McpArgs {
 pub struct Identity {
     pub id: String,
     pub name: String,
-    /// We registered the agent ourselves, so we deregister it on exit.
+    /// We created this record, rather than joining one that already
+    /// existed. Not the same as owning it: see [`McpServer::shutdown`].
     pub registered_here: bool,
+    /// The process this agent *is*. Its lifetime, not ours, is what ends
+    /// the agent.
+    pub host_pid: Option<u32>,
+    /// Process birth recorded by the daemon, so a recycled PID is distinguishable.
+    pub host_started_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub struct McpServer<B> {
@@ -86,8 +92,8 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         identity.name, identity.id
     );
     let server = McpServer::new(client, identity);
-    // Whatever ends the session — stdin closing, or the host going away and
-    // breaking the pipe — the agent we registered must be deregistered.
+    // Transport shutdown preserves a live provider identity; cleanup below
+    // only retires a registration whose owning process has ended.
     let outcome = pump(&server).await;
     server.shutdown().await;
     outcome
@@ -137,6 +143,8 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
                 id: agent.id.to_string(),
                 name: agent.spec.name,
                 registered_here: false,
+                host_pid: agent.pid,
+                host_started_at: agent.process_started_at,
             }),
             Ok(other) => bail!("unexpected reply to inspect: {other:?}"),
             Err(err) => Err(err.context(format!(
@@ -202,6 +210,8 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         // leave it alone.
         Response::Agent { agent } => Ok(Identity {
             registered_here: agent.spec.labels.get("registrar") == Some(&registrar),
+            host_pid: agent.pid.or(Some(host_pid)),
+            host_started_at: agent.process_started_at,
             id: agent.id.to_string(),
             name: agent.spec.name,
         }),
@@ -214,16 +224,48 @@ impl<B: Backend> McpServer<B> {
         Self { backend, identity }
     }
 
-    /// Deregister if we were the ones who registered.
+    /// End the agent only if the thing it names has actually ended.
+    ///
+    /// Creating a record is not owning it. One process is one agent, so
+    /// by the time this server exits the hooks adapter may have joined
+    /// the same record, or a second MCP server may be serving it, and
+    /// the provider itself may be very much alive — an MCP host is free
+    /// to restart its servers. Deregistering there takes a live
+    /// session's identity, inbox and leases away from it.
+    ///
+    /// What ends an agent is the end of the process it stands for. That
+    /// is `SessionEnd` where the runtime has a hooks adapter, and the
+    /// daemon's liveness sweep everywhere else — both of which happen
+    /// without us. So this only cleans up the case nothing else covers:
+    /// a record we created for a host that is already gone.
     pub async fn shutdown(&self) {
-        if self.identity.registered_here {
-            let _ = self
-                .backend
-                .call(Request::Deregister {
-                    agent: self.identity.id.clone(),
-                })
-                .await;
+        if !self.identity.registered_here {
+            return;
         }
+        if let Some(pid) = self.identity.host_pid {
+            let Some(expected) = self.identity.host_started_at else {
+                // Without a verified birth, only the daemon can decide cleanup.
+                return;
+            };
+            match agentdocker_host::procinfo::start_time(pid) {
+                Some(actual) if actual == expected => return,
+                Some(_) => {} // A different process now holds the old PID.
+                None => {
+                    #[cfg(unix)]
+                    if agentdocker_host::procinfo::alive(pid) {
+                        return;
+                    }
+                    #[cfg(not(unix))]
+                    return;
+                }
+            }
+        }
+        let _ = self
+            .backend
+            .call(Request::Deregister {
+                agent: self.identity.id.clone(),
+            })
+            .await;
     }
 
     /// Handle one message or, for `2025-03-26` clients, a batch: a batch's
@@ -320,6 +362,28 @@ impl<B: Backend> McpServer<B> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         match name {
+            "report_activity" => {
+                let activity = arguments
+                    .get("activity")
+                    .cloned()
+                    .ok_or_else(|| (INVALID_PARAMS, "activity is required".to_owned()))?;
+                let activity =
+                    serde_json::from_value::<agentdocker_core::ReportedActivity>(activity)
+                        .map_err(|_| {
+                            (
+                                INVALID_PARAMS,
+                                "activity must be working or idle".to_owned(),
+                            )
+                        })?;
+                self.forward(Request::ReportActivity {
+                    agent: me,
+                    observation: agentdocker_core::ActivityObservation {
+                        activity,
+                        observed_at: chrono::Utc::now(),
+                    },
+                })
+                .await
+            }
             "observe_paths" | "check_stale" | "read_set" => {
                 let paths: Vec<String> = arguments
                     .get("paths")
@@ -1111,6 +1175,11 @@ fn tool_definitions() -> Vec<Value> {
         json!({"name":"check_stale","description":"Compare retained reads to current content. Reread changed paths before editing; checking repeatedly never clears staleness.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}),
         json!({"name":"read_set","description":"Show this session's durable content observations.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({
+            "name": "report_activity",
+            "description": "Report an observed working or idle turn state. Expires after five minutes; call only from actual activity evidence, not a generic heartbeat.",
+            "inputSchema": { "type": "object", "properties": { "activity": { "type": "string", "enum": ["working", "idle"] } }, "required": ["activity"], "additionalProperties": false }
+        }),
+        json!({
             "name": "whoami",
             "description": "This agent's own record in AgentDocker: id, name, runtime, status.",
             "inputSchema": { "type": "object", "properties": { "verbose": verbose.clone() }, "additionalProperties": false }
@@ -1365,6 +1434,8 @@ mod tests {
                 id: "abc123".into(),
                 name: "tester".into(),
                 registered_here: true,
+                host_pid: None,
+                host_started_at: None,
             },
         )
     }
@@ -1543,6 +1614,7 @@ mod tests {
                 "observe_paths",
                 "check_stale",
                 "read_set",
+                "report_activity",
                 "whoami",
                 "list_agents",
                 "inspect_agent",
@@ -1839,6 +1911,8 @@ mod tests {
                 id: "abc123".into(),
                 name: "tester".into(),
                 registered_here: false,
+                host_pid: None,
+                host_started_at: None,
             },
         );
         adopted.shutdown().await;
@@ -1875,6 +1949,79 @@ mod tests {
             text.contains("external"),
             "and say what goes wrong without `commit`, not just that it exists"
         );
+    }
+
+    /// A live session keeps its identity when an MCP server goes away.
+    ///
+    /// This is the sequence: the MCP server registers first and creates
+    /// the record, the hooks adapter joins the same record, and then the
+    /// MCP server disconnects while the provider is very much alive — an
+    /// MCP host is free to restart its servers. Deregistering there
+    /// takes a running session's identity, inbox and leases away from
+    /// it. Creating a record is not owning it; what ends an agent is the
+    /// end of the process it stands for.
+    #[tokio::test]
+    async fn a_live_session_keeps_its_identity_when_an_mcp_server_exits() {
+        let ours = |host_pid| {
+            McpServer::new(
+                Mock::default(),
+                Identity {
+                    id: "abc123".into(),
+                    name: "claude-code-4242".into(),
+                    registered_here: true,
+                    host_pid,
+                    host_started_at: Some(chrono::Utc::now()),
+                },
+            )
+        };
+
+        // The provider is still running: nothing is ended here. Both
+        // `SessionEnd` and the daemon's liveness sweep will do it
+        // properly, and neither needs us.
+        let mut alive = ours(Some(std::process::id()));
+        alive.identity.host_started_at = agentdocker_host::procinfo::start_time(std::process::id());
+        alive.shutdown().await;
+        assert!(
+            alive.backend.requests.lock().unwrap().is_empty(),
+            "a running session must not lose its agent to a restarted MCP server"
+        );
+        let mut unknown = ours(Some(std::process::id()));
+        unknown.identity.host_started_at = None;
+        unknown.shutdown().await;
+        assert!(unknown.backend.requests.lock().unwrap().is_empty());
+        let mut recycled = ours(Some(std::process::id()));
+        recycled.identity.host_started_at = alive
+            .identity
+            .host_started_at
+            .map(|at| at - chrono::Duration::hours(1));
+        recycled.shutdown().await;
+        assert!(matches!(
+            recycled.backend.requests.lock().unwrap().as_slice(),
+            [Request::Deregister { .. }]
+        ));
+
+        // The host is gone and nothing else will clean up a record we
+        // made, so this is the one case that still deregisters.
+        let gone = ours(Some(dead_pid()));
+        gone.shutdown().await;
+        assert!(matches!(
+            gone.backend.requests.lock().unwrap().as_slice(),
+            [Request::Deregister { agent }] if agent == "abc123"
+        ));
+    }
+
+    /// A pid that certainly no longer exists: a child we already reaped.
+    fn dead_pid() -> u32 {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
     }
 
     /// Ownership of a registration is proved, not guessed from its name.

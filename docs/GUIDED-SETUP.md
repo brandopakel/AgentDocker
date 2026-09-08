@@ -1,5 +1,10 @@
 # Guided setup and connection checks
 
+Codex plans include MCP and a separate activity `hooks.json`, respecting
+`CODEX_HOME`. Both files use the same private receipt and preflight rules.
+Existing hooks are preserved; review and trust new definitions in Codex `/hooks`.
+Activity hooks do not consume messages. See [activity and messaging](ACTIVITY-AND-MESSAGING.md).
+
 In the native agentdocker window, open **Runtimes**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Saved setup plans**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
 
 The equivalent CLI flow is:
@@ -15,15 +20,33 @@ agentdocker setup --undo PLAN_ID
 
 Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
 
-Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. It does not rewrite Claude's mutable `.claude.json` application state or add a second MCP identity. Codex and supported JSON MCP hosts receive the existing stdio MCP adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse and existing duplicate reconciliation still require the delivery plan's lifecycle review. Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
 ## Apply, recovery and undo
 
 Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.
 
-All files are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
+All planned files and delegated provider entries are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
 
 A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly. Unreadable or incompatible receipts are preserved and counted while healthy plans remain visible.
+
+For delegated Claude MCP registration, a new receipt records the complete planned
+server entry and a unique ownership marker in its environment. Undo requires
+that exact entry, including command, arguments, environment and flags. A
+matching runtime name alone does not authorize removal. Existing registrations
+are left alone; an interrupted add cannot claim a later registration with a
+different marker. Older receipts without this evidence refuse to remove a
+present entry. Invalid provider JSON or an invalid `mcpServers` container fails
+preflight before hook changes. A provider command succeeds only when the exact
+planned entry appears after add, or the reserved entry is absent after remove.
+
+The provider CLI remains the writer of its live application state, using its
+[documented MCP registration interface](https://code.claude.com/docs/en/mcp).
+These checks are not a compare-and-swap transaction with that CLI: an independent
+writer can still race between validation and the provider command. Avoid
+simultaneous edits to the same MCP entry while applying or undoing. Fully
+coordinated provider mutations remain separate delivery work; ordinary unrelated
+application-state updates do not invalidate a receipt.
 
 ## What a connection check proves
 
@@ -39,3 +62,34 @@ Provider configuration follows the installed CLI capabilities and the official [
 
 
 CLI inventory also checks standard installation directories when a native app inherits a minimal PATH. Connection checks continue to use the inspecting process's actual PATH; finding a CLI in an inventory fallback does not validate a bare MCP command. Selecting a runtime explicitly inspects only that target, so an unrelated malformed desktop launcher does not block its setup preview. Codex desktop and ChatGPT have independent inventory rows without a supported setup adapter; the Codex CLI configuration is not treated as their connection health.
+
+Codex hooks must belong to a configuration layer the running provider actually
+loads. A disposable `codex exec --ignore-user-config` trial accepted MCP
+configuration but invoked no hook callbacks, including when hook settings were
+passed as command-line overrides. A fresh private provider home loaded the
+same hook definitions. Keep configuration health unverified until an actual
+callback is observed; this is separate from a passing MCP message round trip.
+The activity adapter resolves physical checkout aliases, so macOS `/tmp` and
+`/private/tmp` do not reject a report from the same directory. A different
+checkout remains a mismatch. Codex interrupt hooks use its documented maximum
+three-second timeout; other activity hooks retain a fifteen-second outer limit.
+
+Claude Code inventory, connection checks, user hooks and guided setup respect
+[`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars). A selected profile
+uses `settings.json` and `.claude.json` inside that directory; without an
+override the default remains `~/.claude/settings.json` and `~/.claude.json`.
+Saved delegated steps pin the selected profile directory at preview. Apply,
+resume and undo set that profile only in the provider child process; a plan for
+the default profile explicitly removes an inherited override from that child.
+Changing the invoking shell's profile after preview does not redirect the saved
+plan. Setup does not switch the profiles of existing provider sessions.
+
+The [packaged Claude profile trial](verification/2026-09-07-claude-profile-setup.json)
+passed with Claude Code 2.1.263 and candidate `a65d956`: preview in profile A,
+apply and undo while invoking from profile B, matching health diagnostics,
+preservation of unrelated MCP entries/hooks, and refusal before edits for a
+changed server environment or malformed provider JSON. Both disposable profiles
+were removed; monitored user configurations stayed unchanged. Run
+`scripts/claude_setup_smoke.py --binary PATH --manifest PATH --output NEW_DIRECTORY`
+with an installed Claude CLI to repeat this configuration-only trial. It does
+not invoke a model or prove automatic inbox consumption.

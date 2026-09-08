@@ -98,7 +98,7 @@ def smoke(binary_dir, output):
         runtime = root / "codex"
         runtime.symlink_to(shutil.which("sleep"))
         env = {**os.environ, "AGENTDOCKER_HOME": str(home), "AGENTDOCKER_SOCKET": str(endpoint),
-               "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": "warn"}
+               "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": os.environ.get("RUST_LOG", "warn")}
         daemon = fixture = window = None
         previous_umask = os.umask(0o077)
         try:

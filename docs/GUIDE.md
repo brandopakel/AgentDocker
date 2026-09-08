@@ -70,14 +70,24 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 
 A native window over the same Unix socket as the CLI. No HTTP, no browser,
 no localhost. `agentdocker ui` opens it, and on macOS it opens
-`AgentDocker.app` if that is installed so the Dock and the app switcher
-name it properly.
+`agentdocker-ui` beside the CLI when available. Otherwise it looks for
+`AgentDocker.app`, whose bundle supplies the Dock and app-switcher identity;
+a bare executable uses the generic executable identity.
 
 Agents are grouped by project, and every project keeps one colour
 everywhere it appears — the heading, the dot on each of its rows, the
 lease list. The colour comes from the project's id, so it is the same
 colour in every session and on every machine. The **All projects** menu in
 the title bar narrows every screen to one project at a time.
+
+### Installation and cleanup
+
+The **Installation** panel previews local package installation, rollback,
+launcher removal and retained-version cleanup. Applying a reviewed plan refuses
+changed inputs. Cleanup preserves running sessions and settings, protects active
+and rollback versions, and retains older releases without lifetime locks.
+Installed user services require explicit service removal first. See
+[desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and full limits.
 
 ### Agents
 
@@ -108,9 +118,11 @@ terminal output, because output is not evidence — an agent printing a
 paragraph may be doing nothing, and an agent printing nothing may be
 halfway through a refactor.
 
-So an agent that has not been wired up has nothing to derive from, and
-reads `idle` however busy it is. Hover the cell: if that is why, it says
-so. Fix it on **Runtimes**, or with `agentdocker setup`.
+An agent without fresh provider observations or recent daemon coordination
+reads `unknown`. Recent coordination can establish `working`; an explicit
+provider stop produces a provisional `idle` observation that can expire or be
+superseded by newer activity. Hover the cell for the observation source.
+Configure integration on **Runtimes**, or with `agentdocker setup`.
 
 ### Questions
 
@@ -121,6 +133,12 @@ it. Same thing as `agentdocker questions` and `agentdocker answer`.
 
 ### Terminal
 
+The terminal accepts up to 64 KiB of queued input across 32 entries. If it is
+full, closed, or an entry is too large, a notice identifies the rejected input;
+nothing from that entry is sent. The notice stays until dismissed. Already sent
+input is never replayed automatically. Malformed or oversized output ends the
+attachment with a reason; the agent and its daemon log remain available.
+
 The terminal of a managed agent, over `attach`. A real vt100 screen:
 colours, cursor, resize, scrollback, and every keystroke goes to the
 agent. **Detach** leaves it running.
@@ -128,6 +146,10 @@ agent. **Detach** leaves it running.
 Only agents started with a terminal have one — `agentdocker run --tty`, or
 `run` for a runtime that needs one. An adopted process keeps the terminal
 it was started in; that one belongs to whatever launched it.
+
+When the managed command exits, an existing attachment finishes after its final
+output. The CLI restores terminal settings and exits without waiting for an
+extra keypress. Ctrl-] still detaches while leaving a running command intact.
 
 ### Console
 
@@ -503,9 +525,10 @@ Newest first. Only what changes how the product is used.
 
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
-  prefers the bundle. The bundle is ad-hoc signed: it runs on the machine
-  that built it, and needs Developer ID signing and notarization before
-  it will open on anyone else's Mac.
+  first launches a matching sibling `agentdocker-ui`, then falls back to the
+  bundle when no sibling exists. Local preview bundles use ad-hoc signing. Public macOS
+  distribution still requires Developer ID signing and notarization; the
+  current public release predates this desktop work.
 - A new mark: three agents, in the app's own project colours, meeting at
   one host. Drawn on Apple's icon grid, and simplified below 24pt where
   the connectors would otherwise be a smudge.

@@ -448,6 +448,23 @@ impl Store {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
 
+    /// Fail only the event insert, leaving the agent row writable.
+    ///
+    /// The distinction is the whole point: a sequence that wrote the row
+    /// and then the event would take the row and lose the event, and
+    /// memory would move on believing both had landed. One transaction
+    /// takes neither. Rejecting every write cannot tell those apart.
+    #[cfg(test)]
+    pub(crate) fn reject_session_binding_event_for_test(&self) {
+        self.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_session_binding
+            BEFORE INSERT ON events WHEN json_extract(NEW.json, '$.kind.event') = 'agent_session_bound'
+            BEGIN SELECT RAISE(FAIL, 'injected session binding event failure'); END;",
+            )
+            .unwrap();
+    }
+
     #[cfg(test)]
     pub(crate) fn reject_validation_finish_for_test(&self) {
         self.conn.execute_batch("CREATE TEMP TRIGGER reject_validation_finish

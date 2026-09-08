@@ -1,0 +1,1552 @@
+{
+  "format": 1,
+  "date": "2026-09-07",
+  "platform": "aarch64-apple-darwin",
+  "source_commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+  "scope": "sanitized exact-source native desktop integration and short resource observations; raw logs, process identities and captures remain private",
+  "standard_gate": {
+    "command": "bash scripts/verify.sh check",
+    "source_before": {
+      "commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+      "dirty": false,
+      "content_sha256": "89550b00b48961ddc5ef79302b34578d88f0c463b3591620ad0a2ba70ccb379e"
+    },
+    "source_after": {
+      "commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+      "dirty": false,
+      "content_sha256": "89550b00b48961ddc5ef79302b34578d88f0c463b3591620ad0a2ba70ccb379e"
+    },
+    "source_unchanged": true,
+    "exit": 0,
+    "elapsed_seconds": 69.29240202903748,
+    "rust_passed": 569,
+    "python_passed": 37,
+    "fixture_skips": 5,
+    "original_log_sha256": "57b0e1c89b27ecdc7f5c8e85e6ddf46f4904c8beaf1e1e13604762f5867c632a"
+  },
+  "build": {
+    "source_commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "source_tree": "f238ea71ece7708d4c7a242114ad3275c0a26bcf",
+    "source_input_sha256": "12f3905f4889ddf865c36485e3409cae0be45c2bbbbe98e5081a5be5fc913cfa",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "c1a5ee5dc4c5097a1b49b6470066fba7e2a3b8a6cbe8e2ee8ecca0e779c1c53a",
+      "agentd": "7f4e586ce441c80a70aebfb5c41783aa8e3b2434d149eaaead80b203ace42b40",
+      "agentdocker-ui": "26d1324be2fcee26d64c06780169b5765138bd659c04519adafe321a3a1e8f17"
+    },
+    "binary_sha256_stage": "build output before packaging and bundle signing"
+  },
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "f238ea71ece7708d4c7a242114ad3275c0a26bcf",
+    "source_input_sha256": "12f3905f4889ddf865c36485e3409cae0be45c2bbbbe98e5081a5be5fc913cfa",
+    "source_dirty": false,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "b2f66a8d67c3e75a6f16287dbad3bd2d3bbc324467e14599a8799f0c0e5bc51a",
+      "agentd": "1a359a891bb73475969111315c3c060ac9957b370c44235ce72d36bc3a1c985c",
+      "agentdocker-ui": "c04dca97499a14a869296c1128b49162f77f8268eb640d163a59ff85cfd5dbd7"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "2111fa102f3dc54df7111e7dba2332691a4f24a9011049f7398fb7dfac5dcb94"
+    },
+    "app_allocated_bytes": 38662144,
+    "archive_bytes": 14153477,
+    "binary_sha256_stage": "packaged binaries after macOS bundle signing"
+  },
+  "packaged_installation": {
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "activation keeps the existing fixture daemon responsive",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "synthetic_second_generation": true,
+    "limitation": "same binaries with synthetic metadata; not distinct-source upgrade acceptance"
+  },
+  "packaged_gui": {
+    "connected": true,
+    "display_name": "agentdocker",
+    "elapsed_seconds": 0.395609083,
+    "fixture_discovered": true,
+    "frames": 12,
+    "result": "passed",
+    "runtime_rows": 14,
+    "screenshot_requested": true,
+    "transport": "unix-socket",
+    "tcp_socket_observation": "none",
+    "tcp_observation": {
+      "samples": 4,
+      "elapsed_seconds": 0.4573944159783423,
+      "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+    },
+    "scope": "native window, daemon connection, runtime inventory, running process discovery"
+  },
+  "resource_observations": [
+    {
+      "source_commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+      "driver_sha256": "e2cecd2e591d0145da79187bb332f7cc122fa3e9ad7b22118915bce55f43d06c",
+      "os": "26.5.1",
+      "architecture": "arm64",
+      "scope": "single short native GUI/daemon observation; owned idle sleep commands in a tiny project",
+      "method": {
+        "stages": [
+          0,
+          1,
+          10,
+          100
+        ],
+        "samples_per_stage": 5,
+        "warmup_seconds": 2,
+        "sample_pause_seconds": 0.75,
+        "rss": "Darwin ps rss; summed child RSS is not unique physical memory",
+        "cpu": "Darwin ps %cpu samples, not interval CPU utilization or an isolated CPU benchmark",
+        "threads": "Darwin ps -M thread rows excluding header",
+        "descriptors": "lsof numeric descriptors; excludes mapped files",
+        "disk": "du -sk allocated bytes including SQLite WAL while running",
+        "transport": "lsof TCP polling; short-lived sockets between samples can be missed"
+      },
+      "binaries": {
+        "agentd": {
+          "bytes": 13125264,
+          "sha256": "1a359a891bb73475969111315c3c060ac9957b370c44235ce72d36bc3a1c985c"
+        },
+        "agentdocker": {
+          "bytes": 7955408,
+          "sha256": "b2f66a8d67c3e75a6f16287dbad3bd2d3bbc324467e14599a8799f0c0e5bc51a"
+        },
+        "agentdocker-ui": {
+          "bytes": 17032240,
+          "sha256": "c04dca97499a14a869296c1128b49162f77f8268eb640d163a59ff85cfd5dbd7"
+        }
+      },
+      "stages": [
+        {
+          "owned_agents": 0,
+          "new_agent_launch_seconds": 7.080379873514175e-07,
+          "samples": [
+            {
+              "daemon": {
+                "rss_bytes": 16220160,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 16
+              },
+              "window": {
+                "rss_bytes": 109494272,
+                "ps_cpu_percent": 0.3,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 0,
+              "state_allocated_bytes": 434176
+            },
+            {
+              "daemon": {
+                "rss_bytes": 16220160,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 16
+              },
+              "window": {
+                "rss_bytes": 109608960,
+                "ps_cpu_percent": 0.1,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 0,
+              "state_allocated_bytes": 434176
+            },
+            {
+              "daemon": {
+                "rss_bytes": 16220160,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 16
+              },
+              "window": {
+                "rss_bytes": 109625344,
+                "ps_cpu_percent": 0.4,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 0,
+              "state_allocated_bytes": 434176
+            },
+            {
+              "daemon": {
+                "rss_bytes": 16793600,
+                "ps_cpu_percent": 0.1,
+                "threads": 16,
+                "descriptors": 16
+              },
+              "window": {
+                "rss_bytes": 109608960,
+                "ps_cpu_percent": 0.0,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 0,
+              "state_allocated_bytes": 434176
+            },
+            {
+              "daemon": {
+                "rss_bytes": 16793600,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 16
+              },
+              "window": {
+                "rss_bytes": 109576192,
+                "ps_cpu_percent": 0.6,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 0,
+              "state_allocated_bytes": 434176
+            }
+          ],
+          "observed_ranges": {
+            "daemon": {
+              "rss_bytes": {
+                "min": 16220160,
+                "max": 16793600
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 0.1
+              },
+              "threads": {
+                "min": 16,
+                "max": 16
+              },
+              "descriptors": {
+                "min": 16,
+                "max": 16
+              }
+            },
+            "window": {
+              "rss_bytes": {
+                "min": 109494272,
+                "max": 109625344
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 0.6
+              },
+              "threads": {
+                "min": 8,
+                "max": 9
+              },
+              "descriptors": {
+                "min": 8,
+                "max": 8
+              }
+            }
+          }
+        },
+        {
+          "owned_agents": 1,
+          "new_agent_launch_seconds": 0.010503374971449375,
+          "samples": [
+            {
+              "daemon": {
+                "rss_bytes": 17121280,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 19
+              },
+              "window": {
+                "rss_bytes": 109690880,
+                "ps_cpu_percent": 3.6,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 1196032,
+              "state_allocated_bytes": 565248
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17219584,
+                "ps_cpu_percent": 1.9,
+                "threads": 16,
+                "descriptors": 19
+              },
+              "window": {
+                "rss_bytes": 109854720,
+                "ps_cpu_percent": 9.7,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 1196032,
+              "state_allocated_bytes": 565248
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17219584,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 19
+              },
+              "window": {
+                "rss_bytes": 110051328,
+                "ps_cpu_percent": 7.9,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 1196032,
+              "state_allocated_bytes": 565248
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17219584,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 19
+              },
+              "window": {
+                "rss_bytes": 109969408,
+                "ps_cpu_percent": 4.3,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 1196032,
+              "state_allocated_bytes": 565248
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17219584,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 19
+              },
+              "window": {
+                "rss_bytes": 110067712,
+                "ps_cpu_percent": 0.5,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 1196032,
+              "state_allocated_bytes": 565248
+            }
+          ],
+          "observed_ranges": {
+            "daemon": {
+              "rss_bytes": {
+                "min": 17121280,
+                "max": 17219584
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 1.9
+              },
+              "threads": {
+                "min": 16,
+                "max": 16
+              },
+              "descriptors": {
+                "min": 19,
+                "max": 19
+              }
+            },
+            "window": {
+              "rss_bytes": {
+                "min": 109690880,
+                "max": 110067712
+              },
+              "ps_cpu_percent": {
+                "min": 0.5,
+                "max": 9.7
+              },
+              "threads": {
+                "min": 8,
+                "max": 8
+              },
+              "descriptors": {
+                "min": 8,
+                "max": 8
+              }
+            }
+          }
+        },
+        {
+          "owned_agents": 10,
+          "new_agent_launch_seconds": 0.05526183301117271,
+          "samples": [
+            {
+              "daemon": {
+                "rss_bytes": 17793024,
+                "ps_cpu_percent": 0.1,
+                "threads": 16,
+                "descriptors": 46
+              },
+              "window": {
+                "rss_bytes": 110673920,
+                "ps_cpu_percent": 0.3,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 11960320,
+              "state_allocated_bytes": 2138112
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17793024,
+                "ps_cpu_percent": 0.3,
+                "threads": 16,
+                "descriptors": 46
+              },
+              "window": {
+                "rss_bytes": 110673920,
+                "ps_cpu_percent": 2.5,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 11960320,
+              "state_allocated_bytes": 2138112
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17793024,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 46
+              },
+              "window": {
+                "rss_bytes": 110936064,
+                "ps_cpu_percent": 5.7,
+                "threads": 8,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 11960320,
+              "state_allocated_bytes": 2138112
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17793024,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 46
+              },
+              "window": {
+                "rss_bytes": 110968832,
+                "ps_cpu_percent": 13.8,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 11960320,
+              "state_allocated_bytes": 2138112
+            },
+            {
+              "daemon": {
+                "rss_bytes": 17793024,
+                "ps_cpu_percent": 0.0,
+                "threads": 16,
+                "descriptors": 46
+              },
+              "window": {
+                "rss_bytes": 110804992,
+                "ps_cpu_percent": 3.9,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 11960320,
+              "state_allocated_bytes": 2138112
+            }
+          ],
+          "observed_ranges": {
+            "daemon": {
+              "rss_bytes": {
+                "min": 17793024,
+                "max": 17793024
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 0.3
+              },
+              "threads": {
+                "min": 16,
+                "max": 16
+              },
+              "descriptors": {
+                "min": 46,
+                "max": 46
+              }
+            },
+            "window": {
+              "rss_bytes": {
+                "min": 110673920,
+                "max": 110968832
+              },
+              "ps_cpu_percent": {
+                "min": 0.3,
+                "max": 13.8
+              },
+              "threads": {
+                "min": 8,
+                "max": 9
+              },
+              "descriptors": {
+                "min": 8,
+                "max": 8
+              }
+            }
+          }
+        },
+        {
+          "owned_agents": 100,
+          "new_agent_launch_seconds": 0.4267669590190053,
+          "samples": [
+            {
+              "daemon": {
+                "rss_bytes": 20955136,
+                "ps_cpu_percent": 0.0,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 112951296,
+                "ps_cpu_percent": 11.9,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119603200,
+              "state_allocated_bytes": 4624384
+            },
+            {
+              "daemon": {
+                "rss_bytes": 20955136,
+                "ps_cpu_percent": 0.1,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 112984064,
+                "ps_cpu_percent": 16.3,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119603200,
+              "state_allocated_bytes": 4624384
+            },
+            {
+              "daemon": {
+                "rss_bytes": 20955136,
+                "ps_cpu_percent": 0.0,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113590272,
+                "ps_cpu_percent": 20.1,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119603200,
+              "state_allocated_bytes": 4624384
+            },
+            {
+              "daemon": {
+                "rss_bytes": 20955136,
+                "ps_cpu_percent": 0.0,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113328128,
+                "ps_cpu_percent": 26.1,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119603200,
+              "state_allocated_bytes": 4624384
+            },
+            {
+              "daemon": {
+                "rss_bytes": 21118976,
+                "ps_cpu_percent": 0.3,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113606656,
+                "ps_cpu_percent": 12.6,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119603200,
+              "state_allocated_bytes": 4624384
+            }
+          ],
+          "observed_ranges": {
+            "daemon": {
+              "rss_bytes": {
+                "min": 20955136,
+                "max": 21118976
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 0.3
+              },
+              "threads": {
+                "min": 17,
+                "max": 17
+              },
+              "descriptors": {
+                "min": 316,
+                "max": 316
+              }
+            },
+            "window": {
+              "rss_bytes": {
+                "min": 112951296,
+                "max": 113606656
+              },
+              "ps_cpu_percent": {
+                "min": 11.9,
+                "max": 26.1
+              },
+              "threads": {
+                "min": 9,
+                "max": 9
+              },
+              "descriptors": {
+                "min": 8,
+                "max": 8
+              }
+            }
+          }
+        }
+      ],
+      "result": "passed",
+      "elapsed_seconds": 26.153293875046074,
+      "cleanup": {
+        "created_agents": 100,
+        "window_exited": true,
+        "daemon_exited": true,
+        "errors": [],
+        "fixture_allocated_bytes_removed": 593920,
+        "fixture_removed": true
+      }
+    },
+    {
+      "source_commit": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+      "driver_sha256": "ecbc45de9cffc089603d98520084108400959ddb296a0118eadd6849ce5c9785",
+      "os": "26.5.1",
+      "architecture": "arm64",
+      "scope": "single short native GUI/daemon observation; owned idle sleep commands in a tiny project",
+      "method": {
+        "stages": [
+          100
+        ],
+        "samples_per_stage": 30,
+        "warmup_seconds": 10.0,
+        "sample_pause_seconds": 0.75,
+        "rss": "Darwin ps rss; summed child RSS is not unique physical memory",
+        "cpu": "Darwin ps %cpu samples plus cumulative process CPU seconds; interval deltas use monotonic sample timestamps",
+        "threads": "Darwin ps -M thread rows excluding header",
+        "descriptors": "lsof numeric descriptors; excludes mapped files",
+        "disk": "du -sk allocated bytes including SQLite WAL while running",
+        "transport": "lsof TCP polling; short-lived sockets between samples can be missed"
+      },
+      "binaries": {
+        "agentd": {
+          "bytes": 13125264,
+          "sha256": "1a359a891bb73475969111315c3c060ac9957b370c44235ce72d36bc3a1c985c"
+        },
+        "agentdocker": {
+          "bytes": 7955408,
+          "sha256": "b2f66a8d67c3e75a6f16287dbad3bd2d3bbc324467e14599a8799f0c0e5bc51a"
+        },
+        "agentdocker-ui": {
+          "bytes": 17032240,
+          "sha256": "c04dca97499a14a869296c1128b49162f77f8268eb640d163a59ff85cfd5dbd7"
+        }
+      },
+      "stages": [
+        {
+          "owned_agents": 100,
+          "new_agent_launch_seconds": 0.5146194589324296,
+          "samples": [
+            {
+              "sample_monotonic_seconds": 10.624567792052403,
+              "daemon": {
+                "rss_bytes": 21331968,
+                "ps_cpu_percent": 0.3,
+                "cpu_seconds": 0.24,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113623040,
+                "ps_cpu_percent": 1.3,
+                "cpu_seconds": 0.33,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 11.47582195897121,
+              "daemon": {
+                "rss_bytes": 21331968,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.24,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113623040,
+                "ps_cpu_percent": 1.2,
+                "cpu_seconds": 0.34,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 12.330673209042288,
+              "daemon": {
+                "rss_bytes": 21331968,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.25,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114114560,
+                "ps_cpu_percent": 0.2,
+                "cpu_seconds": 0.35,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 13.168523667030968,
+              "daemon": {
+                "rss_bytes": 21331968,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.25,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.7,
+                "cpu_seconds": 0.36,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 14.013690292020328,
+              "daemon": {
+                "rss_bytes": 21331968,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.25,
+                "threads": 17,
+                "descriptors": 320
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.5,
+                "cpu_seconds": 0.37,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 14.866605791961774,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.26,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.38,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 15.712553541990928,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.26,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.38,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 16.567001958959736,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.26,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.38,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 17.403676833957434,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.26,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 1.5,
+                "cpu_seconds": 0.39,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 18.236608125036582,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.27,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.2,
+                "cpu_seconds": 0.4,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 19.07328954199329,
+              "daemon": {
+                "rss_bytes": 21430272,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.27,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.3,
+                "cpu_seconds": 0.4,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 19.917389667010866,
+              "daemon": {
+                "rss_bytes": 21495808,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.28,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 1.4,
+                "cpu_seconds": 0.42,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 20.773452874971554,
+              "daemon": {
+                "rss_bytes": 21495808,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.28,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.9,
+                "cpu_seconds": 0.43,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 21.611718959058635,
+              "daemon": {
+                "rss_bytes": 21495808,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.28,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.44,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 22.452048834064044,
+              "daemon": {
+                "rss_bytes": 21495808,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.29,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.7,
+                "cpu_seconds": 0.44,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 23.294363792054355,
+              "daemon": {
+                "rss_bytes": 21495808,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.29,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.5,
+                "cpu_seconds": 0.45,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 24.12922558397986,
+              "daemon": {
+                "rss_bytes": 21512192,
+                "ps_cpu_percent": 3.5,
+                "cpu_seconds": 0.3,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113852416,
+                "ps_cpu_percent": 0.6,
+                "cpu_seconds": 0.46,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 24.978153791977093,
+              "daemon": {
+                "rss_bytes": 21594112,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.3,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 113868800,
+                "ps_cpu_percent": 0.5,
+                "cpu_seconds": 0.47,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 25.825056459056213,
+              "daemon": {
+                "rss_bytes": 21594112,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.3,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114130944,
+                "ps_cpu_percent": 3.0,
+                "cpu_seconds": 0.51,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 26.660501667065546,
+              "daemon": {
+                "rss_bytes": 21594112,
+                "ps_cpu_percent": 0.1,
+                "cpu_seconds": 0.31,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114376704,
+                "ps_cpu_percent": 26.7,
+                "cpu_seconds": 0.7,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 27.503345042001456,
+              "daemon": {
+                "rss_bytes": 21594112,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.31,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114491392,
+                "ps_cpu_percent": 26.9,
+                "cpu_seconds": 0.93,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 28.34363137499895,
+              "daemon": {
+                "rss_bytes": 21594112,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.31,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114425856,
+                "ps_cpu_percent": 23.4,
+                "cpu_seconds": 1.13,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 29.18288591702003,
+              "daemon": {
+                "rss_bytes": 21676032,
+                "ps_cpu_percent": 2.8,
+                "cpu_seconds": 0.33,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114442240,
+                "ps_cpu_percent": 17.9,
+                "cpu_seconds": 1.27,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 30.022041750024073,
+              "daemon": {
+                "rss_bytes": 21676032,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.33,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114180096,
+                "ps_cpu_percent": 13.5,
+                "cpu_seconds": 1.36,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 30.87332650006283,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 0.3,
+                "cpu_seconds": 0.34,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114262016,
+                "ps_cpu_percent": 2.9,
+                "cpu_seconds": 1.38,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 31.712440166971646,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.34,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114262016,
+                "ps_cpu_percent": 14.8,
+                "cpu_seconds": 1.47,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 32.54907062498387,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.34,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114425856,
+                "ps_cpu_percent": 10.3,
+                "cpu_seconds": 1.59,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 33.40207716706209,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.35,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114425856,
+                "ps_cpu_percent": 1.3,
+                "cpu_seconds": 1.6,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 34.23805445898324,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 2.6,
+                "cpu_seconds": 0.36,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114425856,
+                "ps_cpu_percent": 0.4,
+                "cpu_seconds": 1.6,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            },
+            {
+              "sample_monotonic_seconds": 35.09027145896107,
+              "daemon": {
+                "rss_bytes": 21741568,
+                "ps_cpu_percent": 0.0,
+                "cpu_seconds": 0.36,
+                "threads": 17,
+                "descriptors": 316
+              },
+              "window": {
+                "rss_bytes": 114425856,
+                "ps_cpu_percent": 0.4,
+                "cpu_seconds": 1.61,
+                "threads": 9,
+                "descriptors": 8
+              },
+              "owned_children_rss_sum_bytes": 119635968,
+              "state_allocated_bytes": 4558848
+            }
+          ],
+          "observed_ranges": {
+            "daemon": {
+              "rss_bytes": {
+                "min": 21331968,
+                "max": 21741568
+              },
+              "ps_cpu_percent": {
+                "min": 0.0,
+                "max": 3.5
+              },
+              "threads": {
+                "min": 17,
+                "max": 17
+              },
+              "descriptors": {
+                "min": 316,
+                "max": 320
+              }
+            },
+            "window": {
+              "rss_bytes": {
+                "min": 113623040,
+                "max": 114491392
+              },
+              "ps_cpu_percent": {
+                "min": 0.1,
+                "max": 26.9
+              },
+              "threads": {
+                "min": 9,
+                "max": 9
+              },
+              "descriptors": {
+                "min": 8,
+                "max": 8
+              }
+            }
+          },
+          "observed_interval_seconds": 24.465703666908666,
+          "interval_cpu_percent_of_one_core": {
+            "daemon": 0.4904825204856348,
+            "window": 5.231813551846771
+          }
+        }
+      ],
+      "result": "passed",
+      "elapsed_seconds": 36.42552691698074,
+      "cleanup": {
+        "created_agents": 100,
+        "window_exited": true,
+        "daemon_exited": true,
+        "errors": [],
+        "fixture_allocated_bytes_removed": 643072,
+        "fixture_removed": true
+      }
+    }
+  ],
+  "original_failures_and_fixes": [
+    {
+      "source": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "failure": "Live journal retained 1000 rows against a 200-row window; console retained oversized Unicode history.",
+      "fixed_by": "fea215c07dc90e3736b2084c1b41a18e8d637eef"
+    },
+    {
+      "source": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "failure": "A late journal snapshot replaced a newer live sequence.",
+      "fixed_by": "fea215c07dc90e3736b2084c1b41a18e8d637eef"
+    },
+    {
+      "source": "585373af2b16acc8a42242425c915f21bc925b56",
+      "failure": "Storage report JSON and operating-system exceptions disclosed private cache paths.",
+      "fixed_by": "fea215c07dc90e3736b2084c1b41a18e8d637eef"
+    },
+    {
+      "source": "fea215c07dc90e3736b2084c1b41a18e8d637eef",
+      "failure": "A 10000-event burst queued 10000 agent refreshes; the fixed implementation queues one.",
+      "fixed_by": "509f74641519e1ae386bae98d13dbc8bbf44d5f3"
+    }
+  ],
+  "limitations": [
+    "One Apple Silicon laptop; no native Windows, Intel Mac or Linux resource acceptance.",
+    "Short sleeping processes do not model provider model memory, heavy output, file churn, sustained sessions or soaks.",
+    "GUI interval CPU at 100 quiet agents was about 5.2% of one core; measured tuning and longer baselines remain open.",
+    "Summed RSS is not unique physical memory. GUI queue and scrollback bounds do not establish a total RAM ceiling.",
+    "Terminal input queue and protocol frame byte bounds require follow-up.",
+    "The earlier packaged GUI capture timeout remains unresolved; this later pass does not establish its cause.",
+    "No signing/notarization, distinct-source upgrade or live daemon handoff acceptance.",
+    "Newer main Homebrew changes and PR #77 were not part of this candidate. Final CI and CodeRabbit review remain pending."
+  ],
+  "completed_cache_cleanup": {
+    "source": "0f7a07c415ee00385a255de655e3f8a51531b358",
+    "measured_code": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "allocated_removed_bytes": 7090970624,
+    "free_before": 309378543616,
+    "free_after": 316259430400,
+    "source_unchanged": true,
+    "remote_evidence_confirmed": true,
+    "retained": "Cargo lock inodes, cache identity markers, private JUnit and logs; current small packaged preview"
+  },
+  "package_retirement": [
+    {
+      "source_commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+      "allocated_bytes_before": 51834880,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "bb7ff712b8afce6ccbc16d9c5a6bf79e1b86f26f",
+        "source_input_sha256": "15aed2f72fa3213653a65407b5c122a436cf215a8297b607d43ca09bfab97e9d",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "5f7dca0ad0cfd74fd8197069463c6df46ca8a43a9d5fa9c62cad885a4d7de3d4",
+          "agentd": "1cf205430ca0d03192ceeb190a95dd56f80e6a388c4962bc7dc917a1c1748f0f",
+          "agentdocker-ui": "156cc5417f32cd440d68397446f28e4f4ba39f2ae113ac6b5730f99722d14d1a"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "56bc6a045c94a396419caa95838e213735102c00d610a66b476a1da0643af2f3"
+        }
+      },
+      "status": "removed after remote evidence byte verification"
+    },
+    {
+      "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+      "allocated_bytes_before": 51830784,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "a7d58ca0c2a9676b21d2a40749a000b84264a6d1",
+        "source_input_sha256": "a1d5b0bb0ca4a1e9944113969c69227d6795a3ca2b5538ddd597304445adeb2b",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "ce52cb26ec77b779aa11d438884880c6fecb7b811ec0c0c6268e18861acd5e1f",
+          "agentdocker-ui": "dca732525adfb7a550bfdf64ffbb7457e5320d63db17d955ba08c1c632041599"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "49f54de8f8731c9ccb307c3f9c52acc7f7591265a0389ff663b7e390388874c2"
+        }
+      },
+      "status": "removed after remote evidence byte verification"
+    },
+    {
+      "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
+      "allocated_bytes_before": 51855360,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "993f3c0f187a3965b116ee02ce67b9e82f8f7c45",
+        "source_input_sha256": "f9beae566277c55bba21f505f6e39fb94a10c7ea3820387eb9869254554bffd9",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "ce52cb26ec77b779aa11d438884880c6fecb7b811ec0c0c6268e18861acd5e1f",
+          "agentdocker-ui": "e85b4166813c6e97b3f685261c8333dc1d4c24614313e1b93d5287ad52e69a7b"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "add475b0f8057bd39fa7ee656b80b5d5ec41693a4caeba7ea2553561ce35af46"
+        }
+      },
+      "status": "removed after remote evidence byte verification"
+    },
+    {
+      "source_commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "allocated_bytes_before": 52764672,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "2d83cceaee5c8d13a32c091bfab71c4a151f66ae",
+        "source_input_sha256": "655e3261ff8f23310558aaf1dd27abedf34ea005d0a2020d70071130e2d7ae2c",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "af0631d01235a1eff254b2622ba93e88286fd62fbccfa8c6b725a1285c42eb77",
+          "agentdocker-ui": "2bcbd607985c8b006a6982d23ed9f461fccda9c5d7f7394f5cb9f0cbf346c9b4"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "372dab646734001a39197e80c79b607808f040abf658fed60a476b731a1eccd6"
+        }
+      },
+      "status": "removed after remote evidence byte verification"
+    },
+    {
+      "source_commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+      "allocated_bytes_before": 51777536,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "7ed86e07819252118bc1dbeb3f7391376b21eb4b",
+        "source_input_sha256": "aa9e19a48f7a3798fcd1537e9161a8995d219e33ae591d6dba5828de0447bfe3",
+        "source_dirty": false,
+        "state_schema": 8,
+        "binary_sha256": {
+          "agentdocker": "ed18fd3926b0751c80b05637cdb46e050efa6e0da99a1e0983d945084e16e83e",
+          "agentd": "65cb08a7bac301d0edee88570af4c887e6a20ab3559bf00eeb5fe8103dd0c24d",
+          "agentdocker-ui": "1957cc7eff8d086951f24910678fa03b5ee375442e43be8016b72e964550f297"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "2f6ca4ad3289f1947cf055ff06bdb2217b9461a3b8985775f80a5a631b61f5b7"
+        }
+      },
+      "status": "removed after remote evidence byte verification"
+    }
+  ],
+  "earlier_integrated_package_acceptance": {
+    "source": {
+      "commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "dirty": false,
+      "content_sha256": "607314c1f668c2fed751acdb1243ac77112dacc6b3d6d378e2cd0a64d5482078"
+    },
+    "source_unchanged": true,
+    "exit": 0,
+    "elapsed_seconds": 104.92033910751343,
+    "rust_passed": 560,
+    "python_passed": 35,
+    "packaged_installation": {
+      "passed": true,
+      "scenarios": [
+        "preview without writes and pinned initial installation",
+        "activation keeps the existing fixture daemon responsive",
+        "changed preview payload and active generation are refused",
+        "compatible rollback switches all commands and retains both releases",
+        "tampered executable is refused without changing activation",
+        "cleanup retains active, rollback and running or legacy binaries",
+        "uninstall preserves the live daemon and its state",
+        "daemon exit releases its pin and invalidates stale cleanup preview",
+        "unused payloads removed; permanent pins and daemon state retained"
+      ],
+      "synthetic_second_generation": true
+    },
+    "packaged_gui": {
+      "connected": true,
+      "elapsed_seconds": 0.208826542,
+      "fixture_discovered": true,
+      "frames": 10,
+      "result": "passed",
+      "runtime_rows": 14,
+      "tcp_observation": {
+        "samples": 3,
+        "elapsed_seconds": 0.3118628748925403,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      }
+    },
+    "limitation": "later pass does not resolve the earlier screenshot failure"
+  },
+  "completed_package_cleanup": {
+    "evidence_commit": "452a57a16eaba56756ee4b6dff0b762b59935ee9",
+    "evidence_sha256": "ab0942f22d02705c56f27dda54b4a20d1f34a8170654d0ed60aaf97aebf7c3af",
+    "allocated_removed_bytes": 260063232,
+    "free_before": 316246339584,
+    "free_after": 316506398720,
+    "packages_removed": 5,
+    "retained_candidate_source": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "retained_candidate_app_and_archive_allocated_bytes": 52826112
+  }
+}

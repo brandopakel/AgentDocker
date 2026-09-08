@@ -25,6 +25,10 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    AgentActivityReported {
+        agent: AgentId,
+        observation: crate::ActivityObservation,
+    },
     ContainerUpdated {
         agent: AgentId,
     },
@@ -170,6 +174,17 @@ pub enum EventKind {
     AgentStarted {
         agent: AgentId,
         pid: Option<u32>,
+    },
+    /// A record that named no session has been shown whose it is.
+    ///
+    /// One process is one agent, and the two halves of a session do not
+    /// arrive together: whichever registers first owns the record, and
+    /// only the hooks adapter knows the session id. When the other half
+    /// arrives the record learns it — which is what stops the *next*
+    /// session in the same process from adopting the same identity.
+    AgentSessionBound {
+        agent: AgentId,
+        session: String,
     },
     /// A task several agents will attempt, with the measure that ranks
     /// them fixed before any of them starts.

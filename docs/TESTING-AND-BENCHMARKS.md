@@ -28,7 +28,7 @@ The scheduled workflow runs bounded protocol, resource-key, engine-metadata and 
 
 Record p50/p95/p99 request and hook latency, throughput, stale-warning delay, missed stale detections and false alerts, restart/handoff recovery time, watcher queue gaps, fingerprint throughput, SQLite write latency and process memory. Use workloads with 1/10/100 concurrent agents and small/medium/large fixture checkouts, with cold and warm runs separated.
 
-Every result includes commit SHA, dirty-content identity if applicable, Rust/tool versions, OS/architecture, CPU, workload parameters and container engine/image identity when used. Different machines and engines are different Bencher testbeds. Establish repeated baselines before selecting regression thresholds; shared-runner timing is initially advisory. Correctness invariants are immediate hard failures. Promote performance checks to blocking only once measured variance supports the threshold; the hook's explicit one-second delivery budget remains an existing functional contract.
+Every result includes commit SHA, dirty-content identity if applicable, Rust/tool versions, OS/architecture, CPU, workload parameters and container engine/image identity when used. Different machines and engines are different Bencher testbeds. Establish repeated baselines before selecting regression thresholds; shared-runner timing is initially advisory. Correctness invariants are immediate hard failures. Promote performance checks to blocking only once measured variance supports the threshold; the hook's coordination/output phase retains its one-second deadline. Input and activity have separate budgets; do not label the complete invocation a one-second operation.
 
 ## Rollout
 
@@ -55,7 +55,14 @@ A managed-workspace launch failure keeps the original daemon response even when 
 
 Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, frames and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
-**The graphical run needs a window that is actually on screen.** The screenshot is taken during the paint, and `egui-wgpu` skips the paint entirely for an occluded surface — a minimised window, one behind another, or any window at all while the display is asleep or locked. The run then reaches its deadline having rendered thousands of frames and captured none, with `connected`, `runtime_rows` and `fixture_discovered` all true. That is not a flake and it is not a regression; it is a machine that was not showing the window. Measured on a desk against both `AgentDocker.app` and the bare executable, launched directly and through Launch Services: 1850 frames, 1850 occlusions, no capture — and the same on the commit before the change under test, which is how it was ruled out as one.
+**Keep the graphical fixture visible and retain renderer diagnostics.**
+Screenshot capture happens during painting, which the renderer can skip for
+an occluded surface. The #80 investigation reported a separate local run with
+1850 frames and 1850 occlusions without a capture, including an older commit.
+That observation supplies a hypothesis for other timeouts; it does not identify
+the cause of the original integration failure without matching source and
+viewport/renderer evidence. This integration records viewport counters and
+requests focus before capture, while preserving the original failure record.
 
 The window logs through `tracing-subscriber`, which bridges the `log` records `eframe`, `winit` and `wgpu` emit, so this is one run away rather than an afternoon:
 
@@ -65,7 +72,7 @@ RUST_LOG=warn,egui_wgpu=trace python3 scripts/desktop_smoke.py \
 # Skipping frame due to occlusion.
 ```
 
-CI has nothing to occlude the window, which is why this passes there and can fail locally. On macOS run it against the packaged bundle, as `desktop.yml` does — `artifacts/desktop/AgentDocker.app/Contents/MacOS` — not against `target/release`.
+CI and local compositor conditions differ; inspect each run rather than assuming CI cannot occlude a window. On macOS use the packaged bundle, as `desktop.yml` does: `artifacts/desktop/AgentDocker.app/Contents/MacOS`.
 
 Socket load reports connect/write/read/decode failures by operation and retains a bounded fixture-daemon log tail. All agents register before workers start; failure to create a worker cancels already-created waiting workers. Criterion stores each campaign's samples in a fresh `artifacts/criterion.*` directory, alongside source manifests, so cached baseline metadata without its samples cannot become an implicit comparison. The original 100-client Linux failure remains open until the labeled failure is reproduced and explained.
 
@@ -92,3 +99,83 @@ and all applicable checks on the published head are required before integration.
 
 
 Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On this Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.
+
+
+## Diagnosing slow state operations
+
+For a separately identified diagnostic campaign, set
+`AGENTDOCKER_BENCH_DIAGNOSTICS=1 bash scripts/verify.sh bench`, or dispatch the
+Performance workflow with `diagnostics=true`. The fixture daemon enables only
+the `agentd_state_timing` debug target. It records at most 256 lock-wait/store
+samples of 250 ms or more per daemon, with operation names and durations, and
+retains at most an 8 KiB log tail for each scenario. The benchmark manifest
+records this mode. Normal campaigns leave it disabled. Instrumented results
+are diagnostic evidence: logging can affect timings, and the five-second read
+timeout and no-retry policy are unchanged.
+
+The integrated `e008831` disjoint 100-client campaign failed at release-response
+read after its other five workloads completed. Its [source-bound failure record](verification/2026-09-07-integration-benchmark-failure.json)
+remains open; empty daemon stderr did not distinguish state contention from
+storage or host scheduling delays. Capture new evidence before assigning a
+cause or treating a later successful run as a resolution.
+
+## Development disk budget
+
+The September 7 local campaign exhausted disk space by retaining debug outputs
+in 31 isolated worktrees. About 187 GiB of allocated regenerable caches were
+removed; source, credentials and reports were preserved. The installed desktop
+app was not the cause. Treat build storage as part of T12 cleanup evidence.
+
+`verify.sh` and `build_native.py` now run a read-only storage preflight before
+compilation. It checks the Cargo-reported active target directory, registered
+worktrees' default targets and fuzz targets. Defaults require 20 GiB free locally
+(5 GiB on CI), limit the current target to 12 GiB, and limit their aggregate to
+40 GiB. Override the positive GiB limits with `AGENTDOCKER_BUILD_MIN_FREE_GIB`,
+`AGENTDOCKER_BUILD_MAX_CURRENT_GIB` and `AGENTDOCKER_BUILD_MAX_TOTAL_GIB` for the
+machine's capacity. A preflight is not a filesystem quota or a reservation;
+concurrent tools can still consume space. Nonstandard targets belonging to other
+worktrees are outside this inventory.
+
+Keep only one local build campaign active and at most two debug caches. Retain
+JUnit, coverage, benchmark manifests/results and failure logs before clearing
+inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html).
+`cargo clean --profile dev` removes generated development output; inspect
+`--dry-run` first. Do not clean an active build/test directory, running binaries,
+or another session's cache. Each worktree keeps its own target directory.
+Workspace development builds disable incremental compilation, while keeping
+line-table debug information. Release builds retain the default optimization
+level, enable thin LTO and strip symbols. Direct
+Cargo commands do not invoke the storage preflight; run
+`python3 scripts/build_storage.py` first. This bounds the campaign workflow,
+not all disk use by arbitrary programs.
+
+The [first state timing diagnostic campaign](verification/2026-09-07-state-timing-diagnostic.json)
+passed at `ef3fd7b` without reaching the 250 ms logging threshold. Its eight
+Bencher reports use a separate diagnostic testbed. The earlier integrated
+timeout remains unresolved; compare this campaign only with its recorded mode
+and shared-runner limitations in mind.
+
+The [d06a117 macOS failure](verification/2026-09-07-macos-capture-failure.json)
+records a capture request followed by failed `Occluded` surface acquisitions,
+then a visible, focused, unoccluded viewport at timeout. The pinned eframe
+0.36.1 source drains capture commands before acquisition, and egui-wgpu drops
+those commands when acquisition fails. A single request can therefore be lost
+even when the window later becomes visible. The inspected sources match their
+registry archives and Cargo.lock checksums.
+
+Explicit graphical acceptance now requests focus first, waits for known
+visibility and retries capture only after a newly reported surface failure,
+with at most four requests in the original 60-second deadline. Waiting alone
+does not issue additional requests. Results retain capture-attempt and surface-
+failure counts. A real renderer screenshot with the connected fixture remains
+mandatory; repeated failures still fail acceptance. This recovery path does not
+assign the same cause to earlier runs without matching evidence.
+
+### Download size gates
+
+The desktop packager refuses payloads above 100 MiB and each compressed download
+above 40 MiB per architecture (universal builds allow twice these totals). Its
+manifest records logical payload and archive bytes. The release workflow also
+limits the combined CLI/daemon payload to 30 MiB. CLI tarballs contain just those
+two commands; desktop ZIPs contain one self-contained app with all three
+executables. Build caches and compiler dependencies are never download inputs.

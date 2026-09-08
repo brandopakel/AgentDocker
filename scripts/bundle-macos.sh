@@ -18,6 +18,12 @@ version=${3:-0.1.0}
 # screens shell out to `agentdocker`, and an app installed on its own
 # would find whatever happens to be on PATH, or nothing.
 bindir=$(dirname -- "$binary")
+for tool in agentdocker agentd; do
+    if [ ! -x "$bindir/$tool" ]; then
+        echo "bundle-macos.sh: required executable $tool is not beside the UI binary" >&2
+        exit 1
+    fi
+done
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 app="$outdir/AgentDocker.app"
@@ -42,8 +48,8 @@ for tool in agentdocker agentd; do
         cp "$bindir/$tool" "$app/Contents/MacOS/$tool"
         chmod 0755 "$app/Contents/MacOS/$tool"
     else
-        echo "bundle-macos.sh: $tool is not beside $binary; the app will" >&2
-        echo "  fall back to whatever is on PATH" >&2
+        echo "bundle-macos.sh: required executable $tool disappeared during packaging" >&2
+        exit 1
     fi
 done
 cp "$work/AgentDocker.icns" "$app/Contents/Resources/AgentDocker.icns"

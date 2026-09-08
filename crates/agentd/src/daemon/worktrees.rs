@@ -260,7 +260,7 @@ impl Daemon {
         all: bool,
         push: bool,
     ) -> Response {
-        let (agent, root, _) = match self.reader_checkout(reference) {
+        let (agent, root, _) = match self.writer_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
         };
@@ -269,13 +269,22 @@ impl Daemon {
         }
         {
             let mut state = lock(&self.state);
-            let action = format!("commit:{}", root.display());
+            let Some(record) = state.registry.get(&agent) else {
+                return Response::error(ErrorCode::NotFound, "agent was removed before commit");
+            };
+            let policy_root = record
+                .project
+                .as_ref()
+                .map(|p| p.dir())
+                .unwrap_or(&root)
+                .to_path_buf();
+            let action = format!("commit:{}", policy_root.display());
             let ruling = state.permits(&agent, &action);
             if !ruling.is_allowed() {
                 return state.refuse(&agent, &action, ruling);
             }
             if push {
-                let action = format!("push:{}", root.display());
+                let action = format!("push:{}", policy_root.display());
                 let ruling = state.permits(&agent, &action);
                 if !ruling.is_allowed() {
                     return state.refuse(&agent, &action, ruling);

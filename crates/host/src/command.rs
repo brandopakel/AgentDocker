@@ -56,6 +56,17 @@ pub struct Output {
 
 /// Capture at most 4 MiB and stop the entire subprocess group on timeout.
 pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output> {
+    run_with_env(root, argv, timeout, &[])
+}
+
+/// Apply explicit child-only overrides without mutating the caller's environment.
+/// None removes an inherited value; all command bounds and group cleanup remain.
+pub fn run_with_env(
+    root: &Path,
+    argv: &[String],
+    timeout: Duration,
+    environment: &[(&str, Option<&std::ffi::OsStr>)],
+) -> io::Result<Output> {
     let program = argv
         .first()
         .ok_or_else(|| io::Error::other("empty command"))?;
@@ -68,6 +79,13 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(errors.try_clone()?);
+    for (name, value) in environment {
+        if let Some(value) = value {
+            command.env(name, value);
+        } else {
+            command.env_remove(name);
+        }
+    }
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
@@ -127,6 +145,29 @@ pub fn run(root: &Path, argv: &[String], timeout: Duration) -> io::Result<Output
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn environment_overrides_are_applied_only_to_the_owned_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let before = std::env::var_os("AGENTDOCKER_TEST_COMMAND_ENV");
+        let output = run_with_env(
+            directory.path(),
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf '%s' \"$AGENTDOCKER_TEST_COMMAND_ENV\"".into(),
+            ],
+            Duration::from_secs(5),
+            &[(
+                "AGENTDOCKER_TEST_COMMAND_ENV",
+                Some(std::ffi::OsStr::new("child-only")),
+            )],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "child-only");
+        assert_eq!(std::env::var_os("AGENTDOCKER_TEST_COMMAND_ENV"), before);
+    }
+
     #[test]
     fn time_and_output_limits_report_distinct_causes() {
         let tmp = tempfile::tempdir().unwrap();

@@ -13,6 +13,9 @@ class BenchmarkCampaign(unittest.TestCase):
             root = Path(folder)
             (root / "scripts").mkdir()
             shutil.copy2(Path(__file__).parents[1] / "scripts/verify.sh", root / "scripts/verify.sh")
+            # Storage admission has its own refusal regression. This fixture
+            # tests outcome orchestration after a successful admission.
+            (root / "scripts/build_storage.py").write_text("print('{}')\n")
             (root / "scripts/benchmark_manifest.py").write_text('print(\'{"source":"fixture"}\')\n')
             binary = root / "bin"
             binary.mkdir()

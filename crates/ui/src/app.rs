@@ -5,7 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+mod queue;
+use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
@@ -14,6 +17,7 @@ use agentdocker_core::{
     Activity, AgentActivity, AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease,
     MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
 };
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use egui::{Color32, RichText};
 
@@ -25,6 +29,11 @@ use crate::theme::{ABSENT, UNVERIFIED, WIRED};
 const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
+const JOURNAL_WINDOW: usize = 200;
+const CONSOLE_BYTES: usize = 256 * 1024;
+const MESSAGE_CAPACITY: usize = 64;
+const CONSOLE_HISTORY_COMMANDS: usize = 100;
+const CONSOLE_HISTORY_BYTES: usize = 64 * 1024;
 /// How long a console command may run. Long enough for anything that
 /// finishes, short enough that `watch` or `logs -f` — which never do —
 /// give the worker thread back.
@@ -34,12 +43,6 @@ const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// read what the button now says, short enough that the intent behind it
 /// has not gone stale.
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
-
-/// How long an agent's last report stands before the window stops
-/// treating it as news. Past this the DOING column says what it knows —
-/// that it has not heard from the agent — rather than asserting a state
-/// nobody has confirmed since.
-const QUIET_AFTER: Duration = Duration::from_secs(15 * 60);
 
 /// How long the status line keeps saying the last thing that happened.
 /// Nothing lives only there — a failed setup keeps its plan, a lost
@@ -102,6 +105,7 @@ impl Screen {
 }
 
 /// What the worker is asked to do.
+#[derive(Debug)]
 enum Cmd {
     Agents,
     Leases,
@@ -131,7 +135,7 @@ enum Msg {
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
-    Journal(String, Vec<JournalEntry>),
+    Journal(String, Option<u64>, Vec<JournalEntry>),
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
@@ -149,6 +153,7 @@ enum Msg {
 }
 
 pub struct App {
+    worker_stop: Arc<std::sync::atomic::AtomicBool>,
     desktop: crate::desktop::Panel,
     smoke: Option<crate::smoke::Smoke>,
     setup_plan: Option<serde_json::Value>,
@@ -173,7 +178,7 @@ pub struct App {
     /// mind, and it disarms itself so a click forgotten five minutes ago
     /// cannot be completed by accident.
     confirm_stop: Option<(String, Instant)>,
-    tx: Sender<Cmd>,
+    tx: CommandSender,
     rx: Receiver<Msg>,
     screen: Screen,
     agents: Vec<AgentRecord>,
@@ -182,7 +187,7 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
-    /// The rooms this person is in, and what has been said in them.
+    /// Open channels across the projects of registered live agents.
     ///
     /// The person at the keyboard is an agent like any other, so channel
     /// messages arrive in their inbox — and until this screen existed
@@ -203,6 +208,7 @@ pub struct App {
     terminal: Option<Terminal>,
     console_input: String,
     console_output: String,
+    console_truncated: bool,
     /// What has been typed here before, oldest first, and where the up
     /// arrow currently is in it. `None` is the live line.
     console_history: Vec<String>,
@@ -245,13 +251,18 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
-        // Asked here because this is the only context macOS will
-        // register: a foreground app with a run loop. The one-shot
-        // poster the daemon runs inherits the answer.
+        // Permission requests belong to the foreground app and its run loop.
         crate::notify::request_permission();
-        let (cmd_tx, cmd_rx) = channel::<Cmd>();
-        let (msg_tx, msg_rx) = channel::<Msg>();
-        spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
+        let (cmd_tx, cmd_rx) = queue::channel();
+        let (msg_tx, msg_rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let worker_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        spawn_worker(
+            client.clone(),
+            cmd_rx,
+            msg_tx.clone(),
+            cc.egui_ctx.clone(),
+            worker_stop.clone(),
+        );
         spawn_events(client.clone(), msg_tx, cc.egui_ctx.clone());
         // The window is a person being present, so the person is an
         // agent for as long as it is open.
@@ -267,6 +278,7 @@ impl App {
             let _ = cmd_tx.send(cmd);
         }
         Self {
+            worker_stop,
             desktop: Default::default(),
             tx: cmd_tx,
             rx: msg_rx,
@@ -297,6 +309,7 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
             console_focused: false,
@@ -314,8 +327,9 @@ impl App {
 
     /// The window's state without a window or a daemon, for tests.
     #[cfg(test)]
-    fn bare(tx: Sender<Cmd>, rx: Receiver<Msg>) -> Self {
+    fn bare(tx: CommandSender, rx: Receiver<Msg>) -> Self {
         Self {
+            worker_stop: Default::default(),
             desktop: Default::default(),
             tx,
             rx,
@@ -346,6 +360,7 @@ impl App {
             terminal: None,
             console_input: String::new(),
             console_output: String::new(),
+            console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
             console_focused: false,
@@ -361,8 +376,25 @@ impl App {
         }
     }
 
-    fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
+    fn send(&mut self, cmd: Cmd) {
+        if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
+            match command {
+                Cmd::Answer(id, _) => {
+                    self.sending.remove(&id);
+                }
+                Cmd::Setup(_) => self.setup_busy = false,
+                Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
+                Cmd::Console(_) => {
+                    self.console_running = self.console_running.saturating_sub(1);
+                    self.append_console(&format!("Command not queued: {reason}\n"));
+                }
+                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
+                // Full queues may omit refreshes: events and periodic refresh
+                // request another snapshot. User actions get an explicit error.
+                _ => return,
+            }
+            self.say(reason);
+        }
     }
 
     /// Say the last thing that happened, and remember when.
@@ -377,7 +409,8 @@ impl App {
         if !self.status.is_empty() && self.status_at.elapsed() >= STATUS_FOR {
             self.status.clear();
         }
-        while let Ok(msg) = self.rx.try_recv() {
+        for _ in 0..MESSAGE_CAPACITY {
+            let Ok(msg) = self.rx.try_recv() else { break };
             match msg {
                 Msg::Agents(agents) => {
                     self.agents = agents;
@@ -404,9 +437,25 @@ impl App {
                 }
                 Msg::Inbox(inbox) => self.inbox = inbox,
                 Msg::Discovered(found) => self.discovered = found,
-                Msg::Journal(project, entries) => {
+                Msg::Journal(project, head_seq, entries) => {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
-                        self.journal = entries;
+                        // An in-flight snapshot may predate live events. Merge
+                        // by sequence so a late reply cannot roll the view back.
+                        let mut merged: BTreeMap<_, _> = entries
+                            .into_iter()
+                            .map(|entry| (entry.seq, entry))
+                            .collect();
+                        // The durable head also makes an empty post-prune
+                        // snapshot authoritative. An older daemon has no such
+                        // boundary, so use its snapshot without guessing.
+                        merged.extend(
+                            self.journal
+                                .drain(..)
+                                .filter(|entry| head_seq.is_some_and(|head| entry.seq > head))
+                                .map(|entry| (entry.seq, entry)),
+                        );
+                        self.journal = merged.into_values().rev().take(JOURNAL_WINDOW).collect();
+                        self.journal.reverse();
                     }
                 }
                 Msg::Activity(activity) => {
@@ -496,8 +545,8 @@ impl App {
                     // Appended, not replaced: a terminal keeps what it
                     // said, and the command that produced this is
                     // already above it.
-                    self.console_output.push_str(text.trim_end());
-                    self.console_output.push('\n');
+                    self.append_console(text.trim_end());
+                    self.append_console("\n");
                     self.screen = Screen::Console;
                 }
             }
@@ -548,6 +597,10 @@ impl App {
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
             | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
+            EventKind::AgentActivityReported { .. } => {
+                self.send(Cmd::Agents);
+                self.send(Cmd::Activity);
+            }
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }
@@ -566,6 +619,8 @@ impl App {
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>
             {
                 self.journal.push(entry.clone());
+                let excess = self.journal.len().saturating_sub(JOURNAL_WINDOW);
+                self.journal.drain(..excess);
             }
             _ => {}
         }
@@ -615,25 +670,8 @@ impl App {
         }
     }
 
-    /// Runtimes that are heard from only when they choose to speak.
-    ///
-    /// A hooks adapter reports every turn of a session whether the agent
-    /// asks it to or not. A runtime without one — Codex is the one
-    /// people actually run — reaches the daemon only when it calls an
-    /// AgentDocker MCP tool, so "idle" for one of those means "has not
-    /// called us", not "is doing nothing". Reporting a session that is
-    /// at this moment editing files as idle is the sort of thing that
-    /// makes a reader stop believing the rest of the table.
-    fn mute(&self) -> std::collections::BTreeSet<String> {
-        self.runtimes
-            .iter()
-            .filter(|r| r.hooks == Wiring::Unsupported)
-            .map(|r| r.name.clone())
-            .collect()
-    }
-
-    /// Runtimes with no way to tell the daemon what their agents are
-    /// doing, by the name an agent registers under.
+    /// Runtimes whose configuration needs review. This is a setup hint,
+    /// not evidence about an individual session's current activity.
     fn unwired(&self) -> std::collections::BTreeSet<String> {
         self.runtimes
             .iter()
@@ -655,7 +693,6 @@ impl App {
     fn agents_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         let unwired = self.unwired();
-        let mute = self.mute();
         // Grouped by project id, not by name: two checkouts of one
         // repository share a name, and the id is what actually says they
         // are the same work.
@@ -744,20 +781,9 @@ impl App {
                     // What the project is doing, in the words a reader
                     // would use: "1 blocked" is worth colour, "all idle"
                     // is worth saying, and "0 working" is neither.
-                    // Only agents we have actually heard from lately
-                    // count towards "idle". A project whose sessions all
-                    // predate the setup, or whose runtime has no hooks
-                    // adapter, is not idle — it is unheard, and saying
-                    // the first is how the summary came to disagree with
-                    // what the person could see happening.
                     let unheard = agents
                         .iter()
-                        .filter(|agent| {
-                            mute.contains(&agent.spec.runtime)
-                                || (now - agent.last_seen)
-                                    .to_std()
-                                    .is_ok_and(|since| since > QUIET_AFTER)
-                        })
+                        .filter(|agent| matches!(self.activity.get(agent.id.as_str()), None | Some(Activity::Unknown)))
                         .count();
                     if blocked > 0 {
                         ui.label(RichText::new(format!("{blocked} blocked")).color(UNVERIFIED));
@@ -766,13 +792,15 @@ impl App {
                     } else if working > 0 {
                         ui.label(RichText::new(format!("{working} working")).color(WIRED));
                     } else if unheard == agents.len() {
-                        ui.label(RichText::new("none heard from").color(UNVERIFIED));
+                        ui.label(RichText::new("activity unknown").color(UNVERIFIED));
                     } else if unheard > 0 {
                         ui.label(
-                            RichText::new(format!("{unheard} not heard from")).color(UNVERIFIED),
+                            RichText::new(format!("{unheard} unknown")).color(UNVERIFIED),
                         );
-                    } else {
+                    } else if agents.iter().all(|a| matches!(self.activity.get(a.id.as_str()), Some(Activity::Idle { .. }))) {
                         ui.label(RichText::new("all idle").weak());
+                    } else {
+                        ui.label(RichText::new("activity unknown").weak());
                     }
                     ui.end_row();
 
@@ -812,56 +840,25 @@ impl App {
                                 .on_hover_text("Waiting for a lease another agent holds.");
                             }
                             Some(Activity::Working { .. }) => {
-                                ui.label(RichText::new("working").color(WIRED))
-                                    .on_hover_text(
-                                        "Holding a lease, or reporting work in progress.",
-                                    );
+                                ui.label(RichText::new("working").color(WIRED)).on_hover_text(
+                                    "Recent coordination or an explicit provider activity report; not inferred from CPU use or terminal output.",
+                                );
                             }
-                            Some(other) => {
-                                // "idle" is a claim about the agent.
-                                // "we have not heard from it" is a claim
-                                // about us, and saying the first when we
-                                // mean the second is how a table stops
-                                // being believed: a Codex session
-                                // editing files right now was reported
-                                // idle, because Codex has no way to say
-                                // otherwise unless it calls a tool.
-                                let quiet = (now - agent.last_seen)
-                                    .to_std()
-                                    .is_ok_and(|since| since > QUIET_AFTER);
-                                let mute = mute.contains(&agent.spec.runtime);
-                                let heard_from =
-                                    matches!(other, Activity::Idle { .. }) && !quiet && !mute;
-                                let label = ui.label(if heard_from {
-                                    RichText::new(other.label()).weak()
-                                } else {
-                                    RichText::new("not heard from").color(UNVERIFIED)
-                                });
+                            None | Some(Activity::Unknown) => {
+                                let label = ui.label(RichText::new("unknown").color(UNVERIFIED));
                                 if unwired.contains(&agent.spec.runtime) {
-                                    label.on_hover_text(
-                                        "Not wired up, so it reports nothing — Runtimes.",
-                                    );
-                                } else if mute {
-                                    label.on_hover_text(format!(
-                                        "{} has no hooks adapter, so it is heard from only when \
-                                         it calls an AgentDocker tool. It may be busy; this says \
-                                         only that it has not called us.",
-                                        agent.spec.runtime
-                                    ));
-                                } else if quiet {
-                                    label.on_hover_text(
-                                        "Nothing since the time in SEEN. Hooks are loaded when a \
-                                         session starts, so a session older than your setup \
-                                         cannot report until it is restarted.",
-                                    );
+                                    label.on_hover_text("No fresh activity report. Check this integration in Runtimes; the process may still be working.");
                                 } else {
-                                    label.on_hover_text(
-                                        "Alive and quiet: between turns, or waiting on a person.",
-                                    );
+                                    label.on_hover_text("No fresh activity report. Configuration alone does not prove this session is connected or idle.");
                                 }
                             }
-                            None => {
-                                ui.label(RichText::new(agent.status.to_string()).weak());
+                            Some(Activity::Idle { .. }) => {
+                                ui.label(RichText::new("idle").weak()).on_hover_text(
+                                    "The provider recently reported a turn ending or being interrupted. This observation expires without another report.",
+                                );
+                            }
+                            Some(other) => {
+                                ui.label(RichText::new(other.label()).weak());
                             }
                         }
                         ui.label(
@@ -1367,6 +1364,9 @@ impl App {
     /// transcript, the last commands on the up arrow, and output that
     /// accumulates instead of a box that is replaced.
     fn console_screen(&mut self, ui: &mut egui::Ui) {
+        if self.console_truncated {
+            ui.label("Earlier output omitted. Showing the latest 256 KiB.");
+        }
         let mut run = false;
         let palette = self.settings.palette();
         let font = egui::FontId::monospace(self.settings.terminal_size);
@@ -1458,15 +1458,55 @@ impl App {
             });
         if run && !self.console_input.trim().is_empty() {
             let line = self.console_input.trim().to_owned();
-            self.console_output
-                .push_str(&format!("agentdocker {line}\n"));
-            if self.console_history.last() != Some(&line) {
-                self.console_history.push(line.clone());
-            }
-            self.console_recall = None;
+            self.append_console(&format!("agentdocker {line}\n"));
+            self.remember_console_command(&line);
             self.console_input.clear();
             self.console_running += 1;
             self.send(Cmd::Console(line));
+        }
+    }
+
+    fn remember_console_command(&mut self, line: &str) {
+        self.console_recall = None;
+        // Never save a truncated command for later execution.
+        if line.len() > CONSOLE_HISTORY_BYTES
+            || self.console_history.last().is_some_and(|last| last == line)
+        {
+            return;
+        }
+        self.console_history.push(line.to_owned());
+        let mut bytes: usize = self.console_history.iter().map(String::len).sum();
+        while self.console_history.len() > CONSOLE_HISTORY_COMMANDS || bytes > CONSOLE_HISTORY_BYTES
+        {
+            bytes -= self.console_history.remove(0).len();
+        }
+    }
+
+    /// Retain a UTF-8 tail without growing the window's buffer with each reply.
+    fn append_console(&mut self, text: &str) {
+        fn boundary(text: &str, mut at: usize) -> usize {
+            while !text.is_char_boundary(at) {
+                at += 1;
+            }
+            at
+        }
+        if text.len() >= CONSOLE_BYTES {
+            let at = boundary(text, text.len() - CONSOLE_BYTES);
+            self.console_output = text[at..].to_owned();
+            self.console_truncated = true;
+            return;
+        }
+        let excess = (self.console_output.len() + text.len()).saturating_sub(CONSOLE_BYTES);
+        if excess > 0 {
+            let at = boundary(&self.console_output, excess);
+            self.console_output.drain(..at);
+            self.console_truncated = true;
+        }
+        self.console_output.push_str(text);
+        // String::drain retains capacity. Also release any previously oversized
+        // allocation, rather than merely hiding its bytes from the UI.
+        if self.console_output.capacity() > CONSOLE_BYTES * 2 {
+            self.console_output.shrink_to(CONSOLE_BYTES);
         }
     }
 
@@ -1834,6 +1874,9 @@ impl App {
     }
 
     fn journal_screen(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!(
+            "Latest {JOURNAL_WINDOW} entries. Earlier entries remain in the project journal."
+        ));
         let projects = self.projects();
         let mut changed: Option<String> = None;
         ui.horizontal(|ui| {
@@ -2064,21 +2107,34 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.worker_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl eframe::App for App {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Hidden windows still consume bounded replies and events, without
+        // depending on a rendered frame to release backend backpressure.
+        self.drain();
+        let delay = if ctx.input(|input| input.viewport().visible()) == Some(false) {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_millis(500)
+        };
+        ctx.request_repaint_after(delay);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
     }
 }
 
 impl App {
-    /// One frame, without the `eframe::Frame` around it.
-    ///
-    /// Separate so a test can run it: an `eframe::Frame` cannot be built
-    /// outside eframe, and every screen's layout is worth rendering at
-    /// least once before somebody has to find out by opening the window.
+    /// Draw separately from eframe's window so every screen can be tested.
     fn draw(&mut self, ui: &mut egui::Ui) {
-        self.drain();
-        ui.ctx().request_repaint_after(Duration::from_millis(500));
         self.apply_settings(ui.ctx());
 
         // The sidebar and the title bar sit on their own ground, the
@@ -2103,7 +2159,7 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     self.mark(ui);
-                    ui.heading("AgentDocker");
+                    ui.heading("agentdocker");
                     ui.separator();
                     match &self.connected {
                         Ok(()) => {
@@ -2412,88 +2468,137 @@ fn span(secs: i64) -> String {
 
 // ----- threads ---------------------------------------------------------------
 
-/// A thread that runs one job at a time, in the order it was given them.
-///
-/// The console and guided setup shell out to a subprocess rather than
-/// talk to the daemon, they take seconds — a guided apply waits on the
-/// provider's own tool, a console `watch` runs to its whole
-/// twenty-second limit — and both are transcripts, so their order is
-/// part of what they say. On the daemon's thread each one held up every
-/// agent list, lease and question queued behind it while the window went
-/// on painting the stale ones. A lane each, and neither waits on the
-/// other or on the socket.
-fn lane<T: Send + 'static>(
-    tx: Sender<Msg>,
-    ctx: egui::Context,
-    mut work: impl FnMut(T) -> Msg + Send + 'static,
-) -> Sender<T> {
-    let (lane, jobs) = channel::<T>();
-    std::thread::spawn(move || {
-        while let Ok(job) = jobs.recv() {
-            let _ = tx.send(work(job));
-            ctx.request_repaint();
-        }
-    });
-    lane
-}
+/// Shell commands keep their order without delaying daemon requests. Each
+/// window owns three fixed workers, each with at most four queued jobs.
+const SHELL_QUEUE_CAPACITY: usize = 4;
 
-fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: egui::Context) {
-    std::thread::spawn(move || {
-        let consoles = lane(tx.clone(), ctx.clone(), |line: String| {
-            Msg::Console(console(&line))
-        });
-        let setups = lane(tx.clone(), ctx.clone(), |args: Vec<String>| {
-            Msg::Setup(setup(&args))
-        });
-        while let Ok(cmd) = rx.recv() {
-            // What is left after this reaches the daemon, so a failure
-            // that is not the daemon's own answer means the socket.
-            let cmd = match cmd {
-                Cmd::Console(line) => {
-                    let _ = consoles.send(line);
-                    continue;
-                }
-                Cmd::Setup(args) => {
-                    let _ = setups.send(args);
-                    continue;
-                }
-                // Installation steps are independent of each other and
-                // of everything else, so they need no lane at all.
-                Cmd::Desktop(args) => {
-                    let tx = tx.clone();
-                    let ctx = ctx.clone();
-                    std::thread::spawn(move || {
-                        let _ = tx.send(Msg::Desktop(desktop(&args)));
-                        ctx.request_repaint();
-                    });
-                    continue;
-                }
-                daemon => daemon,
-            };
-            let outcome = run(&client, cmd);
-            let disconnected = outcome
-                .as_ref()
-                .err()
-                .is_some_and(|error| error.downcast_ref::<RemoteError>().is_none());
-            let msg = match outcome {
-                Ok(Some(msg)) => msg,
-                Ok(None) => continue,
-                Err(err) => failure_message(err),
-            };
-            let _ = tx.send(msg);
-            if !disconnected {
-                let _ = tx.send(Msg::Connected);
+fn lane<T: Send + 'static>(
+    tx: SyncSender<Msg>,
+    ctx: egui::Context,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    mut work: impl FnMut(T) -> Msg + Send + 'static,
+) -> (SyncSender<T>, std::thread::JoinHandle<()>) {
+    let (lane, jobs) = sync_channel::<T>(SHELL_QUEUE_CAPACITY);
+    let worker = std::thread::spawn(move || {
+        while let Ok(job) = jobs.recv() {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if tx.send(work(job)).is_err() {
+                break;
             }
             ctx.request_repaint();
         }
     });
+    (lane, worker)
+}
+
+fn submit<T>(lane: &SyncSender<T>, job: T, rejected: impl FnOnce(String) -> Msg) -> Option<Msg> {
+    use std::sync::mpsc::TrySendError;
+    match lane.try_send(job) {
+        Ok(()) => None,
+        Err(TrySendError::Full(_)) => Some(rejected(
+            "Command not queued: this worker's queue is full; try again after it catches up."
+                .into(),
+        )),
+        Err(TrySendError::Disconnected(_)) => Some(rejected(
+            "Command not queued: this worker stopped; reopen agentdocker.".into(),
+        )),
+    }
+}
+
+fn spawn_worker(
+    client: Arc<Client>,
+    rx: CommandReceiver,
+    tx: SyncSender<Msg>,
+    ctx: egui::Context,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let (consoles, console_worker) = lane(
+            tx.clone(),
+            ctx.clone(),
+            cancelled.clone(),
+            |line: String| Msg::Console(console(&line)),
+        );
+        let (setups, setup_worker) = lane(
+            tx.clone(),
+            ctx.clone(),
+            cancelled.clone(),
+            |args: Vec<String>| Msg::Setup(setup(&args)),
+        );
+        let (desktops, desktop_worker) = lane(
+            tx.clone(),
+            ctx.clone(),
+            cancelled.clone(),
+            |args: Vec<String>| Msg::Desktop(desktop(&args)),
+        );
+        while let Ok(cmd) = rx.recv() {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            // Admission never waits behind a subprocess. A rejected job
+            // returns the usual completion shape to clear the UI's busy state.
+            let rejected = match cmd {
+                Cmd::Console(line) => submit(&consoles, line, Msg::Console),
+                Cmd::Setup(args) => submit(&setups, args, |error| Msg::Setup(Err(error))),
+                Cmd::Desktop(args) => submit(&desktops, args, |error| Msg::Desktop(Err(error))),
+                daemon => {
+                    let answer = match &daemon {
+                        Cmd::Answer(id, _) => Some(id.clone()),
+                        _ => None,
+                    };
+                    let outcome = run(&client, daemon);
+                    let disconnected = outcome
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| error.downcast_ref::<RemoteError>().is_none());
+                    let msg = match outcome {
+                        Ok(Some(msg)) => msg,
+                        Ok(None) => continue,
+                        Err(err) => {
+                            if let Some(id) = answer {
+                                // Preserve the draft even when no daemon reply arrived.
+                                if tx.send(Msg::Answered(id, Err(format!("{err:#}")))).is_err() {
+                                    break;
+                                }
+                            }
+                            failure_message(err)
+                        }
+                    };
+                    if tx.send(msg).is_err() {
+                        break;
+                    }
+                    if !disconnected && tx.send(Msg::Connected).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                    continue;
+                }
+            };
+            if let Some(message) = rejected {
+                if tx.send(message).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        }
+        // Closing a window must not run its remaining queued installations.
+        // In-flight subprocesses keep their existing deadlines; joining happens
+        // on this background worker, never on the UI thread.
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        drop((consoles, setups, desktops));
+        for worker in [console_worker, setup_worker, desktop_worker] {
+            let _ = worker.join();
+        }
+    })
 }
 
 fn failure_message(error: anyhow::Error) -> Msg {
     if error.downcast_ref::<RemoteError>().is_none() {
-        Msg::Disconnected(error.to_string())
+        Msg::Disconnected(format!("{error:#}"))
     } else {
-        Msg::Status(error.to_string())
+        Msg::Status(format!("{error:#}"))
     }
 }
 
@@ -2533,10 +2638,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             kind: None,
             path: None,
             grep: None,
-            limit: 200,
+            limit: JOURNAL_WINDOW,
             digest: None,
         })? {
-            Response::Journal { entries, .. } => Some(Msg::Journal(project, entries)),
+            Response::Journal {
+                entries, head_seq, ..
+            } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
         Cmd::Me => match client.call(&Request::Me {
@@ -2553,7 +2660,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Activity { activity } => Some(Msg::Activity(activity)),
             _ => None,
         },
-        // Every room in the project, not only the ones this person is
+        // Every room in the named project, not only the ones this person is
         // in. A channel between two agents need not have the human as a
         // member — most will not — and a window that listed only its
         // own memberships would show nothing while agents talked.
@@ -2578,28 +2685,25 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Questions { questions } => Some(Msg::Questions(questions)),
             _ => None,
         },
-        Cmd::Answer(message, text) => Some(Msg::Answered(
-            message.clone(),
-            client
-                .call(&Request::Answer {
-                    from: None,
-                    message,
-                    text,
-                })
-                .map(|_| ())
-                .map_err(|err| err.to_string()),
-        )),
+        Cmd::Answer(message, text) => {
+            client.call(&Request::Answer {
+                from: None,
+                message: message.clone(),
+                text,
+            })?;
+            Some(Msg::Answered(message, Ok(())))
+        }
         Cmd::Adopt(pid) => Some(
-            match client.call(&Request::Adopt {
-                pid,
-                name: None,
-                runtime: None,
-            }) {
-                Ok(Response::Agent { agent }) => {
-                    Msg::Status(format!("adopted {}", agent.spec.name))
-                }
-                Ok(_) => Msg::Status(format!("adopted pid {pid}")),
-                Err(err) => Msg::Status(format!("pid {pid}: {err}")),
+            match client
+                .call(&Request::Adopt {
+                    pid,
+                    name: None,
+                    runtime: None,
+                })
+                .with_context(|| format!("pid {pid}"))?
+            {
+                Response::Agent { agent } => Msg::Status(format!("adopted {}", agent.spec.name)),
+                _ => Msg::Status(format!("adopted pid {pid}")),
             },
         ),
         Cmd::AdoptAll => {
@@ -2608,34 +2712,32 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             let mut adopted = 0;
             for process in processes {
-                if client
+                client
                     .call(&Request::Adopt {
                         pid: process.pid,
                         name: None,
                         runtime: None,
                     })
-                    .is_ok()
-                {
-                    adopted += 1;
-                }
+                    .with_context(|| {
+                        format!(
+                            "adopted {adopted} process(es); failed at pid {}",
+                            process.pid
+                        )
+                    })?;
+                adopted += 1;
             }
             Some(Msg::Status(format!("adopted {adopted} process(es)")))
         }
-        Cmd::Stop(agent) => Some(
-            match client.call(&Request::Stop {
+        Cmd::Stop(agent) => {
+            client.call(&Request::Stop {
                 agent: agent.clone(),
                 force: false,
-            }) {
-                Ok(_) => Msg::Status(format!(
-                    "stopping {}",
-                    agent.chars().take(12).collect::<String>()
-                )),
-                Err(err) => Msg::Status(err.to_string()),
-            },
-        ),
-        // The three that shell out never reach here: `spawn_worker`
-        // sends them to a lane or a thread of their own. Answered
-        // anyway, so this stays a total function over `Cmd`.
+            })?;
+            Some(Msg::Status(format!(
+                "stopping {}",
+                agent.chars().take(12).collect::<String>()
+            )))
+        }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::Console(line) => Some(Msg::Console(console(&line))),
@@ -2712,7 +2814,6 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// The named binary next to this one, else whatever is on `PATH`.
 /// The sibling tool of this name, or the bare name for `PATH` to
 /// resolve.
 ///
@@ -2723,7 +2824,7 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 /// button that shells out. Comparing against our own path costs one
 /// `canonicalize` and rules that out however the bundle is laid out.
 fn beside(name: &str) -> std::path::PathBuf {
-    let me = std::env::current_exe().ok();
+    let me = agentdocker_host::procinfo::executable_path().ok();
     let real = |path: &std::path::Path| path.canonicalize().ok();
     me.as_deref()
         .and_then(|me| me.parent())
@@ -2768,7 +2869,7 @@ fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("Invalid installation reply: {error}"))
 }
 
-fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
+fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: egui::Context) {
     std::thread::spawn(move || {
         loop {
             let tx_events = tx.clone();
@@ -2812,8 +2913,8 @@ mod tests {
     /// looking at. Cheap here, expensive to find by opening the window.
     #[test]
     fn every_screen_lays_itself_out_with_something_on_it() {
-        let (tx, _requests) = channel::<Cmd>();
-        let (_messages, rx) = channel::<Msg>();
+        let (tx, _requests) = queue::channel();
+        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         app.runtimes = serde_json::from_value(serde_json::json!([{
             "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
@@ -2908,8 +3009,8 @@ mod tests {
     /// says so.
     #[test]
     fn the_sidebar_is_reachable_and_choosable_from_the_keyboard() {
-        let (tx, _requests) = channel::<Cmd>();
-        let (_messages, rx) = channel::<Msg>();
+        let (tx, _requests) = queue::channel();
+        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>, app: &mut App| {
@@ -2952,40 +3053,70 @@ mod tests {
         );
     }
 
-    /// An agent nobody has heard from is not reported as idle.
-    ///
-    /// This is the defect a person actually caught: a Codex session
-    /// editing files was shown as `idle`, because Codex has no hooks
-    /// adapter and reaches the daemon only when it calls a tool. The
-    /// table was asserting something about the agent when all it knew
-    /// was something about itself.
     #[test]
-    fn an_agent_nobody_has_heard_from_is_not_reported_as_idle() {
-        let (tx, _requests) = channel::<Cmd>();
-        let (_messages, rx) = channel::<Msg>();
+    fn activity_rows_follow_reports_instead_of_runtime_capability_guesses() {
+        let (tx, _requests) = queue::channel();
+        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
+        let now = Utc::now();
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "owned-codex".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        agent.status = agentdocker_core::AgentStatus::Running;
+        let id = agent.id.as_str().to_owned();
+        app.agents.push(agent);
         app.runtimes = serde_json::from_value(serde_json::json!([{
-            "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
-            "cli":"/fixture/claude", "version":null, "apps":[], "config_dir":null,
-            "mcp":"wired", "hooks":"wired"
-        }, {
             "name":"codex", "vendor":"OpenAI", "label":"Codex", "cli":"/fixture/codex",
             "version":null, "apps":[], "config_dir":null,
             "mcp":"wired", "hooks":"unsupported"
         }]))
         .unwrap();
-        let mute = app.mute();
-        assert!(mute.contains("codex"), "codex has no hooks adapter");
-        assert!(
-            !mute.contains("claude-code"),
-            "claude-code does, so its idle means idle"
-        );
-        // And neither is "unwired": both channels codex supports are
-        // wired, which is exactly why the old check missed it.
-        assert!(
-            !app.unwired().contains("codex"),
-            "codex is wired; it is simply unable to say more"
-        );
+        let ctx = egui::Context::default();
+        for (state, expected) in [
+            (None, "unknown"),
+            (Some(Activity::Unknown), "unknown"),
+            (Some(Activity::Idle { since: now }), "idle"),
+            (Some(Activity::Working { since: now }), "working"),
+        ] {
+            app.activity.clear();
+            if let Some(state) = state {
+                app.activity.insert(id.clone(), state);
+            }
+            let mut output = ctx.run_ui(Default::default(), |ui| app.agents_screen(ui));
+            output.textures_delta.clear();
+            fn collect(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
+                match shape {
+                    egui::epaint::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+                    egui::epaint::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, texts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut texts = Vec::new();
+            for shape in output.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "expected {expected}; saw {texts:?}"
+            );
+            if expected == "unknown" {
+                assert!(
+                    !texts
+                        .iter()
+                        .any(|text| text == "idle" || text == "all idle")
+                );
+            }
+        }
     }
 
     /// The window looks at the conversation; it does not consume it.
@@ -3028,11 +3159,211 @@ mod tests {
     }
 
     #[test]
+    fn channel_request_uses_explicit_project_and_no_membership_filter() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing channel request");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "channels");
+            assert_eq!(request["project"], "fixture-project");
+            assert_eq!(request["all"], false);
+            assert!(request["agent"].is_null());
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"channels\",\"channels\":[]}\n")
+                .unwrap();
+        });
+        let response = run(
+            &Client::isolated(socket),
+            Cmd::Channels("fixture-project".into()),
+        );
+        server.join().unwrap();
+        assert!(
+            matches!(response.unwrap(), Some(Msg::Channels(project, channels))
+            if project == "fixture-project" && channels.is_empty())
+        );
+    }
+
+    /// The status line stops being news.
+    #[test]
+    fn the_status_line_lets_go_of_what_is_no_longer_news() {
+        let (tx, _requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        messages
+            .send(Msg::Status("half the fleet is on fire".to_owned()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.status, "half the fleet is on fire");
+        // Still true, perhaps, but no longer what just happened — and a
+        // line that never expires is a line the eye stops reading.
+        app.status_at = Instant::now()
+            .checked_sub(STATUS_FOR + Duration::from_secs(1))
+            .expect("the machine has been up longer than the status timeout");
+        app.drain();
+        assert!(app.status.is_empty());
+    }
+
+    #[test]
+    fn a_full_command_queue_preserves_drafts_and_releases_busy_controls() {
+        let (commands, requests) = queue::channel();
+        for _ in 0..queue::CAPACITY {
+            commands.send(Cmd::Stop("fixture".into())).unwrap();
+        }
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let id = MessageId::from("fixture-question".to_owned());
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        app.send(Cmd::Answer(id.clone(), "draft".into()));
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("queue is full"));
+        app.setup_busy = true;
+        app.send(Cmd::Setup(vec!["--health".into()]));
+        assert!(!app.setup_busy);
+        app.console_running = 1;
+        app.send(Cmd::Console("ps".into()));
+        assert_eq!(app.console_running, 0);
+        assert!(app.console_output.contains("queue is full"));
+        app.drain();
+        assert!(app.status.contains("queue is full"));
+        app.send(Cmd::Agents); // Rejected refresh must release its coalescing key.
+        assert_eq!(requests.try_iter().count(), queue::CAPACITY);
+        app.send(Cmd::Agents);
+        assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
+    }
+
+    #[test]
+    fn a_closed_command_worker_does_not_leave_an_answer_in_flight() {
+        let (commands, requests) = queue::channel();
+        drop(requests);
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let id = MessageId::from("fixture-question".to_owned());
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        app.send(Cmd::Answer(id.clone(), "draft".into()));
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("worker stopped"));
+    }
+
+    #[test]
+    fn command_recall_keeps_complete_recent_commands_with_count_and_byte_limits() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        for number in 0..150 {
+            app.remember_console_command(&format!("fixture {number}"));
+        }
+        assert_eq!(app.console_history.len(), CONSOLE_HISTORY_COMMANDS);
+        app.recall(true);
+        assert_eq!(app.console_input, "fixture 149");
+        for _ in 0..150 {
+            app.recall(true);
+        }
+        assert_eq!(app.console_input, "fixture 50");
+        app.remember_console_command(&"x".repeat(CONSOLE_HISTORY_BYTES + 1));
+        app.recall(true);
+        assert_eq!(
+            app.console_input, "fixture 149",
+            "oversized commands are never recalled in truncated form"
+        );
+        let mut latest = String::new();
+        for number in 0..100 {
+            latest = format!("{} {number}", "é".repeat(1000));
+            app.remember_console_command(&latest);
+        }
+        assert!(
+            app.console_history.iter().map(String::len).sum::<usize>() <= CONSOLE_HISTORY_BYTES
+        );
+        app.recall(true);
+        assert_eq!(app.console_input, latest);
+    }
+
+    #[test]
+    fn event_burst_coalesces_refresh_work_while_the_daemon_is_busy() {
+        let (tx, requests) = queue::channel();
+        let (_messages, results) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, results);
+        for _ in 0..10_000 {
+            app.on_event(Event::new(
+                EventKind::AgentRemoved {
+                    agent: "fixture".into(),
+                },
+                Utc::now(),
+            ));
+        }
+        let pending: Vec<_> = requests.try_iter().collect();
+        assert_eq!(
+            pending.len(),
+            1,
+            "one snapshot covers a burst of changes while queued"
+        );
+        assert!(matches!(pending[0], Cmd::Agents));
+        app.on_event(Event::new(
+            EventKind::AgentRemoved {
+                agent: "fixture".into(),
+            },
+            Utc::now(),
+        ));
+        assert_eq!(
+            requests.try_iter().count(),
+            1,
+            "a change after dispatch still refreshes"
+        );
+    }
+
+    #[test]
+    fn channel_and_inbox_refreshes_coalesce_without_losing_other_projects() {
+        let (commands, requests) = queue::channel();
+        for _ in 0..10_000 {
+            commands.send(Cmd::Channels("project-a".into())).unwrap();
+            commands.send(Cmd::Channels("project-b".into())).unwrap();
+            commands.send(Cmd::Inbox).unwrap();
+        }
+        let pending: Vec<_> = requests.try_iter().collect();
+        assert_eq!(pending.len(), 3);
+        assert!(matches!(&pending[0], Cmd::Channels(project) if project == "project-a"));
+        assert!(matches!(&pending[1], Cmd::Channels(project) if project == "project-b"));
+        assert!(matches!(&pending[2], Cmd::Inbox));
+        commands.send(Cmd::Channels("project-a".into())).unwrap();
+        commands.send(Cmd::Inbox).unwrap();
+        assert_eq!(requests.try_iter().count(), 2);
+    }
+
+    #[test]
     fn channel_snapshots_keep_other_projects_and_refuse_departed_projects() {
         use agentdocker_core::channel::{Channel, ChannelSubject};
         use agentdocker_core::{AgentSpec, ChannelId, ProjectId};
-        let (commands, requests) = std::sync::mpsc::channel();
-        let (messages, results) = std::sync::mpsc::channel();
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let mut agents = Vec::new();
         for name in ["project-a", "project-a", "project-b"] {
@@ -3103,8 +3434,125 @@ mod tests {
         assert!(app.channels.is_empty());
     }
 
+    fn journal_entry(seq: u64) -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "project":"fixture-project", "seq":seq, "at":Utc::now(),
+            "agent_name":"fixture", "kind":"note", "summary":format!("entry {seq}"),
+            "summary_source":"explicit"
+        }))
+        .unwrap()
+    }
+
     #[test]
-    fn channel_request_uses_explicit_project_and_no_membership_filter() {
+    fn history_live_journal_is_bounded_and_late_snapshot_keeps_newer_entries() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        for seq in 1..=1000 {
+            app.on_event(Event::new(
+                EventKind::JournalAppended {
+                    entry: journal_entry(seq),
+                },
+                Utc::now(),
+            ));
+        }
+        assert_eq!(
+            app.journal.len(),
+            200,
+            "live updates must respect the snapshot window"
+        );
+        assert_eq!(app.journal.first().unwrap().seq, 801);
+        // The RPC snapshot can have been read before the most recent events.
+        messages
+            .send(Msg::Journal(
+                "fixture-project".into(),
+                Some(900),
+                (701..=900).map(journal_entry).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.journal.first().unwrap().seq, 801);
+        assert_eq!(app.journal.last().unwrap().seq, 1000);
+        assert_eq!(app.journal.len(), 200);
+    }
+
+    #[test]
+    fn history_late_journal_snapshot_does_not_replace_newer_live_entries() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        app.journal = (801..=1000).map(journal_entry).collect();
+        messages
+            .send(Msg::Journal(
+                "fixture-project".into(),
+                Some(900),
+                (701..=900).map(journal_entry).collect(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.journal.last().unwrap().seq, 1000);
+        assert_eq!(app.journal.len(), 200);
+    }
+
+    #[test]
+    fn history_empty_snapshot_respects_pruning_and_legacy_responses() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.journal_project = Some("fixture-project".into());
+        app.journal = (801..=1001).map(journal_entry).collect();
+        messages
+            .send(Msg::Journal("fixture-project".into(), Some(1000), vec![]))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.journal
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [1001]
+        );
+        messages
+            .send(Msg::Journal("fixture-project".into(), None, vec![]))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.journal.is_empty(),
+            "do not invent a head for an older daemon"
+        );
+    }
+
+    #[test]
+    fn history_console_keeps_a_bounded_utf8_tail_across_large_and_repeated_replies() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        messages
+            .send(Msg::Console(format!("{}\nLATEST", "🐋".repeat(200_000))))
+            .unwrap();
+        app.drain();
+        assert!(app.console_output.len() <= 256 * 1024);
+        assert!(
+            app.console_output.capacity() <= 512 * 1024,
+            "trimming must also bound retained allocation"
+        );
+        assert!(app.console_output.ends_with("\nLATEST\n"));
+        for _ in 0..20 {
+            messages.send(Msg::Console("é".repeat(20_000))).unwrap();
+            app.drain();
+        }
+        assert!(app.console_output.len() <= 256 * 1024);
+        assert!(app.console_output.capacity() <= 512 * 1024);
+        assert!(app.console_output.ends_with("é\n"));
+    }
+
+    #[cfg(unix)]
+    fn command_with_replies(
+        cmd: Cmd,
+        replies: Vec<(serde_json::Value, Option<serde_json::Value>)>,
+    ) -> Vec<Msg> {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
         let temp = tempfile::tempdir().unwrap();
@@ -3112,72 +3560,220 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "missing channel request");
-                        std::thread::sleep(Duration::from_millis(5));
+            for (expected, reply) in replies {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                Instant::now() < deadline,
+                                "missing expected fixture request"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fixture accept failed: {error}"),
                     }
-                    Err(error) => panic!("fixture accept: {error}"),
+                };
+                // Darwin inherits O_NONBLOCK from the listener. The accept
+                // loop is polled, but this fixture's request reader uses the
+                // socket deadlines below and must wait for the request bytes.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                for (key, value) in expected.as_object().unwrap() {
+                    assert_eq!(request[key], *value);
                 }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "channels");
-            assert_eq!(request["project"], "fixture-project");
-            assert_eq!(request["all"], false);
-            assert!(request["agent"].is_null());
-            reader
-                .get_mut()
-                .write_all(b"{\"type\":\"channels\",\"channels\":[]}\n")
-                .unwrap();
+                if let Some(reply) = reply {
+                    serde_json::to_writer(reader.get_mut(), &reply).unwrap();
+                    reader.get_mut().write_all(b"\n").unwrap();
+                }
+            }
+            listener
         });
-        let response = run(
-            &Client::isolated(socket),
-            Cmd::Channels("fixture-project".into()),
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let worker = spawn_worker(
+            Arc::new(Client::isolated(socket)),
+            requests,
+            messages,
+            egui::Context::default(),
+            Default::default(),
         );
-        server.join().unwrap();
+        commands.send(cmd).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+        let listener = server.join().unwrap();
         assert!(
-            matches!(response.unwrap(), Some(Msg::Channels(project, channels))
-            if project == "fixture-project" && channels.is_empty())
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "worker sent an unexpected extra request after the planned replies"
         );
+        results.try_iter().collect()
     }
 
-    /// The status line stops being news.
+    #[cfg(unix)]
     #[test]
-    fn the_status_line_lets_go_of_what_is_no_longer_news() {
-        let (tx, _requests) = channel::<Cmd>();
-        let (messages, rx) = channel::<Msg>();
-        let mut app = App::bare(tx, rx);
+    fn channel_requests_name_a_project_without_filtering_to_human_membership() {
+        use serde_json::json;
+        let replies = command_with_replies(
+            Cmd::Channels("fixture-project".into()),
+            vec![(
+                json!({"op":"channels", "project":"fixture-project", "all":false, "agent":null}),
+                Some(json!({"type":"channels", "channels":[]})),
+            )],
+        );
+        assert!(replies.iter().any(|reply| matches!(reply,
+            Msg::Channels(project, channels) if project == "fixture-project" && channels.is_empty())));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_answer_preserves_draft_and_reports_a_working_connection() {
+        use serde_json::json;
+        let id = MessageId::from("fixture-question".to_owned());
+        let replies = command_with_replies(
+            Cmd::Answer(id.clone(), "draft".into()),
+            vec![(
+                json!({"op":"answer", "message":id, "text":"draft"}),
+                Some(json!({"type":"error", "code":"not_found", "message":"question expired"})),
+            )],
+        );
+        assert!(
+            replies
+                .iter()
+                .any(|message| matches!(message, Msg::Connected))
+        );
+        assert!(
+            !replies
+                .iter()
+                .any(|message| matches!(message, Msg::Disconnected(_)))
+        );
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.answers.insert(id.clone(), "draft".into());
+        app.sending.insert(id.clone());
+        for message in replies {
+            messages.send(message).unwrap();
+        }
+        app.drain();
+        assert_eq!(app.answers[&id], "draft");
+        assert!(!app.sending.contains(&id));
+        assert!(app.connected.is_ok());
+        assert!(app.status.contains("question expired"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bulk_adoption_preserves_partial_progress_and_distinguishes_remote_failure() {
+        use serde_json::json;
+        for reply in [
+            None,
+            Some(json!({"type":"error", "code":"not_found", "message":"process exited"})),
+        ] {
+            let transport_failed = reply.is_none();
+            let messages = command_with_replies(
+                Cmd::AdoptAll,
+                vec![
+                    (
+                        json!({"op":"discover"}),
+                        Some(json!({"type":"processes", "processes": [
+                            {"pid":101,"ppid":1,"runtime":"codex","command":"fixture"},
+                            {"pid":102,"ppid":1,"runtime":"codex","command":"fixture"},
+                            {"pid":103,"ppid":1,"runtime":"codex","command":"fixture"}
+                        ]})),
+                    ),
+                    (json!({"op":"adopt", "pid":101}), Some(json!({"type":"ok"}))),
+                    (json!({"op":"adopt", "pid":102}), reply),
+                ],
+            );
+            assert_eq!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message, Msg::Disconnected(_))),
+                transport_failed
+            );
+            assert_eq!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message, Msg::Connected)),
+                !transport_failed
+            );
+            assert!(messages.iter().any(|message| match message {
+                Msg::Status(text) | Msg::Disconnected(text) =>
+                    text.contains("adopted 1 process(es); failed at pid 102"),
+                _ => false,
+            }));
+        }
+    }
+
+    fn disconnected_command(cmd: Cmd) -> Vec<Msg> {
+        let temp = tempfile::tempdir().unwrap();
+        let client = Arc::new(Client::isolated(temp.path().join("missing.sock")));
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let worker = spawn_worker(
+            client,
+            requests,
+            messages,
+            egui::Context::default(),
+            Default::default(),
+        );
+        commands.send(cmd).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+        let messages: Vec<_> = results.try_iter().collect();
+        assert!(
+            messages.iter().any(|m| matches!(m, Msg::Disconnected(_))),
+            "failed command must report disconnection"
+        );
+        assert!(
+            !messages.iter().any(|m| matches!(m, Msg::Connected)),
+            "failed command must not report connectivity"
+        );
         messages
-            .send(Msg::Status("half the fleet is on fire".to_owned()))
-            .unwrap();
+    }
+
+    #[test]
+    fn failed_answer_reports_transport_failure_and_keeps_the_draft() {
+        let id = MessageId::from("owned-question".to_owned());
+        let result = disconnected_command(Cmd::Answer(id.clone(), "draft answer".into()));
+        let (commands, _) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.answers.insert(id.clone(), "draft answer".into());
+        app.sending.insert(id.clone());
+        for message in result {
+            messages.send(message).unwrap();
+        }
         app.drain();
-        assert_eq!(app.status, "half the fleet is on fire");
-        // Still true, perhaps, but no longer what just happened — and a
-        // line that never expires is a line the eye stops reading.
-        app.status_at = Instant::now()
-            .checked_sub(STATUS_FOR + Duration::from_secs(1))
-            .expect("the machine has been up longer than the status timeout");
-        app.drain();
-        assert!(app.status.is_empty());
+        assert_eq!(app.answers[&id], "draft answer");
+        assert!(!app.sending.contains(&id));
+        assert!(app.connected.is_err());
+    }
+
+    #[test]
+    fn failed_adoption_reports_transport_failure() {
+        disconnected_command(Cmd::Adopt(123));
+    }
+
+    #[test]
+    fn failed_stop_reports_transport_failure() {
+        disconnected_command(Cmd::Stop("owned-fixture".into()));
     }
 
     #[test]
     fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
-        let (tx, requests) = channel::<Cmd>();
-        let (messages, rx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         let rows: Vec<RuntimeInfo> = serde_json::from_value(serde_json::json!([{
             "name":"codex", "vendor":"OpenAI", "label":"Codex",
@@ -3223,43 +3819,114 @@ mod tests {
         ));
     }
 
-    /// Each lane keeps its own order, and no lane waits on another.
-    ///
-    /// Both halves matter. The console is a transcript, so its lines
-    /// have to come back in the order they were typed; and the reason
-    /// the console and setup left the daemon's thread at all is that a
-    /// command taking its full twenty seconds there stopped the agent
-    /// list, the leases and the questions with it.
     #[test]
-    fn lanes_keep_their_own_order_and_never_wait_on_each_other() {
-        let (tx, rx) = channel::<Msg>();
-        let ctx = egui::Context::default();
-        let slow = lane(tx.clone(), ctx.clone(), |line: String| {
-            std::thread::sleep(Duration::from_millis(200));
-            Msg::Console(line)
-        });
-        let quick = lane(tx, ctx, Msg::Status);
-        slow.send("first".to_owned()).unwrap();
-        slow.send("second".to_owned()).unwrap();
-        quick.send("meanwhile".to_owned()).unwrap();
-        let heard: Vec<Msg> = (0..3)
-            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
-            .collect();
-        let said: Vec<&str> = heard
-            .iter()
-            .map(|msg| match msg {
-                Msg::Console(line) | Msg::Status(line) => line.as_str(),
-                _ => panic!("a lane answered with something it was not given"),
-            })
-            .collect();
-        assert_eq!(said, ["meanwhile", "first", "second"]);
-        assert!(matches!(heard[0], Msg::Status(_)));
+    fn bounded_shell_lanes_keep_order_without_blocking_each_other() {
+        let (tx, rx) = sync_channel(MESSAGE_CAPACITY);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (started, running) = sync_channel(1);
+        let (release, gate) = sync_channel(1);
+        let mut first = true;
+        let (slow, slow_worker) = lane(
+            tx.clone(),
+            egui::Context::default(),
+            cancelled.clone(),
+            move |line: String| {
+                if first {
+                    first = false;
+                    started.send(()).unwrap();
+                    gate.recv_timeout(Duration::from_secs(3)).unwrap();
+                }
+                Msg::Console(line)
+            },
+        );
+        let (quick, quick_worker) = lane(tx, egui::Context::default(), cancelled, Msg::Status);
+        slow.try_send("first".into()).unwrap();
+        running.recv_timeout(Duration::from_secs(3)).unwrap();
+        for index in 0..SHELL_QUEUE_CAPACITY {
+            assert!(submit(&slow, format!("queued {index}"), Msg::Console).is_none());
+        }
+        assert!(
+            matches!(submit(&slow, "overflow".into(), Msg::Console), Some(Msg::Console(text)) if text.contains("queue is full"))
+        );
+        // The first worker remains gated, with a full queue, while another
+        // completes. No wall-clock race or sleep is used to establish order.
+        quick.try_send("meanwhile".into()).unwrap();
+        assert!(
+            matches!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), Msg::Status(text) if text == "meanwhile")
+        );
+        release.send(()).unwrap();
+        for expected in std::iter::once("first".to_owned())
+            .chain((0..SHELL_QUEUE_CAPACITY).map(|index| format!("queued {index}")))
+        {
+            assert!(
+                matches!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), Msg::Console(text) if text == expected)
+            );
+        }
+        drop((slow, quick));
+        slow_worker.join().unwrap();
+        quick_worker.join().unwrap();
+    }
+
+    #[test]
+    fn closing_shell_workers_discards_pending_jobs_and_joins() {
+        let (tx, rx) = sync_channel(MESSAGE_CAPACITY);
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let app = App::bare(commands, results);
+        let cancelled = app.worker_stop.clone();
+        let (started, running) = sync_channel(1);
+        let (release, gate) = sync_channel(1);
+        let (jobs, worker) = lane(
+            tx,
+            egui::Context::default(),
+            cancelled.clone(),
+            move |line: String| {
+                started.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(3)).unwrap();
+                Msg::Console(line)
+            },
+        );
+        jobs.try_send("in flight".into()).unwrap();
+        running.recv_timeout(Duration::from_secs(3)).unwrap();
+        jobs.try_send("must not execute".into()).unwrap();
+        drop(app);
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        drop(jobs);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(matches!(rx.recv().unwrap(), Msg::Console(text) if text == "in flight"));
+        assert!(rx.recv().is_err());
+        assert!(running.try_recv().is_err());
+    }
+
+    #[test]
+    fn oversized_command_rejection_preserves_drafts_and_console_state() {
+        let (commands, requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let id = MessageId::from("owned-question".to_owned());
+        let answer = "x".repeat(queue::COMMAND_BYTES + 1);
+        app.answers.insert(id.clone(), answer.clone());
+        app.sending.insert(id.clone());
+        app.send(Cmd::Answer(id.clone(), answer.clone()));
+        assert_eq!(app.answers[&id], answer);
+        assert!(!app.sending.contains(&id));
+        app.console_running = 1;
+        app.send(Cmd::Console(answer));
+        assert_eq!(app.console_running, 0);
+        assert!(app.console_output.contains("64 KiB"));
+        app.setup_busy = true;
+        app.send(Cmd::Setup(vec!["x".repeat(queue::COMMAND_BYTES)]));
+        assert!(!app.setup_busy);
+        assert_eq!(requests.try_iter().count(), 0);
+        app.send(Cmd::Agents);
+        assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
     }
 
     #[test]
     fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
-        let (tx, requests) = channel::<Cmd>();
-        let (messages, rx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
         app.connected = Err("offline".into());
         app.journal_project = Some("project-a".into());
@@ -3295,8 +3962,8 @@ mod tests {
             event.seq = seq;
             event
         };
-        let (tx, requests) = channel::<Cmd>();
-        let (_mtx, mrx) = channel::<Msg>();
+        let (tx, requests) = queue::channel();
+        let (_mtx, mrx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, mrx);
         app.on_event(stopping(1));
         app.on_event(stopping(2));
@@ -3330,7 +3997,11 @@ mod tests {
         app.on_event(live.clone());
         app.on_event(live);
         assert_eq!(app.last_seq, 3, "a live event does not move the cursor");
-        assert!(requests.try_iter().count() >= 2, "and each one is acted on");
+        assert_eq!(
+            requests.try_iter().count(),
+            1,
+            "live events coalesce into a fresh snapshot"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@
 // process-group `kill`, none of which Windows has. Windows starts a
 // suspended process and resumes it, which is the same idea and a
 // different implementation; until that exists the module is Unix-only.
+pub mod installation;
 #[cfg(unix)]
 pub mod launch;
 pub mod lock;

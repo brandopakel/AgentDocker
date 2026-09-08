@@ -224,6 +224,8 @@ fn walk(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Activity {
+    /// The process is present, but no fresh activity evidence is available.
+    Unknown,
     /// Registered, no process yet.
     Starting,
     /// Acted through the daemon within the activity window — claimed,
@@ -236,7 +238,7 @@ pub enum Activity {
         held_by: Vec<AgentId>,
         since: DateTime<Utc>,
     },
-    /// Alive and quiet: between turns, or waiting on a person.
+    /// Explicitly reported quiet by an adapter; silence alone cannot prove it.
     Idle { since: DateTime<Utc> },
     /// Not running any more.
     Finished,
@@ -246,12 +248,47 @@ impl Activity {
     /// A word for a column.
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::Starting => "starting",
             Self::Working { .. } => "working",
             Self::Blocked { .. } => "blocked",
             Self::Idle { .. } => "idle",
             Self::Finished => "finished",
         }
+    }
+}
+
+/// Explicit adapter observations; process liveness and MCP configuration are
+/// not turn observations. No prompts, tool arguments or transcripts are stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportedActivity {
+    Working,
+    Idle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityObservation {
+    pub activity: ReportedActivity,
+    pub observed_at: DateTime<Utc>,
+}
+
+impl ActivityObservation {
+    /// A missed hook must not leave a permanent working/idle assertion. Long
+    /// silent turns become unknown until another provider event arrives.
+    pub fn current(&self, now: DateTime<Utc>) -> Option<Activity> {
+        let age = now - self.observed_at;
+        if age < chrono::Duration::zero() || age >= chrono::Duration::minutes(5) {
+            return None;
+        }
+        Some(match self.activity {
+            ReportedActivity::Working => Activity::Working {
+                since: self.observed_at,
+            },
+            ReportedActivity::Idle => Activity::Idle {
+                since: self.observed_at,
+            },
+        })
     }
 }
 
@@ -268,6 +305,31 @@ pub struct AgentActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_observations_expire_instead_of_guessing_idle() {
+        let now = now();
+        for activity in [ReportedActivity::Working, ReportedActivity::Idle] {
+            let observation = ActivityObservation {
+                activity,
+                observed_at: now,
+            };
+            assert!(observation.current(now).is_some());
+            assert!(
+                observation
+                    .current(now + chrono::Duration::seconds(299))
+                    .is_some()
+            );
+            assert_eq!(
+                observation.current(now + chrono::Duration::minutes(5)),
+                None
+            );
+            assert_eq!(
+                observation.current(now - chrono::Duration::seconds(1)),
+                None
+            );
+        }
+    }
 
     fn agent(name: &str) -> AgentId {
         AgentId::from(name)

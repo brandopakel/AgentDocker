@@ -64,7 +64,7 @@ def trial(args):
 
         def cli(*arguments, success=True):
             command = [str(controller), "desktop", "--prefix", str(prefix), *map(str, arguments)]
-            if arguments[0] != "status" and MAC:
+            if arguments[0] in {"install", "rollback"} and MAC:
                 command.append("--local-preview")
             output = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=120)
@@ -128,6 +128,57 @@ def trial(args):
                 result["scenarios"].append("tampered executable is refused without changing activation")
                 if not MAC:
                     subprocess.run(["desktop-file-validate", str(prefix / ".local/share/applications/agentdocker.desktop")], check=True)
+                if json.loads((source / META).read_text()).get("installation_lock") == 1:
+                    # Real binaries, synthetic metadata generations: make the
+                    # running first release neither current nor rollback.
+                    extra_ids = []
+                    for generation in [3, 4]:
+                        extra = root / f"generation-{generation}" / PAYLOAD
+                        if MAC:
+                            subprocess.run(["/usr/bin/ditto", str(source), str(extra)], check=True)
+                        else:
+                            shutil.copytree(source, extra)
+                        metadata = json.loads((extra / META).read_text())
+                        metadata["installation_acceptance_generation"] = generation
+                        (extra / META).write_text(json.dumps(metadata, indent=2) + "\n")
+                        if MAC:
+                            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(extra)], check=True)
+                        installed = cli("install", "--from", extra)
+                        extra_ids.append(installed["candidate"]["id"])
+                    cleanup = cli("prune", "--preview")
+                    second_path = root_install / "versions" / second_id
+                    assert cleanup["maintenance"]["remove"] == [str(second_path)]
+                    first_retained = next(entry for entry in cleanup["maintenance"]["retained"]
+                                          if Path(entry["path"]).name == first_id)
+                    pinned = json.loads((first / META).read_text()).get("installation_lock") == 1
+                    assert first_retained["reason"] == ("running process uses this version" if pinned
+                                                        else "older release has no lifetime pin contract")
+                    cli("prune", "--expect-plan", cleanup["plan_id"])
+                    assert not second_path.exists()
+                    assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
+                    result["scenarios"].append("cleanup retains active, rollback and running or legacy binaries")
+                    removal = cli("uninstall", "--preview")
+                    cli("uninstall", "--expect-plan", removal["plan_id"])
+                    assert cli("status")["installation"] is None
+                    assert all(not (binaries / name).is_symlink()
+                               for name in ["agentdocker", "agentd", "agentdocker-ui"])
+                    assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
+                    assert Path(environment["AGENTDOCKER_HOME"]).is_dir()
+                    result["scenarios"].append("uninstall preserves the live daemon and its state")
+                    before_exit = cli("prune", "--preview")
+                    rpc(environment["AGENTDOCKER_SOCKET"], "shutdown")
+                    daemon.wait(timeout=10)
+                    if pinned:
+                        cli("prune", "--expect-plan", before_exit["plan_id"], success=False)
+                        result["scenarios"].append("daemon exit releases its pin and invalidates stale cleanup preview")
+                    after_exit = cli("prune", "--preview")
+                    cli("prune", "--expect-plan", after_exit["plan_id"])
+                    remaining = {entry.name for entry in (root_install / "versions").iterdir()}
+                    assert remaining == (set() if pinned else {first_id})
+                    assert all((root_install / "pins" / f"{identity}.lock").exists()
+                               for identity in [second_id, *extra_ids])
+                    assert Path(environment["AGENTDOCKER_HOME"]).is_dir()
+                    result["scenarios"].append("unused payloads removed; permanent pins and daemon state retained")
                 result["first"] = preview["previous"]
                 result["second"] = preview["candidate"]
                 result["passed"] = True

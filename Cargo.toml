@@ -35,7 +35,7 @@ sha2 = "0.10"
 shlex = "2"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.44", features = ["full"] }
 toml = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -44,3 +44,14 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 process-wrap = { version = "10", default-features = false, features = ["std", "job-object", "creation-flags"] }
 filetime = "0.2"
+
+# Repeated isolated worktrees otherwise retain many GiB of incremental state.
+# Line tables retain useful backtraces without full dependency debug data.
+[profile.dev]
+incremental = false
+debug = 1
+
+# Ship optimized native executables without compiler symbols or unused code.
+[profile.release]
+strip = "symbols"
+lto = "thin"

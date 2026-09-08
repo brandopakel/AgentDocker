@@ -46,13 +46,17 @@ pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
 /// separate open in the same process still contends, matching the Unix API.
 #[cfg(windows)]
 pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
+    exclusive_file(crate::dirs::private_file(path, true, false)?)
+}
+
+#[cfg(windows)]
+fn exclusive_file(file: File) -> io::Result<Option<Lock>> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::{
         Foundation::ERROR_LOCK_VIOLATION,
         Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx},
         System::IO::OVERLAPPED,
     };
-    let file = crate::dirs::private_file(path, true, false)?;
     // SAFETY: the synchronous file handle stays live; OVERLAPPED describes
     // byte zero and is valid for this nonblocking, synchronous lock call.
     let locked = unsafe {
@@ -77,9 +81,102 @@ pub fn try_exclusive(path: &Path) -> io::Result<Option<Lock>> {
     }
 }
 
+/// Hold a private lock file for a reader without waiting. Release
+/// pins use shared readers so multiple binaries can use one retained version.
+#[cfg(unix)]
+pub fn try_shared(path: &Path) -> io::Result<Option<Lock>> {
+    let file = crate::dirs::private_file(path, true, false)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(Some(Lock { _file: file }));
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(None),
+        _ => Err(error),
+    }
+}
+
+#[cfg(windows)]
+pub fn try_shared(path: &Path) -> io::Result<Option<Lock>> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{
+        Foundation::ERROR_LOCK_VIOLATION,
+        Storage::FileSystem::{LOCKFILE_FAIL_IMMEDIATELY, LockFileEx},
+        System::IO::OVERLAPPED,
+    };
+    let file = crate::dirs::private_file(path, true, false)?;
+    let locked = unsafe {
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if locked != 0 {
+        return Ok(Some(Lock { _file: file }));
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+/// Test an existing pin without creating a new filesystem entry.
+#[cfg(unix)]
+pub fn try_exclusive_existing(path: &Path) -> io::Result<Option<Lock>> {
+    let file = crate::dirs::private_file(path, false, false)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(Some(Lock { _file: file }));
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(None),
+        _ => Err(error),
+    }
+}
+
+/// Test an existing pin without creating a new filesystem entry.
+#[cfg(windows)]
+pub fn try_exclusive_existing(path: &Path) -> io::Result<Option<Lock>> {
+    exclusive_file(crate::dirs::private_file(path, false, false)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_lock_does_not_create_files_and_contends_with_readers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("release.lock");
+        assert_eq!(
+            try_exclusive_existing(&path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!path.exists());
+        let reader = try_shared(&path).unwrap().unwrap();
+        assert!(try_exclusive_existing(&path).unwrap().is_none());
+        drop(reader);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if try_exclusive_existing(&path).unwrap().is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader lock never released"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn exclusive_until_dropped() {

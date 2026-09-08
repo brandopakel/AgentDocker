@@ -32,7 +32,7 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 
 ## Standard verification workflow
 
-Use `bash scripts/verify.sh check` before opening or updating a ready PR. The standard suite is nextest (zero retries, JUnit), separate doctests, formatting, strict Clippy, installer tests, packaging and release build. Use targeted tests while editing. Each worktree keeps its own Cargo target directory.
+Use `bash scripts/verify.sh check` before opening or updating a ready PR. The standard suite is nextest (zero retries, JUnit), separate doctests, formatting, strict Clippy, installer tests, packaging and release build. Use targeted tests while editing. Each worktree keeps its own Cargo target directory. Before direct Cargo commands, run `python3 scripts/build_storage.py`. Keep one local build campaign active and at most two debug caches; preserve reports and remove inactive generated caches before they accumulate. Never clean another session’s active build directory.
 
 Use `bash scripts/verify.sh coverage` to inspect untested branches; `bench` for Criterion and native Unix-socket workloads with code/environment provenance; `fuzz` for bounded nightly protocol/resource-key campaigns. Add meaningful Proptest scenarios for coordination state transitions and retain minimized failures. See `docs/TESTING-AND-BENCHMARKS.md` for tools, contracts and reporting. Never describe a benchmark from different source content or an image as validation of the current state.
 

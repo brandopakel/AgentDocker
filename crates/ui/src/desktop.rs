@@ -50,7 +50,7 @@ impl Panel {
             args.extend(["--prefix".into(), self.prefix.clone()]);
         }
         args.push(operation.into());
-        if self.local_preview && operation != "status" {
+        if self.local_preview && matches!(operation, "install" | "rollback") {
             args.push("--local-preview".into());
         }
         args
@@ -69,7 +69,7 @@ impl Panel {
             ui.label("Application bundle or extracted desktop package");
             let mut changed = ui.text_edit_singleline(&mut self.source).changed();
             if ui.button("Use this application").clicked() {
-                match std::env::current_exe().ok().and_then(|exe| {
+                match agentdocker_host::procinfo::executable_path().ok().and_then(|exe| {
                     exe.parent()?.parent().map(|parent| {
                         if cfg!(target_os = "macos") { parent.parent().unwrap_or(parent) } else { parent }.to_owned()
                     })
@@ -113,6 +113,16 @@ impl Panel {
                     args.extend(["--from".into(), self.source.clone(), "--preview".into()]);
                     command = Some(args);
                 }
+                if ui.button("Preview removal").clicked() {
+                    let mut args = self.command("uninstall");
+                    args.push("--preview".into());
+                    command = Some(args);
+                }
+                if ui.button("Preview cleanup").clicked() {
+                    let mut args = self.command("prune");
+                    args.push("--preview".into());
+                    command = Some(args);
+                }
                 // Offered only when the last status found something to
                 // go back to. A live button whose only outcome is "no
                 // active desktop installation" is a red error the reader
@@ -133,7 +143,30 @@ impl Panel {
             });
             if let Some(report) = &self.report {
                 ui.separator();
-                if report.get("installation").is_some() {
+                if let Some(plan) = report.get("maintenance") {
+                    ui.label("Running sessions and your settings are preserved. Installed user services must be removed separately before removing desktop launchers or pruning versions.");
+                    if let Some(paths) = plan["remove"].as_array() {
+                        for path in paths { ui.label(format!("Remove: {}", path.as_str().unwrap_or("unknown"))); }
+                    }
+                    if let Some(entries) = plan["retained"].as_array() {
+                        for entry in entries { ui.label(format!("Keep: {} — {}", entry["path"].as_str().unwrap_or("unknown"), entry["reason"].as_str().unwrap_or("unknown"))); }
+                    }
+                    if report["preview"] == true && plan["remove"].as_array().is_some_and(|paths| !paths.is_empty()) {
+                        let pinned = pinned_maintenance(report);
+                        if ui.add_enabled(pinned.is_some(), egui::Button::new("Apply reviewed cleanup"))
+                            .on_disabled_hover_text("This preview is missing its cleanup operation or plan identity. Preview it again.")
+                            .clicked()
+                            && let Some((operation, plan_id)) = pinned
+                        {
+                            let mut args = self.command(operation);
+                            args.extend(["--expect-plan".into(), plan_id.into()]);
+                            if let Some(keep) = plan["keep"].as_u64() { args.extend(["--keep".into(), keep.to_string()]); }
+                            command = Some(args);
+                        }
+                    } else if report["preview"] == false {
+                        ui.label("Cleanup completed.");
+                    }
+                } else if report.get("installation").is_some() {
                     if report["installation"].is_null() {
                         ui.label("No managed desktop installation at this prefix.");
                     } else {
@@ -211,6 +244,13 @@ fn pinned(report: &Value) -> Option<(&str, &str)> {
         .zip(report["candidate"]["id"].as_str())
 }
 
+fn pinned_maintenance(report: &Value) -> Option<(&str, &str)> {
+    let operation = report["maintenance"]["operation"].as_str()?;
+    let plan_id = report["plan_id"].as_str()?;
+    (matches!(operation, "prune" | "uninstall") && !plan_id.is_empty())
+        .then_some((operation, plan_id))
+}
+
 fn describe(ui: &mut egui::Ui, label: &str, release: &Value) {
     let version = release["version"].as_str().unwrap_or("unknown");
     let commit = release["source_commit"].as_str().unwrap_or("unknown");
@@ -272,21 +312,13 @@ mod tests {
         }
     }
 
-    /// A report is the answer to the question that was asked. Changing
-    /// the source or the prefix asks a different question, so the old
-    /// answer must not stay on screen next to the new inputs — an apply
-    /// button is built from the report, and applying a stale one would
-    /// install something the reader did not choose.
+    /// Receiving a preview stores its report and ends the busy state.
     #[test]
-    fn a_report_belongs_to_the_inputs_that_produced_it() {
+    fn receiving_a_report_finishes_the_busy_state() {
         let mut p = panel();
         p.receive(Ok(json!({"preview": true, "source": "/a"})));
         assert!(p.report.is_some());
         assert!(!p.busy, "a reply ends the wait");
-
-        // What `show` does when an input changes, without a window.
-        p.report = None;
-        assert!(p.report.is_none());
     }
 
     /// A live button whose only outcome is an error is a fault the
@@ -348,6 +380,27 @@ mod tests {
         assert!(pinned(&json!({"source": "/tmp/pkg", "candidate": {}})).is_none());
         assert!(pinned(&json!({"source": 7, "candidate": {"id": "v1"}})).is_none());
         assert!(pinned(&json!({})).is_none());
+    }
+
+    #[test]
+    fn cleanup_requires_a_known_operation_and_reviewed_plan() {
+        for operation in ["prune", "uninstall"] {
+            assert_eq!(
+                pinned_maintenance(
+                    &json!({"maintenance":{"operation":operation},"plan_id":"reviewed"})
+                ),
+                Some((operation, "reviewed"))
+            );
+        }
+        for report in [
+            json!({}),
+            json!({"maintenance":{"operation":"prune"}}),
+            json!({"maintenance":{"operation":"prune"},"plan_id":""}),
+            json!({"maintenance":{"operation":"install"},"plan_id":"reviewed"}),
+            json!({"maintenance":{"operation":7},"plan_id":"reviewed"}),
+        ] {
+            assert!(pinned_maintenance(&report).is_none());
+        }
     }
 
     /// The panel lays itself out in every state it can be shown in.

@@ -22,6 +22,17 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
     ("SessionEnd", None),
 ];
 
+/// Activity observations only; Codex coordination remains on MCP.
+pub const CODEX_ACTIVITY_HOOKS: &[(&str, Option<&str>)] = &[
+    ("UserPromptSubmit", None),
+    ("PreToolUse", None),
+    ("PostToolUse", None),
+    ("PreCompact", None),
+    ("PostCompact", None),
+    ("Stop", None),
+    ("Interrupt", None),
+];
+
 /// How a runtime registers MCP servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpWiring {
@@ -98,7 +109,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         mcp: McpWiring::TomlServers {
             file: ".codex/config.toml",
         },
-        hooks: false,
+        hooks: true,
     },
     RuntimeSpec {
         name: "codex-desktop",
@@ -326,7 +337,7 @@ mod tests {
             );
             assert!(!r.vendor.is_empty() && !r.label.is_empty());
             if r.hooks {
-                assert_eq!(r.name, "claude-code", "hooks exist for Claude Code only");
+                assert!(matches!(r.name, "claude-code" | "codex"));
             }
         }
         assert_eq!(spec("codex").map(|r| r.vendor), Some("OpenAI"));

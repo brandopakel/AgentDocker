@@ -1,0 +1,1004 @@
+{
+  "format": 1,
+  "scope": "Source-pinned native integration, actual provider callbacks and synthetic message trials; not complete delivery or release acceptance",
+  "source": {
+    "head": "8611292c2e6c0b2ebcc4dd74e3bfe337f26c65a5",
+    "tested_merge": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+    "tree": "27df5debc50dcc464bd68fa55b73803b735bf6c6",
+    "source_input_sha256": "86edf6b429a3a506372c8373bd48786b4ce7120890dfdc9061dade869f0ceb1e",
+    "artifact": 10041188864,
+    "workflow": 34187712572,
+    "artifact_sha256": "37d19150468b437b201535607626ddc2fe08b9f3fe85f495166d1791a2a2dfd5",
+    "archive_and_binary_hashes_match": true
+  },
+  "desktop_manifest": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "27df5debc50dcc464bd68fa55b73803b735bf6c6",
+    "source_input_sha256": "86edf6b429a3a506372c8373bd48786b4ce7120890dfdc9061dade869f0ceb1e",
+    "source_dirty": false,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "a55e3134b1558ee302bf353cf4904304dd2b274b42351ec174d70b9864b46d0c",
+      "agentd": "db14789678a2ae27e5301f3442af110ae25ff31260a85f410f9ac9efaa8150ac",
+      "agentdocker-ui": "7cafa2c5c8202dd4a1b2373dfb0161e4e892c87399b27dfedc581278f6422c26"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "f6caf2b27cc2c3173287f2f0a9c4c25af371730c822b485d5fa18b5bdbfc9a3b",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "46aafcb39e345bf007f81c198de88602fac904ef05af6a470212ee508cc37bc2"
+    }
+  },
+  "ci": {
+    "standard_coverage": 34187712573,
+    "packaged_macos_linux": 34187712572,
+    "engines": 34187712605,
+    "windows_foundations": 34187712660,
+    "performance": 34187712553,
+    "conclusion": "success for all applicable jobs; credentialed Bencher job intentionally skipped; review still pending"
+  },
+  "local_host": {
+    "os": "Darwin",
+    "os_release": "25.5.0",
+    "architecture": "arm64"
+  },
+  "provider_trials": [
+    {
+      "provider": "codex",
+      "result": "passed",
+      "provider_version": "codex-cli 0.153.4",
+      "exit_code": 0,
+      "registered": true,
+      "identity_count": 1,
+      "maximum_live_records": 1,
+      "message_consumed": true,
+      "peer_echo": true,
+      "journal_echo": true,
+      "file_echo": false,
+      "activity_counts": {
+        "working": 9,
+        "idle": 1
+      },
+      "duration_seconds": 26.143748332979158,
+      "owned_descendants_after_stop": [],
+      "provider_configuration_unchanged": true,
+      "hook_adapter_seconds": [
+        0.040183833,
+        0.047343958,
+        0.034010708,
+        0.038519375,
+        0.03843975,
+        0.033929875,
+        0.034577583,
+        0.039082041,
+        0.03603645799999999,
+        0.034573875
+      ],
+      "hook_invocations_instrumented": 10,
+      "scope": "Actual provider activity callbacks and synthetic message consumption; does not test duplicate reconciliation or session restart"
+    },
+    {
+      "provider": "claude",
+      "result": "passed",
+      "exit_code": 0,
+      "registered": true,
+      "identity_count": 1,
+      "maximum_live_records": 1,
+      "message_consumed": true,
+      "peer_echo": false,
+      "journal_echo": false,
+      "file_echo": true,
+      "activity_counts": {
+        "working": 5,
+        "idle": 1
+      },
+      "duration_seconds": 6.591199540998787,
+      "owned_descendants_after_stop": [],
+      "provider_configuration_unchanged": true,
+      "hook_adapter_seconds": null,
+      "hook_invocations_instrumented": null,
+      "scope": "Actual provider activity callbacks and synthetic message consumption; does not test duplicate reconciliation or session restart"
+    }
+  ],
+  "provider_fixture": {
+    "driver_sha256": "3232dd3dc7dff1672ad08811e92d90e1ccb8cd5cd7377f6413636f664bd275c9",
+    "codex_scope": "Fresh isolated provider home, auth symlink removed afterward, one-invocation trust for vetted fixture hooks, five explicitly allowed MCP tools; unchanged hook input forwarded",
+    "claude_scope": "Fresh disposable provider session, synthetic hook-delivered nonce written to fixture file; no MCP echo expected",
+    "user_provider_configuration_changed": false,
+    "production_daemon_changed": false,
+    "raw_provider_evidence": "retained privately; excluded from GitHub"
+  },
+  "prior_provider_attempts": {
+    "pr_head": "fa38e1cfba10ac0ea7a9b75f5e22864564129bcb",
+    "tested_merge": "9812aed279033355280d68adc18a8693b7de12a9",
+    "attempts": [
+      {
+        "attempt": 1,
+        "diagnosis": "CLI hook overrides with ignore-user-config; no activity callbacks observed",
+        "provider": "codex",
+        "result": "failed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 0,
+          "idle": 0
+        },
+        "duration_seconds": 25.304371375008486,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": null
+      },
+      {
+        "attempt": 2,
+        "diagnosis": "Project hook file with ignore-user-config; no activity callbacks observed",
+        "provider": "codex",
+        "result": "failed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 0,
+          "idle": 0
+        },
+        "duration_seconds": 22.677471500006504,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": null
+      },
+      {
+        "attempt": 3,
+        "diagnosis": "Pass-through invocation tracing confirmed zero callbacks",
+        "provider": "codex",
+        "result": "failed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 0,
+          "idle": 0
+        },
+        "duration_seconds": 28.59190933406353,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": 0
+      },
+      {
+        "attempt": 4,
+        "diagnosis": "Cleared inherited provider session environment; still zero callbacks",
+        "provider": "codex",
+        "result": "failed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 0,
+          "idle": 0
+        },
+        "duration_seconds": 25.61419004201889,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": 0
+      },
+      {
+        "attempt": 5,
+        "diagnosis": "Isolated provider home invoked ten hooks; input cwd used an OS alias rejected by exact string comparison",
+        "provider": "codex",
+        "result": "failed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 0,
+          "idle": 0
+        },
+        "duration_seconds": 28.112721916055307,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": 10
+      },
+      {
+        "attempt": 6,
+        "diagnosis": "Controlled diagnosis canonicalized input in the wrapper; not unmodified candidate acceptance",
+        "provider": "codex",
+        "result": "passed",
+        "provider_version": "codex-cli 0.153.4",
+        "exit_code": 0,
+        "registered": true,
+        "identity_count": 1,
+        "maximum_live_records": 1,
+        "message_consumed": true,
+        "peer_echo": true,
+        "journal_echo": true,
+        "file_echo": false,
+        "activity_counts": {
+          "working": 9,
+          "idle": 1
+        },
+        "duration_seconds": 33.667589290998876,
+        "owned_descendants_after_stop": [],
+        "provider_configuration_unchanged": true,
+        "hook_invocations_instrumented": 10
+      }
+    ]
+  },
+  "packaged_ci": {
+    "maintenance": {
+      "passed": true,
+      "scenarios": [
+        "preview without writes and pinned initial installation",
+        "activation keeps the existing fixture daemon responsive",
+        "changed preview payload and active generation are refused",
+        "compatible rollback switches all commands and retains both releases",
+        "tampered executable is refused without changing activation",
+        "cleanup retains active, rollback and running or legacy binaries",
+        "uninstall preserves the live daemon and its state",
+        "daemon exit releases its pin and invalidates stale cleanup preview",
+        "unused payloads removed; permanent pins and daemon state retained"
+      ],
+      "synthetic_second_generation": true,
+      "first": {
+        "id": "0ff0b4380443577eb8bd70fa2907e599eeed71add4bfda18cab5cb5e34605949",
+        "installation_lock": 1,
+        "payload": "AgentDocker.app",
+        "source_commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+        "state_schema": 8,
+        "target": "aarch64-apple-darwin",
+        "tree_sha256": "0ff0b4380443577eb8bd70fa2907e599eeed71add4bfda18cab5cb5e34605949",
+        "version": "0.1.0"
+      },
+      "second": {
+        "id": "cdd5148eab33c3b1b5c4ed95308eecd4f67d365f147179aef410113094b2dcde",
+        "installation_lock": 1,
+        "payload": "AgentDocker.app",
+        "source_commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+        "state_schema": 8,
+        "target": "aarch64-apple-darwin",
+        "tree_sha256": "cdd5148eab33c3b1b5c4ed95308eecd4f67d365f147179aef410113094b2dcde",
+        "version": "0.1.0"
+      }
+    },
+    "terminal": {
+      "source_commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Darwin",
+      "os_version": "25.6.0",
+      "architecture": "arm64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 13165568,
+          "sha256": "db14789678a2ae27e5301f3442af110ae25ff31260a85f410f9ac9efaa8150ac"
+        },
+        "agentdocker": {
+          "bytes": 8159520,
+          "sha256": "a55e3134b1558ee302bf353cf4904304dd2b274b42351ec174d70b9864b46d0c"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.47137762500000235,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "gui": {
+      "connected": true,
+      "display_name": "agentdocker",
+      "elapsed_seconds": 1.4414685409999999,
+      "fixture_discovered": true,
+      "frames": 9,
+      "result": "passed",
+      "runtime_rows": 14,
+      "screenshot": "window.png",
+      "screenshot_requested": true,
+      "viewport_focused": true,
+      "viewport_minimized": false,
+      "viewport_occluded": false,
+      "viewport_visible": true,
+      "transport": "unix-socket",
+      "tcp_socket_observation": "none",
+      "tcp_observation": {
+        "samples": 11,
+        "elapsed_seconds": 1.663293834000001,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "scope": "native window, daemon connection, runtime inventory, running process discovery"
+    }
+  },
+  "local_gui_attempts": [
+    {
+      "connected": true,
+      "elapsed_seconds": 60.022919584,
+      "error": "gave up after 60s waiting for: the renderer to hand back a screenshot",
+      "fixture_discovered": true,
+      "frames": 1754,
+      "result": "failed",
+      "runtime_rows": 14,
+      "screenshot_requested": true,
+      "viewport_focused": false,
+      "viewport_minimized": false,
+      "viewport_occluded": null,
+      "viewport_visible": null,
+      "private_renderer_log_sha256": "079b3949e22fd6a5824446626da0aeda8fb00d5783d49144cb58bb3459697ce4",
+      "renderer_surface_error": "Occluded",
+      "os_session_locked_observed": true,
+      "limit": "OS lock observed during investigation; viewport occlusion fields are unavailable. Does not diagnose older unrelated failures."
+    },
+    {
+      "connected": true,
+      "elapsed_seconds": 60.024726542,
+      "error": "gave up after 60s waiting for: the renderer to hand back a screenshot",
+      "fixture_discovered": true,
+      "frames": 1856,
+      "result": "failed",
+      "runtime_rows": 14,
+      "screenshot_requested": true,
+      "viewport_focused": false,
+      "viewport_minimized": false,
+      "viewport_occluded": null,
+      "viewport_visible": null,
+      "private_renderer_log_sha256": "d46725980bce9ea187ab8822f9a1aa7558b9ea166d2be242f45b059b506fe706",
+      "renderer_surface_error": "Occluded",
+      "os_session_locked_observed": true,
+      "limit": "OS lock observed during investigation; viewport occlusion fields are unavailable. Does not diagnose older unrelated failures."
+    }
+  ],
+  "benchmark": {
+    "workflow": 34187712553,
+    "artifact": 10041143261,
+    "archive_sha256": "7e3a5d45ffdb78f063cf7a9dc62b6239e936e8d4d8fcfdd8f2448768a841811a",
+    "manifest": {
+      "commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+      "source_sha256": "1dfe3f1c8305ca2ab6d0838570b0bf155bdba0d3f4dfdaf72bb8e7b2128c847b",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "architecture": "x86_64",
+      "processor": "x86_64",
+      "cpu_count": 4,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "before_after_equal": true,
+    "statuses": [
+      {
+        "workload": "shared",
+        "clients": 1,
+        "exit_code": 0
+      },
+      {
+        "workload": "disjoint",
+        "clients": 1,
+        "exit_code": 0
+      },
+      {
+        "workload": "shared",
+        "clients": 10,
+        "exit_code": 0
+      },
+      {
+        "workload": "disjoint",
+        "clients": 10,
+        "exit_code": 0
+      },
+      {
+        "workload": "shared",
+        "clients": 100,
+        "exit_code": 0
+      },
+      {
+        "workload": "disjoint",
+        "clients": 100,
+        "exit_code": 0
+      }
+    ],
+    "socket_metrics": {
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.129434564
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 772.5911604260513
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 772.5911604260513
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1263269.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1527274.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 2508454.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.730057316
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1369.7554672542997
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1369.7554672542997
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 6862832.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 11066893.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 14827070.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 7.650605558
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1307.0860762836364
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1307.0860762836364
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 69644804.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 131579685.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 167541098.0
+          }
+        }
+      },
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.147160555
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 679.5299188699037
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 679.5299188699037
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1419713.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1850430.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 4079781.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.877
+          },
+          "elapsed-seconds": {
+            "value": 0.395750146
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 2526.846825218859
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 877
+          },
+          "throughput": {
+            "value": 2216.0446657169396
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 3249569.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 6050506.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 7559304.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 123
+          },
+          "throughput": {
+            "value": 310.8021595019197
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 5951711.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 10488997.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 12987187.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9852
+          },
+          "elapsed-seconds": {
+            "value": 3.148545746
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 3176.0694640388433
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9852
+          },
+          "throughput": {
+            "value": 3129.0636359710684
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 27080908.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 59910850.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 75260685.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 148
+          },
+          "throughput": {
+            "value": 47.00582806777488
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 46676116.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 91704817.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 102921035.0
+          }
+        }
+      }
+    },
+    "criterion_estimates": {
+      "fingerprint_100_files_400_kib": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1462679.2066595056,
+            "upper_bound": 1469169.3586547368
+          },
+          "point_estimate": 1465398.5119618766,
+          "standard_error": 1696.2880147143437
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1460666.5308641975,
+            "upper_bound": 1462756.4548328817
+          },
+          "point_estimate": 1461656.5279411767,
+          "standard_error": 578.6954934401531
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 2600.382075424904,
+            "upper_bound": 4811.018660962282
+          },
+          "point_estimate": 3860.0704416733283,
+          "standard_error": 583.7170714098299
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1461637.5337091887,
+            "upper_bound": 1464004.1228377668
+          },
+          "point_estimate": 1462711.7595241615,
+          "standard_error": 609.571095503356
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 5086.120559839755,
+            "upper_bound": 26796.250211595245
+          },
+          "point_estimate": 17007.79533485393,
+          "standard_error": 6027.707823737172
+        }
+      },
+      "lease_conflict/1": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179.0481283170409,
+            "upper_bound": 180.01248825121547
+          },
+          "point_estimate": 179.4645762108847,
+          "standard_error": 0.24695298255092846
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179.07985376049248,
+            "upper_bound": 179.35772474190375
+          },
+          "point_estimate": 179.2618277523295,
+          "standard_error": 0.0759610964818493
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.3951429673666315,
+            "upper_bound": 0.6471159773892385
+          },
+          "point_estimate": 0.55051870723734,
+          "standard_error": 0.06455004561166378
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 178.57262978062036,
+            "upper_bound": 180.12996444539974
+          },
+          "point_estimate": 179.25497139847153,
+          "standard_error": 0.39957519811938375
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.9481048625239353,
+            "upper_bound": 3.796694683254013
+          },
+          "point_estimate": 2.4869155612393876,
+          "standard_error": 0.7545906471824422
+        }
+      },
+      "lease_conflict/100": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17746.30212879332,
+            "upper_bound": 17816.473031338133
+          },
+          "point_estimate": 17778.126452119763,
+          "standard_error": 17.914858213446184
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17735.632682411673,
+            "upper_bound": 17775.15144350423
+          },
+          "point_estimate": 17761.138486465876,
+          "standard_error": 13.46528863862992
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 57.89593870428364,
+            "upper_bound": 102.96658477072585
+          },
+          "point_estimate": 80.33921626668288,
+          "standard_error": 11.70879982569496
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17706.24254895011,
+            "upper_bound": 17801.82691826966
+          },
+          "point_estimate": 17749.72531697946,
+          "standard_error": 24.589156749344692
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 95.65086658683474,
+            "upper_bound": 247.90696757375815
+          },
+          "point_estimate": 179.21855610246888,
+          "standard_error": 38.98819118612426
+        }
+      },
+      "lease_conflict/1000": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179772.11857674437,
+            "upper_bound": 181189.58620187305
+          },
+          "point_estimate": 180359.4872238463,
+          "standard_error": 366.92666396513516
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179455.39102564103,
+            "upper_bound": 179689.92156862744
+          },
+          "point_estimate": 179525.72734517304,
+          "standard_error": 56.20616211501669
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 353.0730237220648,
+            "upper_bound": 630.9134637713064
+          },
+          "point_estimate": 519.0229512238963,
+          "standard_error": 74.15687578378362
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179638.35826449207,
+            "upper_bound": 181628.03688138817
+          },
+          "point_estimate": 180448.03663366337,
+          "standard_error": 519.8485779546775
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1008.1259094024581,
+            "upper_bound": 5840.109737942584
+          },
+          "point_estimate": 3679.2390996953836,
+          "standard_error": 1337.0575430691888
+        }
+      }
+    },
+    "private_bencher_upload": {
+      "reported_files": 8,
+      "source_commit": "50b78dc99bbd2d9e2f804bb4bb2cf6aaca8e8b21",
+      "branch": "fix/codex-activity-reporting",
+      "testbed": "github-ubuntu-x86_64",
+      "credentials_in_github": false
+    },
+    "limit": "Shared-runner advisory measurements; no causal comparison or accepted resource threshold from this campaign"
+  },
+  "cleanup": {
+    "local_cargo_cache_created": false,
+    "provider_owned_descendants_remaining": 0,
+    "current_package": "retained for local visual acceptance pending unlocked display",
+    "obsolete_package_prune": {
+      "allocated_bytes_removed": 132296704,
+      "free_bytes_before": 312418603008,
+      "free_bytes_after": 312550862848,
+      "prior_report_publication_verified_commit": "078be589a164fe5800c9c887f99dafa231431b65",
+      "prior_report_sha256": "f425e5a95791426705f4c14603717b49d54cb665c875c14c61345031ffdeebc2",
+      "scope": "Obsolete extracted package and redundant owned download archives; no open files in retired package, current unpacked candidate and private failures retained",
+      "limit": "Free-space readings are host-wide and can also change with other activity"
+    }
+  },
+  "remaining": [
+    "Automatic Codex inbox injection and acknowledgement at supported hook boundaries",
+    "Identity source review, atomic binding failure injection, verified physical workdir registration and actual MCP detach trial",
+    "Local visible GUI acceptance after unlocking the Mac; broader GUI interactions and sustained resource tests",
+    "Integration of subsequently merged channel GUI and handover protocol work",
+    "Full platform parity, live daemon transfer, signed distribution and the complete delivery/test matrix"
+  ]
+}

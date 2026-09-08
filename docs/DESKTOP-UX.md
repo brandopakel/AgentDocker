@@ -46,30 +46,27 @@ and a summary of what its agents are doing.
 
 | Column | What it means |
 |---|---|
-| NAME | The name the agent registered under. One process is one agent; see below. |
+| NAME | The registered identity; duplicate reconciliation remains under review. |
 | RUNTIME | `you` for the person at the keyboard. |
-| DOING | working, blocked on a named resource, idle — or **not heard from**. |
+| DOING | working, blocked on a named resource, idle, starting, finished, or **unknown**. |
 | BRANCH | Branch and short HEAD of the agent's checkout. |
 | LEASES | How many leases it holds right now. |
 | SEEN | When the daemon last heard from it. |
 
-**"not heard from" is the important one.** "Idle" is a claim about the
-agent; "we have not heard from it" is a claim about us, and the window
-used to say the first when it only knew the second. Two cases produce
-it, and the hover says which:
+**Unknown means there is no fresh activity report.** A live process and a
+configured integration do not establish whether an agent is working or idle.
+The daemon supplies activity; the window does not override it based on a
+runtime's advertised hook support. In particular, a fresh explicit idle report
+is usable even when inventory has not yet recognized the hook installation.
 
-- **The runtime has no hooks adapter.** Codex is the one people actually
-  run. A hooks adapter reports every turn whether the agent asks it to
-  or not; without one, AgentDocker hears from a session only when it
-  calls an AgentDocker tool. A Codex session editing files right now
-  reported `idle`, and that is what made the whole table untrustworthy.
-- **The last report is older than fifteen minutes.** Hooks are loaded
-  when a session starts, so a session older than the setup that
-  installed them cannot report until it is restarted, however alive its
-  process is.
-
-The project summary counts the same way: it will say "2 not heard from"
-rather than "all idle".
+Claude Code and Codex hooks report prompt/tool and stop boundaries. Explicit
+observations expire after five minutes without another report. More recent
+coordination contact can establish recent work; leases and waiters provide
+separate coordination evidence. Codex activity hooks require a supported
+version, enabled hooks and trusted definitions in a fresh session. They do not
+yet inject inbox messages or wake an idle model. The project summary shows
+unknown records instead of calling an unobserved group idle. See
+[Activity and messaging](ACTIVITY-AND-MESSAGING.md) for exact semantics.
 
 **Stop** asks once. It is the only control here a person cannot take
 back, and it sits in a dense row beside Attach. The first click arms it
@@ -122,18 +119,29 @@ one running to its whole limit no longer stops the agent list, the
 leases and the questions behind it — and because nothing else on screen
 moves while one runs, the prompt says how many are still going.
 
+Console, setup and installation each use one worker with room for four queued
+jobs. A full queue rejects the new action visibly; commands are never silently
+truncated or replayed. The shared request queue holds at most 32 commands,
+coalesces snapshot refreshes, and rejects commands retaining more than 64 KiB.
+Replies and events have 64 buffered slots; hidden-window logic drains bounded
+batches. Closing the window cancels queued jobs; a subprocess already running
+keeps its existing timeout and is joined off the UI thread. These bounds do not
+establish a total memory limit for all daemon responses.
+
 ## Channels
 
 The window lists open channels for the projects of registered live agents,
-including channels the person at the keyboard has not joined. Each request
-names its project explicitly; the daemon requires either a project or a member
-from which it can derive one. Repeated agents in the same project produce one
-query. Each project's snapshot updates independently, and a late reply cannot
-restore a project that has disappeared from the agent list.
+including channels the person at the keyboard has not joined. Requests name
+each project explicitly; omitting both a project and a member is rejected by
+the daemon. Each project's snapshot refreshes independently, and a late reply
+cannot restore a project that has disappeared from the agent list. Repeated
+channel and inbox polls coalesce while queued.
 
-Reviews retain their explicit verdicts. Messages shown are still queued for
-the person at the keyboard, and the window never drains that inbox. This is
-not durable agent-to-agent message history.
+Reviews show their explicit verdicts. Messages shown are still queued for the
+person at the keyboard; the window never drains that inbox. Agent-to-agent
+traffic is not a durable conversation history in this view. Message pagination,
+byte budgets and retained history remain to build before sustained-use
+acceptance; the existing queue-count limits do not cover response sizes.
 
 ## Runtimes
 
@@ -172,8 +180,10 @@ which it rewrites throughout a session; a byte-for-byte plan against it
 would fail preflight nearly always and take the hooks change down with
 it. So the plan carries the command rather than the bytes. It is still
 previewed, still listed, and still undone by the matching remove — and
-the plan takes back only a registration it made itself, never one that
-appeared between the preview and the apply.
+undo checks the complete recorded entry and its ownership marker before
+requesting removal. Changed entries and old receipts without ownership evidence
+are preserved. Provider commands are separate from the file transaction;
+concurrent edits to that same entry are not serialized by these checks.
 
 ## Journal
 
@@ -224,7 +234,7 @@ not pinned to what was reviewed is not the install that was reviewed.
 
 ## What the window will not do
 
-- **Assert what it has not been told.** See "not heard from".
+- **Assert what it has not been told.** See the unknown activity state.
 - **Block on its own work.** The console, guided setup and installation
   each shell out somewhere other than the thread that talks to the
   daemon. A window that keeps painting stale numbers while it waits is
@@ -243,21 +253,24 @@ not pinned to what was reviewed is not the install that was reviewed.
   identity, so an ad-hoc build falls back to `osascript`, which belongs
   to Script Editor. It resolves with a Developer ID and nothing else
   changes. See `DISTRIBUTION-SETUP.md`.
-- **Which of a session's two names survives is a race.** One process is
-  one agent now, but whichever half registers first owns the name, and
-  that is not settled.
-- **The graphical acceptance run needs an unoccluded window.** Not a
-  window bug — the renderer skips the paint for an occluded surface and
-  the screenshot is taken during the paint. See
-  `TESTING-AND-BENCHMARKS.md`.
+- **Duplicate identities remain under review.** Hooks, MCP and adoption can
+  register separate records. Reuse must verify process birth, runtime, checkout
+  and session identity; existing transport and coordination references must
+  survive any reconciliation. See the delivery plan's #83 review requirements.
+- **Graphical capture can be delayed by occlusion.** Preserve the viewport
+  and renderer diagnostics when a run times out. Occlusion must be observed
+  in that run before assigning it as the cause; a later passing run does not
+  explain an earlier failure. See `TESTING-AND-BENCHMARKS.md`.
 
 ## Testing it
 
 Every screen is rendered headlessly with content on it, asserting each
 frame actually drew — that is what catches a layout mistake on the
 screen nobody happened to have open. The installation panel is rendered
-in each of its states including both failures. Beyond that: the lanes
-keep their order and never wait on each other, the status line expires,
+in each of its states including both failures. Worker tests gate one running
+job, fill its queue, verify rejection and progress on another worker, then check
+order and cancellation. Oversized commands and full queues preserve drafts and
+release busy controls. Beyond that: the status line expires,
 the sidebar is reachable and choosable from the keyboard, an agent
 nobody has heard from is not reported as idle, and asking for
 notifications outside a bundle is refused rather than fatal.

@@ -464,6 +464,15 @@ enum Command {
     },
     /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
     Send(SendArgs),
+    /// Report an observed provider turn state (expires after five minutes).
+    ReportActivity {
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        /// Current provider activity: working or idle.
+        #[arg(value_parser = ["working", "idle"])]
+        activity: String,
+    },
     /// Stream messages for an agent and/or matching topic patterns.
     Watch {
         /// Receive messages addressed to this agent.
@@ -936,6 +945,7 @@ struct ClaimArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
     let socket = cli.socket.clone();
     let client = Client::new(cli.socket);
@@ -1682,6 +1692,21 @@ async fn main() -> Result<()> {
         Command::Heartbeat { agent } => {
             client.call(&Request::Heartbeat { agent }).await?;
         }
+        Command::ReportActivity { agent, activity } => {
+            client
+                .call(&Request::ReportActivity {
+                    agent,
+                    observation: agentdocker_core::ActivityObservation {
+                        activity: if activity == "working" {
+                            agentdocker_core::ReportedActivity::Working
+                        } else {
+                            agentdocker_core::ReportedActivity::Idle
+                        },
+                        observed_at: chrono::Utc::now(),
+                    },
+                })
+                .await?;
+        }
         Command::Send(args) => {
             let payload: Value = match (args.json, args.text) {
                 (Some(raw), _) => serde_json::from_str(&raw).context("--json is not valid JSON")?,
@@ -2034,11 +2059,18 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             };
             // The snapshot, and where its tail starts.
             let snapshot = async {
-                let Response::Journal { project, entries } = client.call(&request).await? else {
+                let Response::Journal {
+                    project,
+                    entries,
+                    head_seq,
+                } = client.call(&request).await?
+                else {
                     return Ok(None);
                 };
                 entries.iter().for_each(print);
-                let last = entries.last().map_or(args.since.unwrap_or(0), |e| e.seq);
+                let last = head_seq
+                    .unwrap_or_else(|| entries.last().map_or(args.since.unwrap_or(0), |e| e.seq))
+                    .max(args.since.unwrap_or(0));
                 Ok(Some((project, last)))
             };
             if !args.follow {
@@ -2400,6 +2432,7 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Working { since } | Activity::Idle { since } => {
                     (String::new(), Some(*since))
                 }
+                Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
             vec![
@@ -2597,48 +2630,50 @@ fn named(names: &BTreeMap<String, String>, id: &agentdocker_core::AgentId) -> St
         .unwrap_or_else(|| id.short().to_owned())
 }
 
-/// One row per known runtime; installed ones first.
-/// Where the desktop app is, preferring the bundle.
-///
-/// On macOS the same binary is called two different things depending on
-/// how it is started: run the file directly and the Dock, the app
-/// switcher and the menu bar all read `agentdocker-ui`, because a bare
-/// executable has no name but its own; run the copy inside
-/// `AgentDocker.app` and they read AgentDocker and draw its icon,
-/// because the bundle around it carries both. So the bundle is looked
-/// for first, and its inner executable is what gets started — `open`
-/// would work too, but it cannot pass the socket through.
+/// Launch the GUI from the same loaded release before trying installed apps.
+/// Starting its bundle executable directly preserves the selected daemon socket.
 fn desktop_app() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    let executable = agentdocker_host::procinfo::executable_path().ok();
+    let applications: Vec<_> = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Applications"))
+        .into_iter()
+        .chain(std::iter::once(PathBuf::from("/Applications")))
+        .collect();
+    let search_path: Vec<_> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    desktop_app_from(executable.as_deref(), &applications, &search_path)
+}
+
+fn desktop_app_from(
+    executable: Option<&std::path::Path>,
+    applications: &[PathBuf],
+    search_path: &[PathBuf],
+) -> Option<PathBuf> {
+    if let Some(sibling) = executable
+        .and_then(|exe| exe.parent())
+        .map(|dir| dir.join("agentdocker-ui"))
+        .filter(|sibling| sibling.is_file())
     {
-        let bundles = [
-            "Applications/AgentDocker.app",
-            "../Applications/AgentDocker.app",
-        ];
-        let roots = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(std::iter::once(PathBuf::from("/")));
-        for root in roots {
-            for bundle in bundles {
-                let inner = root.join(bundle).join("Contents/MacOS/AgentDocker");
-                if inner.is_file() {
-                    return Some(inner);
+        return Some(sibling);
+    }
+    if cfg!(target_os = "macos") {
+        for root in applications {
+            for inner in [
+                "AgentDocker.app/Contents/MacOS/agentdocker-ui",
+                "AgentDocker.app/Contents/MacOS/AgentDocker",
+            ] {
+                let candidate = root.join(inner);
+                if candidate.is_file() {
+                    return Some(candidate);
                 }
             }
         }
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join("agentdocker-ui")))
-        .filter(|sibling| sibling.is_file())
-        .or_else(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|dir| dir.join("agentdocker-ui"))
-                    .find(|candidate| candidate.is_file())
-            })
-        })
+    search_path
+        .iter()
+        .map(|dir| dir.join("agentdocker-ui"))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Print a view, and say what it is when that is not obvious. The note
@@ -2881,6 +2916,52 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn desktop_launch_prefers_matching_release_over_installed_app_and_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let binaries = temp.path().join("release");
+        let applications = temp.path().join("Applications");
+        let legacy = applications.join("AgentDocker.app/Contents/MacOS/AgentDocker");
+        let fallback = temp.path().join("path");
+        for dir in [&binaries, legacy.parent().unwrap(), &fallback] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for file in [
+            binaries.join("agentdocker-ui"),
+            legacy,
+            fallback.join("agentdocker-ui"),
+        ] {
+            std::fs::write(file, "fixture").unwrap();
+        }
+        assert_eq!(
+            super::desktop_app_from(
+                Some(&binaries.join("agentdocker")),
+                &[applications],
+                &[fallback]
+            ),
+            Some(binaries.join("agentdocker-ui"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn desktop_launch_finds_current_bundle_and_supports_legacy_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Applications");
+        let modern = root.join("AgentDocker.app/Contents/MacOS/agentdocker-ui");
+        let legacy = root.join("AgentDocker.app/Contents/MacOS/AgentDocker");
+        for file in [&modern, &legacy] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "fixture").unwrap();
+        }
+        assert_eq!(
+            super::desktop_app_from(None, std::slice::from_ref(&root), &[]),
+            Some(modern.clone())
+        );
+        std::fs::remove_file(modern).unwrap();
+        assert_eq!(super::desktop_app_from(None, &[root], &[]), Some(legacy));
+    }
     use super::*;
 
     #[test]

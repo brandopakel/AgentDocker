@@ -5,13 +5,15 @@
 //! and typing at it, exactly as it was.
 
 use std::io::IsTerminal;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 
 use agentdocker_core::{Request, Response, protocol};
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::client::Client;
+
+mod input;
 
 /// Ctrl-] detaches, the way `telnet` has always done it.
 const DETACH: u8 = 0x1d;
@@ -54,14 +56,8 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     // Raw mode from here, restored by the guard however this ends.
     let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
         .context("cannot put this terminal in raw mode")?;
-    let outcome = pump(
-        reader,
-        write_half,
-        agent,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-    )
-    .await;
+    let keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
+    let outcome = pump(reader, write_half, agent, keys, tokio::io::stdout()).await;
     // The guard restores the terminal as it drops; say goodbye on a fresh
     // line either way.
     eprint!("\r\n");

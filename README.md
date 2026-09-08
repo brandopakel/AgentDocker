@@ -33,7 +33,7 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits).
 
-> Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux host support exists; Linux desktop packaging and Windows host support remain unfinished. Before real-agent trials, read the [engineering audit and known blockers](docs/AUDIT-2026-09-06.md) and [trial plan](docs/LOCAL-TRIAL.md).
+> Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux have native host support and desktop packaging with graphical CI. Published signed desktop releases, target-distribution acceptance and full native Windows support remain unfinished; Windows CI currently covers core/host foundations. Before real-agent trials, read the [engineering audit and known blockers](docs/AUDIT-2026-09-06.md) and [trial plan](docs/LOCAL-TRIAL.md).
 
 ## The Docker analogy
 
@@ -54,6 +54,12 @@ If you know [herdr](https://github.com/herdrdev/herdr), the two are complements 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
 ## Install
+
+End users download native executables; Rust build caches are only development
+files. The next release separates CLI/daemon tarballs from self-contained desktop
+archives, with no duplicate app copy in the CLI download. Packaging enforces a
+100 MiB desktop payload and 40 MiB download ceiling per architecture; see
+[size and build-storage checks](docs/TESTING-AND-BENCHMARKS.md#download-size-gates).
 
 ```sh
 cargo install --git https://github.com/brandopakel/AgentDocker --tag v0.1.0 agentdocker --locked   # released CLI + daemon, from source on macOS/Linux
@@ -102,7 +108,7 @@ agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writ
 agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, in arrival order
 agentdocker leases
 agentdocker waiting     # who is queued for what
-agentdocker activity    # working, idle, or blocked on what, held by whom
+agentdocker activity    # observed working/idle, unknown, or blocked with its holders
 
 # 4. Talk. Messages to an offline agent queue in its inbox.
 agentdocker send --from reviewer --to writer "ping me when src/ is free"

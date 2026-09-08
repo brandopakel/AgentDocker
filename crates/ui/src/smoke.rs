@@ -5,7 +5,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -19,13 +19,33 @@ use std::time::{Duration, Instant};
 /// together is how a graphical check becomes flaky with no evidence.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
 
-// Asked for exactly once, and this is not an oversight. Sending
-// `ViewportCommand::Screenshot` again before the first has been
-// answered replaces the pending request rather than queuing a second
-// one, so a retry loop asks forever and is answered never: measured at
-// 12 failures in 12 runs with a two-second retry against 15 passes in
-// 15 without one. If the single reply is ever genuinely lost, the
-// deadline below reports it by name rather than hanging silently.
+// eframe drains capture commands before acquiring a surface. A failed
+// acquisition drops that capture, so a later successful paint cannot answer it.
+// Recover only after a reported acquisition failure, never on a timer.
+const MAX_CAPTURE_ATTEMPTS: u8 = 4;
+
+#[derive(Default)]
+struct Capture {
+    attempts: u8,
+    pending_at_failure: Option<u64>,
+}
+
+impl Capture {
+    fn request_after_surface(&mut self, failures: u64) -> bool {
+        if self
+            .pending_at_failure
+            .is_some_and(|previous| failures > previous)
+        {
+            self.pending_at_failure = None;
+        }
+        if self.pending_at_failure.is_some() || self.attempts >= MAX_CAPTURE_ATTEMPTS {
+            return false;
+        }
+        self.attempts += 1;
+        self.pending_at_failure = Some(failures);
+        true
+    }
+}
 
 pub struct Smoke {
     output: PathBuf,
@@ -35,9 +55,9 @@ pub struct Smoke {
     /// When the last progress line went out, so a stalled run leaves a
     /// trail in the log rather than an empty file.
     reported: Instant,
-    /// When a screenshot was last asked for, or `None` before the first
-    /// ask. See `RETRY_AFTER`.
-    requested: Option<Instant>,
+    capture: Capture,
+    surface_failures: Arc<AtomicU64>,
+    focus_requested: bool,
     frames: usize,
     outcome: Arc<AtomicU8>,
 }
@@ -59,14 +79,9 @@ fn unmet(connected: bool, runtimes: usize, fixture: bool, frames: usize) -> Stri
     }
     if waiting.is_empty() {
         // Everything the window waits for has happened, so what is left
-        // is the screenshot the renderer owes us — and the reason it
-        // owes it is worth naming, because it is nearly always the same
-        // one. Run with `RUST_LOG=egui_wgpu=trace` to see it said in the
-        // renderer's own words.
-        return "the renderer to hand back a screenshot (a window kept \
-                occluded never paints, and the capture happens during \
-                the paint)"
-            .to_owned();
+        // is the screenshot the renderer owes us. A timeout preserves this
+        // distinction from failed connection, inventory or discovery.
+        return "the renderer to hand back a screenshot".to_owned();
     }
     waiting.join(", ")
 }
@@ -95,12 +110,18 @@ impl Smoke {
                 started: Instant::now(),
                 deadline: deadline.unwrap_or(DEFAULT_DEADLINE),
                 reported: Instant::now(),
-                requested: None,
+                capture: Capture::default(),
+                surface_failures: Arc::new(AtomicU64::new(0)),
+                focus_requested: false,
                 frames: 0,
                 outcome: outcome.clone(),
             },
             outcome,
         ))
+    }
+
+    pub fn surface_failures(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.surface_failures)
     }
 
     pub fn tick(
@@ -117,6 +138,7 @@ impl Smoke {
         let fixture = self
             .expected_pid
             .is_none_or(|pid| discovered.iter().any(|agent| agent.pid == pid));
+        let viewport = ctx.input(|input| input.viewport().clone());
         let screenshot = ctx.input(|input| {
             input.events.iter().find_map(|event| {
                 if let egui::Event::Screenshot { image, .. } = event {
@@ -187,9 +209,15 @@ impl Smoke {
             report["connected"] = json!(connected);
             report["runtime_rows"] = json!(runtimes);
             report["fixture_discovered"] = json!(fixture);
-            report["screenshot_requested"] = json!(self.requested.is_some());
+            report["screenshot_requested"] = json!(self.capture.attempts > 0);
+            report["capture_attempts"] = json!(self.capture.attempts);
+            report["surface_failures"] = json!(self.surface_failures.load(Ordering::Relaxed));
             report["frames"] = json!(self.frames);
             report["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
+            report["viewport_visible"] = json!(viewport.visible());
+            report["viewport_occluded"] = json!(viewport.occluded);
+            report["viewport_minimized"] = json!(viewport.minimized);
+            report["viewport_focused"] = json!(viewport.focused);
             let write = (|| -> anyhow::Result<()> {
                 use std::io::Write;
                 agentdocker_host::dirs::private_file(
@@ -209,20 +237,59 @@ impl Smoke {
             && runtimes > 0
             && fixture
             && self.frames >= 3
-            && self.requested.is_none()
+            && viewport.visible() != Some(false)
+            && viewport.occluded != Some(true)
+            && viewport.minimized != Some(true)
+            && self
+                .capture
+                .request_after_surface(self.surface_failures.load(Ordering::Relaxed))
         {
-            // Brought to the front first, and this is not a courtesy.
-            // egui-wgpu skips the whole paint for an occluded window —
-            // "Skipping frame due to occlusion" — and the screenshot is
-            // taken during the paint, so a window behind a terminal is
-            // asked for a frame it will never render. On a CI runner
-            // there is nothing to hide behind and this changes nothing;
-            // on a desk it is the difference between a run that works
-            // and an hour spent on the wrong question.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            eprintln!(
+                "graphical acceptance screenshot requested at {:?}: visible={:?}, occluded={:?}, minimized={:?}, focused={:?}",
+                self.started.elapsed(),
+                viewport.visible(),
+                viewport.occluded,
+                viewport.minimized,
+                viewport.focused
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-            self.requested = Some(Instant::now());
+        }
+        if self.outcome.load(Ordering::Relaxed) == 0 && !self.focus_requested {
+            // Focus first, then wait for a visible viewport before requesting
+            // capture. Both commands in one frame can race surface readiness.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.focus_requested = true;
         }
         ctx.request_repaint_after(Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_acquisition_allows_a_new_capture_but_waiting_alone_does_not() {
+        let mut capture = Capture::default();
+        assert!(capture.request_after_surface(0));
+        for _ in 0..1000 {
+            assert!(!capture.request_after_surface(0));
+        }
+        // The renderer reported a failure after the outstanding request.
+        assert!(capture.request_after_surface(1));
+        assert!(!capture.request_after_surface(1));
+        assert_eq!(capture.attempts, 2);
+    }
+
+    #[test]
+    fn repeated_surface_failure_does_not_create_unbounded_captures() {
+        let mut capture = Capture::default();
+        for failure in 0..u64::from(MAX_CAPTURE_ATTEMPTS) {
+            assert!(capture.request_after_surface(failure));
+        }
+        for failure in u64::from(MAX_CAPTURE_ATTEMPTS)..1000 {
+            assert!(!capture.request_after_surface(failure));
+        }
+        assert_eq!(capture.attempts, MAX_CAPTURE_ATTEMPTS);
     }
 }

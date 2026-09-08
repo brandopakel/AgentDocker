@@ -15,6 +15,7 @@ impl Drop for DaemonChild {
     }
 }
 fn request(socket: &Path, request: &Request) -> Result<Response> {
+    let started = Instant::now();
     let operation = match request {
         Request::Ping => "ping",
         Request::Register { .. } => "register",
@@ -34,7 +35,7 @@ fn request(socket: &Path, request: &Request) -> Result<Response> {
     let mut line = String::new();
     BufReader::new(stream)
         .read_line(&mut line)
-        .with_context(|| format!("{operation}: read response"))?;
+        .with_context(|| format!("{operation}: read response after {:?}", started.elapsed()))?;
     serde_json::from_str(&line).with_context(|| format!("{operation}: decode response"))
 }
 fn main() -> Result<()> {
@@ -67,8 +68,17 @@ fn main() -> Result<()> {
     std::fs::create_dir(&checkout)?;
     std::fs::write(checkout.join("input.rs"), "original\n")?;
     let log = std::fs::File::create(tmp.path().join("daemon.log"))?;
+    let diagnostics = std::env::var("AGENTDOCKER_BENCH_DIAGNOSTICS").as_deref() == Ok("1");
     let mut daemon = DaemonChild(
         Command::new(binary)
+            .env(
+                "RUST_LOG",
+                if diagnostics {
+                    "warn,agentd_state_timing=debug"
+                } else {
+                    "warn"
+                },
+            )
             .arg("--home")
             .arg(tmp.path().join("state"))
             .arg("--socket")
@@ -246,6 +256,12 @@ fn main() -> Result<()> {
         samples.success.len(),
         samples.conflict.len()
     );
+    if diagnostics {
+        eprintln!(
+            "bounded state timing tail (diagnostic run): {}",
+            log_tail(&tmp.path().join("daemon.log"))
+        );
+    }
     Ok(())
 }
 

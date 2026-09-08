@@ -1,0 +1,2871 @@
+{
+  "format": 1,
+  "scope": "Terminal admission/lifecycle verification and short native Mac observation at the stated sources; not release acceptance",
+  "baseline": {
+    "verification": {
+      "ci_run": 34175874116,
+      "head_commit": "6cb34310a545aad84a0fb56c64af082e47e31568",
+      "tested_merge_commit": "0048aa2cbe8790f90b395e2e273660d85c758822",
+      "tree": "2b91326414798cc05f1547a80d45dd3de771dccd",
+      "source_sha256": "c946ee2fd8b358b3bdc0d50fe5ba21875e3bbac2f7a85bc89c1d45f3fd27f8fa",
+      "before_after_manifest_equal": true,
+      "known_correctness_limit": "baseline retains the three deliberately reproduced terminal failures; benchmark success is independent"
+    },
+    "download": {
+      "archive_sha256": "36acd410d72de7515ab7a44c71780be9653cca3688d947373e2ee2591833f5c2",
+      "archive_bytes": 24239
+    },
+    "manifest": {
+      "commit": "0048aa2cbe8790f90b395e2e273660d85c758822",
+      "source_sha256": "c946ee2fd8b358b3bdc0d50fe5ba21875e3bbac2f7a85bc89c1d45f3fd27f8fa",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "architecture": "x86_64",
+      "processor": "x86_64",
+      "cpu_count": 4,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "socket_metrics": {
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.114310115
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 874.8132219095396
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 874.8132219095396
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1124327.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1233567.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 1900414.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.608037265
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1644.6360405229439
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1644.6360405229439
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 5927554.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 8641601.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 10505657.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 6.469153897
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1545.7972030372305
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1545.7972030372305
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 59613856.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 108565781.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 135954004.0
+          }
+        }
+      },
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.11840834
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 844.5351062264701
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 844.5351062264701
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1171045.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1298883.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 1921506.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.868
+          },
+          "elapsed-seconds": {
+            "value": 0.332437164
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 3008.0872666811706
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 868
+          },
+          "throughput": {
+            "value": 2611.019747479256
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 2813683.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 4936923.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 6086938.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 132
+          },
+          "throughput": {
+            "value": 397.0675192019145
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 4897922.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 8913224.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 10250888.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9851
+          },
+          "elapsed-seconds": {
+            "value": 2.765734333
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 3615.6762711019214
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9851
+          },
+          "throughput": {
+            "value": 3561.8026946625027
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 24696932.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 48896182.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 63532466.99999999
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 149
+          },
+          "throughput": {
+            "value": 53.87357643941863
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 43538147.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 71994511.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 91328008.0
+          }
+        }
+      }
+    },
+    "criterion_estimates": {
+      "fingerprint_100_files_400_kib/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1626151.9471386957,
+            "upper_bound": 1643678.3150612006
+          },
+          "point_estimate": 1634110.1953235564,
+          "standard_error": 4538.2183749079695
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1620168.6875,
+            "upper_bound": 1621526.851851852
+          },
+          "point_estimate": 1621064.2819148935,
+          "standard_error": 356.12763200870614
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 2549.5001279767253,
+            "upper_bound": 5264.2297790411885
+          },
+          "point_estimate": 3647.13738551077,
+          "standard_error": 702.1727254965089
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1626862.7190069985,
+            "upper_bound": 1662373.250480958
+          },
+          "point_estimate": 1642917.5542633368,
+          "standard_error": 9202.791171830982
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 23250.411981199093,
+            "upper_bound": 61680.320950446105
+          },
+          "point_estimate": 45613.93652823437,
+          "standard_error": 9701.46417111374
+        }
+      },
+      "lease_conflict/1/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 176.54522428156898,
+            "upper_bound": 177.83105192558386
+          },
+          "point_estimate": 176.9968097463616,
+          "standard_error": 0.3917919763136969
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 176.4986787085542,
+            "upper_bound": 176.6282773209391
+          },
+          "point_estimate": 176.5497416510639,
+          "standard_error": 0.0319331697307171
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.23003332639583063,
+            "upper_bound": 0.39052773833825916
+          },
+          "point_estimate": 0.299071416308929,
+          "standard_error": 0.03998348261521511
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 176.51886243060406,
+            "upper_bound": 176.64512859479157
+          },
+          "point_estimate": 176.58110387911134,
+          "standard_error": 0.03206280168972916
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.32664481281678315,
+            "upper_bound": 6.767132680663521
+          },
+          "point_estimate": 3.9560433148792185,
+          "standard_error": 2.2973837856018973
+        }
+      },
+      "lease_conflict/100/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17937.459429407256,
+            "upper_bound": 18062.012390669024
+          },
+          "point_estimate": 17990.967476609698,
+          "standard_error": 32.15599673976376
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17974.099867724868,
+            "upper_bound": 17992.49001536098
+          },
+          "point_estimate": 17982.982387955184,
+          "standard_error": 4.681700624341852
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 32.15026269973266,
+            "upper_bound": 75.5560028760202
+          },
+          "point_estimate": 47.03280037171079,
+          "standard_error": 11.614992803774081
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17984.865863849493,
+            "upper_bound": 18025.82333117863
+          },
+          "point_estimate": 18002.86464882096,
+          "standard_error": 10.589146440279647
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 110.99769564264564,
+            "upper_bound": 489.1269700102956
+          },
+          "point_estimate": 322.6798813261209,
+          "standard_error": 99.57324558527863
+        }
+      },
+      "lease_conflict/1000/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 172903.24619366624,
+            "upper_bound": 174264.49396823897
+          },
+          "point_estimate": 173407.87949809417,
+          "standard_error": 386.1455933698188
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 172763.42989076464,
+            "upper_bound": 173171.43884220353
+          },
+          "point_estimate": 172951.24904528097,
+          "standard_error": 102.90081185041471
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 564.248275327425,
+            "upper_bound": 985.5030200112045
+          },
+          "point_estimate": 697.1210363444245,
+          "standard_error": 110.0792152771067
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 172898.07987688342,
+            "upper_bound": 173302.82853261346
+          },
+          "point_estimate": 173105.27960987145,
+          "standard_error": 103.48818987075916
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 743.8370957249039,
+            "upper_bound": 6589.538790518277
+          },
+          "point_estimate": 3892.9079716826636,
+          "standard_error": 2046.7444094448742
+        }
+      }
+    },
+    "private_bencher_upload": {
+      "exit": 0,
+      "elapsed_seconds": 3.812247292022221,
+      "scope": "eight source-verified baseline result files; private local credentials only"
+    }
+  },
+  "corrected": {
+    "verification": {
+      "ci_run": 34177267234,
+      "head_commit": "8230d4beb56b5dfa575a53ee93a88e32fe64b08c",
+      "tested_merge_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+      "tree": "4bdf25eb84307a9b57b7dcaf928fa39f96e96eb0",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "before_after_manifest_equal": true,
+      "successful_socket_scenarios": 6,
+      "criterion_files": 2
+    },
+    "download": {
+      "artifact": 10037736171,
+      "archive_bytes": 24192,
+      "archive_sha256": "0f6f52930d1cffa59771000b7b6b3fa83c3513f87aa768a042706834c4f4ccbf"
+    },
+    "manifest": {
+      "commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "architecture": "x86_64",
+      "processor": "x86_64",
+      "cpu_count": 4,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "socket_metrics": {
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.164460882
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 608.0473288474764
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 608.0473288474764
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1452270.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1792850.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 12047396.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 1.132578847
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 882.9407353393736
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 882.9407353393736
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 9208661.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 19079536.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 63097558.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 12.385935728
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 807.3673414430623
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 807.3673414430623
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 114034457.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 217074444.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 277897296.0
+          }
+        }
+      },
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.17616317
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 567.6555434373711
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 567.6555434373711
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1600668.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 3058546.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 7180950.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.879
+          },
+          "elapsed-seconds": {
+            "value": 0.582611633
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1716.4092567990315
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 879
+          },
+          "throughput": {
+            "value": 1508.7237367263485
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 4357638.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 10886669.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 14050287.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 121
+          },
+          "throughput": {
+            "value": 207.6855200726828
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 8555649.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 16643048.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 19726505.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9854
+          },
+          "elapsed-seconds": {
+            "value": 4.679802442
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 2136.842339807472
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9854
+          },
+          "throughput": {
+            "value": 2105.6444416462828
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 38330729.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 97011124.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 134553786.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 146
+          },
+          "throughput": {
+            "value": 31.197898161189087
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 69148654.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 141328900.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 172739016.0
+          }
+        }
+      }
+    },
+    "criterion_estimates": {
+      "fingerprint_100_files_400_kib/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 949852.761253102,
+            "upper_bound": 956149.6753779572
+          },
+          "point_estimate": 952687.1969396233,
+          "standard_error": 1620.6765260999907
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 946937.172462406,
+            "upper_bound": 948626.2803273427
+          },
+          "point_estimate": 947976.005952381,
+          "standard_error": 386.413972141034
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 2576.41180862001,
+            "upper_bound": 4899.748888051671
+          },
+          "point_estimate": 3550.885325621954,
+          "standard_error": 549.3319742049773
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 950312.9631390647,
+            "upper_bound": 956167.5657220472
+          },
+          "point_estimate": 952793.6329673415,
+          "standard_error": 1512.3795775253193
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 7817.883966710806,
+            "upper_bound": 22687.64652018698
+          },
+          "point_estimate": 16293.354192696823,
+          "standard_error": 3715.417708567818
+        }
+      },
+      "lease_conflict/1/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 162.210507820376,
+            "upper_bound": 163.049586449021
+          },
+          "point_estimate": 162.5875138385153,
+          "standard_error": 0.2153418170726607
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 161.90932984692367,
+            "upper_bound": 162.2626048247709
+          },
+          "point_estimate": 162.05202317203307,
+          "standard_error": 0.08105345694115933
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.4480994994600517,
+            "upper_bound": 0.7861231756058867
+          },
+          "point_estimate": 0.5926214834006541,
+          "standard_error": 0.08249253006309312
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 161.98459951451343,
+            "upper_bound": 163.14421750391432
+          },
+          "point_estimate": 162.4424526433104,
+          "standard_error": 0.3093473449723328
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1.0349025658004825,
+            "upper_bound": 3.0061699269951245
+          },
+          "point_estimate": 2.155038887520089,
+          "standard_error": 0.5077499251319633
+        }
+      },
+      "lease_conflict/100/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17702.3254158316,
+            "upper_bound": 17856.219871772253
+          },
+          "point_estimate": 17758.414913383698,
+          "standard_error": 44.144324416562576
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17677.869047619046,
+            "upper_bound": 17699.940346790892
+          },
+          "point_estimate": 17687.655631868132,
+          "standard_error": 5.798168575678987
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 28.12508265285365,
+            "upper_bound": 51.304592385863224
+          },
+          "point_estimate": 40.172754879573866,
+          "standard_error": 5.454992150959956
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17701.566344021132,
+            "upper_bound": 17741.256951378607
+          },
+          "point_estimate": 17719.563682207772,
+          "standard_error": 10.185440097316066
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 68.79497697636782,
+            "upper_bound": 747.7928815975538
+          },
+          "point_estimate": 441.7257048169682,
+          "standard_error": 235.54753662299467
+        }
+      },
+      "lease_conflict/1000/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 173424.79453568617,
+            "upper_bound": 174693.02461482317
+          },
+          "point_estimate": 173969.50785322208,
+          "standard_error": 324.9516081471555
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 172922.6105442177,
+            "upper_bound": 173372.68452380953
+          },
+          "point_estimate": 173098.1219027583,
+          "standard_error": 129.72930690067693
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 504.0563594985091,
+            "upper_bound": 898.0376816005098
+          },
+          "point_estimate": 608.0533243960335,
+          "standard_error": 99.21063826009267
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 173179.06123462098,
+            "upper_bound": 173887.66629678424
+          },
+          "point_estimate": 173488.96925964238,
+          "standard_error": 182.11743762886547
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1473.8626318751487,
+            "upper_bound": 4944.732545284136
+          },
+          "point_estimate": 3250.962901231726,
+          "standard_error": 992.0884326779646
+        }
+      }
+    },
+    "private_bencher_upload": {
+      "exit_code": 0,
+      "elapsed_seconds": 3.713794582989067,
+      "expected_files": 8
+    }
+  },
+  "corrected_ci": {
+    "standard_and_coverage": {
+      "run": 34177267233,
+      "result": "passed"
+    },
+    "native_desktop": {
+      "run": 34177267271,
+      "result": "passed"
+    },
+    "windows_foundations": {
+      "run": 34177267226,
+      "result": "passed"
+    },
+    "docker_and_podman": {
+      "run": 34177267230,
+      "result": "passed"
+    },
+    "performance": {
+      "run": 34177267234,
+      "result": "passed"
+    }
+  },
+  "mac_resource_observation": {
+    "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+    "driver_sha256": "eaa8e4ad8009e16d54fe569c1e1be57c10d41a5595479737527c68e86bc49bff",
+    "os": "26.5.1",
+    "architecture": "arm64",
+    "scope": "single short native GUI/daemon observation; owned idle sleep commands in a tiny project",
+    "method": {
+      "stages": [
+        100
+      ],
+      "samples_per_stage": 30,
+      "warmup_seconds": 10.0,
+      "sample_pause_seconds": 0.75,
+      "rss": "Darwin ps rss; summed child RSS is not unique physical memory",
+      "cpu": "Darwin ps %cpu samples plus cumulative process CPU seconds; interval deltas use monotonic sample timestamps",
+      "threads": "Darwin ps -M thread rows excluding header",
+      "descriptors": "lsof numeric descriptors; excludes mapped files",
+      "disk": "du -sk allocated bytes including SQLite WAL while running",
+      "transport": "lsof TCP polling; short-lived sockets between samples can be missed"
+    },
+    "binaries": {
+      "agentd": {
+        "bytes": 13126000,
+        "sha256": "3eaf4283f4e3e2e25cc7eaa11c6791ff8ff7cd929a9159ad0a8422f3d8ca1711"
+      },
+      "agentdocker": {
+        "bytes": 7954672,
+        "sha256": "a3b718a0ae2252f9960b9635aa3703686fd36778610890ba16e75741b7f7227c"
+      },
+      "agentdocker-ui": {
+        "bytes": 17080752,
+        "sha256": "7f4abc7db028eeb9016effbc6519ee0f59a447872ee4fd9e23ff01d1e8aaace3"
+      }
+    },
+    "stages": [
+      {
+        "owned_agents": 100,
+        "new_agent_launch_seconds": 0.500508000026457,
+        "samples": [
+          {
+            "sample_monotonic_seconds": 10.886995709035546,
+            "daemon": {
+              "rss_bytes": 21807104,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.24,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106807296,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.36,
+              "threads": 8,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 11.722397500067018,
+            "daemon": {
+              "rss_bytes": 21807104,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.24,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106807296,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.36,
+              "threads": 8,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 12.562821125029586,
+            "daemon": {
+              "rss_bytes": 21807104,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.24,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106921984,
+              "ps_cpu_percent": 1.0,
+              "cpu_seconds": 0.37,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 13.406226459075697,
+            "daemon": {
+              "rss_bytes": 21807104,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.24,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106921984,
+              "ps_cpu_percent": 0.4,
+              "cpu_seconds": 0.37,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 14.251318791997619,
+            "daemon": {
+              "rss_bytes": 21807104,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.24,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106921984,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.37,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 15.097794875036925,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.2,
+              "cpu_seconds": 0.25,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106921984,
+              "ps_cpu_percent": 1.0,
+              "cpu_seconds": 0.38,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 15.937640500022098,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.25,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106954752,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.39,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 16.774705209070817,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.25,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106954752,
+              "ps_cpu_percent": 0.5,
+              "cpu_seconds": 0.39,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 17.619795958977193,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.26,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106954752,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.4,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 18.46476225007791,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.26,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 106954752,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.4,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 19.301814874983393,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.26,
+              "threads": 17,
+              "descriptors": 317
+            },
+            "window": {
+              "rss_bytes": 106954752,
+              "ps_cpu_percent": 0.2,
+              "cpu_seconds": 0.4,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 20.14607470901683,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107036672,
+              "ps_cpu_percent": 0.5,
+              "cpu_seconds": 0.4,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 20.995881958981045,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107036672,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.41,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 21.839750749990344,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107036672,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.41,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 22.68041412497405,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.5,
+              "cpu_seconds": 0.41,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 23.524687792058103,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.42,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 24.364099042024463,
+            "daemon": {
+              "rss_bytes": 21921792,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.27,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.42,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 25.203937542042695,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.29,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.4,
+              "cpu_seconds": 0.42,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 26.047873125062324,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.29,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.4,
+              "cpu_seconds": 0.43,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 26.891846625017934,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.29,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107315200,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.43,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 27.736354709020816,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.29,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.3,
+              "cpu_seconds": 0.44,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 28.577552083996125,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.29,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.2,
+              "cpu_seconds": 0.44,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 29.418511500000022,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 3.0,
+              "cpu_seconds": 0.3,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 1.3,
+              "cpu_seconds": 0.45,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 30.25870758399833,
+            "daemon": {
+              "rss_bytes": 21954560,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.3,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107053056,
+              "ps_cpu_percent": 0.1,
+              "cpu_seconds": 0.45,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 31.107544249971397,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.32,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107331584,
+              "ps_cpu_percent": 0.5,
+              "cpu_seconds": 0.45,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 32.02890558401123,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.32,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107069440,
+              "ps_cpu_percent": 0.5,
+              "cpu_seconds": 0.46,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 32.88543241703883,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.32,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107069440,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.46,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 33.904718209058046,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.32,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107069440,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.46,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 34.798978584003635,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.6,
+              "cpu_seconds": 0.33,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107085824,
+              "ps_cpu_percent": 1.9,
+              "cpu_seconds": 0.48,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          },
+          {
+            "sample_monotonic_seconds": 35.638498667045496,
+            "daemon": {
+              "rss_bytes": 22052864,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.33,
+              "threads": 17,
+              "descriptors": 316
+            },
+            "window": {
+              "rss_bytes": 107085824,
+              "ps_cpu_percent": 0.0,
+              "cpu_seconds": 0.48,
+              "threads": 7,
+              "descriptors": 8
+            },
+            "owned_children_rss_sum_bytes": 119635968,
+            "state_allocated_bytes": 4567040
+          }
+        ]
+      }
+    ],
+    "result": "passed",
+    "profile": {
+      "method": "Darwin sample; 5 seconds at 10 ms after resource samples",
+      "sha256": "8c1a54d1665b340b4dba900a8d6b8d26153bd2ea2a3ae396e73d5afdc3164035",
+      "bytes": 227458
+    },
+    "elapsed_seconds": 42.475601791986264,
+    "cleanup": {
+      "created_agents": 100,
+      "window_exited": true,
+      "daemon_exited": true,
+      "errors": [],
+      "fixture_allocated_bytes_removed": 643072,
+      "fixture_removed": true
+    }
+  },
+  "mac_package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "4bdf25eb84307a9b57b7dcaf928fa39f96e96eb0",
+    "source_input_sha256": "acb04e9aa2e3cd97c2274d194d2fb4d114cedb8b8f2368664730426367589719",
+    "source_dirty": false,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "a3b718a0ae2252f9960b9635aa3703686fd36778610890ba16e75741b7f7227c",
+      "agentd": "3eaf4283f4e3e2e25cc7eaa11c6791ff8ff7cd929a9159ad0a8422f3d8ca1711",
+      "agentdocker-ui": "7f4abc7db028eeb9016effbc6519ee0f59a447872ee4fd9e23ff01d1e8aaace3"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "4e8ae6b15d6a5bd210a79c74d9f65beb011be77304b594a21689ed36b42c15e0",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "7c4ffb5853afb761683e00b8f846d89c5ecbf2e0c2f4bee513e815c2277fe007"
+    }
+  },
+  "mac_ci_graphical": {
+    "connected": true,
+    "display_name": "agentdocker",
+    "elapsed_seconds": 2.333313292,
+    "fixture_discovered": true,
+    "frames": 10,
+    "result": "passed",
+    "runtime_rows": 14,
+    "screenshot": "window.png",
+    "screenshot_requested": true,
+    "viewport_focused": true,
+    "viewport_minimized": false,
+    "viewport_occluded": false,
+    "viewport_visible": true,
+    "transport": "unix-socket",
+    "tcp_socket_observation": "none",
+    "tcp_observation": {
+      "samples": 11,
+      "elapsed_seconds": 2.6586122080000223,
+      "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+    },
+    "scope": "native window, daemon connection, runtime inventory, running process discovery"
+  },
+  "mac_ci_installation": {
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "activation keeps the existing fixture daemon responsive",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "synthetic_second_generation": true,
+    "first": {
+      "id": "74daf2da82d5bb3dac46400eed0858d3726e7d4f23bad25587b77211290c0922",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+      "state_schema": 8,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "74daf2da82d5bb3dac46400eed0858d3726e7d4f23bad25587b77211290c0922",
+      "version": "0.1.0"
+    },
+    "second": {
+      "id": "28579192b55798276261977932530e13acde10b03b7dccb09cee4eb8101c7303",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+      "state_schema": 8,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "28579192b55798276261977932530e13acde10b03b7dccb09cee4eb8101c7303",
+      "version": "0.1.0"
+    }
+  },
+  "new_pty_original_failure": {
+    "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+    "driver_sha256": "13fa90bbb2ff97f128180f4c55779319475597a8ba1c1e490b9713178180b5a6",
+    "os": "Darwin",
+    "os_version": "25.5.0",
+    "architecture": "arm64",
+    "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+    "binaries": {
+      "agentd": {
+        "bytes": 13126000,
+        "sha256": "3eaf4283f4e3e2e25cc7eaa11c6791ff8ff7cd929a9159ad0a8422f3d8ca1711"
+      },
+      "agentdocker": {
+        "bytes": 7954672,
+        "sha256": "a3b718a0ae2252f9960b9635aa3703686fd36778610890ba16e75741b7f7227c"
+      }
+    },
+    "checks": [
+      "attach_handshake_and_no_newline_output",
+      "unicode_input_and_ansi_output",
+      "initial_terminal_dimensions",
+      "sigwinch_resize_reaches_child",
+      "noisy_output_above_replay_capacity",
+      "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+      "reattach_replays_tail_with_one_live_child"
+    ],
+    "result": "failed",
+    "failure_class": "TimeoutError",
+    "elapsed_seconds": 10.186932084034197,
+    "cleanup": {
+      "daemon_exited": true,
+      "errors": [],
+      "fixture_removed": true
+    }
+  },
+  "independent_cli_End_failure": {
+    "source_commit": "9da980d23f9f23595e0efb533b857eeea4dd8cc9",
+    "scenario": "actual CLI receives End while keyboard stays open",
+    "End_message_printed": true,
+    "result": "failed",
+    "failure_class": "TimeoutError",
+    "cleanup_complete": true
+  },
+  "limits": [
+    "One shared-runner baseline/corrected pair is advisory; backend timing does not establish GUI improvement.",
+    "The first corrected pair measured 30-48% lower socket throughput and claim_release p99 latency up to 534% higher than baseline. repeat_at_823 re-measures the same corrected head closer to baseline; this is consistent with shared-runner variance, rather than establishing a confirmed regression or improvement.",
+    "The 100-agent observation uses idle owned sleep commands, not actual provider work or a soak.",
+    "Other desktop apps and development sessions were active on the Mac; window focus/occlusion was not recorded.",
+    "The original screenshot timeout and earlier higher GUI CPU reading remain unexplained.",
+    "The real PTY trial discovered separate daemon/CLI completion defects after the bounded GUI terminal unit tests passed; those fixes need their own source verification.",
+    "Private profiles, terminal bytes, discovered process state and raw logs are excluded."
+  ],
+  "benchmark_comparison": {
+    "socket-disjoint-1": {
+      "socket_v2/disjoint/1_clients/100_iterations/attempts/throughput": {
+        "baseline": 874.8132219095396,
+        "corrected": 608.0473288474764,
+        "percent_change": -30.49403991400216
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/throughput": {
+        "baseline": 874.8132219095396,
+        "corrected": 608.0473288474764,
+        "percent_change": -30.49403991400216
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 1124327.0,
+        "corrected": 1452270.0,
+        "percent_change": 29.16793779745572
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 1233567.0,
+        "corrected": 1792850.0,
+        "percent_change": 45.3386804283837
+      },
+      "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 1900414.0,
+        "corrected": 12047396.0,
+        "percent_change": 533.9353425095795
+      }
+    },
+    "socket-disjoint-10": {
+      "socket_v2/disjoint/10_clients/100_iterations/attempts/throughput": {
+        "baseline": 1644.6360405229439,
+        "corrected": 882.9407353393736,
+        "percent_change": -46.31391301271584
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/throughput": {
+        "baseline": 1644.6360405229439,
+        "corrected": 882.9407353393736,
+        "percent_change": -46.31391301271584
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 5927554.0,
+        "corrected": 9208661.0,
+        "percent_change": 55.353472950225346
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 8641601.0,
+        "corrected": 19079536.0,
+        "percent_change": 120.7870509179954
+      },
+      "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 10505657.0,
+        "corrected": 63097558.0,
+        "percent_change": 500.6055404245541
+      }
+    },
+    "socket-disjoint-100": {
+      "socket_v2/disjoint/100_clients/100_iterations/attempts/throughput": {
+        "baseline": 1545.7972030372305,
+        "corrected": 807.3673414430623,
+        "percent_change": -47.77016416793084
+      },
+      "socket_v2/disjoint/100_clients/100_iterations/claim_release/throughput": {
+        "baseline": 1545.7972030372305,
+        "corrected": 807.3673414430623,
+        "percent_change": -47.77016416793084
+      },
+      "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 59613856.0,
+        "corrected": 114034457.0,
+        "percent_change": 91.28851017454733
+      },
+      "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 108565781.0,
+        "corrected": 217074444.0,
+        "percent_change": 99.94738857909566
+      },
+      "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 135954004.0,
+        "corrected": 277897296.0,
+        "percent_change": 104.40537816010185
+      }
+    },
+    "socket-shared-1": {
+      "socket_v2/shared/1_clients/100_iterations/attempts/throughput": {
+        "baseline": 844.5351062264701,
+        "corrected": 567.6555434373711,
+        "percent_change": -32.78484940978299
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/throughput": {
+        "baseline": 844.5351062264701,
+        "corrected": 567.6555434373711,
+        "percent_change": -32.78484940978299
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 1171045.0,
+        "corrected": 1600668.0,
+        "percent_change": 36.68714694994642
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 1298883.0,
+        "corrected": 3058546.0,
+        "percent_change": 135.4750966792236
+      },
+      "socket_v2/shared/1_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 1921506.0,
+        "corrected": 7180950.0,
+        "percent_change": 273.7146800478375
+      }
+    },
+    "socket-shared-10": {
+      "socket_v2/shared/10_clients/100_iterations/attempts/throughput": {
+        "baseline": 3008.0872666811706,
+        "corrected": 1716.4092567990315,
+        "percent_change": -42.94017744063823
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/throughput": {
+        "baseline": 2611.019747479256,
+        "corrected": 1508.7237367263485,
+        "percent_change": -42.217069090231576
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50/latency": {
+        "baseline": 2813683.0,
+        "corrected": 4357638.0,
+        "percent_change": 54.873096933805265
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95/latency": {
+        "baseline": 4936923.0,
+        "corrected": 10886669.0,
+        "percent_change": 120.51526831591258
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99/latency": {
+        "baseline": 6086938.0,
+        "corrected": 14050287.0,
+        "percent_change": 130.8268459445455
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/throughput": {
+        "baseline": 397.0675192019145,
+        "corrected": 207.6855200726828,
+        "percent_change": -47.695162653918366
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 4897922.0,
+        "corrected": 8555649.0,
+        "percent_change": 74.67915985595523
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 8913224.0,
+        "corrected": 16643048.0,
+        "percent_change": 86.7230981741287
+      },
+      "socket_v2/shared/10_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 10250888.0,
+        "corrected": 19726505.0,
+        "percent_change": 92.43703569876092
+      }
+    },
+    "socket-shared-100": {
+      "socket_v2/shared/100_clients/100_iterations/attempts/throughput": {
+        "baseline": 3615.6762711019214,
+        "corrected": 2136.842339807472,
+        "percent_change": -40.900617765864226
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/throughput": {
+        "baseline": 3561.8026946625027,
+        "corrected": 2105.6444416462828,
+        "percent_change": -40.88261978122283
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50/latency": {
+        "baseline": 24696932.0,
+        "corrected": 38330729.0,
+        "percent_change": 55.20441567397927
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95/latency": {
+        "baseline": 48896182.0,
+        "corrected": 97011124.0,
+        "percent_change": 98.4022474392786
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99/latency": {
+        "baseline": 63532466.99999999,
+        "corrected": 134553786.0,
+        "percent_change": 111.78744090009917
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/throughput": {
+        "baseline": 53.87357643941863,
+        "corrected": 31.197898161189087,
+        "percent_change": -42.09053821353139
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p50/latency": {
+        "baseline": 43538147.0,
+        "corrected": 69148654.0,
+        "percent_change": 58.82314421879278
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p95/latency": {
+        "baseline": 71994511.0,
+        "corrected": 141328900.0,
+        "percent_change": 96.30510442664163
+      },
+      "socket_v2/shared/100_clients/100_iterations/claim_release/p99/latency": {
+        "baseline": 91328008.0,
+        "corrected": 172739016.0,
+        "percent_change": 89.14133767157169
+      }
+    }
+  },
+  "repeat_at_823": {
+    "verification": {
+      "run": 34178745855,
+      "head_commit": "8230d4beb56b5dfa575a53ee93a88e32fe64b08c",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "same_content_and_environment_as_original": true,
+      "before_after_manifest_equal": true,
+      "successful_socket_scenarios": 6
+    },
+    "download": {
+      "artifact": 10038201847,
+      "archive_bytes": 24214,
+      "archive_sha256": "3f83de93f97e13e0ad5a71fce893848d980b96810c3045ffe62b76828e1de3b4"
+    },
+    "manifest": {
+      "commit": "8230d4beb56b5dfa575a53ee93a88e32fe64b08c",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "architecture": "x86_64",
+      "processor": "x86_64",
+      "cpu_count": 4,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "private_bencher_upload": {
+      "exit_code": 0,
+      "elapsed_seconds": 3.952920333016664,
+      "expected_files": 8
+    },
+    "socket_metrics": {
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.137237215
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 728.6653259467558
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 728.6653259467558
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1312148.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1645285.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 3763649.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.772157288
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1295.0729281985355
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1295.0729281985355
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 7350406.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 11165153.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 14510954.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 8.060057111
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1240.685997913396
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1240.685997913396
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 73117614.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 140622751.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 176064472.0
+          }
+        }
+      },
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.150528026
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 664.3281165462171
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 664.3281165462171
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1436813.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1731097.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 3934191.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.872
+          },
+          "elapsed-seconds": {
+            "value": 0.420284161
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 2379.342580078815
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 872
+          },
+          "throughput": {
+            "value": 2074.7867298287265
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 3411270.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 6374745.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 8504259.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 128
+          },
+          "throughput": {
+            "value": 304.5558502500883
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 6332543.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 11408009.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 11759651.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9856
+          },
+          "elapsed-seconds": {
+            "value": 3.514463849
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 2845.384226343766
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9856
+          },
+          "throughput": {
+            "value": 2804.410693484416
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 30864218.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 65485430.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 87411945.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 144
+          },
+          "throughput": {
+            "value": 40.97353285935023
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 54888158.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 93760952.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 112882321.0
+          }
+        }
+      }
+    },
+    "criterion_estimates": {
+      "fingerprint_100_files_400_kib/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1450950.0807507355,
+            "upper_bound": 1473761.7626912403
+          },
+          "point_estimate": 1459228.7024297386,
+          "standard_error": 6580.800009005108
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1447205.5818181818,
+            "upper_bound": 1449511.9529411765
+          },
+          "point_estimate": 1448190.3837772398,
+          "standard_error": 665.3652244960944
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 2209.0445441149805,
+            "upper_bound": 4363.763584075769
+          },
+          "point_estimate": 2791.4743258036488,
+          "standard_error": 579.3576641316865
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1450988.46521756,
+            "upper_bound": 1461594.4675672648
+          },
+          "point_estimate": 1455414.6427840993,
+          "standard_error": 2730.8971817309575
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 9419.024645551825,
+            "upper_bound": 111951.01096221837
+          },
+          "point_estimate": 66039.88128307977,
+          "standard_error": 35682.09252598103
+        }
+      },
+      "lease_conflict/1/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 174.98350222927473,
+            "upper_bound": 179.98856583835638
+          },
+          "point_estimate": 177.2126974940037,
+          "standard_error": 1.2856227033815444
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 173.79489219887097,
+            "upper_bound": 174.20739531614862
+          },
+          "point_estimate": 173.93919815628124,
+          "standard_error": 0.10176555030253004
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.4031997529391869,
+            "upper_bound": 0.8654370251158753
+          },
+          "point_estimate": 0.5803030447154505,
+          "standard_error": 0.11502355911639446
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 174.32841545967506,
+            "upper_bound": 175.28464089038712
+          },
+          "point_estimate": 174.74871500260602,
+          "standard_error": 0.24514234274328967
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 5.6360365347462515,
+            "upper_bound": 18.20979997172998
+          },
+          "point_estimate": 12.90187742218026,
+          "standard_error": 3.160286947847303
+        }
+      },
+      "lease_conflict/100/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17838.78694896167,
+            "upper_bound": 18063.613626196995
+          },
+          "point_estimate": 17931.978586213587,
+          "standard_error": 58.5924279831642
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17781.86959586466,
+            "upper_bound": 17898.70825008325
+          },
+          "point_estimate": 17870.074390053986,
+          "standard_error": 32.36423441464741
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 141.74251694500217,
+            "upper_bound": 203.40153291116172
+          },
+          "point_estimate": 171.03135211064546,
+          "standard_error": 15.627033926795221
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17764.302274211903,
+            "upper_bound": 17964.02966211567
+          },
+          "point_estimate": 17834.533861597247,
+          "standard_error": 54.74464121480048
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 145.79671816930707,
+            "upper_bound": 937.5744272346078
+          },
+          "point_estimate": 588.1198094035916,
+          "standard_error": 220.1357176972565
+        }
+      },
+      "lease_conflict/1000/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179771.35860166652,
+            "upper_bound": 181837.51866963482
+          },
+          "point_estimate": 180603.84443935408,
+          "standard_error": 543.4930983318045
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179424.38,
+            "upper_bound": 179651.91784989857
+          },
+          "point_estimate": 179537.3744152047,
+          "standard_error": 59.6548408179995
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 312.23246570676423,
+            "upper_bound": 663.1239736655132
+          },
+          "point_estimate": 482.5759016723211,
+          "standard_error": 87.36110764799042
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179762.19739105963,
+            "upper_bound": 180398.25929042167
+          },
+          "point_estimate": 180041.34185163293,
+          "standard_error": 163.19296451023044
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1144.2520413340912,
+            "upper_bound": 8910.375464337221
+          },
+          "point_estimate": 5485.060234582725,
+          "standard_error": 2258.586893898881
+        }
+      }
+    }
+  },
+  "pty_followup_at_865": {
+    "verification": {
+      "head_commit": "865b05487611def29de9991c900a09ce07078535",
+      "tested_merge_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "package_verified": true,
+      "ci_run": 34178775442
+    },
+    "package_manifest": {
+      "format": 1,
+      "product": "agentdocker",
+      "version": "0.1.0",
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "target": "aarch64-apple-darwin",
+      "display_name": "agentdocker",
+      "signing": "local-preview",
+      "notarized": false,
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "source_dirty": false,
+      "state_schema": 8,
+      "installation_lock": 1,
+      "binary_sha256": {
+        "agentdocker": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f",
+        "agentd": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4",
+        "agentdocker-ui": "9581db6c74e0b30a9fcda8f7a9c14fe10da5260801e46692ce9aa6107a17dfe4"
+      },
+      "artifacts": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": "f6fb4ee96f9afb2d3d12e7090e6d5bac397ff637994710c2bdb7a41e1a2efc2f",
+        "agentdocker-desktop-aarch64-apple-darwin.dmg": "cbfe7a58321b8cdc7aa0f0a4be8eae0c405bd58f82eb5b689777d62399ef2053"
+      }
+    },
+    "mac_ci": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Darwin",
+      "os_version": "25.6.0",
+      "architecture": "arm64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 13135824,
+          "sha256": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4"
+        },
+        "agentdocker": {
+          "bytes": 7950288,
+          "sha256": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.46446308400004455,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "mac_local": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Darwin",
+      "os_version": "25.5.0",
+      "architecture": "arm64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 13135824,
+          "sha256": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4"
+        },
+        "agentdocker": {
+          "bytes": 7950288,
+          "sha256": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.5698194579454139,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "standard_mac_failure": {
+      "run": 34178775537,
+      "passed": 586,
+      "failed": 1,
+      "fixture": "bulk_adoption_preserves_partial_progress_and_distinguishes_remote_failure",
+      "original_log_sha256": "0c51c5c1a5fd2f0d9047b06a1a26c9022e9ad5190b9ad6c65be0904040cccf45",
+      "reason": "Darwin accepted socket inherited O_NONBLOCK; existing read timeout did not apply"
+    },
+    "linux_ci": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Linux",
+      "os_version": "6.17.0-1022-azure",
+      "architecture": "x86_64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 15602816,
+          "sha256": "817e397f946a3d6285d2ac5f9dc07a271ac6c69c1a17ad72a76961ae8bc5598f"
+        },
+        "agentdocker": {
+          "bytes": 9321648,
+          "sha256": "0f98933d585870ac15808e2214c8b14bc223983c06bdf941961c95bb192cd02a"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.2523287049999965,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "linux_package_manifest": {
+      "format": 1,
+      "product": "agentdocker",
+      "version": "0.1.0",
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "target": "x86_64-unknown-linux-gnu",
+      "display_name": "agentdocker",
+      "signing": "checksum",
+      "notarized": false,
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "source_dirty": false,
+      "state_schema": 8,
+      "installation_lock": 1,
+      "binary_sha256": {
+        "agentdocker": "0f98933d585870ac15808e2214c8b14bc223983c06bdf941961c95bb192cd02a",
+        "agentd": "817e397f946a3d6285d2ac5f9dc07a271ac6c69c1a17ad72a76961ae8bc5598f",
+        "agentdocker-ui": "c0001adf037dab473a3b6f317092bd4fa22e5a4711022542bdfe05f3aae02c29"
+      },
+      "artifacts": {
+        "agentdocker-desktop-x86_64-unknown-linux-gnu.tar.gz": "49b25cf92cd3920e13e0cf7e9bb65645de5eb2da5b0b7f5cbbd17fbb55af33f3"
+      }
+    },
+    "linux_verification": {
+      "head": "865b05487611def29de9991c900a09ce07078535",
+      "tested_merge": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "artifact": 10038191730,
+      "workflow_run": 34178775442,
+      "archive_sha256": "5aaecd43e0269c4a8b964f37c4fdce9ec398366b7c55cf6e51167dc27af30936",
+      "checks": "merge parents, identical source tree, driver blob hash, binary/report identities, package archive hash",
+      "source_input_matches_retained_mac_campaign": true
+    }
+  },
+  "cleanup_after_publication": {
+    "published_commit": "865b05487611def29de9991c900a09ce07078535",
+    "previous_report_sha256": "93b1b27cb1ce42bc564f3b06348a95cdb6bb12289f2474e99906350235ebeb02",
+    "allocated_bytes_removed": 99205120,
+    "removed": "obsolete509 preview,823 download wrapper and redundant DMG after hash and open-file checks",
+    "worktree_cargo_cache_bytes": 8192,
+    "limits": "Allocation removed is not a physical free-space delta."
+  }
+}

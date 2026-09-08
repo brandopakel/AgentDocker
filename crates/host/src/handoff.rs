@@ -19,6 +19,7 @@
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::time::Instant;
 
 use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg};
 
@@ -75,6 +76,22 @@ pub fn send(socket: &UnixStream, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::
 
 /// Receive one message and its descriptors.
 pub fn receive(socket: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    receive_bounded(socket, None)
+}
+
+/// Receive a complete frame before one absolute deadline, including trickled bytes.
+/// Uses per-call nonblocking reads without changing the shared socket's flags.
+pub fn receive_until(
+    socket: &UnixStream,
+    deadline: Instant,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    receive_bounded(socket, Some(deadline))
+}
+
+fn receive_bounded(
+    socket: &UnixStream,
+    deadline: Option<Instant>,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut header = [0_u8; 4];
     // The receive is its own scope: `RecvMsg` borrows the buffer, which
     // borrows the header, and the header has to be readable afterwards.
@@ -82,12 +99,26 @@ pub fn receive(socket: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
         let mut buffer = [io::IoSliceMut::new(&mut header)];
         // Room for the control data: one `cmsghdr` plus the descriptors.
         let mut space = nix::cmsg_space!([RawFd; MAX_FDS]);
-        let message = recvmsg::<()>(
-            socket.as_raw_fd(),
-            &mut buffer,
-            Some(&mut space),
-            MsgFlags::empty(),
-        )?;
+        let message = loop {
+            if let Some(deadline) = deadline {
+                wait_readable(socket, deadline)?;
+            }
+            match recvmsg::<()>(
+                socket.as_raw_fd(),
+                &mut buffer,
+                Some(&mut space),
+                if deadline.is_some() {
+                    MsgFlags::MSG_DONTWAIT
+                } else {
+                    MsgFlags::empty()
+                },
+            ) {
+                Ok(message) => break message,
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(nix::errno::Errno::EAGAIN) if deadline.is_some() => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
         let fds: Vec<OwnedFd> = message
             .cmsgs()?
             .flat_map(|control| match control {
@@ -111,7 +142,7 @@ pub fn receive(socket: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
         ));
     }
     let mut payload = vec![0_u8; length];
-    read_exact(socket, &mut payload)?;
+    read_exact(socket, &mut payload, deadline)?;
     Ok((payload, fds))
 }
 
@@ -128,17 +159,67 @@ fn write_all(mut socket: &UnixStream, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn read_exact(mut socket: &UnixStream, mut into: &mut [u8]) -> io::Result<()> {
+fn read_exact(
+    mut socket: &UnixStream,
+    mut into: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
     use io::Read;
     while !into.is_empty() {
-        match socket.read(into) {
+        let read = if let Some(deadline) = deadline {
+            wait_readable(socket, deadline)?;
+            nix::sys::socket::recv(socket.as_raw_fd(), into, MsgFlags::MSG_DONTWAIT)
+                .map_err(io::Error::from)
+        } else {
+            socket.read(into)
+        };
+        match read {
             Ok(0) => return Err(io::Error::other("handoff closed while reading")),
             Ok(n) => into = &mut into[n..],
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if deadline.is_some() && e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+fn wait_readable(socket: &UnixStream, deadline: Instant) -> io::Result<()> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "handoff deadline expired",
+            ));
+        }
+        let millis = remaining
+            .as_millis()
+            .saturating_add(1)
+            .min(i32::MAX as u128) as i32;
+        let mut fd = libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: fd is one initialized pollfd, valid for the duration of poll.
+        let result = unsafe { libc::poll(&mut fd, 1, millis) };
+        if result > 0 {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "handoff deadline expired",
+                ));
+            }
+            return Ok(());
+        }
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

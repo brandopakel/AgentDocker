@@ -38,6 +38,8 @@ fn logging() {
 
 fn main() -> eframe::Result {
     logging();
+    let _installation_pin = agentdocker_host::installation::pin_current_executable()
+        .unwrap_or_else(|error| usage_error(&format!("cannot open installed release: {error}")));
     let mut args = std::env::args_os().skip(1);
     let mut smoke_output = None;
     let mut expected_pid = None;
@@ -122,17 +124,14 @@ fn main() -> eframe::Result {
         },
         None => (None, None),
     };
-    // Our mark, not egui's. eframe falls back to its own logo when the
-    // viewport has no icon and then calls `setApplicationIconImage` with
-    // it — which overrides the bundle's icon on the *running* Dock tile
-    // while Finder still shows ours. That is why the app looked right
-    // until you opened it.
+    // Set the process icon as well as the bundle icon, so the running Dock
+    // tile uses the same artwork as Finder.
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
         .expect("the bundled icon is a valid PNG");
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon)
-            .with_title("AgentDocker")
+            .with_title("agentdocker")
             .with_inner_size([1100.0, 720.0])
             // Small enough to be honest about: below this the agent
             // table's columns start colliding, and a window that cannot
@@ -147,8 +146,21 @@ fn main() -> eframe::Result {
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
+    if let Some(smoke) = &smoke {
+        // Keep renderer failures observable in explicit fixture mode. Preserve
+        // the backend's recovery behavior and bound repetitive log messages.
+        let original = options.wgpu_options.on_surface_status.clone();
+        let failures = smoke.surface_failures();
+        options.wgpu_options.on_surface_status = std::sync::Arc::new(move |status| {
+            let count = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if count <= 16 || count.is_power_of_two() {
+                eprintln!("graphical acceptance surface #{count}: {status:?}");
+            }
+            original(status)
+        });
+    }
     let result = eframe::run_native(
-        "AgentDocker",
+        "agentdocker",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc).with_smoke(smoke)))),
     );
