@@ -69,8 +69,12 @@ pub struct McpArgs {
 pub struct Identity {
     pub id: String,
     pub name: String,
-    /// We registered the agent ourselves, so we deregister it on exit.
+    /// We created this record, rather than joining one that already
+    /// existed. Not the same as owning it: see [`McpServer::shutdown`].
     pub registered_here: bool,
+    /// The process this agent *is*. Its lifetime, not ours, is what ends
+    /// the agent.
+    pub host_pid: Option<u32>,
 }
 
 pub struct McpServer<B> {
@@ -137,6 +141,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
                 id: agent.id.to_string(),
                 name: agent.spec.name,
                 registered_here: false,
+                host_pid: agent.pid,
             }),
             Ok(other) => bail!("unexpected reply to inspect: {other:?}"),
             Err(err) => Err(err.context(format!(
@@ -202,6 +207,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         // leave it alone.
         Response::Agent { agent } => Ok(Identity {
             registered_here: agent.spec.labels.get("registrar") == Some(&registrar),
+            host_pid: agent.pid.or(Some(host_pid)),
             id: agent.id.to_string(),
             name: agent.spec.name,
         }),
@@ -214,16 +220,37 @@ impl<B: Backend> McpServer<B> {
         Self { backend, identity }
     }
 
-    /// Deregister if we were the ones who registered.
+    /// End the agent only if the thing it names has actually ended.
+    ///
+    /// Creating a record is not owning it. One process is one agent, so
+    /// by the time this server exits the hooks adapter may have joined
+    /// the same record, or a second MCP server may be serving it, and
+    /// the provider itself may be very much alive — an MCP host is free
+    /// to restart its servers. Deregistering there takes a live
+    /// session's identity, inbox and leases away from it.
+    ///
+    /// What ends an agent is the end of the process it stands for. That
+    /// is `SessionEnd` where the runtime has a hooks adapter, and the
+    /// daemon's liveness sweep everywhere else — both of which happen
+    /// without us. So this only cleans up the case nothing else covers:
+    /// a record we created for a host that is already gone.
     pub async fn shutdown(&self) {
-        if self.identity.registered_here {
-            let _ = self
-                .backend
-                .call(Request::Deregister {
-                    agent: self.identity.id.clone(),
-                })
-                .await;
+        if !self.identity.registered_here {
+            return;
         }
+        if self
+            .identity
+            .host_pid
+            .is_some_and(agentdocker_host::procinfo::alive)
+        {
+            return;
+        }
+        let _ = self
+            .backend
+            .call(Request::Deregister {
+                agent: self.identity.id.clone(),
+            })
+            .await;
     }
 
     /// Handle one message or, for `2025-03-26` clients, a batch: a batch's
@@ -1392,6 +1419,7 @@ mod tests {
                 id: "abc123".into(),
                 name: "tester".into(),
                 registered_here: true,
+                host_pid: None,
             },
         )
     }
@@ -1867,6 +1895,7 @@ mod tests {
                 id: "abc123".into(),
                 name: "tester".into(),
                 registered_here: false,
+                host_pid: None,
             },
         );
         adopted.shutdown().await;
@@ -1903,6 +1932,57 @@ mod tests {
             text.contains("external"),
             "and say what goes wrong without `commit`, not just that it exists"
         );
+    }
+
+    /// A live session keeps its identity when an MCP server goes away.
+    ///
+    /// This is the sequence: the MCP server registers first and creates
+    /// the record, the hooks adapter joins the same record, and then the
+    /// MCP server disconnects while the provider is very much alive — an
+    /// MCP host is free to restart its servers. Deregistering there
+    /// takes a running session's identity, inbox and leases away from
+    /// it. Creating a record is not owning it; what ends an agent is the
+    /// end of the process it stands for.
+    #[tokio::test]
+    async fn a_live_session_keeps_its_identity_when_an_mcp_server_exits() {
+        let ours = |host_pid| {
+            McpServer::new(
+                Mock::default(),
+                Identity {
+                    id: "abc123".into(),
+                    name: "claude-code-4242".into(),
+                    registered_here: true,
+                    host_pid,
+                },
+            )
+        };
+
+        // The provider is still running: nothing is ended here. Both
+        // `SessionEnd` and the daemon's liveness sweep will do it
+        // properly, and neither needs us.
+        let alive = ours(Some(std::process::id()));
+        alive.shutdown().await;
+        assert!(
+            alive.backend.requests.lock().unwrap().is_empty(),
+            "a running session must not lose its agent to a restarted MCP server"
+        );
+
+        // The host is gone and nothing else will clean up a record we
+        // made, so this is the one case that still deregisters.
+        let gone = ours(Some(dead_pid()));
+        gone.shutdown().await;
+        assert!(matches!(
+            gone.backend.requests.lock().unwrap().as_slice(),
+            [Request::Deregister { agent }] if agent == "abc123"
+        ));
+    }
+
+    /// A pid that certainly no longer exists: a child we already reaped.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
     }
 
     /// Ownership of a registration is proved, not guessed from its name.

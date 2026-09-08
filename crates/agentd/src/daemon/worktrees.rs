@@ -260,7 +260,7 @@ impl Daemon {
         all: bool,
         push: bool,
     ) -> Response {
-        let (agent, root, _) = match self.reader_checkout(reference) {
+        let (agent, root, _) = match self.writer_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
         };

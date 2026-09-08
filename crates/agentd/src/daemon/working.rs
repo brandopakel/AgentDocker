@@ -5,6 +5,37 @@ use agentdocker_core::{ReadMark, StalePath};
 use agentdocker_host::content;
 
 impl Daemon {
+    /// The checkout an agent *writes* to, which is its own and nothing
+    /// else's.
+    ///
+    /// [`Self::reader_checkout`] answers with the project's directory,
+    /// which is right for reading — a read set spans the project — and
+    /// dangerous for writing. A project spans its main checkout and
+    /// every linked worktree, and its directory is the main one, so an
+    /// agent working in a worktree would have had its commit land in
+    /// somebody else's tree. That is not a hypothetical: it is what the
+    /// Codex session on this machine reported before using this, and
+    /// why it kept running git itself.
+    ///
+    /// So this takes the agent's own workdir and will not fall back to
+    /// the project. An agent that has none has nowhere of its own to
+    /// commit, and saying so is better than picking a tree for it.
+    pub(super) fn writer_checkout(
+        &self,
+        reference: &str,
+    ) -> Result<(AgentId, PathBuf, Option<String>), Box<Response>> {
+        let (id, _, head) = self.reader_checkout(reference)?;
+        let state = lock(&self.state);
+        let record = state.registry.get(&id).unwrap();
+        let workdir = record.spec.workdir.clone().ok_or_else(|| {
+            Box::new(Response::error(
+                ErrorCode::Invalid,
+                "this agent registered no working directory, so there is no checkout of its                  own to commit; commit with git, or re-register from the checkout you are in",
+            ))
+        })?;
+        Ok((id, project::canonical(&workdir), head))
+    }
+
     pub(super) fn reader_checkout(
         &self,
         reference: &str,

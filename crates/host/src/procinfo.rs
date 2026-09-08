@@ -59,6 +59,34 @@ pub fn start_time(pid: u32) -> Option<DateTime<Utc>> {
     imp::start_time(pid)
 }
 
+/// Whether a process with this pid exists at all.
+///
+/// Only that. It says nothing about *which* process — a recycled pid
+/// exists just as convincingly as the one that registered it, which is
+/// what [`start_time`] is for. Signal zero is the portable way to ask:
+/// it performs the permission checks and reaches the process without
+/// delivering anything, so `EPERM` is a yes.
+#[cfg(unix)]
+pub fn alive(pid: u32) -> bool {
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    if raw <= 0 {
+        return false;
+    }
+    // SAFETY: kill only reads its scalar arguments, and signal zero
+    // delivers nothing.
+    if unsafe { libc::kill(raw, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+pub fn alive(_pid: u32) -> bool {
+    false
+}
+
 /// The current working directory of another process of ours.
 pub fn cwd(pid: u32) -> Option<PathBuf> {
     imp::cwd(pid)
