@@ -10,6 +10,17 @@ pub struct Panel {
     busy: bool,
     report: Option<Value>,
     error: Option<String>,
+    /// What the last `status` said was installed here, so the screen can
+    /// offer a rollback only when there is a version to roll back to.
+    /// `None` means nobody has asked yet.
+    installed: Option<Installed>,
+}
+
+/// What is at a prefix, as far as the last status knows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Installed {
+    current: bool,
+    previous: bool,
 }
 
 impl Panel {
@@ -17,6 +28,12 @@ impl Panel {
         self.busy = false;
         match result {
             Ok(report) => {
+                if let Some(installation) = report.get("installation") {
+                    self.installed = Some(Installed {
+                        current: !installation["current"].is_null(),
+                        previous: !installation["previous"].is_null(),
+                    });
+                }
                 self.report = Some(report);
                 self.error = None;
             }
@@ -62,7 +79,12 @@ impl Panel {
                 }
             }
             ui.label("Installation prefix (leave empty for your home; use a disposable directory for trials)");
-            changed |= ui.text_edit_singleline(&mut self.prefix).changed();
+            if ui.text_edit_singleline(&mut self.prefix).changed() {
+                changed = true;
+                // A different prefix is a different installation; what
+                // the last status found does not describe it.
+                self.installed = None;
+            }
             if cfg!(target_os = "macos") {
                 changed |= ui.checkbox(&mut self.local_preview, "Allow a locally signed preview build").changed();
             }
@@ -76,7 +98,20 @@ impl Panel {
                     args.extend(["--from".into(), self.source.clone(), "--preview".into()]);
                     command = Some(args);
                 }
-                if ui.button("Preview rollback").clicked() {
+                // Offered only when the last status found something to
+                // go back to. A live button whose only outcome is "no
+                // active desktop installation" is a red error the reader
+                // caused by pressing what the screen invited them to.
+                let can_roll_back = self.installed.is_none_or(|at| at.previous);
+                let rollback = ui.add_enabled(
+                    can_roll_back,
+                    egui::Button::new("Preview rollback"),
+                );
+                if !can_roll_back {
+                    rollback.on_hover_text(
+                        "Nothing to roll back to here: this prefix has no previous version.",
+                    );
+                } else if rollback.clicked() {
                     let mut args = self.command("rollback");
                     args.push("--preview".into());
                     command = Some(args);
@@ -205,6 +240,48 @@ mod tests {
         // What `show` does when an input changes, without a window.
         p.report = None;
         assert!(p.report.is_none());
+    }
+
+    /// A live button whose only outcome is an error is a fault the
+    /// screen invited. Rollback is offered when there is a version to
+    /// go back to, and only then.
+    #[test]
+    fn rollback_is_offered_only_when_there_is_something_to_roll_back_to() {
+        let mut p = panel();
+        assert!(
+            p.installed.is_none(),
+            "before anyone asks, nothing is known"
+        );
+
+        p.receive(Ok(json!({"installation": null})));
+        assert_eq!(
+            p.installed.map(|at| at.previous),
+            Some(false),
+            "an empty prefix has no previous version"
+        );
+
+        p.receive(Ok(
+            json!({"installation": {"current": {"id": "a"}, "previous": null}}),
+        ));
+        assert_eq!(
+            p.installed.map(|at| at.previous),
+            Some(false),
+            "one version is not two"
+        );
+
+        p.receive(Ok(json!({
+            "installation": {"current": {"id": "b"}, "previous": {"id": "a"}}
+        })));
+        assert_eq!(
+            p.installed.map(|at| at.previous),
+            Some(true),
+            "now there is"
+        );
+
+        // A report that is not a status says nothing about the prefix
+        // and must not overwrite what a status found.
+        p.receive(Ok(json!({"candidate": {"id": "c"}, "preview": true})));
+        assert_eq!(p.installed.map(|at| at.previous), Some(true));
     }
 
     #[test]
