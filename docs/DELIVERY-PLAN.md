@@ -310,3 +310,31 @@ for saturated connection establishment, terminal screen-dimension budgets,
 repeated load/slow-reader/soak trials and platform parity remain open. The other
 local campaign exceeded the 40 GiB registered-cache budget during this work;
 heavy builds for this follow-up run on GitHub, with no new local Cargo target.
+
+### GUI integration and active-session coordination follow-up
+
+The #78 integration preserves the bounded terminal and reply queues from
+#79/#81 while incorporating #80's native window and setup work. Console, setup
+and installation each have one worker and four queued jobs; command admission
+also caps retained allocations at 64 KiB. Closing the window cancels queued
+jobs without joining subprocesses on the UI thread. Deterministic fixtures
+exercise saturation, independent progress, ordering, cancellation and rejected
+controls. Final integrated CI and graphical/resource acceptance remain required.
+
+The activity follow-up in #82 adds explicit provider reports and an unknown
+state when observations expire. Real cross-session channel replies demonstrate
+routing, but queue acceptance alone does not demonstrate provider delivery,
+model consumption, reply or review. The delivery review must distinguish each
+step, add native message/channel visibility, and test Codex delivery at supported
+hook/tool boundaries. No assertion that an idle model wakes automatically is
+supported by the current MCP adapter.
+
+Duplicate identity work in #83 requires known process birth, runtime, physical
+checkout and compatible session identity, including MCP-first/hook-A/hook-B
+registration and transport reconnection. Empty inboxes and no held leases do
+not prove a duplicate record has no live references. Existing transports,
+channels, waits and read sets must survive reconciliation, or retirement must
+be deferred. A separate verified checkout binding is needed when an agent's
+registered launch directory differs from the worktree used by its tools.
+The actual live coordination trial remains private; only sanitized findings
+and source-bound fixture results belong in GitHub.

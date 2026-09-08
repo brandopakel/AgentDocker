@@ -41,6 +41,7 @@ const RUNTIME: &str = "claude-code";
 /// How much of a transcript's end is read for the `Stop` summary.
 const TRANSCRIPT_TAIL: u64 = 64 * 1024;
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
+#[cfg(test)]
 const EDIT_MATCHER: &str = agentdocker_core::runtime::CLAUDE_CODE_EDIT_MATCHER;
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh"];
 
@@ -461,7 +462,7 @@ pub async fn claude_code<B: Backend>(
             }
         }
         "Stop" => {
-            let Some(me) = current_agent(backend, input).await? else {
+            let Some(me) = session_agent(backend, input).await? else {
                 return Ok(None);
             };
             // What the model last said is what the release entry quotes.
@@ -490,7 +491,7 @@ pub async fn claude_code<B: Backend>(
             })))
         }
         "SessionEnd" => {
-            if let Some(me) = current_agent(backend, input).await? {
+            if let Some(me) = session_agent(backend, input).await? {
                 release_all(backend, &me, None).await?;
                 backend
                     .call(Request::Deregister {
@@ -582,6 +583,41 @@ async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
         .unwrap_or_else(|| session_name(&input.session_id));
     match backend.call(Request::Inspect { agent: reference }).await? {
         Response::Agent { agent } if agent.status.is_live() => Ok(Some(agent)),
+        _ => Ok(None),
+    }
+}
+
+/// This session's agent, under whichever name it ended up with.
+///
+/// One process is one agent now, and the MCP server registers for the
+/// same process under a name taken from the pid. Whichever half gets
+/// there first owns the name, so when the MCP server wins, looking up
+/// `claude-<session>` finds nothing — and `Stop` and `SessionEnd` would
+/// skip the releases and the deregistration they exist to do, leaking
+/// every lease the session held. The pid is what the two halves agree
+/// on, so it is what finds the other one.
+///
+/// Only the lifecycle events need this. `ensure_registered` gets the
+/// same answer for free: registering a process that already has an
+/// agent returns that agent.
+async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Option<AgentRecord>> {
+    if let Some(me) = current_agent(backend, input).await? {
+        return Ok(Some(me));
+    }
+    let Some(pid) = host_pid() else {
+        return Ok(None);
+    };
+    match backend
+        .call(Request::List {
+            all: false,
+            project: None,
+            labels: Default::default(),
+        })
+        .await?
+    {
+        Response::Agents { agents } => Ok(agents
+            .into_iter()
+            .find(|agent| agent.pid == Some(pid) && agent.status.is_live())),
         _ => Ok(None),
     }
 }
@@ -1310,6 +1346,57 @@ mod tests {
         ));
     }
 
+    /// A session whose agent is named by the other half is still found.
+    ///
+    /// One process is one agent, and whichever half registers first owns
+    /// the name. When the MCP server won, this adapter looked up
+    /// `claude-<session>`, found nothing, and `Stop` and `SessionEnd`
+    /// then skipped the releases and the deregistration they exist to
+    /// do — every lease the session held would have leaked. The pid is
+    /// what the two halves agree on.
+    #[tokio::test]
+    async fn the_session_is_found_whichever_half_registered_first() {
+        let input = input("Stop");
+
+        // Our own name: answered by the first lookup, no listing needed.
+        let ours = agent(&session_name(&input.session_id), true);
+        let backend = Mock::with(vec![Response::Agent {
+            agent: ours.clone(),
+        }]);
+        let found = session_agent(&backend, &input).await.unwrap().unwrap();
+        assert_eq!(found.id, ours.id);
+        assert_eq!(backend.requests().len(), 1, "one lookup");
+
+        // The MCP server's name, and the pid to match. The first lookup
+        // misses and the listing finds it.
+        let mut theirs = agent("claude-code-4242", true);
+        theirs.pid = host_pid();
+        let backend = Mock::with(vec![
+            Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
+            Response::Agents {
+                agents: vec![agent("somebody-else", true), theirs.clone()],
+            },
+        ]);
+        let found = session_agent(&backend, &input).await.unwrap();
+        // `host_pid` walks real ancestry, so it can decline to answer in
+        // a test harness; when it does there is nothing to match on and
+        // nothing to assert beyond not having invented an agent.
+        match host_pid() {
+            Some(_) => assert_eq!(found.unwrap().id, theirs.id, "found by pid"),
+            None => assert!(found.is_none()),
+        }
+
+        // A session that genuinely has no agent still gets None rather
+        // than the first row that happens to be listed.
+        let backend = Mock::with(vec![
+            Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
+            Response::Agents {
+                agents: vec![agent("unrelated", true)],
+            },
+        ]);
+        assert!(session_agent(&backend, &input).await.unwrap().is_none());
+    }
+
     #[test]
     fn session_name_is_prefix_of_id() {
         assert_eq!(session_name("0123456789abcdef"), "claude-01234567");
@@ -1680,14 +1767,27 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_agent_at_session_end_is_a_no_op() {
-        let backend = Mock::with(vec![Response::error(ErrorCode::NotFound, "nope")]);
+        // Two lookups, not one: the name this adapter would have chosen,
+        // then the pid, because the MCP half may own the name. Both
+        // missing still means there is nothing to end.
+        let backend = Mock::with(vec![
+            Response::error(ErrorCode::NotFound, "nope"),
+            Response::Agents { agents: vec![] },
+        ]);
         assert!(
             claude_code(&backend, &input("SessionEnd"), &opts())
                 .await
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(backend.requests().len(), 1);
+        // Two lookups where the pid is knowable, one where it is not:
+        // `host_pid` walks real ancestry and is allowed to decline, and a
+        // test that assumed either would be flaky on the machine that
+        // disagreed.
+        assert_eq!(
+            backend.requests().len(),
+            if host_pid().is_some() { 2 } else { 1 }
+        );
     }
 
     #[test]

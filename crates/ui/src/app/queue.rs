@@ -4,6 +4,20 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, mpsc};
 
 pub(super) const CAPACITY: usize = 32;
+pub(super) const COMMAND_BYTES: usize = 64 * 1024;
+
+/// Bound retained command allocations as well as the number of commands.
+fn bytes(command: &Cmd) -> usize {
+    match command {
+        Cmd::Journal(text) | Cmd::Stop(text) | Cmd::Console(text) => text.capacity(),
+        Cmd::Answer(_, text) => text.capacity(),
+        Cmd::Setup(args) | Cmd::Desktop(args) => args.iter().fold(
+            args.capacity().saturating_mul(size_of::<String>()),
+            |total, arg| total.saturating_add(arg.capacity()),
+        ),
+        _ => 0,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
@@ -65,6 +79,12 @@ pub(super) fn channel() -> (Sender, Receiver) {
 impl Sender {
     /// UI submission never waits for the daemon or for room in its queue.
     pub(super) fn send(&self, command: Cmd) -> Result<(), Rejected> {
+        if bytes(&command) > COMMAND_BYTES {
+            return Err(Rejected {
+                command,
+                reason: "Command not queued: it exceeds the 64 KiB command limit.",
+            });
+        }
         let refresh = key(&command);
         let mut pending = self
             .pending

@@ -214,6 +214,9 @@ impl Smoke {
                 viewport.minimized,
                 viewport.focused
             );
+            // A capture needs a paint; bring the fixture forward in case
+            // the compositor has occluded it.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = Some(Instant::now());
         }
