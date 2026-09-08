@@ -562,40 +562,74 @@ async fn found_by_pid<B: Backend>(
     input: &HookInput,
     pid: Option<u32>,
 ) -> Result<Option<AgentRecord>> {
-    if let Some(me) = current_agent(backend, input).await? {
-        return Ok(Some(me));
+    // An explicit binding is authoritative. Whoever started this agent
+    // set `AGENTDOCKER_AGENT_ID` and knows which record it is, and that
+    // record's pid may legitimately not be this process — `run`
+    // registers an agent for the child it spawns. A name *derived* from
+    // the session id is a different thing entirely, and is checked below.
+    if let Some(bound) = std::env::var("AGENTDOCKER_AGENT_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+    {
+        return match backend.call(Request::Inspect { agent: bound }).await? {
+            Response::Agent { agent } if agent.status.is_live() => Ok(Some(agent)),
+            _ => Ok(None),
+        };
     }
+    let named = current_agent(backend, input).await?;
     let Some(pid) = pid else {
-        return Ok(None);
+        // Nothing to verify against, so a record found by name is all
+        // there is. It is still the record this session asked for by
+        // name, which is weaker than the check below and better than
+        // ending nothing at all.
+        return Ok(named);
     };
     let started = agentdocker_host::procinfo::start_time(pid);
+    // A birth time nobody can read is not evidence of anything, and
+    // `None == None` would match every record that also failed to read
+    // one. Without it there is nothing to verify against.
+    if started.is_none() {
+        return Ok(named);
+    }
+    // The same predicate the daemon registers by, for the same reason:
+    // this hook is about to release another agent's leases and
+    // deregister it, so "shares a pid" is nowhere near enough. A
+    // recycled pid, another runtime in one host, another project, or a
+    // second session multiplexed into this process are each a different
+    // agent, and ending one of those instead would be worse than ending
+    // nothing.
+    let ours = |agent: &AgentRecord| {
+        agent.status.is_live()
+            && agent.pid == Some(pid)
+            && agent.process_started_at == started
+            && agent.spec.runtime == RUNTIME
+            && agent
+                .spec
+                .labels
+                .get("session_id")
+                .filter(|id| !id.is_empty())
+                .is_none_or(|theirs| *theirs == input.session_id)
+    };
+    // The name is a hint, not proof. A session id prefix is eight
+    // characters and a name outlives the session that chose it, so a
+    // live record answering to it may be a different process entirely —
+    // it still has to pass.
+    if let Some(named) = named.filter(&ours) {
+        return Ok(Some(named));
+    }
     match backend
         .call(Request::List {
             all: false,
-            project: None,
+            // Narrowed to this session's own project, and resolved by
+            // the daemon from the directory rather than compared here:
+            // a project spans its main checkout and every linked
+            // worktree, and only the daemon knows which is which.
+            project: input.cwd.as_ref().map(|cwd| cwd.display().to_string()),
             labels: Default::default(),
         })
         .await?
     {
-        // The same predicate the daemon registers by, for the same
-        // reason: this hook is about to release another agent's leases
-        // and deregister it, so "shares a pid" is nowhere near enough.
-        // A recycled pid, another runtime in one host, or a second
-        // session multiplexed into this process are each a different
-        // agent, and ending one of those instead would be worse than
-        // ending nothing.
-        Response::Agents { agents } => Ok(agents.into_iter().find(|agent| {
-            agent.status.is_live()
-                && agent.pid == Some(pid)
-                && agent.process_started_at == started
-                && agent.spec.runtime == RUNTIME
-                && agent
-                    .spec
-                    .labels
-                    .get("session_id")
-                    .filter(|id| !id.is_empty())
-                    .is_none_or(|theirs| *theirs == input.session_id)
-        })),
+        Response::Agents { agents } => Ok(agents.into_iter().find(ours)),
         _ => Ok(None),
     }
 }
@@ -1075,6 +1109,10 @@ mod tests {
     use super::*;
     use crate::client::mock::Mock;
 
+    /// A live agent has a process, and since the lifecycle hooks verify
+    /// the record against one before releasing its leases, a fixture
+    /// without one is not a live agent — it is a record nothing can
+    /// confirm. This test process is the one to hand.
     fn agent(name: &str, live: bool) -> AgentRecord {
         let mut record = AgentRecord::new(
             AgentSpec {
@@ -1090,7 +1128,26 @@ mod tests {
         } else {
             AgentStatus::Exited { code: Some(0) }
         };
+        if live {
+            let me = fixture_pid();
+            record.pid = Some(me);
+            record.process_started_at = agentdocker_host::procinfo::start_time(me);
+        }
         record
+    }
+
+    /// The pid the lifecycle hooks will actually look for.
+    ///
+    /// `session_agent` asks `host_pid`, which walks real ancestry to the
+    /// first non-shell parent — not this process. A fixture built on
+    /// `std::process::id()` therefore fails the very check it is meant
+    /// to pass, and the hook falls through to a listing nobody mocked.
+    fn fixture_pid() -> u32 {
+        host_pid().unwrap_or_else(std::process::id)
+    }
+
+    fn agent_with_pid(name: &str) -> AgentRecord {
+        agent(name, true)
     }
 
     fn message(from: &str, text: &str) -> Envelope {
@@ -1318,29 +1375,38 @@ mod tests {
         let input = input("Stop");
 
         // Our own name: answered by the first lookup, no listing needed.
-        let ours = agent(&session_name(&input.session_id), true);
+        let me = fixture_pid();
+        let matching = agent_with_pid;
+        let ours = matching(&session_name(&input.session_id));
         let backend = Mock::with(vec![Response::Agent {
             agent: ours.clone(),
         }]);
-        let found = session_agent(&backend, &input).await.unwrap().unwrap();
-        assert_eq!(found.id, ours.id);
-        assert_eq!(backend.requests().len(), 1, "one lookup");
+        let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
+        assert_eq!(found.unwrap().id, ours.id);
+        assert_eq!(
+            backend.requests().len(),
+            1,
+            "one lookup when the name checks out"
+        );
 
         // The MCP server's name, and the pid to match. The first lookup
         // misses and the listing finds it. The pid is injected rather
         // than read, so this asserts on every machine.
-        let me = std::process::id();
-        let matching = |name: &str| {
-            let mut a = agent(name, true);
-            a.pid = Some(me);
-            a.process_started_at = agentdocker_host::procinfo::start_time(me);
-            a
-        };
         let theirs = matching("claude-code-4242");
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
-                agents: vec![agent("somebody-else", true), theirs.clone()],
+                // A genuinely different process, which is the only kind
+                // of "somebody else" there can be once one process is
+                // one agent.
+                agents: vec![
+                    {
+                        let mut other = agent("somebody-else", true);
+                        other.pid = Some(1);
+                        other
+                    },
+                    theirs.clone(),
+                ],
             },
         ]);
         let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
@@ -1381,6 +1447,54 @@ mod tests {
                 "{name} shares the pid and is not this session"
             );
         }
+
+        // A name that resolves is a hint, not proof. The fast path used
+        // to return whatever answered to `claude-<session>` without
+        // checking anything: a name outlives the session that chose it,
+        // and eight characters of session id is not a lot.
+        let impostor_by_name = {
+            let mut a = agent(&session_name(&input.session_id), true);
+            a.pid = Some(me);
+            a.process_started_at = Some(Utc::now() - chrono::Duration::hours(24 * 30));
+            a
+        };
+        let real = matching("claude-code-4242");
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: impostor_by_name,
+            },
+            Response::Agents {
+                agents: vec![real.clone()],
+            },
+        ]);
+        assert_eq!(
+            found_by_pid(&backend, &input, Some(me))
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            real.id,
+            "the name answered, but the process behind it did not match"
+        );
+
+        // A birth time nobody can read is not evidence, so there is
+        // nothing to verify against and nothing is invented. The listing
+        // is not even asked for.
+        let backend = Mock::with(vec![Response::error(
+            agentdocker_core::ErrorCode::NotFound,
+            "no such agent",
+        )]);
+        assert!(
+            found_by_pid(&backend, &input, Some(u32::MAX))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            backend.requests().len(),
+            1,
+            "no listing without a birth time"
+        );
 
         // And the same session under the other half's name, with our own
         // session id on it, is us.

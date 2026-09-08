@@ -479,50 +479,60 @@ impl Daemon {
     pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
         lock(&self.state).mark_exited(id, status)
     }
-    /// Retire a duplicate record left over from before one process was
-    /// one agent.
+    /// Report a duplicate record left over from before one process was
+    /// one agent. Report, not repair.
     ///
-    /// Refusing new duplicates does not repair the ones already on
-    /// screen: both halves of a session share a live pid, so neither is
-    /// ever reaped and the pair persists for as long as the session
-    /// does. This retires the half nothing is using — no leases, no
-    /// inbox — and keeps the one that is. Where both halves are in use
-    /// it retires neither and says so, because merging two agents'
-    /// leases and messages is a guess, and the wrong guess loses work
-    /// somebody is in the middle of.
-    pub fn reconcile_duplicates(&self) {
-        let mut state = lock(&self.state);
-        let live: Vec<AgentRecord> = state.registry.live().cloned().collect();
-        let mut retire = Vec::new();
+    /// Refusing new duplicates does not help a session that is already
+    /// showing twice: both halves share a live pid, so neither is ever
+    /// reaped and the pair persists as long as the session does. The
+    /// obvious repair is to retire the half that holds no leases and has
+    /// an empty inbox — and that is a guess, which review caught before
+    /// it shipped.
+    ///
+    /// An idle transport is not an unused agent. A connected MCP server
+    /// holds that id and will use it on its next call; the record may
+    /// own channel membership, pending questions, journal cursors and
+    /// observations, none of which show up as a lease or a queued
+    /// message. Marking it exited strands all of that and silently drops
+    /// messages addressed to it afterwards, on the evidence that its
+    /// inbox happened to be empty at the moment we looked.
+    ///
+    /// Repairing it properly means keeping the old id as a durable
+    /// resolvable alias and migrating every reference atomically. Until
+    /// that exists, this says what it found and leaves both alone: a
+    /// duplicate a person can see is better than one silently resolved
+    /// the wrong way.
+    pub fn duplicates(&self) -> Vec<(AgentId, AgentId)> {
+        let state = lock(&self.state);
+        // Sorted, because the registry is not ordered and "the earlier
+        // one" has to mean the one that registered first rather than
+        // whichever the map happened to yield. A report a person acts on
+        // should not name a different half each time it is read.
+        let mut live: Vec<&AgentRecord> = state.registry.live().collect();
+        live.sort_by_key(|a| (a.created_at, a.id.clone()));
+        let mut found = Vec::new();
         for (at, agent) in live.iter().enumerate() {
-            let Some(earlier) = live[..at].iter().find(|kept| same_agent(kept, agent)) else {
-                continue;
-            };
-            let idle = |a: &AgentRecord| {
-                state.leases.by_holder(&a.id).is_empty()
-                    && state.inboxes.get(&a.id).is_none_or(VecDeque::is_empty)
-            };
-            // The later registration is the one to let go of, so the
-            // name and id anything already refers to survive.
-            if idle(agent) {
-                retire.push((agent.id.clone(), earlier.id.clone()));
-            } else if idle(earlier) {
-                retire.push((earlier.id.clone(), agent.id.clone()));
-            } else {
-                warn!(
-                    duplicate = %agent.id, kept = %earlier.id,
-                    "two live records for one process are both in use;                      neither is retired — inspect them before stopping either"
-                );
+            if let Some(earlier) = live[..at].iter().find(|kept| same_agent(kept, agent)) {
+                found.push((earlier.id.clone(), agent.id.clone()));
             }
         }
-        for (going, staying) in retire {
-            info!(retired = %going, kept = %staying, "retired a duplicate record for one process");
-            state.mark_exited(&going, AgentStatus::Exited { code: Some(0) });
+        found
+    }
+
+    /// Say so, once per sweep, for anything already duplicated.
+    fn report_duplicates(&self) {
+        for (kept, duplicate) in self.duplicates() {
+            warn!(
+                first = %kept, second = %duplicate,
+                "two live records for one process, from before one process was one agent; \
+                 both are left alone — retiring either can strand channel membership, \
+                 pending questions or a journal cursor that no lease or inbox would show"
+            );
         }
     }
 
     pub fn check_liveness(&self) {
-        self.reconcile_duplicates();
+        self.report_duplicates();
         let candidates: Vec<_> = {
             let state = lock(&self.state);
             state
@@ -4268,15 +4278,43 @@ impl State {
             .labels
             .get("adopted")
             .is_some_and(|v| v == "true");
-        if let Some(existing) = self.registry.live().find(|a| same_agent(a, &record)) {
+        let existing = self
+            .registry
+            .live()
+            .find(|a| same_agent(a, &record))
+            .map(|a| a.id.clone());
+        if let Some(id) = existing {
             if adopted {
                 return Response::error(ErrorCode::Invalid, "pid is already registered");
             }
-            // Nothing changed, so nothing is emitted: this is the same
-            // agent answering a second half of itself, not a new one.
-            return Response::Agent {
-                agent: existing.clone(),
-            };
+            // The record takes on the session it has just been shown,
+            // and this is not bookkeeping — without it the rule is not
+            // transitive and two sessions collapse into one.
+            //
+            // Only the hooks adapter names a session, so an MCP-first
+            // record has none, and "absent on one side is not a
+            // mismatch" is what lets its hooks half join. Left that way,
+            // the record still names no session afterwards, so the
+            // *next* session in the same process matches it too and
+            // adopts the same identity. Learning the first verified
+            // session id closes it: the second session then disagrees
+            // with a session that is present, and gets its own record.
+            let learned = record
+                .spec
+                .labels
+                .get("session_id")
+                .filter(|id| !id.is_empty())
+                .cloned();
+            if let Some(session) = learned
+                && let Some(agent) = self.registry.get_mut(&id)
+                && !agent.spec.labels.contains_key("session_id")
+            {
+                agent.spec.labels.insert("session_id".to_owned(), session);
+                let agent = agent.clone();
+                self.persist("agent", |store| store.upsert_agent(&agent));
+            }
+            let agent = self.registry.get(&id).cloned().expect("just found");
+            return Response::Agent { agent };
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -4447,64 +4485,160 @@ mod tests {
         );
     }
 
-    /// Duplicates that already exist are repaired, carefully.
+    /// Two sessions in one process do not collapse into one agent.
     ///
-    /// Refusing new ones does not help a session that is already showing
-    /// twice: both halves share a live pid, so neither is ever reaped.
-    /// The half nothing is using goes; the half holding leases or
-    /// messages stays; and where both are in use neither goes, because
-    /// merging two agents' work is a guess and the wrong guess loses
-    /// something somebody is in the middle of.
+    /// "Absent on one side is not a mismatch" is what lets an MCP-first
+    /// record be joined by its hooks half, and on its own it is not
+    /// transitive: the record still named no session afterwards, so the
+    /// *next* session in the same process matched it too and adopted
+    /// the same identity. Learning the first verified session id is
+    /// what closes it.
     #[tokio::test]
-    async fn an_existing_duplicate_is_retired_only_when_nothing_is_using_it() {
+    async fn a_record_learns_its_session_so_the_next_one_cannot_take_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let with_session = |name: &str, session: Option<&str>| {
+            let mut spec = spec(name);
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            spec
+        };
+        let register = async |spec: AgentSpec| match daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(me),
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("unexpected {other:?}"),
+        };
+
+        // MCP first, naming no session. Then session A joins it.
+        let mcp = register(with_session("claude-code-45856", None)).await;
+        let first = register(with_session("claude-aaaa", Some("session-a"))).await;
+        assert_eq!(first.id, mcp.id, "the hooks half joins the MCP record");
+        assert_eq!(
+            first.spec.labels.get("session_id").map(String::as_str),
+            Some("session-a"),
+            "and the record learns whose session it is"
+        );
+
+        // A second session in the same process is a second agent.
+        let second = register(with_session("claude-bbbb", Some("session-b"))).await;
+        assert_ne!(
+            second.id, mcp.id,
+            "a different session must not inherit the first one's identity"
+        );
+        assert_eq!(lock(&daemon.state).registry.live().count(), 2);
+
+        // And session A rejoining still finds its own.
+        let again = register(with_session("claude-aaaa", Some("session-a"))).await;
+        assert_eq!(again.id, first.id);
+    }
+
+    /// A live session keeps its agent when an MCP server exits — through
+    /// the daemon, not a mock.
+    ///
+    /// The mock test asserts that `shutdown` sends no request. This
+    /// asserts the thing that actually matters: after the real sequence
+    /// the record is still there, still live, and still holding what it
+    /// held.
+    #[tokio::test]
+    async fn the_real_sequence_leaves_a_live_session_holding_everything() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+        let register = async |name: &str, session: Option<&str>| {
+            let mut spec = spec(name);
+            spec.labels.insert("via".to_owned(), "mcp".to_owned());
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(me),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+
+        // MCP registers, hooks joins the same record, and the session
+        // takes a lease and is sent something.
+        let mcp = register("claude-code-45856", None).await;
+        let hooks = register("claude-2c79ae10", Some("session-a")).await;
+        assert_eq!(hooks.id, mcp.id);
+        // The name that survives is the first registrar's, so the hooks
+        // half is answered as `claude-code-45856` however it asked. That
+        // is a race and it is deliberately not settled here; what
+        // matters is that there is one identity, and the id is it.
+        assert_eq!(hooks.spec.name, "claude-code-45856");
+        assert!(matches!(
+            claim(&daemon, &hooks.id.to_string(), "task:in-progress").await,
+            Response::Lease { .. }
+        ));
+
+        // The MCP server goes away. Its `shutdown` sees the host process
+        // still alive and sends nothing — so nothing here does either.
+        assert!(daemon.is_live(&mcp.id), "the session is still running");
+        assert_eq!(
+            lock(&daemon.state).leases.by_holder(&mcp.id).len(),
+            1,
+            "and still holds what it took"
+        );
+
+        // Only the process ending ends the agent.
+        let ended = lock(&daemon.state).deregister(&hooks.id.to_string());
+        let _ = &ended;
+        assert!(matches!(ended, Response::Agent { .. }));
+        assert!(!daemon.is_live(&mcp.id));
+    }
+
+    /// Duplicates that already exist are reported, not repaired.
+    ///
+    /// The obvious repair — retire the half with no leases and an empty
+    /// inbox — is a guess. An idle transport is not an unused agent: a
+    /// connected MCP server holds that id for its next call, and the
+    /// record may own channel membership, pending questions, a journal
+    /// cursor and observations, none of which appear as a lease or a
+    /// queued message. So both are left alone and named.
+    #[tokio::test]
+    async fn an_existing_duplicate_is_reported_and_left_alone() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let me = std::process::id();
 
-        // Two records for one process, as a session registered before
-        // the rule existed. The second is doing nothing.
         let hooks = register(&daemon, "claude-2c79ae10", Some(me)).await;
         let stale = {
             let mut record = AgentRecord::new(spec("claude-code-45856"), false, Utc::now());
             record.pid = Some(me);
             record.process_started_at = procinfo::start_time(me);
             record.status = AgentStatus::Running;
-            match lock(&daemon.state).registry.insert(record.clone()) {
-                Ok(()) => record,
-                Err(e) => panic!("{e:?}"),
-            }
-        };
-        assert_eq!(lock(&daemon.state).registry.live().count(), 2);
-
-        daemon.reconcile_duplicates();
-        assert!(daemon.is_live(&hooks.id), "the one in use stays");
-        assert!(!daemon.is_live(&stale.id), "the one nothing uses goes");
-
-        // Now both are in use: neither is touched, because choosing
-        // between them would throw away one agent's leases.
-        let first = register(&daemon, "first", Some(1)).await;
-        let second = {
-            let mut record = AgentRecord::new(spec("second"), false, Utc::now());
-            record.pid = Some(1);
-            record.process_started_at = procinfo::start_time(1);
-            record.status = AgentStatus::Running;
             lock(&daemon.state).registry.insert(record.clone()).unwrap();
             record
         };
-        for who in [&first, &second] {
-            assert!(matches!(
-                claim(
-                    &daemon,
-                    who.spec.name.as_str(),
-                    &format!("task:{}", who.spec.name)
-                )
-                .await,
-                Response::Lease { .. }
-            ));
-        }
-        daemon.reconcile_duplicates();
-        assert!(daemon.is_live(&first.id), "both hold leases");
-        assert!(daemon.is_live(&second.id), "so neither is retired");
+
+        assert_eq!(
+            daemon.duplicates(),
+            vec![(hooks.id.clone(), stale.id.clone())],
+            "the pair is found and named, oldest first"
+        );
+        daemon.check_liveness();
+        assert!(daemon.is_live(&hooks.id), "neither is retired:");
+        assert!(
+            daemon.is_live(&stale.id),
+            "an empty inbox now is not evidence nothing will arrive"
+        );
     }
 
     /// Sharing a process is not the same as being the same agent.
