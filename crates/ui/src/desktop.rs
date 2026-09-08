@@ -152,9 +152,14 @@ impl Panel {
                         for entry in entries { ui.label(format!("Keep: {} — {}", entry["path"].as_str().unwrap_or("unknown"), entry["reason"].as_str().unwrap_or("unknown"))); }
                     }
                     if report["preview"] == true && plan["remove"].as_array().is_some_and(|paths| !paths.is_empty()) {
-                        if ui.button("Apply reviewed cleanup").clicked() {
-                            let mut args = self.command(plan["operation"].as_str()?);
-                            args.extend(["--expect-plan".into(), report["plan_id"].as_str()?.into()]);
+                        let pinned = pinned_maintenance(report);
+                        if ui.add_enabled(pinned.is_some(), egui::Button::new("Apply reviewed cleanup"))
+                            .on_disabled_hover_text("This preview is missing its cleanup operation or plan identity. Preview it again.")
+                            .clicked()
+                            && let Some((operation, plan_id)) = pinned
+                        {
+                            let mut args = self.command(operation);
+                            args.extend(["--expect-plan".into(), plan_id.into()]);
                             if let Some(keep) = plan["keep"].as_u64() { args.extend(["--keep".into(), keep.to_string()]); }
                             command = Some(args);
                         }
@@ -237,6 +242,13 @@ fn pinned(report: &Value) -> Option<(&str, &str)> {
     report["source"]
         .as_str()
         .zip(report["candidate"]["id"].as_str())
+}
+
+fn pinned_maintenance(report: &Value) -> Option<(&str, &str)> {
+    let operation = report["maintenance"]["operation"].as_str()?;
+    let plan_id = report["plan_id"].as_str()?;
+    (matches!(operation, "prune" | "uninstall") && !plan_id.is_empty())
+        .then_some((operation, plan_id))
 }
 
 fn describe(ui: &mut egui::Ui, label: &str, release: &Value) {
@@ -376,6 +388,27 @@ mod tests {
         assert!(pinned(&json!({"source": "/tmp/pkg", "candidate": {}})).is_none());
         assert!(pinned(&json!({"source": 7, "candidate": {"id": "v1"}})).is_none());
         assert!(pinned(&json!({})).is_none());
+    }
+
+    #[test]
+    fn cleanup_requires_a_known_operation_and_reviewed_plan() {
+        for operation in ["prune", "uninstall"] {
+            assert_eq!(
+                pinned_maintenance(
+                    &json!({"maintenance":{"operation":operation},"plan_id":"reviewed"})
+                ),
+                Some((operation, "reviewed"))
+            );
+        }
+        for report in [
+            json!({}),
+            json!({"maintenance":{"operation":"prune"}}),
+            json!({"maintenance":{"operation":"prune"},"plan_id":""}),
+            json!({"maintenance":{"operation":"install"},"plan_id":"reviewed"}),
+            json!({"maintenance":{"operation":7},"plan_id":"reviewed"}),
+        ] {
+            assert!(pinned_maintenance(&report).is_none());
+        }
     }
 
     /// The panel lays itself out in every state it can be shown in.
