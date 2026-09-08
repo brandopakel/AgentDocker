@@ -2631,7 +2631,7 @@ fn desktop_app_from(
     if cfg!(target_os = "macos") {
         for root in applications {
             for inner in [
-                "agentdocker.app/Contents/MacOS/agentdocker-ui",
+                "AgentDocker.app/Contents/MacOS/agentdocker-ui",
                 "AgentDocker.app/Contents/MacOS/AgentDocker",
             ] {
                 let candidate = root.join(inner);
@@ -2920,7 +2920,7 @@ mod tests {
     fn desktop_launch_finds_current_bundle_and_supports_legacy_fallback() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Applications");
-        let modern = root.join("agentdocker.app/Contents/MacOS/agentdocker-ui");
+        let modern = root.join("AgentDocker.app/Contents/MacOS/agentdocker-ui");
         let legacy = root.join("AgentDocker.app/Contents/MacOS/AgentDocker");
         for file in [&modern, &legacy] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();

@@ -36,7 +36,7 @@ fn checked_version(layout: &Layout, directory: &Path) -> Result<u32> {
         "release directory is not a regular directory"
     );
     let payload = directory.join(if cfg!(target_os = "macos") {
-        "agentdocker.app"
+        "AgentDocker.app"
     } else {
         "agentdocker-desktop"
     });

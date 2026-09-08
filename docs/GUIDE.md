@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/instal
 ```
 
 That puts `agentdocker`, `agentd` and the desktop app under `~/.local/bin`,
-and on macOS installs `agentdocker.app` as well. From a checkout:
+and on macOS installs `AgentDocker.app` as well. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -70,7 +70,7 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 
 A native window over the same Unix socket as the CLI. No HTTP, no browser,
 no localhost. `agentdocker ui` opens it, and on macOS it opens
-`agentdocker.app` if that is installed so the Dock and the app switcher
+`AgentDocker.app` if that is installed so the Dock and the app switcher
 name it properly.
 
 Agents are grouped by project, and every project keeps one colour
@@ -510,7 +510,7 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
-- The desktop app ships as `agentdocker.app` on macOS, with its own icon,
+- The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
   prefers the bundle. Local preview bundles use ad-hoc signing. Public macOS
   distribution still requires Developer ID signing and notarization; the
