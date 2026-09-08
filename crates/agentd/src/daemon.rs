@@ -361,7 +361,9 @@ fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
         // Both have to be known. An absent checkout is not evidence of
         // anything, and `None == None` would make two agents that could
         // not say where they are into one agent — the same mistake as
-        // agreeing on two unreadable birth times.
+        // agreeing on two unreadable birth times. Registration refuses a
+        // workdir it cannot resolve, so a `Some` here is always a
+        // directory that existed when it was recorded.
         && match (&a.spec.workdir, &b.spec.workdir) {
             (Some(one), Some(other)) => one == other,
             _ => false,
@@ -1497,14 +1499,25 @@ impl Daemon {
                 .await
                 .ok()
                 .and_then(Result::ok);
-            if resolved.is_none() {
-                warn!(
-                    workdir = %given.display(),
-                    "cannot resolve this agent's checkout; it will not be matched with another \
-                     registration for the same process"
+            let Some(resolved) = resolved else {
+                // Refused, because there is no honest third option. The
+                // unresolved path cannot be kept — two registrations
+                // that both failed on the same input would carry equal
+                // paths and match each other on no evidence — and it
+                // cannot be dropped either, because an absent checkout
+                // is a checkout that matches nothing and the caller did
+                // give one. So the registration does not happen, and
+                // says why.
+                return Response::error(
+                    ErrorCode::Invalid,
+                    format!(
+                        "cannot resolve the working directory {}; register from a directory \
+                         that exists, or with none at all",
+                        given.display()
+                    ),
                 );
-            }
-            spec.workdir = Some(resolved.unwrap_or(given));
+            };
+            spec.workdir = Some(resolved);
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
@@ -4630,20 +4643,24 @@ mod tests {
         );
     }
 
-    /// Registration itself distinguishes two checkouts, and reconciles
-    /// two spellings of one.
+    /// Two spellings of one directory are one checkout.
     ///
-    /// Both halves of this were review findings. Matching on the project
-    /// let two linked worktrees of one repository collapse, because a
-    /// project spans all of them. And comparing raw paths let one
-    /// directory spelled `/var/...` and `/private/var/...` look like two.
+    /// Comparing raw paths let `/var/...` and `/private/var/...` — one
+    /// directory, two spellings — look like two places to work. The
+    /// alias is made here rather than borrowed from the platform,
+    /// because the system temp directory is reached through a symlink on
+    /// macOS and directly on Linux, and a test that relied on that would
+    /// assert something true on one machine and false on another.
     #[tokio::test]
-    async fn registration_tells_two_checkouts_apart_and_two_spellings_together() {
+    async fn two_spellings_of_one_checkout_are_one_agent() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let me = std::process::id();
-        let here = TempDir::new().unwrap();
-        let elsewhere = TempDir::new().unwrap();
+        let real = TempDir::new().unwrap();
+        let alias = real.path().parent().unwrap().join("alias-to-the-checkout");
+        let _ = std::fs::remove_file(&alias);
+        std::os::unix::fs::symlink(real.path(), &alias).unwrap();
+
         let register = async |name: &str, workdir: &std::path::Path| {
             let mut spec = spec(name);
             spec.workdir = Some(workdir.to_path_buf());
@@ -4659,31 +4676,51 @@ mod tests {
                 other => panic!("unexpected {other:?}"),
             }
         };
-
-        let first = register("claude-here", here.path()).await;
-        // The same process, in a different tree. Two agents.
-        let other_tree = register("claude-elsewhere", elsewhere.path()).await;
-        assert_ne!(
-            other_tree.id, first.id,
-            "one process in two checkouts is two agents"
-        );
-
-        // The same tree under a name that resolves to it. On macOS the
-        // system temp directory is reached through /var, which is a
-        // symlink to /private/var — two spellings, one directory.
-        let alias = here.path().canonicalize().unwrap();
-        assert_ne!(
-            alias,
-            here.path(),
-            "this machine spells the temp directory two ways, which is what makes the \
-             rest of this test meaningful"
-        );
-        let same_tree = register("claude-again", &alias).await;
+        let first = register("claude-direct", real.path()).await;
+        let through_alias = register("claude-aliased", &alias).await;
         assert_eq!(
-            same_tree.id, first.id,
-            "two spellings of one directory are one checkout"
+            through_alias.id, first.id,
+            "the same directory under another name is the same checkout"
         );
-        assert_eq!(lock(&daemon.state).registry.live().count(), 2);
+        assert_eq!(lock(&daemon.state).registry.live().count(), 1);
+        let _ = std::fs::remove_file(&alias);
+    }
+
+    /// Two checkouts of one project are two agents.
+    ///
+    /// Asserted against the predicate directly, with records that agree
+    /// on everything else including the project id. Two unrelated
+    /// temporary directories would have been rejected by the project
+    /// comparison before the checkout clause was ever reached, so a test
+    /// built that way passes whether or not the clause exists.
+    #[tokio::test]
+    async fn one_project_in_two_checkouts_is_two_agents() {
+        let me = std::process::id();
+        let born = procinfo::start_time(me);
+        let one_project = ProjectRef::directory("/somewhere/that/is/one/project");
+        let in_tree = |tree: &str| {
+            let mut record = AgentRecord::new(spec("half"), false, Utc::now());
+            record.spec.workdir = Some(PathBuf::from(tree));
+            record.project = Some(one_project.clone());
+            record.pid = Some(me);
+            record.process_started_at = born;
+            record.status = AgentStatus::Running;
+            record
+        };
+        let main_checkout = in_tree("/repo");
+        let worktree = in_tree("/repo-worktree");
+        assert_eq!(
+            main_checkout.project.as_ref().map(ProjectRef::id),
+            worktree.project.as_ref().map(ProjectRef::id),
+            "one project, which is exactly why the project alone is not enough"
+        );
+        assert!(
+            !same_agent(&main_checkout, &worktree),
+            "a linked worktree is another place to work"
+        );
+        // And the same tree really is the same agent, so the clause is
+        // not simply refusing everything.
+        assert!(same_agent(&main_checkout, &in_tree("/repo")));
     }
 
     /// Two sessions in one process do not collapse into one agent.
