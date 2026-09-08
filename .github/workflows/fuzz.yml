@@ -32,3 +32,4 @@ jobs:
             fuzz/artifacts/
             fuzz/corpus/
             artifacts/fuzz-manifest*.json
+            artifacts/fuzz-*.log
