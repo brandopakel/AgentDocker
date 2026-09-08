@@ -162,47 +162,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
 }
 
 fn read_input(fd: i32, timeout: std::time::Duration) -> Result<Input> {
-    const MAX_INPUT: usize = 1024 * 1024;
-    let deadline = std::time::Instant::now() + timeout;
-    let mut bytes = Vec::new();
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        ensure!(!remaining.is_zero(), "hook input timed out");
-        let mut descriptor = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one initialized, borrowed descriptor; no fd ownership changes.
-        let ready = unsafe {
-            libc::poll(
-                &mut descriptor,
-                1,
-                remaining.as_millis().min(i32::MAX as u128).max(1) as i32,
-            )
-        };
-        if ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        ensure!(ready > 0, "hook input timed out or is unavailable");
-        let mut chunk = [0u8; 4096];
-        // SAFETY: this invocation is the sole stdin reader; poll established
-        // readability, and chunk is valid for the requested length.
-        let count = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-        if count < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        ensure!(count >= 0, "hook input failed");
-        if count == 0 {
-            break;
-        }
-        ensure!(
-            bytes.len() + count as usize <= MAX_INPUT,
-            "hook input exceeds 1 MiB"
-        );
-        bytes.extend_from_slice(&chunk[..count as usize]);
-    }
-    serde_json::from_slice(&bytes).context("invalid Codex hook event")
+    super::input::read(fd, timeout)
 }
 
 #[cfg(test)]

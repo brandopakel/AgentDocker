@@ -1,0 +1,343 @@
+{
+  "recorded_at": "2026-09-08T07:27:51.611425+00:00",
+  "pr": 94,
+  "pr_head": "10e3067e40c51b4e3e38e21030b4e55b369526eb",
+  "package_provenance": {
+    "artifact_id": 10044925944,
+    "artifact_bytes": 30995760,
+    "artifact_sha256": "6c1c88c73bcfc07700d25e8fb2ee62bbb52051d17c1f414b910710ce958c99e9",
+    "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+    "source_tree": "95067c45df33492de9fcce04ea7ceb84e9d458bf",
+    "source_input_sha256": "e4ec7ce5a15fbe7d0c143b3eaa71ecccda9f668bb93c1e811ab611406c92ab67",
+    "source_parents": [
+      "43b9021a91ac84f5e3461696b44907569ce1daac",
+      "10e3067e40c51b4e3e38e21030b4e55b369526eb"
+    ],
+    "outer_archive_verified": true,
+    "inner_archive_verified": true,
+    "binary_hashes_verified": true,
+    "git_blob_input_hash_verified": true,
+    "ad_hoc_bundle_signature_verified": true
+  },
+  "binary_sha256": {
+    "agentdocker": "2b149e16fc95e1c344d73f4b22cbf388dec56c69a4877010fd0da1aa9b16f693",
+    "agentd": "c8ae0b7537785d113625e979399646b559e6bb06a956d5384efd77a8f3a8f4ea",
+    "agentdocker-ui": "1da6f1cc4dcf8d147daa3d046abfe673836c477c66d6ef134c0503acc9c282a3"
+  },
+  "ci": {
+    "standard": "https://github.com/brandopakel/AgentDocker/actions/runs/34198467354",
+    "desktop": "https://github.com/brandopakel/AgentDocker/actions/runs/34198467333",
+    "performance": "https://github.com/brandopakel/AgentDocker/actions/runs/34198467388",
+    "engines": "https://github.com/brandopakel/AgentDocker/actions/runs/34198467464",
+    "windows_foundations": "https://github.com/brandopakel/AgentDocker/actions/runs/34198467549",
+    "applicable_build_and_test_jobs": "passed",
+    "coderabbit": "review in progress; not yet accepted"
+  },
+  "provider_trials": [
+    {
+      "provider": "codex",
+      "result": "passed",
+      "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+      "driver_sha256": "9add86d8799fe2c75b9eefa86fb79409e09b7cae4d4bab3a50e79bb204806ade",
+      "provider_version": "codex-cli 0.153.4",
+      "identity_count": 1,
+      "maximum_live_records": 1,
+      "message_consumed": true,
+      "peer_echo": true,
+      "journal_echo": true,
+      "file_echo": false,
+      "activity_counts": {
+        "working": 9,
+        "idle": 1
+      },
+      "duration_seconds": 22.06362633407116,
+      "hook_adapter_seconds": [
+        0.03801750000000001,
+        0.038893208,
+        0.038756,
+        0.037818958,
+        0.038249959,
+        0.048520917000000004,
+        0.038997750000000005,
+        0.035328042,
+        0.038549958999999995,
+        0.0394705
+      ],
+      "owned_descendants_after_stop": [],
+      "provider_configuration_unchanged": true,
+      "cleanup_scope": "unreaped supervisor reserves each owned process group; stop group before reaping"
+    },
+    {
+      "provider": "claude",
+      "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+      "driver_sha256": "9add86d8799fe2c75b9eefa86fb79409e09b7cae4d4bab3a50e79bb204806ade",
+      "identity_count": 1,
+      "maximum_live_records": 1,
+      "message_consumed": true,
+      "peer_echo": false,
+      "journal_echo": false,
+      "file_echo": true,
+      "activity_counts": {
+        "working": 5,
+        "idle": 1
+      },
+      "duration_seconds": 7.012490832945332,
+      "hook_adapter_seconds": [],
+      "owned_descendants_after_stop": [],
+      "provider_configuration_unchanged": false,
+      "cleanup_scope": "unreaped supervisor reserves each owned process group; stop group before reaping",
+      "functional_result": "passed",
+      "result": "failed privacy acceptance",
+      "finding": "A monitored configuration changed during the trial. The original harness incorrectly returned passed despite its false privacy field. The global Claude state file had a modification time inside the trial window; the exact writer and changed fields were not captured. No user file was restored or overwritten.",
+      "correction": "Repeat with owned CLAUDE_CONFIG_DIR, before/after hashes retained privately, and a changed configuration now fails the driver. Reuse existing authentication only in the child environment; no login or refresh."
+    },
+    {
+      "provider": "claude",
+      "result": "passed",
+      "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+      "driver_sha256": "f36f12b7eb298d2238d1f644d7e36b1c330bda0da43aebff50d18777486775f4",
+      "provider_version": "2.1.263 (Claude Code)",
+      "identity_count": 1,
+      "maximum_live_records": 1,
+      "message_consumed": true,
+      "peer_echo": false,
+      "journal_echo": false,
+      "file_echo": true,
+      "activity_counts": {
+        "working": 5,
+        "idle": 1
+      },
+      "duration_seconds": 7.121290749986656,
+      "hook_adapter_seconds": [],
+      "owned_descendants_after_stop": [],
+      "provider_configuration_unchanged": true,
+      "profile_isolation": "CLAUDE_CONFIG_DIR points to an owned disposable profile",
+      "cleanup_scope": "unreaped supervisor reserves each owned process group; stop group before reaping",
+      "authentication_scope": "existing Claude login access token reused only in owned child environment; no credential files, login or refresh"
+    }
+  ],
+  "provider_versions_observed": {
+    "claude": {
+      "version": "2.1.263 (Claude Code)",
+      "launcher_sha256": "ef5d2909c8af49f31ab6d5487e90316777bc2fac170adfe8160716caa8aaf4f9"
+    },
+    "codex": {
+      "version": "codex-cli 0.153.4",
+      "launcher_sha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70"
+    },
+    "observed_at": "2026-09-08T07:21:46.215010+00:00"
+  },
+  "setup_trial": {
+    "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+    "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+    "source_tree": "95067c45df33492de9fcce04ea7ceb84e9d458bf",
+    "binary_sha256": "2b149e16fc95e1c344d73f4b22cbf388dec56c69a4877010fd0da1aa9b16f693",
+    "driver_sha256": "4d43d3b1e1539b1abfef2186ae4eb9e2bf1bc0c9066392e5a9b559dd479b6cf6",
+    "checks": [
+      "preview selects profile A for hooks and MCP",
+      "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+      "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+      "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+      "changed environment refuses undo before hooks or provider entry are changed",
+      "malformed provider state refuses apply before hook edits"
+    ],
+    "calls": [
+      {
+        "name": "preview-a",
+        "exit": 0,
+        "elapsed_seconds": 0.014844542020000517
+      },
+      {
+        "name": "apply-from-b",
+        "exit": 0,
+        "elapsed_seconds": 0.16877666697837412
+      },
+      {
+        "name": "health-a",
+        "exit": 0,
+        "elapsed_seconds": 0.005667749908752739
+      },
+      {
+        "name": "undo-from-b",
+        "exit": 0,
+        "elapsed_seconds": 0.1631958750076592
+      },
+      {
+        "name": "preview-changed-entry",
+        "exit": 0,
+        "elapsed_seconds": 0.013931125053204596
+      },
+      {
+        "name": "apply-changed-entry",
+        "exit": 0,
+        "elapsed_seconds": 0.15901183302048594
+      },
+      {
+        "name": "refuse-changed-entry",
+        "exit": 1,
+        "elapsed_seconds": 0.0069390840362757444
+      },
+      {
+        "name": "undo-restored-entry",
+        "exit": 0,
+        "elapsed_seconds": 0.1605037080589682
+      },
+      {
+        "name": "preview-malformed-state",
+        "exit": 0,
+        "elapsed_seconds": 0.012709917034953833
+      },
+      {
+        "name": "refuse-malformed-state",
+        "exit": 1,
+        "elapsed_seconds": 0.008025666000321507
+      },
+      {
+        "name": "close-unused-plan",
+        "exit": 0,
+        "elapsed_seconds": 0.015559249906800687
+      }
+    ],
+    "result": "passed",
+    "provider_version": "2.1.263 (Claude Code)",
+    "elapsed_seconds": 0.7418525000102818,
+    "cleanup": {
+      "scratch_removed": true,
+      "user_configuration_hashes_unchanged": true,
+      "model_invoked": false
+    }
+  },
+  "packaged_identity_trial": {
+    "scope": "Actual packaged MCP and Claude hooks with an owned synthetic Python host; no model or real provider",
+    "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+    "source_tree": "95067c45df33492de9fcce04ea7ceb84e9d458bf",
+    "binary_sha256": {
+      "agentdocker": "2b149e16fc95e1c344d73f4b22cbf388dec56c69a4877010fd0da1aa9b16f693",
+      "agentd": "c8ae0b7537785d113625e979399646b559e6bb06a956d5384efd77a8f3a8f4ea"
+    },
+    "driver_sha256": "3ba1ee514fca05dd6b5baaca5fb639ffdc3061cf14cc1e512343fbda6bcb09fd",
+    "checks": [
+      "MCP-first registration",
+      "actual SessionStart hook joins MCP identity",
+      "both actual MCP shutdowns preserve live identity, lease and inbox",
+      "MCP reconnection reuses bound identity",
+      "actual prompt hook outputs pending token then acknowledges it",
+      "prompt activity reaches the identity originally named by MCP",
+      "Stop reports idle and releases the joined identity lease",
+      "actual SessionEnd releases and ends joined identity"
+    ],
+    "result": "passed",
+    "identity_count_after_hook": 1,
+    "status_after_mcp_shutdown": [
+      {
+        "state": "running"
+      },
+      {
+        "state": "running"
+      }
+    ],
+    "host_alive_after_mcp_shutdown": true,
+    "elapsed_seconds": 0.4346539580000126,
+    "cleanup": {
+      "owned_processes_remaining": 0,
+      "owned_process_groups_remaining": 0,
+      "scratch_removed": true,
+      "provider_config_changed": false,
+      "production_daemon_changed": false
+    }
+  },
+  "packaged_terminal_trial": {
+    "source_commit": "f8ec0f6eb52f404d3823c8afe2a0346c806c026a",
+    "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+    "os": "Darwin",
+    "os_version": "25.6.0",
+    "architecture": "arm64",
+    "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+    "binaries": {
+      "agentd": {
+        "bytes": 13292864,
+        "sha256": "c8ae0b7537785d113625e979399646b559e6bb06a956d5384efd77a8f3a8f4ea"
+      },
+      "agentdocker": {
+        "bytes": 8144096,
+        "sha256": "2b149e16fc95e1c344d73f4b22cbf388dec56c69a4877010fd0da1aa9b16f693"
+      }
+    },
+    "checks": [
+      "attach_handshake_and_no_newline_output",
+      "unicode_input_and_ansi_output",
+      "initial_terminal_dimensions",
+      "sigwinch_resize_reaches_child",
+      "noisy_output_above_replay_capacity",
+      "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+      "reattach_replays_tail_with_one_live_child",
+      "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+    ],
+    "result": "passed",
+    "elapsed_seconds": 0.4094804169999975,
+    "cleanup": {
+      "daemon_exited": true,
+      "created_children": 1,
+      "errors": [],
+      "fixture_removed": true
+    }
+  },
+  "benchmark": {
+    "all_six_socket_workloads": "passed, no retries or timeout changes",
+    "input_hash_independently_verified_from_git_blobs": true,
+    "source_sha256": "34340234e9eb99065f1d0e11f2dc476cbcb050c076becbf6c9197cfb772351d8",
+    "artifact_id": 10044916182,
+    "artifact_sha256": "6e9f931ce4a030b1c785d2af772c2ab171912afd204688e790cc95c1a99bcbbb",
+    "testbed": "github-ubuntu-x86_64",
+    "bencher_reports": [
+      {
+        "artifact": "criterion-leases.txt",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6082-7691-a5fd-86e71e44a2a8"
+      },
+      {
+        "artifact": "criterion-fingerprint.txt",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6269-7c42-b91c-89ed83038c62"
+      },
+      {
+        "artifact": "socket-shared-1.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-63ee-7e82-9962-e60b061053b0"
+      },
+      {
+        "artifact": "socket-disjoint-1.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-65df-7f51-b06a-8294d14f562d"
+      },
+      {
+        "artifact": "socket-shared-10.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6762-7952-96d1-62144674cb34"
+      },
+      {
+        "artifact": "socket-disjoint-10.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6946-7d31-afc3-5b82f9830246"
+      },
+      {
+        "artifact": "socket-shared-100.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6ad6-7ba2-8e1a-e52820a463ca"
+      },
+      {
+        "artifact": "socket-disjoint-100.json",
+        "url": "https://bencher.dev/perf/agentdocker/reports/01a07fe9-6c67-7f31-a88e-7f6b9d20370a"
+      }
+    ],
+    "limit": "The earlier e008831 disjoint100 timeout remains unexplained. This passing campaign does not resolve it."
+  },
+  "privacy_references": [
+    "https://code.claude.com/docs/en/env-vars",
+    "https://code.claude.com/docs/en/authentication"
+  ],
+  "limits": [
+    "Fresh short fixtures, not sustained-use acceptance or universal provider support.",
+    "Codex consumed its message through requested MCP calls; automatic Codex hook inbox injection is not implemented.",
+    "Existing live duplicate records were not migrated. No production daemon or installed GUI was replaced.",
+    "Local GUI remains blocked by the locked Mac display; Mac/Linux CI graphical acceptance passed.",
+    "Full Windows daemon/GUI, distribution signing, safe live upgrades and the complete delivery/test matrix remain open."
+  ],
+  "storage": {
+    "local_cargo_cache_created": false,
+    "generated_outputs": "Prune only owned completed package outputs after this report is verified on GitHub; retain current small package while remaining isolated tests need it."
+  }
+}

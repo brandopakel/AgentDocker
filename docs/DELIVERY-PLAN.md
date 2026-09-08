@@ -526,3 +526,27 @@ retained an identical older Channels regression beside its bounded-queue version
 The obsolete copy is removed, preserving all assertions in the bounded version.
 The [original failure](verification/2026-09-08-final-candidate-compile.json) is
 retained; fresh corrected-source CI remains required.
+
+### September 8 integrated acceptance and continued input audit
+
+At `10e3067`, all applicable build/test CI jobs passed, including Mac/Linux
+packaging, graphics, installation, PTY and joined identity activity. Fresh actual
+Codex MCP/activity and Claude hook/activity trials each retained one identity and
+consumed a unique fixture message. Eight verified benchmark artifacts were
+uploaded to Bencher. [Source-bound evidence](verification/2026-09-08-integrated-provider-trials.json)
+retains the first Claude trial's privacy failure: a monitored provider
+configuration changed, while the old harness incorrectly returned success.
+The corrected trial isolates `CLAUDE_CONFIG_DIR`, retains before/after hashes
+privately and fails on changes. It passed without any monitored user configuration
+change. No user file was restored. Future real Claude trials must use this
+isolation. The original benchmark timeout remains unexplained; this short trial
+does not close soaks, live upgrades, platform/signing or the complete test matrix.
+
+Further T09/L13 audit reproduced the Claude hook waiting past 1.5 seconds on an
+empty, still-open stdin pipe before its coordination timeout even started. The
+[original packaged reproduction](verification/2026-09-08-hook-input-baseline.json)
+is retained. Claude now shares Codex's 1 MiB, one-second absolute input reader.
+A trickling writer cannot renew its deadline; invalid input fails open with a
+diagnostic. Packaged Mac/Linux CI tests held-open and oversized input for both
+adapters without a provider or daemon. Corrected-source verification remains
+required. This is an input phase bound, not a total bound across all hook phases.

@@ -28,6 +28,11 @@ review/trust definitions in `/hooks`. Setup never grants trust. See the
 The activity hook does not read transcripts, store tool arguments, consume
 inboxes or claim files. MCP supplies Codex coordination.
 
+Both adapters cap stdin at 1 MiB and use a one-second absolute input deadline.
+An oversized or never-closed stream produces a diagnostic and exits successfully
+so the provider continues. Input, coordination delivery and activity each have
+separate budgets; this is not a one-second bound on every combined hook phase.
+
 ## Messages
 
 ```mermaid

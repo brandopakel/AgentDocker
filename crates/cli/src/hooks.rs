@@ -36,6 +36,7 @@ use crate::client::{Backend, Client};
 use crate::format;
 
 mod codex;
+mod input;
 
 const RUNTIME: &str = "claude-code";
 /// How much of a transcript's end is read for the `Stop` summary.
@@ -324,9 +325,8 @@ fn write_output_before(
 }
 
 fn read_event() -> Result<HookInput> {
-    let mut raw = String::new();
-    std::io::stdin().read_to_string(&mut raw)?;
-    serde_json::from_str(&raw).context("stdin is not a Claude Code hook event")
+    input::read(0, std::time::Duration::from_secs(1))
+        .context("stdin is not a bounded Claude Code hook event")
 }
 
 /// Handle one event. `Some(value)` is JSON for Claude Code's stdout.
