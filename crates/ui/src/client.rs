@@ -20,6 +20,20 @@ pub struct Client {
     autostart: bool,
 }
 
+/// A daemon reply proves the connection worked even when the request failed.
+#[derive(Debug)]
+pub struct RemoteError {
+    pub code: agentdocker_core::ErrorCode,
+    pub message: String,
+}
+
+impl std::fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.message)
+    }
+}
+impl std::error::Error for RemoteError {}
+
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The window has two threads that reconnect on their own schedules; one
@@ -84,7 +98,7 @@ impl Client {
             bail!("agentd closed the connection without answering");
         }
         match serde_json::from_str::<Response>(&reply)? {
-            Response::Error { message, .. } => bail!("{message}"),
+            Response::Error { code, message, .. } => Err(RemoteError { code, message }.into()),
             response => Ok(response),
         }
     }
@@ -278,6 +292,46 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn failed_inventory_reply_preserves_its_typed_daemon_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Request>(&request).unwrap(),
+                Request::Runtimes
+            ));
+            serde_json::to_writer(
+                reader.get_mut(),
+                &Response::Error {
+                    code: agentdocker_core::ErrorCode::Unavailable,
+                    message: "desktop inventory unavailable".into(),
+                    details: None,
+                },
+            )
+            .unwrap();
+            reader.get_mut().write_all(b"\n").unwrap();
+        });
+        let client = Client {
+            socket,
+            home: tmp.path().to_owned(),
+            autostart: false,
+        };
+        let error = client.call(&Request::Runtimes).unwrap_err();
+        server.join().unwrap();
+        let remote = error.downcast_ref::<RemoteError>().unwrap();
+        assert_eq!(remote.code, agentdocker_core::ErrorCode::Unavailable);
+        assert_eq!(remote.message, "desktop inventory unavailable");
+    }
 
     #[test]
     fn event_readiness_recovers_an_idle_connection_and_lag_is_reported() {

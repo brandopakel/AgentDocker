@@ -46,6 +46,8 @@ pub struct RuntimeSpec {
     pub clis: &'static [&'static str],
     /// Desktop apps of the same vendor, as (bundle file name, label).
     pub apps: &'static [(&'static str, &'static str)],
+    /// Known Linux desktop-entry IDs and their labels. Presence is inventory only.
+    pub linux_apps: &'static [(&'static str, &'static str)],
     /// The configuration directory, relative to the home directory.
     pub config_dir: Option<&'static str>,
     pub mcp: McpWiring,
@@ -61,6 +63,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Claude Code",
         clis: &["claude"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".claude"),
         mcp: McpWiring::JsonServers {
             file: ".claude.json",
@@ -73,6 +76,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Claude Desktop",
         clis: &[],
         apps: &[("Claude.app", "Claude Desktop")],
+        linux_apps: &[],
         config_dir: Some("Library/Application Support/Claude"),
         mcp: if cfg!(target_os = "macos") {
             McpWiring::JsonServers {
@@ -88,11 +92,34 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         vendor: "OpenAI",
         label: "Codex",
         clis: &["codex"],
-        apps: &[("Codex.app", "Codex"), ("ChatGPT.app", "ChatGPT")],
+        apps: &[],
+        linux_apps: &[],
         config_dir: Some(".codex"),
         mcp: McpWiring::TomlServers {
             file: ".codex/config.toml",
         },
+        hooks: false,
+    },
+    RuntimeSpec {
+        name: "codex-desktop",
+        vendor: "OpenAI",
+        label: "Codex desktop",
+        clis: &[],
+        apps: &[("Codex.app", "Codex")],
+        linux_apps: &[],
+        config_dir: None,
+        mcp: McpWiring::None,
+        hooks: false,
+    },
+    RuntimeSpec {
+        name: "chatgpt",
+        vendor: "OpenAI",
+        label: "ChatGPT",
+        clis: &[],
+        apps: &[("ChatGPT.app", "ChatGPT")],
+        linux_apps: &[],
+        config_dir: None,
+        mcp: McpWiring::None,
         hooks: false,
     },
     RuntimeSpec {
@@ -101,6 +128,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Gemini CLI",
         clis: &["gemini"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".gemini"),
         mcp: McpWiring::JsonServers {
             file: ".gemini/settings.json",
@@ -113,6 +141,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Cursor",
         clis: &["cursor-agent"],
         apps: &[("Cursor.app", "Cursor")],
+        linux_apps: &[("cursor.desktop", "Cursor")],
         config_dir: Some(".cursor"),
         mcp: McpWiring::JsonServers {
             file: ".cursor/mcp.json",
@@ -125,6 +154,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Windsurf",
         clis: &[],
         apps: &[("Windsurf.app", "Windsurf")],
+        linux_apps: &[("windsurf.desktop", "Windsurf")],
         config_dir: Some(".codeium/windsurf"),
         mcp: McpWiring::JsonServers {
             file: ".codeium/windsurf/mcp_config.json",
@@ -137,6 +167,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Copilot CLI",
         clis: &["copilot"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".copilot"),
         mcp: McpWiring::None,
         hooks: false,
@@ -147,6 +178,11 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "VS Code (editor)",
         clis: &[],
         apps: &[("Visual Studio Code.app", "VS Code")],
+        linux_apps: &[
+            ("code.desktop", "VS Code"),
+            ("code-insiders.desktop", "VS Code Insiders"),
+            ("com.visualstudio.code.desktop", "VS Code"),
+        ],
         config_dir: Some(".vscode"),
         // An editor bundle does not prove an agent extension is installed.
         mcp: McpWiring::None,
@@ -158,6 +194,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Aider",
         clis: &["aider"],
         apps: &[],
+        linux_apps: &[],
         config_dir: None,
         mcp: McpWiring::None,
         hooks: false,
@@ -168,6 +205,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Goose",
         clis: &["goose"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".config/goose"),
         mcp: McpWiring::None,
         hooks: false,
@@ -178,6 +216,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "Amp",
         clis: &["amp"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".config/amp"),
         mcp: McpWiring::None,
         hooks: false,
@@ -188,6 +227,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         label: "OpenCode",
         clis: &["opencode"],
         apps: &[],
+        linux_apps: &[],
         config_dir: Some(".config/opencode"),
         mcp: McpWiring::None,
         hooks: false,
@@ -243,7 +283,7 @@ pub struct RuntimeInfo {
     pub name: String,
     pub vendor: String,
     pub label: String,
-    /// The CLI on `PATH`, when there is one.
+    /// The CLI on PATH or in a standard installation directory, when found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
