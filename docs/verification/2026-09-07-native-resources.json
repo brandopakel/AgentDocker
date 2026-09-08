@@ -1344,5 +1344,197 @@
     "The earlier packaged GUI capture timeout remains unresolved; this later pass does not establish its cause.",
     "No signing/notarization, distinct-source upgrade or live daemon handoff acceptance.",
     "Newer main Homebrew changes and PR #77 were not part of this candidate. Final CI and CodeRabbit review remain pending."
-  ]
+  ],
+  "completed_cache_cleanup": {
+    "source": "0f7a07c415ee00385a255de655e3f8a51531b358",
+    "measured_code": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "allocated_removed_bytes": 7090970624,
+    "free_before": 309378543616,
+    "free_after": 316259430400,
+    "source_unchanged": true,
+    "remote_evidence_confirmed": true,
+    "retained": "Cargo lock inodes, cache identity markers, private JUnit and logs; current small packaged preview"
+  },
+  "package_retirement": [
+    {
+      "source_commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+      "allocated_bytes_before": 51834880,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "9b08d82751630bb855c607ba295b5ccc25b9a140",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "bb7ff712b8afce6ccbc16d9c5a6bf79e1b86f26f",
+        "source_input_sha256": "15aed2f72fa3213653a65407b5c122a436cf215a8297b607d43ca09bfab97e9d",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "5f7dca0ad0cfd74fd8197069463c6df46ca8a43a9d5fa9c62cad885a4d7de3d4",
+          "agentd": "1cf205430ca0d03192ceeb190a95dd56f80e6a388c4962bc7dc917a1c1748f0f",
+          "agentdocker-ui": "156cc5417f32cd440d68397446f28e4f4ba39f2ae113ac6b5730f99722d14d1a"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "56bc6a045c94a396419caa95838e213735102c00d610a66b476a1da0643af2f3"
+        }
+      },
+      "status": "evidence published before retirement"
+    },
+    {
+      "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+      "allocated_bytes_before": 51830784,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "a7d58ca0c2a9676b21d2a40749a000b84264a6d1",
+        "source_input_sha256": "a1d5b0bb0ca4a1e9944113969c69227d6795a3ca2b5538ddd597304445adeb2b",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "ce52cb26ec77b779aa11d438884880c6fecb7b811ec0c0c6268e18861acd5e1f",
+          "agentdocker-ui": "dca732525adfb7a550bfdf64ffbb7457e5320d63db17d955ba08c1c632041599"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "49f54de8f8731c9ccb307c3f9c52acc7f7591265a0389ff663b7e390388874c2"
+        }
+      },
+      "status": "evidence published before retirement"
+    },
+    {
+      "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
+      "allocated_bytes_before": 51855360,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "993f3c0f187a3965b116ee02ce67b9e82f8f7c45",
+        "source_input_sha256": "f9beae566277c55bba21f505f6e39fb94a10c7ea3820387eb9869254554bffd9",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "ce52cb26ec77b779aa11d438884880c6fecb7b811ec0c0c6268e18861acd5e1f",
+          "agentdocker-ui": "e85b4166813c6e97b3f685261c8333dc1d4c24614313e1b93d5287ad52e69a7b"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "add475b0f8057bd39fa7ee656b80b5d5ec41693a4caeba7ea2553561ce35af46"
+        }
+      },
+      "status": "evidence published before retirement"
+    },
+    {
+      "source_commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "allocated_bytes_before": 52764672,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "2d83cceaee5c8d13a32c091bfab71c4a151f66ae",
+        "source_input_sha256": "655e3261ff8f23310558aaf1dd27abedf34ea005d0a2020d70071130e2d7ae2c",
+        "source_dirty": false,
+        "state_schema": 8,
+        "installation_lock": 1,
+        "binary_sha256": {
+          "agentdocker": "3b44222fc062e8f5c174c766c8ba3897182e0592c47493f735714fdfd9e63e9e",
+          "agentd": "af0631d01235a1eff254b2622ba93e88286fd62fbccfa8c6b725a1285c42eb77",
+          "agentdocker-ui": "2bcbd607985c8b006a6982d23ed9f461fccda9c5d7f7394f5cb9f0cbf346c9b4"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "372dab646734001a39197e80c79b607808f040abf658fed60a476b731a1eccd6"
+        }
+      },
+      "status": "evidence published before retirement"
+    },
+    {
+      "source_commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+      "allocated_bytes_before": 51777536,
+      "package_manifest": {
+        "format": 1,
+        "product": "agentdocker",
+        "version": "0.1.0",
+        "source_commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
+        "target": "aarch64-apple-darwin",
+        "display_name": "agentdocker",
+        "signing": "local-preview",
+        "notarized": false,
+        "source_tree": "7ed86e07819252118bc1dbeb3f7391376b21eb4b",
+        "source_input_sha256": "aa9e19a48f7a3798fcd1537e9161a8995d219e33ae591d6dba5828de0447bfe3",
+        "source_dirty": false,
+        "state_schema": 8,
+        "binary_sha256": {
+          "agentdocker": "ed18fd3926b0751c80b05637cdb46e050efa6e0da99a1e0983d945084e16e83e",
+          "agentd": "65cb08a7bac301d0edee88570af4c887e6a20ab3559bf00eeb5fe8103dd0c24d",
+          "agentdocker-ui": "1957cc7eff8d086951f24910678fa03b5ee375442e43be8016b72e964550f297"
+        },
+        "artifacts": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": "2f6ca4ad3289f1947cf055ff06bdb2217b9461a3b8985775f80a5a631b61f5b7"
+        }
+      },
+      "status": "evidence published before retirement"
+    }
+  ],
+  "earlier_integrated_package_acceptance": {
+    "source": {
+      "commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
+      "dirty": false,
+      "content_sha256": "607314c1f668c2fed751acdb1243ac77112dacc6b3d6d378e2cd0a64d5482078"
+    },
+    "source_unchanged": true,
+    "exit": 0,
+    "elapsed_seconds": 104.92033910751343,
+    "rust_passed": 560,
+    "python_passed": 35,
+    "packaged_installation": {
+      "passed": true,
+      "scenarios": [
+        "preview without writes and pinned initial installation",
+        "activation keeps the existing fixture daemon responsive",
+        "changed preview payload and active generation are refused",
+        "compatible rollback switches all commands and retains both releases",
+        "tampered executable is refused without changing activation",
+        "cleanup retains active, rollback and running or legacy binaries",
+        "uninstall preserves the live daemon and its state",
+        "daemon exit releases its pin and invalidates stale cleanup preview",
+        "unused payloads removed; permanent pins and daemon state retained"
+      ],
+      "synthetic_second_generation": true
+    },
+    "packaged_gui": {
+      "connected": true,
+      "elapsed_seconds": 0.208826542,
+      "fixture_discovered": true,
+      "frames": 10,
+      "result": "passed",
+      "runtime_rows": 14,
+      "tcp_observation": {
+        "samples": 3,
+        "elapsed_seconds": 0.3118628748925403,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      }
+    },
+    "limitation": "later pass does not resolve the earlier screenshot failure"
+  }
 }
