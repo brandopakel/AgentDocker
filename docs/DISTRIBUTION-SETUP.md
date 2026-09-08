@@ -16,10 +16,10 @@ nothing.
 A "tap" is just a GitHub repository named `homebrew-<something>` with a
 `Formula/` directory in it. That is the whole mechanism.
 
-**Status: done, except the token.** The tap exists at
+**Status: done.** The tap exists at
 [brandopakel/homebrew-tap](https://github.com/brandopakel/homebrew-tap),
-carries the v0.1.0 formula, and `HOMEBREW_TAP_REPOSITORY` is set. This
-works today:
+carries the v0.1.0 formula, and both `HOMEBREW_TAP_REPOSITORY` and
+`HOMEBREW_TAP_TOKEN` are set on this repository. This works today:
 
 ```sh
 brew tap brandopakel/tap
@@ -28,35 +28,27 @@ brew install agentdocker
 
 Verified by installing it and running both binaries.
 
-**The one step left** is a token, so releases can push to the tap on
-their own. It cannot be created from a script — it is an interactive
-page:
+Every tagged release now pushes the generated formula to
+`Formula/agentdocker.rb` on its own. If the token is ever revoked the
+release job warns and carries on — the formula and the cask are attached
+to the run either way and can be copied across by hand, because a
+missing distribution channel is not a reason to fail a build, and
+`publish` needs that job to finish before it can upload the release
+assets.
 
-```sh
-gh secret set HOMEBREW_TAP_TOKEN --body "<the token>"
-```
-
-Make it a *fine-grained* personal access token at
+Replacing the token, when it expires: make a *fine-grained* personal
+access token at
 <https://github.com/settings/personal-access-tokens/new>, scoped to
-**only** `brandopakel/homebrew-tap`, with **Contents: read and write**.
-It needs nothing from the AgentDocker repository. Until it is set, the
-release job prints what to set and carries on; the formula and cask are
-attached to the run either way and can be copied across by hand.
-
-A fine-grained personal access token scoped to that one repository with
-**Contents: read and write** is enough. It does not need access to this
-repository.
-
-From then on every tagged release pushes the generated formula to
-`Formula/agentdocker.rb`, and anybody can install with:
+**only** `brandopakel/homebrew-tap`, with **Contents: read and write** —
+it needs nothing from the AgentDocker repository — and then
 
 ```sh
-brew tap brandopakel/tap
-brew install agentdocker
+gh secret set HOMEBREW_TAP_TOKEN
 ```
 
-Until then the release job says so in its log and carries on; a missing
-distribution channel is not a reason to fail a build.
+Typed at the prompt, or piped. Not `--body "<the token>"`: an argument
+is visible to every process on the machine while the command runs, and
+it stays in the shell history afterwards.
 
 ## The cask
 
@@ -163,8 +155,7 @@ when the certificate exists it is configuration, not work.
 
 1. ~~Create the tap and point the release at it.~~ Done, and verified by
    installing from it.
-2. Set `HOMEBREW_TAP_TOKEN` so releases publish on their own. One
-   interactive page, then one command.
+2. ~~Set `HOMEBREW_TAP_TOKEN` so releases publish on their own.~~ Done.
 3. Ship a release; confirm the formula updates and the cask appears.
 4. Buy the Developer ID when the app is going to somebody who is not
    you. Then `--identity` and `--notary-profile` in the release

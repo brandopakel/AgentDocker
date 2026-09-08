@@ -692,7 +692,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | ✅ canonical physical `path:` lease keys with validated `file:` input aliases | 2 | 1 |
-| 4 | 🔄 service/lazy start and release archives/installer ✅; maintained Homebrew tap/cask pending | 2 | — |
+| 4 | ✅ service/lazy start, release archives and installer, and a maintained Homebrew tap carrying both the formula and the application cask; every tagged release publishes to it, and a tap that will not take the formula warns rather than failing the release | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | ✅ project watcher over every checkout of a project — the main one and each linked worktree, capped at 32 extra per project with a `watcher_gap` when the cap bites — ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback that also re-reads each checkout's HEAD | 3 | 3, 6 |
