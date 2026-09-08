@@ -233,8 +233,40 @@ late connection on both macOS and Linux. The Windows installation-lock fixture
 now creates state with the same private-directory API as installation; both
 previously failing Windows tests passed in that campaign.
 
-The corrected terminal implementation needs its own full CI and actual PTY
-acceptance. Retain the original failures. GUI CPU profiling, transport deadlines
+At `8230d4b`, the corrected terminal implementation passed Linux/macOS standard
+CI, coverage, Windows foundations, both engines, both desktop package/graphical
+checks and benchmarks. Its tested merge tree and artifact hashes were verified;
+eight baseline and eight corrected result files reached private Bencher. The
+[source-bound report](verification/2026-09-07-terminal-resources.json) records
+those outcomes and a 100-agent Mac observation: 0.36%/0.48% of one core and
+20.8–21.0/101.9–102.4 MiB RSS for daemon/window over 24.75 seconds. The profile
+mostly shows waiting, with some agent-table layout. This short observation does
+not explain the older higher CPU reading or establish a sustained budget.
+
+Actual packaged PTY acceptance then exposed two more completion defects:
+attached session handles kept their own output sender alive after child exit;
+the CLI's blocking stdin read could prevent shutdown even after receiving End.
+The follow-up uses weak output handles and independently reopened nonblocking
+terminal input. A real CLI/daemon PTY campaign now joins both desktop CI jobs,
+covering no-newline/Unicode/ANSI output, initial size, acknowledged SIGWINCH,
+noisy output, detach, bounded replay and exit with the keyboard kept open.
+These fixes need their own final-source CI and local acceptance before L04 can
+advance. This campaign does not automate GUI keystrokes or prove provider use.
+
+At `865b054`, the packaged Mac/Linux PTY campaigns and local Mac trial passed all
+eight scenarios. Linux standard CI, coverage, Windows foundations and engines
+also passed. An older Mac bulk-adoption fixture inherited nonblocking accepted
+sockets; its explicit blocking-mode correction now needs final-source CI.
+The separately dispatched `8230d4b` benchmark passed but varied materially from
+the first run; retain the full comparison before setting performance thresholds.
+
+Add concurrent #80 (`4354c23`) to the review/integration gate: bound its dedicated
+console/setup queues and installation worker count, preserve existing admission
+feedback and cleanup, and prove delegated MCP apply/undo preserves an entry
+changed after preview or installation. Retain viewport diagnostics while
+investigating its occlusion evidence against the original screenshot failure.
+
+Retain the original failures. GUI CPU tuning, transport deadlines
 for saturated connection establishment, terminal screen-dimension budgets,
 repeated load/slow-reader/soak trials and platform parity remain open. The other
 local campaign exceeded the 40 GiB registered-cache budget during this work;

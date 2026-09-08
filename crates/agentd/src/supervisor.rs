@@ -40,8 +40,9 @@ const SCROLLBACK: usize = 64 * 1024;
 /// just before you looked.
 #[derive(Clone)]
 pub struct Session {
-    /// Everything the agent writes, to whoever is attached.
-    pub output: broadcast::Sender<Vec<u8>>,
+    /// Only the terminal reader owns the sender. An attached client must not
+    /// keep its own output stream alive after the terminal reaches EOF.
+    output: broadcast::WeakSender<Vec<u8>>,
     /// Keystrokes on their way to the agent.
     pub input: mpsc::Sender<Vec<u8>>,
     master: Arc<OwnedFd>,
@@ -64,7 +65,13 @@ impl Session {
     pub fn attach(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
         let history = lock_scrollback(&self.scrollback);
         let seen: Vec<u8> = history.iter().copied().collect();
-        let live = self.output.subscribe();
+        let live = self
+            .output
+            .upgrade()
+            .map(|output| output.subscribe())
+            // The reader may have ended just before this attach. Replay the
+            // final history, followed by a receiver that is already closed.
+            .unwrap_or_else(|| broadcast::channel(1).1);
         drop(history);
         (seen, live)
     }
@@ -169,6 +176,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         Some(pty) => {
             let master = Arc::new(pty.into_master());
             let (output, _) = broadcast::channel::<Vec<u8>>(256);
+            let session_output = output.downgrade();
             let (input, keystrokes) = mpsc::channel::<Vec<u8>>(64);
             let scrollback = Arc::new(std::sync::Mutex::new(
                 std::collections::VecDeque::<u8>::new(),
@@ -180,7 +188,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             tokio::spawn(pump_terminal(
                 tokio::fs::File::from_std(std::fs::File::from(reader)),
                 tx,
-                output.clone(),
+                output,
                 scrollback.clone(),
             ));
             tokio::spawn(type_into_terminal(
@@ -188,7 +196,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
                 keystrokes,
             ));
             Some(Session {
-                output,
+                output: session_output,
                 input,
                 master,
                 scrollback,

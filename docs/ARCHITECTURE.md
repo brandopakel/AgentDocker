@@ -609,6 +609,15 @@ Row 23 fixes the first on our own terms, and it is done. `run --tty` (or `tty = 
 
 Attaching late shows the screen rather than an empty one: the daemon keeps the last 64 KB each terminal printed, and hands it over with the live stream under one lock, so no byte falls between the two or arrives twice.
 
+Only the terminal-output reader owns the broadcast sender. Session handles hold
+weak references, so an attached client cannot keep its own output channel alive
+after EOF. An attach racing the reader's exit receives the retained tail and an
+already-closed receiver; the server sends `end` after queued output. The CLI
+reads an independently reopened, nonblocking terminal through Tokio readiness
+notifications. Dropping that read cancels it without a stranded stdin worker or
+changes to inherited descriptor flags. The existing raw-mode guard restores
+terminal settings on completion.
+
 Live terminal continuity through daemon replacement remains unfinished. `daemon reload` currently returns `unavailable` without touching the daemon or agents. An unplanned death closes the master with the daemon; the child may exit with it, and a separate process group does not guarantee survival. Snapshot restore creates a new process and terminal.
 
 Native launch uses a stateless host gate around `Command`: the forked child establishes its process group/terminal, reports its PID over an inherited private socket, and waits using only async-signal-safe syscalls. The daemon verifies its birth identity, commits the Running identity and event, then authorizes exec. Until authorization, EOF, cancellation or the 30-second child deadline denies exec. A worker completes Command's exec-error handshake; an owned child wrapper kills/reaps a launch whose asynchronous activation is dropped. No command, shell wrapper or helper application runs before the durable transaction. Normal exit supervision polls the owned child and drains its process group before releasing protection.

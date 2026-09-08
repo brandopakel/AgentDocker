@@ -59,6 +59,15 @@ jobs:
         run: python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/desktop-smoke
       - name: Disposable installation, activation and rollback
         run: python3 scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/desktop-install-smoke
+      - name: Real terminal input, resize, detach, replay and natural exit
+        shell: bash
+        run: |
+          if [[ "$NATIVE_TARGET" == *-apple-darwin ]]; then
+            terminal_binary_dir=artifacts/desktop/AgentDocker.app/Contents/MacOS
+          else
+            terminal_binary_dir=artifacts/desktop/agentdocker-desktop/bin
+          fi
+          python3 scripts/terminal_smoke.py --binary-dir "$terminal_binary_dir" --output artifacts/terminal-smoke --source "$(git rev-parse HEAD)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -71,4 +80,5 @@ jobs:
             artifacts/desktop/manifest.json
             artifacts/desktop-smoke
             artifacts/desktop-install-smoke
+            artifacts/terminal-smoke
           if-no-files-found: warn

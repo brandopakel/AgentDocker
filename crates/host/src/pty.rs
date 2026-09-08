@@ -12,7 +12,7 @@
 
 use std::ffi::CStr;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Mutex;
 
 /// `ptsname` returns a pointer into storage shared by the whole process,
@@ -166,6 +166,44 @@ pub fn window_size(fd: RawFd) -> Option<(u16, u16)> {
     // SAFETY: `size` outlives the call; a non-terminal simply fails.
     let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut size) };
     (result == 0 && size.ws_col > 0).then_some((size.ws_col, size.ws_row))
+}
+
+/// Reopen this terminal for cancellable readiness-driven input. A duplicate
+/// alone shares file status flags with the caller, so setting O_NONBLOCK on it
+/// would also change the shell's inherited stdin. This opens an independent
+/// description and checks that it still names the same terminal device.
+pub fn nonblocking_input(fd: BorrowedFd<'_>) -> io::Result<std::fs::File> {
+    use std::io::IsTerminal;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let original = std::fs::File::from(fd.try_clone_to_owned()?);
+    if !original.is_terminal() {
+        return Err(io::Error::other("input is not a terminal"));
+    }
+    let mut name = vec![0_u8; libc::PATH_MAX as usize];
+    // SAFETY: the borrowed descriptor stays live, and name is writable for
+    // exactly the supplied length. ttyname_r returns an error number directly.
+    let error = unsafe { libc::ttyname_r(fd.as_raw_fd(), name.as_mut_ptr().cast(), name.len()) };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error));
+    }
+    let name = CStr::from_bytes_until_nul(&name)
+        .map_err(|_| io::Error::other("terminal name was not terminated"))?;
+    let reopened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_NOFOLLOW)
+        .open(std::ffi::OsStr::from_bytes(name.to_bytes()))?;
+    let before = original.metadata()?;
+    let after = reopened.metadata()?;
+    if (before.dev(), before.ino(), before.rdev()) != (after.dev(), after.ino(), after.rdev())
+        || !reopened.is_terminal()
+    {
+        return Err(io::Error::other(
+            "terminal device changed while opening input",
+        ));
+    }
+    Ok(reopened)
 }
 
 /// Put a terminal in raw mode for as long as this lives, so keystrokes
