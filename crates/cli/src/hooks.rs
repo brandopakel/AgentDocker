@@ -676,7 +676,15 @@ async fn found_by_pid<B: Backend>(
         })
         .await?
     {
-        Response::Agents { agents } => Ok(agents.into_iter().find(ours)),
+        Response::Agents { agents } => {
+            let mut matching = agents.into_iter().filter(ours);
+            let first = matching.next();
+            Ok(if matching.next().is_none() {
+                first
+            } else {
+                None
+            })
+        }
         _ => Ok(None),
     }
 }
@@ -1564,6 +1572,20 @@ mod tests {
         ]);
         let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
         assert_eq!(found.unwrap().id, theirs.id, "found by pid");
+
+        let backend = Mock::with(vec![
+            Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
+            Response::Agents {
+                agents: vec![theirs.clone(), matching("legacy-duplicate")],
+            },
+        ]);
+        assert!(
+            found_by_pid(&backend, &input, Some(me))
+                .await
+                .unwrap()
+                .is_none(),
+            "ambiguous legacy identities must not authorize release or deregistration"
+        );
 
         // Everything that shares the pid and is still not this session.
         // Ending any of these instead would be worse than ending none.

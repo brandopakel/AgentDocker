@@ -46,6 +46,12 @@ process-wrap = { version = "10", default-features = false, features = ["std", "j
 filetime = "0.2"
 
 # Repeated isolated worktrees otherwise retain many GiB of incremental state.
-# Keep full debugging information; release/benchmark optimization is unchanged.
+# Line tables retain useful backtraces without full dependency debug data.
 [profile.dev]
 incremental = false
+debug = 1
+
+# Ship optimized native executables without compiler symbols or unused code.
+[profile.release]
+strip = "symbols"
+lto = "thin"

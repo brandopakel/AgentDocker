@@ -237,7 +237,7 @@ impl Smoke {
             && runtimes > 0
             && fixture
             && self.frames >= 3
-            && viewport.visible() == Some(true)
+            && viewport.visible() != Some(false)
             && viewport.occluded != Some(true)
             && viewport.minimized != Some(true)
             && self

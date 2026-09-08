@@ -49,7 +49,7 @@ pub(super) async fn report<B: Backend>(
         .canonicalize()
         .context("cannot resolve hook checkout")?;
     let name = format!("codex-{pid}");
-    let agent = match backend
+    let mut agent = match backend
         .call(Request::Inspect {
             agent: name.clone(),
         })
@@ -109,6 +109,42 @@ pub(super) async fn report<B: Backend>(
     ensure!(
         registered_checkout == checkout,
         "hook checkout does not match registered Codex checkout"
+    );
+    if !agent.spec.labels.contains_key("session_id") {
+        // Adopted/MCP-first identities must bind the session through the
+        // daemon's atomic registration path before activity can target them.
+        let id = agent.id.clone();
+        let mut spec = agent.spec.clone();
+        spec.labels
+            .insert("session_id".into(), input.session_id.clone());
+        agent = match backend
+            .call(Request::Register {
+                spec,
+                pid: Some(pid),
+                session: agentdocker_host::multiplexer::own(),
+            })
+            .await?
+        {
+            Response::Agent { agent } => agent,
+            Response::Error { message, .. } => bail!("session binding refused: {message}"),
+            _ => bail!("unexpected session binding response"),
+        };
+        ensure!(agent.id == id, "session binding changed the Codex identity");
+    }
+    ensure!(
+        agent.status.is_live()
+            && agent.pid == Some(pid)
+            && agent.process_started_at == Some(process_started_at)
+            && agent.spec.runtime == "codex"
+            && agent
+                .spec
+                .workdir
+                .as_ref()
+                .and_then(|p| p.canonicalize().ok())
+                .as_ref()
+                == Some(&checkout)
+            && agent.spec.labels.get("session_id") == Some(&input.session_id),
+        "Codex activity requires an exact verified session binding"
     );
     match backend
         .call(Request::ReportActivity {
@@ -239,7 +275,16 @@ mod tests {
         agent.process_started_at = Some(now);
         agent.status = agentdocker_core::AgentStatus::Running;
         let id = agent.id.to_string();
-        let backend = Mock::with(vec![Response::Agent { agent }, Response::Ok]);
+        let mut bound = agent.clone();
+        bound
+            .spec
+            .labels
+            .insert("session_id".into(), "test-session".into());
+        let backend = Mock::with(vec![
+            Response::Agent { agent },
+            Response::Agent { agent: bound },
+            Response::Ok,
+        ]);
         report(
             &backend,
             &Input {
@@ -254,9 +299,13 @@ mod tests {
         .await
         .unwrap();
         let calls = backend.requests();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3);
         assert!(
-            matches!(&calls[1], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
+            matches!(&calls[1], Request::Register { spec, pid: Some(42), .. }
+            if spec.labels.get("session_id").is_some_and(|s| s == "test-session"))
+        );
+        assert!(
+            matches!(&calls[2], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
         );
     }
 
@@ -280,6 +329,10 @@ mod tests {
             false,
             now,
         );
+        record
+            .spec
+            .labels
+            .insert("session_id".into(), "fixture".into());
         record.pid = Some(42);
         record.process_started_at = Some(now);
         record.status = agentdocker_core::AgentStatus::Running;

@@ -374,12 +374,17 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
     if !spec.hooks {
         return Wiring::Unsupported;
     }
-    let Ok(raw) = health::read_configuration(file) else {
-        return Wiring::Missing;
+    let raw = match health::read_configuration(file) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Wiring::Missing,
+        Err(_) => return Wiring::Unverified,
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Wiring::Missing;
+        return Wiring::Unverified;
     };
+    if !value.is_object() || value.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+        return Wiring::Unverified;
+    }
     if hooks_configuration_matches_for(&value, marker, spec.name) {
         if spec.name == "codex" {
             Wiring::Unverified
@@ -438,6 +443,30 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn invalid_hook_files_are_unverified_instead_of_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("hooks.json");
+        let spec = agentdocker_core::runtime::spec("codex").unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Missing
+        );
+        for raw in ["{broken", "[]", "null", r#"{"hooks":[]}"#] {
+            std::fs::write(&file, raw).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+        }
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Unverified
+        );
+    }
 
     pub(super) fn machine() -> (tempfile::TempDir, Roots) {
         let tmp = tempfile::tempdir().unwrap();

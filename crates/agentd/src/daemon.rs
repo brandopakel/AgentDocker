@@ -5224,11 +5224,52 @@ mod tests {
             vec![(hooks.id.clone(), stale.id.clone())],
             "the pair is found and named, oldest first"
         );
+        #[derive(Clone, Default)]
+        struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let warnings = || {
+            String::from_utf8_lossy(&captured.0.lock().unwrap())
+                .matches("two live records for one process")
+                .count()
+        };
         daemon.check_liveness();
         assert!(daemon.is_live(&hooks.id), "neither is retired:");
         assert!(
             daemon.is_live(&stale.id),
             "an empty inbox now is not evidence nothing will arrive"
+        );
+        assert_eq!(warnings(), 1);
+        daemon.check_liveness();
+        assert_eq!(
+            warnings(),
+            1,
+            "unchanged duplicates must not grow the warning log"
+        );
+        lock(&daemon.state).registry.remove(&stale.id);
+        daemon.check_liveness();
+        lock(&daemon.state).registry.insert(stale).unwrap();
+        daemon.check_liveness();
+        assert_eq!(
+            warnings(),
+            2,
+            "a pair that reappears should be announced again"
         );
     }
 
@@ -8197,6 +8238,76 @@ deny = ["send:all"]
     }
 
     // ----- daemon reload --------------------------------------------------
+
+    #[tokio::test]
+    async fn a_linked_worktree_commit_uses_project_policy_and_writes_only_its_checkout() {
+        let dir = TempDir::new().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "main-writer").await;
+        let worktree = dir.path().join("linked");
+        assert!(git(
+            dir.path(),
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked",
+                worktree.to_str().unwrap()
+            ]
+        ));
+        let nested = worktree.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let writer = register_in(&daemon, "linked-writer", &nested).await;
+        let policy_root = writer.project.as_ref().unwrap().dir();
+        assert_eq!(policy_root, worktree.canonicalize().unwrap());
+        std::fs::write(worktree.join("kept.txt"), "linked change\n").unwrap();
+        let policy = dir.path().join("policy.toml");
+        for action in ["commit", "push"] {
+            std::fs::write(
+                &policy,
+                format!(
+                    "[[rule]]\nname = \"project policy\"\ndeny = [\"{action}:{}\"]\n",
+                    policy_root.display()
+                ),
+            )
+            .unwrap();
+            daemon.reload_policies();
+            let reply = daemon
+                .handle(Request::Commit {
+                    agent: "linked-writer".into(),
+                    message: "linked change".into(),
+                    all: true,
+                    push: action == "push",
+                })
+                .await;
+            assert!(
+                matches!(
+                    reply,
+                    Response::Error {
+                        code: ErrorCode::Forbidden,
+                        ..
+                    }
+                ),
+                "{reply:?}"
+            );
+        }
+        std::fs::write(policy, "").unwrap();
+        daemon.reload_policies();
+        let reply = commit(&daemon, "linked-writer", "linked change", true).await;
+        assert!(matches!(reply, Response::Committed { .. }), "{reply:?}");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("kept.txt")).unwrap(),
+            "one\n"
+        );
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(output.status.success() && output.stdout.is_empty());
+    }
 
     #[tokio::test]
     async fn an_ordinary_shutdown_still_stops_what_it_started() {

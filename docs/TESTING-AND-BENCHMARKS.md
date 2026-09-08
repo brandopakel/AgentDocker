@@ -143,7 +143,8 @@ inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/carg
 `--dry-run` first. Do not clean an active build/test directory, running binaries,
 or another session's cache. Each worktree keeps its own target directory.
 Workspace development builds disable incremental compilation, while keeping
-full debug information and unchanged release/benchmark optimization. Direct
+line-table debug information. Release builds retain the default optimization
+level, enable thin LTO and strip symbols. Direct
 Cargo commands do not invoke the storage preflight; run
 `python3 scripts/build_storage.py` first. This bounds the campaign workflow,
 not all disk use by arbitrary programs.
@@ -169,3 +170,12 @@ does not issue additional requests. Results retain capture-attempt and surface-
 failure counts. A real renderer screenshot with the connected fixture remains
 mandatory; repeated failures still fail acceptance. This recovery path does not
 assign the same cause to earlier runs without matching evidence.
+
+### Download size gates
+
+The desktop packager refuses payloads above 100 MiB and each compressed download
+above 40 MiB per architecture (universal builds allow twice these totals). Its
+manifest records logical payload and archive bytes. The release workflow also
+limits the combined CLI/daemon payload to 30 MiB. CLI tarballs contain just those
+two commands; desktop ZIPs contain one self-contained app with all three
+executables. Build caches and compiler dependencies are never download inputs.

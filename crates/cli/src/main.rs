@@ -466,8 +466,10 @@ enum Command {
     Send(SendArgs),
     /// Report an observed provider turn state (expires after five minutes).
     ReportActivity {
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
+        /// Current provider activity: working or idle.
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
     },
@@ -2058,13 +2060,17 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             // The snapshot, and where its tail starts.
             let snapshot = async {
                 let Response::Journal {
-                    project, entries, ..
+                    project,
+                    entries,
+                    head_seq,
                 } = client.call(&request).await?
                 else {
                     return Ok(None);
                 };
                 entries.iter().for_each(print);
-                let last = entries.last().map_or(args.since.unwrap_or(0), |e| e.seq);
+                let last = head_seq
+                    .unwrap_or_else(|| entries.last().map_or(args.since.unwrap_or(0), |e| e.seq))
+                    .max(args.since.unwrap_or(0));
                 Ok(Some((project, last)))
             };
             if !args.follow {

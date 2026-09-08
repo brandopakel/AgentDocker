@@ -233,6 +233,7 @@ def package(args):
         info["installation_lock"] = provenance.get("installation_lock", 0)
         build = macos if "apple-darwin" in args.target else linux
         app, archive, binaries = build(args, stage, info)
+        info["size"] = measure_sizes(app, [p for p in stage.iterdir() if p.suffix in {".zip", ".gz", ".dmg"}], 2 if args.second_binary_dir else 1)
         info["binary_sha256"] = {name: sha256(binaries / name) for name in BINARIES}
         info["artifacts"] = {path.name: sha256(path) for path in stage.iterdir() if path.is_file() and path.suffix in {".zip", ".gz", ".dmg"}}
         for name, checksum in info["artifacts"].items():
@@ -241,6 +242,19 @@ def package(args):
         # Atomic publication of the complete local artifact directory.
         stage.rename(args.output)
     return info
+
+
+def measure_sizes(payload, archives, architectures=1):
+    """Refuse oversized downloads before publishing a completed artifact directory."""
+    payload_bytes = sum(path.stat().st_size for path in payload.rglob("*") if path.is_file() and not path.is_symlink())
+    archive_bytes = {path.name: path.stat().st_size for path in archives}
+    limits = {"payload_bytes": 100 * 1024 ** 2 * architectures,
+              "archive_bytes": 40 * 1024 ** 2 * architectures}
+    if payload_bytes > limits["payload_bytes"]:
+        raise ValueError("desktop payload exceeds the 100 MiB per-architecture size budget")
+    if any(size > limits["archive_bytes"] for size in archive_bytes.values()):
+        raise ValueError("desktop download exceeds the 40 MiB per-architecture size budget")
+    return {"payload_bytes": payload_bytes, "archive_bytes": archive_bytes, "limits": limits}
 
 
 def parser():

@@ -75,6 +75,8 @@ pub struct Identity {
     /// The process this agent *is*. Its lifetime, not ours, is what ends
     /// the agent.
     pub host_pid: Option<u32>,
+    /// Process birth recorded by the daemon, so a recycled PID is distinguishable.
+    pub host_started_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub struct McpServer<B> {
@@ -90,8 +92,8 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         identity.name, identity.id
     );
     let server = McpServer::new(client, identity);
-    // Whatever ends the session — stdin closing, or the host going away and
-    // breaking the pipe — the agent we registered must be deregistered.
+    // Transport shutdown preserves a live provider identity; cleanup below
+    // only retires a registration whose owning process has ended.
     let outcome = pump(&server).await;
     server.shutdown().await;
     outcome
@@ -142,6 +144,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
                 name: agent.spec.name,
                 registered_here: false,
                 host_pid: agent.pid,
+                host_started_at: agent.process_started_at,
             }),
             Ok(other) => bail!("unexpected reply to inspect: {other:?}"),
             Err(err) => Err(err.context(format!(
@@ -208,6 +211,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         Response::Agent { agent } => Ok(Identity {
             registered_here: agent.spec.labels.get("registrar") == Some(&registrar),
             host_pid: agent.pid.or(Some(host_pid)),
+            host_started_at: agent.process_started_at,
             id: agent.id.to_string(),
             name: agent.spec.name,
         }),
@@ -238,12 +242,23 @@ impl<B: Backend> McpServer<B> {
         if !self.identity.registered_here {
             return;
         }
-        if self
-            .identity
-            .host_pid
-            .is_some_and(agentdocker_host::procinfo::alive)
-        {
-            return;
+        if let Some(pid) = self.identity.host_pid {
+            let Some(expected) = self.identity.host_started_at else {
+                // Without a verified birth, only the daemon can decide cleanup.
+                return;
+            };
+            match agentdocker_host::procinfo::start_time(pid) {
+                Some(actual) if actual == expected => return,
+                Some(_) => {} // A different process now holds the old PID.
+                None => {
+                    #[cfg(unix)]
+                    if agentdocker_host::procinfo::alive(pid) {
+                        return;
+                    }
+                    #[cfg(not(unix))]
+                    return;
+                }
+            }
         }
         let _ = self
             .backend
@@ -1420,6 +1435,7 @@ mod tests {
                 name: "tester".into(),
                 registered_here: true,
                 host_pid: None,
+                host_started_at: None,
             },
         )
     }
@@ -1896,6 +1912,7 @@ mod tests {
                 name: "tester".into(),
                 registered_here: false,
                 host_pid: None,
+                host_started_at: None,
             },
         );
         adopted.shutdown().await;
@@ -1953,6 +1970,7 @@ mod tests {
                     name: "claude-code-4242".into(),
                     registered_here: true,
                     host_pid,
+                    host_started_at: Some(chrono::Utc::now()),
                 },
             )
         };
@@ -1960,12 +1978,27 @@ mod tests {
         // The provider is still running: nothing is ended here. Both
         // `SessionEnd` and the daemon's liveness sweep will do it
         // properly, and neither needs us.
-        let alive = ours(Some(std::process::id()));
+        let mut alive = ours(Some(std::process::id()));
+        alive.identity.host_started_at = agentdocker_host::procinfo::start_time(std::process::id());
         alive.shutdown().await;
         assert!(
             alive.backend.requests.lock().unwrap().is_empty(),
             "a running session must not lose its agent to a restarted MCP server"
         );
+        let mut unknown = ours(Some(std::process::id()));
+        unknown.identity.host_started_at = None;
+        unknown.shutdown().await;
+        assert!(unknown.backend.requests.lock().unwrap().is_empty());
+        let mut recycled = ours(Some(std::process::id()));
+        recycled.identity.host_started_at = alive
+            .identity
+            .host_started_at
+            .map(|at| at - chrono::Duration::hours(1));
+        recycled.shutdown().await;
+        assert!(matches!(
+            recycled.backend.requests.lock().unwrap().as_slice(),
+            [Request::Deregister { .. }]
+        ));
 
         // The host is gone and nothing else will clean up a record we
         // made, so this is the one case that still deregisters.
@@ -1979,7 +2012,13 @@ mod tests {
 
     /// A pid that certainly no longer exists: a child we already reaped.
     fn dead_pid() -> u32 {
+        #[cfg(unix)]
         let mut child = std::process::Command::new("true").spawn().unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap();
         let pid = child.id();
         child.wait().unwrap();
         pid

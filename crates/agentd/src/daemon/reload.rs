@@ -31,7 +31,7 @@
 //! worse than one that admits it cannot go yet.
 
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -198,30 +198,12 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
     if within.is_zero() {
         return Err("a successor deadline of zero would never expire".to_owned());
     }
-    let deadline = Instant::now() + within;
-
-    // The timeout the kernel enforces is per-read, and `handoff::receive`
-    // does a header `recvmsg` and then reads the body until it has all
-    // of it. Every one of those resets the clock, so a successor that
-    // trickles a byte at a time can take as long as it likes and still
-    // come back `Serving` — and the predecessor would hand over on the
-    // word of something that took ten minutes to say it. The socket
-    // timeout only stops any single read from hanging; the deadline is
-    // what bounds the wait.
-    //
-    // The one failure tolerated in setting it is a peer that has already
-    // closed: on macOS that returns EINVAL, and it is exactly the case
-    // of a successor that died before speaking. A read on a socket with
-    // no peer cannot block, so the wait is still bounded. Any other
-    // failure leaves the read able to hang for ever, which is not
-    // something to find out later.
-    if let Err(error) = socket.set_read_timeout(Some(within))
-        && !peer_has_gone(socket)
-    {
-        return Err(format!("cannot bound the wait for the successor: {error}"));
-    }
-
-    let (payload, fds) = handoff::receive(socket).map_err(|e| {
+    let deadline = Instant::now()
+        .checked_add(within)
+        .ok_or_else(|| "successor deadline is out of range".to_owned())?;
+    // Poll and recheck the same deadline before every nonblocking read.
+    // A per-read socket timeout would restart when another byte arrives.
+    let (payload, fds) = handoff::receive_until(socket, deadline).map_err(|e| {
         if Instant::now() >= deadline {
             format!("the successor did not say it was serving within {within:?}")
         } else {
@@ -253,27 +235,6 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
         }
         Err(e) => Err(format!("the successor's answer made no sense: {e}")),
     }
-}
-
-/// Whether the other end has already gone.
-///
-/// Asked only to explain a failure to set a timeout, and answered
-/// without consuming anything: a peek returns 0 at end of file, and on a
-/// peer that is merely quiet it returns EAGAIN rather than blocking.
-fn peer_has_gone(socket: &UnixStream) -> bool {
-    use nix::sys::socket::{MsgFlags, recv};
-    let mut nothing = [0_u8; 1];
-    // End of file, and only that. A peer that is merely quiet answers
-    // `EAGAIN` because of `DONTWAIT`, and nothing is consumed because of
-    // `PEEK`.
-    matches!(
-        recv(
-            socket.as_raw_fd(),
-            &mut nothing,
-            MsgFlags::MSG_PEEK | MsgFlags::MSG_DONTWAIT,
-        ),
-        Ok(0)
-    )
 }
 
 impl Daemon {
@@ -421,6 +382,34 @@ mod tests {
         let reason = await_ready(&mine, Duration::ZERO).unwrap_err();
         assert!(reason.contains("never expire"), "{reason}");
         drop(theirs);
+    }
+
+    #[test]
+    fn a_trickling_readiness_reply_cannot_extend_the_deadline() {
+        use std::io::Write;
+        let (mine, mut theirs) = UnixStream::pair().unwrap();
+        let sender = std::thread::spawn(move || {
+            let payload = serde_json::to_vec(&Ready::Serving).unwrap();
+            theirs
+                .write_all(&(payload.len() as u32).to_be_bytes())
+                .unwrap();
+            for byte in payload {
+                if theirs.write_all(&[byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+        let started = Instant::now();
+        let result = await_ready(&mine, Duration::from_millis(100));
+        let elapsed = started.elapsed();
+        drop(mine);
+        sender.join().unwrap();
+        assert!(result.unwrap_err().contains("within"));
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "trickle extended the deadline: {elapsed:?}"
+        );
     }
 
     /// A readiness answer carrying descriptors is refused.

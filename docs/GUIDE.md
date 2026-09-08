@@ -70,8 +70,9 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 
 A native window over the same Unix socket as the CLI. No HTTP, no browser,
 no localhost. `agentdocker ui` opens it, and on macOS it opens
-`AgentDocker.app` if that is installed so the Dock and the app switcher
-name it properly.
+`agentdocker-ui` beside the CLI when available. Otherwise it looks for
+`AgentDocker.app`, whose bundle supplies the Dock and app-switcher identity;
+a bare executable uses the generic executable identity.
 
 Agents are grouped by project, and every project keeps one colour
 everywhere it appears — the heading, the dot on each of its rows, the
@@ -117,9 +118,10 @@ terminal output, because output is not evidence — an agent printing a
 paragraph may be doing nothing, and an agent printing nothing may be
 halfway through a refactor.
 
-So an agent that has not been wired up has nothing to derive from, and
-reads `idle` however busy it is. Hover the cell: if that is why, it says
-so. Fix it on **Runtimes**, or with `agentdocker setup`.
+An agent without fresh provider observations or recent daemon coordination
+reads `unknown`. Recent coordination can establish `working`; an explicit
+provider stop can establish `idle`. Hover the cell for the observation source.
+Configure integration on **Runtimes**, or with `agentdocker setup`.
 
 ### Questions
 
@@ -522,7 +524,8 @@ Newest first. Only what changes how the product is used.
 
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
-  prefers the bundle. Local preview bundles use ad-hoc signing. Public macOS
+  first launches a matching sibling `agentdocker-ui`, then falls back to the
+  bundle when no sibling exists. Local preview bundles use ad-hoc signing. Public macOS
   distribution still requires Developer ID signing and notarization; the
   current public release predates this desktop work.
 - A new mark: three agents, in the app's own project colours, meeting at

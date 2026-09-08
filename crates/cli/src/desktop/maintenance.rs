@@ -233,7 +233,8 @@ pub(super) fn run(
 ) -> Result<()> {
     // Refuse redirected or foreign installation paths before creating a lock.
     layout.preflight()?;
-    let _install_lock = if !preview && layout.root.exists() {
+    let _install_lock = if !preview {
+        layout.ensure_root()?;
         dirs::private_file(&layout.root.join("install.lock"), true, false)?;
         Some(
             lock::try_exclusive(&layout.root.join("install.lock"))?
@@ -242,6 +243,7 @@ pub(super) fn run(
     } else {
         None
     };
+    layout.preflight()?;
     let (plan, _pins) = plan(layout, keep, !preview, service_installed(layout)?)?;
     let id = plan.id()?;
     if let Some(expected) = expected {
@@ -359,6 +361,25 @@ mod tests {
         for (link, _) in layout.links() {
             assert!(link.symlink_metadata().is_err());
         }
+    }
+
+    #[test]
+    fn an_absent_root_is_locked_before_non_preview_maintenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(temp.path().to_owned()).unwrap();
+        run(&layout, Some(0), true, None).unwrap();
+        assert!(!layout.root.exists());
+        run(&layout, Some(0), false, None).unwrap();
+        let held = lock::try_exclusive(&layout.root.join("install.lock"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            run(&layout, None, false, None)
+                .unwrap_err()
+                .to_string()
+                .contains("in progress")
+        );
+        drop(held);
     }
 
     #[test]

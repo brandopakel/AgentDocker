@@ -3597,6 +3597,7 @@ mod tests {
                     reader.get_mut().write_all(b"\n").unwrap();
                 }
             }
+            listener
         });
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
@@ -3610,7 +3611,11 @@ mod tests {
         commands.send(cmd).unwrap();
         drop(commands);
         worker.join().unwrap();
-        server.join().unwrap();
+        let listener = server.join().unwrap();
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "worker sent an unexpected extra request after the planned replies"
+        );
         results.try_iter().collect()
     }
 

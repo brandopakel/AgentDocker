@@ -185,11 +185,17 @@ def trial(binary_dir, output, manifest_path):
                     report['result'] = 'passed'
                 finally:
                     for p in reversed(processes):
-                        stop(p)
+                        try:
+                            stop(p)
+                        except (OSError, subprocess.TimeoutExpired) as failure:
+                            report.setdefault('stop_failures', []).append(type(failure).__name__)
                     for p in processes:
                         for stream in [p.stdin, p.stdout]:
                             if stream is not None:
-                                stream.close()
+                                try:
+                                    stream.close()
+                                except OSError as failure:
+                                    report.setdefault('stream_failures', []).append(type(failure).__name__)
     except Exception as error:
         report['error'] = str(error)
     finally:

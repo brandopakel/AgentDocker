@@ -69,6 +69,25 @@ class DesktopPackaging(unittest.TestCase):
             PACKAGE.package(self.args)
         self.assertFalse(self.output.exists())
 
+    def test_oversized_payload_never_publishes(self):
+        executable = self.binaries / "agentd"
+        with executable.open("ab") as file:
+            file.truncate(101 * 1024 ** 2)
+        self.manifest["binary_sha256"]["agentd"] = PACKAGE.sha256(executable)
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "payload exceeds"):
+            PACKAGE.package(self.args)
+        self.assertFalse(self.output.exists())
+
+    def test_oversized_download_is_rejected_even_with_a_small_payload(self):
+        archive = self.binaries / "fixture.zip"
+        with archive.open("wb") as file:
+            file.truncate(41 * 1024 ** 2)
+        payload = self.binaries / "app"
+        payload.mkdir()
+        with self.assertRaisesRegex(ValueError, "download exceeds"):
+            PACKAGE.measure_sizes(payload, [archive])
+
     def test_schema_is_taken_from_the_binary_build_and_required(self):
         self.manifest["state_schema"] = 9
         self.save_manifest()

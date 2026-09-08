@@ -55,6 +55,12 @@ Agents don't need an SDK. Anything that can write a line of JSON to a Unix socke
 
 ## Install
 
+End users download native executables; Rust build caches are only development
+files. The next release separates CLI/daemon tarballs from self-contained desktop
+archives, with no duplicate app copy in the CLI download. Packaging enforces a
+100 MiB desktop payload and 40 MiB download ceiling per architecture; see
+[size and build-storage checks](docs/TESTING-AND-BENCHMARKS.md#download-size-gates).
+
 ```sh
 cargo install --git https://github.com/brandopakel/AgentDocker --tag v0.1.0 agentdocker --locked   # released CLI + daemon, from source on macOS/Linux
 cargo install --path crates/cli --locked                                                       # checked-out source: CLI + daemon

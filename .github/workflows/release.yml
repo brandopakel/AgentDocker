@@ -39,24 +39,28 @@ jobs:
         run: |
           cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker --bins
           binaries="agentdocker agentd"
+          mkdir dist
           if [ "$WITH_UI" = "true" ]; then
             cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker-ui
-            binaries="$binaries agentdocker-ui"
-            # The same program again, wrapped so macOS calls it
-            # AgentDocker and draws its icon rather than naming it after
-            # the file. The bare binary stays for `agentdocker ui` on a
-            # machine that installs neither into Applications.
+            # The desktop download contains each executable once. CLI-only
+            # users download just the two commands in the separate tarball.
             sh scripts/bundle-macos.sh \
               "target/${BUILD_TARGET}/release/agentdocker-ui" \
               "target/${BUILD_TARGET}/release" \
               "${GITHUB_REF_NAME#v}"
-            binaries="$binaries AgentDocker.app"
+            ditto -c -k --sequesterRsrc --keepParent \
+              "target/${BUILD_TARGET}/release/AgentDocker.app" \
+              "dist/agentdocker-desktop-${BUILD_TARGET}.zip"
+            shasum -a 256 "dist/agentdocker-desktop-${BUILD_TARGET}.zip" > "dist/agentdocker-desktop-${BUILD_TARGET}.zip.sha256"
           fi
-          mkdir dist
           # shellcheck disable=SC2086  # the binary list is deliberately split
           tar -czf "dist/agentdocker-${BUILD_TARGET}.tar.gz" -C "target/${BUILD_TARGET}/release" $binaries
           cd dist
           shasum -a 256 "agentdocker-${BUILD_TARGET}.tar.gz" > "agentdocker-${BUILD_TARGET}.tar.gz.sha256"
+      - name: Enforce download and payload size budgets
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: python3 scripts/check_release_size.py "target/${BUILD_TARGET}/release" dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: binary-${{ matrix.target }}
@@ -84,9 +88,7 @@ jobs:
       - name: Validate formula and cask
         run: |
           ruby -c agentdocker.rb
-          # The cask is only produced when the desktop archives are in
-          # the checksums, so its absence is not a failure.
-          if [ -f agentdocker-app.rb ]; then ruby -c agentdocker-app.rb; fi
+          ruby -c agentdocker-app.rb
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: formula

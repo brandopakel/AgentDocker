@@ -107,6 +107,7 @@ enum DesktopCommand {
     },
     /// Remove owned launchers and deactivate this installation; preserve running sessions and settings.
     Uninstall {
+        /// Print the removal plan without changing the installation.
         #[arg(long)]
         preview: bool,
         /// Refuse changes since the reviewed maintenance plan.
@@ -118,8 +119,10 @@ enum DesktopCommand {
         /// Keep this many additional inactive versions, newest first.
         #[arg(long, default_value_t = 0)]
         keep: usize,
+        /// Print the retention plan without removing any versions.
         #[arg(long)]
         preview: bool,
+        /// Refuse changes since the reviewed maintenance plan.
         #[arg(long)]
         expect_plan: Option<String>,
     },

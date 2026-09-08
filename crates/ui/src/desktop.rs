@@ -312,21 +312,13 @@ mod tests {
         }
     }
 
-    /// A report is the answer to the question that was asked. Changing
-    /// the source or the prefix asks a different question, so the old
-    /// answer must not stay on screen next to the new inputs — an apply
-    /// button is built from the report, and applying a stale one would
-    /// install something the reader did not choose.
+    /// Receiving a preview stores its report and ends the busy state.
     #[test]
-    fn a_report_belongs_to_the_inputs_that_produced_it() {
+    fn receiving_a_report_finishes_the_busy_state() {
         let mut p = panel();
         p.receive(Ok(json!({"preview": true, "source": "/a"})));
         assert!(p.report.is_some());
         assert!(!p.busy, "a reply ends the wait");
-
-        // What `show` does when an input changes, without a window.
-        p.report = None;
-        assert!(p.report.is_none());
     }
 
     /// A live button whose only outcome is an error is a fault the
