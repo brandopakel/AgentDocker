@@ -83,3 +83,13 @@ resume and undo set that profile only in the provider child process; a plan for
 the default profile explicitly removes an inherited override from that child.
 Changing the invoking shell's profile after preview does not redirect the saved
 plan. Setup does not switch the profiles of existing provider sessions.
+
+The [packaged Claude profile trial](verification/2026-09-07-claude-profile-setup.json)
+passed with Claude Code 2.1.263 and candidate `a65d956`: preview in profile A,
+apply and undo while invoking from profile B, matching health diagnostics,
+preservation of unrelated MCP entries/hooks, and refusal before edits for a
+changed server environment or malformed provider JSON. Both disposable profiles
+were removed; monitored user configurations stayed unchanged. Run
+`scripts/claude_setup_smoke.py --binary PATH --manifest PATH --output NEW_DIRECTORY`
+with an installed Claude CLI to repeat this configuration-only trial. It does
+not invoke a model or prove automatic inbox consumption.

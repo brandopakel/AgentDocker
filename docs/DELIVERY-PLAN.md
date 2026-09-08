@@ -468,3 +468,17 @@ physical `/private/var/...` directory. The assertion now resolves the owned
 parent directory before appending the provider file name. The new profile
 apply/health/undo regression itself passed on Mac. The original CI failure
 (run `34195349392`) remains retained; final-source CI is required.
+
+The real packaged provider-CLI [profile setup trial](verification/2026-09-07-claude-profile-setup.json)
+passed at `a65d956`, including eleven public CLI invocations with two expected
+refusals for changed/malformed configuration. The repeatable driver is
+`scripts/claude_setup_smoke.py`. Exact package source/tree, Git-blob input hash,
+archive and executable hashes were verified; only the 8.2 MB CLI was extracted.
+The fixture profiles were removed and monitored user configuration hashes stayed
+unchanged. This closes the bounded configuration trial for that candidate,
+while actual model delivery, concurrent provider mutation and final integrated
+acceptance remain separate.
+
+The standalone Channels correction #89 was merged as `43b9021` after all CI
+checks and CodeRabbit's final review of `7376ed7` reported no remaining concrete
+merge-readiness risk. Source merge does not update an already installed app.
