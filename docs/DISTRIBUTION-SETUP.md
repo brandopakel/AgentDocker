@@ -16,19 +16,32 @@ nothing.
 A "tap" is just a GitHub repository named `homebrew-<something>` with a
 `Formula/` directory in it. That is the whole mechanism.
 
-**One-time setup:**
+**Status: done, except the token.** The tap exists at
+[brandopakel/homebrew-tap](https://github.com/brandopakel/homebrew-tap),
+carries the v0.1.0 formula, and `HOMEBREW_TAP_REPOSITORY` is set. This
+works today:
 
 ```sh
-gh repo create brandopakel/homebrew-tap --public \
-  --description "Homebrew formulae for AgentDocker"
+brew tap brandopakel/tap
+brew install agentdocker
 ```
 
-Then tell the release workflow where it is:
+Verified by installing it and running both binaries.
+
+**The one step left** is a token, so releases can push to the tap on
+their own. It cannot be created from a script — it is an interactive
+page:
 
 ```sh
-gh variable set HOMEBREW_TAP_REPOSITORY --body brandopakel/homebrew-tap
-gh secret   set HOMEBREW_TAP_TOKEN      --body "<a PAT with contents:write on that repo>"
+gh secret set HOMEBREW_TAP_TOKEN --body "<the token>"
 ```
+
+Make it a *fine-grained* personal access token at
+<https://github.com/settings/personal-access-tokens/new>, scoped to
+**only** `brandopakel/homebrew-tap`, with **Contents: read and write**.
+It needs nothing from the AgentDocker repository. Until it is set, the
+release job prints what to set and carries on; the formula and cask are
+attached to the run either way and can be copied across by hand.
 
 A fine-grained personal access token scoped to that one repository with
 **Contents: read and write** is enough. It does not need access to this
@@ -45,13 +58,37 @@ brew install agentdocker
 Until then the release job says so in its log and carries on; a missing
 distribution channel is not a reason to fail a build.
 
-**What the formula does and does not cover.** It installs `agentdocker`,
-`agentd` and the `agentdocker-ui` executable, and registers the daemon
-as a Homebrew service. It does **not** install `AgentDocker.app`, because
-a formula is the wrong vehicle for a GUI application — that wants a
-*cask*, which is a separate file in the same tap and is worth adding
-once the app is signed (see below, because an unsigned cask is a cask
-nobody can open).
+## The cask
+
+Homebrew has two kinds of thing and we need both. A **formula** installs
+commands — `agentdocker`, `agentd`, and the `agentdocker-ui` executable,
+plus the daemon as a Homebrew service. A **cask** installs an
+application, which is what `AgentDocker.app` is: Homebrew puts it in
+`/Applications` and knows how to take it away again.
+
+`packaging/homebrew/agentdocker-app.rb.in` and the same generator
+produce it, from the SHA-256 of the desktop archives the desktop
+workflow builds. The release publishes both, and the cask is skipped —
+loudly, not silently — when a release has no packaged app, because a
+cask pointing at a download that is not there is worse than no cask.
+
+```sh
+brew install --cask brandopakel/tap/agentdocker-app
+```
+
+It `depends_on` the formula, so installing the app brings the commands
+with it.
+
+**It carries a caveat, and will until there is a Developer ID.** The app
+is ad-hoc signed, so Gatekeeper refuses a downloaded copy. Homebrew's
+supported way to say "I fetched this deliberately" is:
+
+```sh
+brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
+```
+
+The cask says so in its own caveats. When the release is signed and
+notarised, both the caveat and the flag go away.
 
 ## Apple Developer ID: what it is actually for
 
@@ -94,9 +131,12 @@ when the certificate exists it is configuration, not work.
 
 ## Order
 
-1. Create the tap and set the two release settings. Costs nothing,
-   makes `brew install agentdocker` real.
-2. Ship a release; confirm the formula lands and installs.
-3. Buy the Developer ID when the app is going to somebody who is not
-   you, then set `--identity` and `--notary-profile` in the release
-   workflow and add a cask beside the formula.
+1. ~~Create the tap and point the release at it.~~ Done, and verified by
+   installing from it.
+2. Set `HOMEBREW_TAP_TOKEN` so releases publish on their own. One
+   interactive page, then one command.
+3. Ship a release; confirm the formula updates and the cask appears.
+4. Buy the Developer ID when the app is going to somebody who is not
+   you. Then `--identity` and `--notary-profile` in the release
+   workflow, and drop the cask's caveat. Everything up to here works
+   without it.

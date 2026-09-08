@@ -1,0 +1,50 @@
+# Generated at release time; edit the template and generator together.
+#
+# A cask, not a formula, because this installs an application rather
+# than commands: Homebrew puts it in /Applications and knows how to
+# remove it again. The formula beside it installs `agentdocker` and
+# `agentd`, and the two are meant to be used together —
+# `depends_on formula:` below makes that automatic.
+cask "agentdocker-app" do
+  version "@VERSION@"
+
+  on_arm do
+    url "https://github.com/brandopakel/AgentDocker/releases/download/v#{version}/agentdocker-desktop-aarch64-apple-darwin.zip"
+    sha256 "@SHA_APP_aarch64-apple-darwin@"
+  end
+  on_intel do
+    url "https://github.com/brandopakel/AgentDocker/releases/download/v#{version}/agentdocker-desktop-x86_64-apple-darwin.zip"
+    sha256 "@SHA_APP_x86_64-apple-darwin@"
+  end
+
+  name "AgentDocker"
+  desc "Local orchestration for AI agents"
+  homepage "https://github.com/brandopakel/AgentDocker"
+
+  depends_on formula: "brandopakel/tap/agentdocker"
+  depends_on macos: ">= :big_sur"
+
+  app "AgentDocker.app"
+
+  # The app is ad-hoc signed until there is a Developer ID behind it, so
+  # Gatekeeper will refuse a downloaded copy. Homebrew's own flag is the
+  # supported way to say "I fetched this deliberately":
+  #
+  #     brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
+  #
+  # Once the release is signed and notarised this caveat goes, and so
+  # does the flag.
+  caveats <<~CAVEATS
+    AgentDocker.app is signed ad-hoc, not with an Apple Developer ID.
+    If macOS refuses to open it, reinstall with --no-quarantine:
+
+      brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
+
+    The `agentdocker` and `agentd` commands are unaffected.
+  CAVEATS
+
+  zap trash: [
+    "~/.agentdocker",
+    "~/Library/Saved Application State/dev.agentdocker.desktop.savedState",
+  ]
+end

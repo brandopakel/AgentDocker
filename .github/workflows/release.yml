@@ -78,13 +78,21 @@ jobs:
       - name: Generate formula
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: python3 packaging/homebrew/generate.py "$RELEASE_TAG" checksums agentdocker.rb
-      - name: Validate formula
-        run: ruby -c agentdocker.rb
+        run: |
+          python3 packaging/homebrew/generate.py "$RELEASE_TAG" checksums \
+            agentdocker.rb --cask agentdocker-app.rb
+      - name: Validate formula and cask
+        run: |
+          ruby -c agentdocker.rb
+          # The cask is only produced when the desktop archives are in
+          # the checksums, so its absence is not a failure.
+          if [ -f agentdocker-app.rb ]; then ruby -c agentdocker-app.rb; fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: formula
-          path: agentdocker.rb
+          path: |
+            agentdocker.rb
+            agentdocker-app.rb
           if-no-files-found: error
       # A formula nobody can reach installs nothing. This pushes it to
       # the tap when one exists and a token for it is configured, and
@@ -104,12 +112,13 @@ jobs:
           fi
           git clone --depth 1 \
             "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPOSITORY}.git" tap
-          mkdir -p tap/Formula
+          mkdir -p tap/Formula tap/Casks
           cp agentdocker.rb tap/Formula/agentdocker.rb
+          [ -f agentdocker-app.rb ] && cp agentdocker-app.rb tap/Casks/agentdocker-app.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/agentdocker.rb
+          git add Formula Casks
           git diff --cached --quiet && { echo "tap already current"; exit 0; }
           git commit -m "agentdocker ${RELEASE_TAG}"
           git push
