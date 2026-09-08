@@ -122,6 +122,19 @@ one running to its whole limit no longer stops the agent list, the
 leases and the questions behind it — and because nothing else on screen
 moves while one runs, the prompt says how many are still going.
 
+## Channels
+
+The window lists open channels for the projects of registered live agents,
+including channels the person at the keyboard has not joined. Each request
+names its project explicitly; the daemon requires either a project or a member
+from which it can derive one. Repeated agents in the same project produce one
+query. Each project's snapshot updates independently, and a late reply cannot
+restore a project that has disappeared from the agent list.
+
+Reviews retain their explicit verdicts. Messages shown are still queued for
+the person at the keyboard, and the window never drains that inbox. This is
+not durable agent-to-agent message history.
+
 ## Runtimes
 
 The agent tools on this machine, what was found of each, and whether

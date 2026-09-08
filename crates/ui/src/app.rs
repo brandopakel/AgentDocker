@@ -3,7 +3,7 @@
 //! both hand results to the UI thread through a channel and ask for a
 //! repaint, so the window never blocks on the socket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -108,7 +108,7 @@ enum Cmd {
     Runtimes,
     Discovered,
     Journal(String),
-    Channels,
+    Channels(String),
     Inbox,
     Activity,
     /// Register the person at the keyboard, so agents can address them.
@@ -132,7 +132,7 @@ enum Msg {
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Vec<JournalEntry>),
-    Channels(Vec<agentdocker_core::Channel>),
+    Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
     Questions(Vec<Question>),
@@ -379,10 +379,29 @@ impl App {
         }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Agents(agents) => self.agents = agents,
+                Msg::Agents(agents) => {
+                    self.agents = agents;
+                    let projects = self.channel_projects();
+                    self.channels
+                        .retain(|channel| projects.contains(&channel.project.to_string()));
+                    for project in projects {
+                        self.send(Cmd::Channels(project));
+                    }
+                }
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
-                Msg::Channels(channels) => self.channels = channels,
+                Msg::Channels(project, channels) => {
+                    // A late reply for a project no longer on screen must not
+                    // restore it. Other projects keep their current snapshots.
+                    if self.channel_projects().contains(&project) {
+                        self.channels
+                            .retain(|channel| channel.project.as_str() != project);
+                        self.channels.extend(channels);
+                        self.channels.sort_by(|a, b| {
+                            a.opened_at.cmp(&b.opened_at).then_with(|| a.id.cmp(&b.id))
+                        });
+                    }
+                }
                 Msg::Inbox(inbox) => self.inbox = inbox,
                 Msg::Discovered(found) => self.discovered = found,
                 Msg::Journal(project, entries) => {
@@ -431,7 +450,6 @@ impl App {
                             Cmd::Runtimes,
                             Cmd::Questions,
                             Cmd::Activity,
-                            Cmd::Channels,
                             Cmd::Inbox,
                         ] {
                             self.send(cmd);
@@ -495,7 +513,6 @@ impl App {
                 Cmd::Discovered,
                 Cmd::Questions,
                 Cmd::Activity,
-                Cmd::Channels,
                 Cmd::Inbox,
             ] {
                 self.send(cmd);
@@ -1187,6 +1204,14 @@ impl App {
     /// never the history of the room. Durable history needs somewhere to
     /// keep it and a bound on how much; neither exists, so this does not
     /// pretend otherwise.
+    fn channel_projects(&self) -> BTreeSet<String> {
+        self.agents
+            .iter()
+            .filter_map(|agent| agent.project.as_ref())
+            .map(|project| project.id().to_string())
+            .collect()
+    }
+
     fn channels_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         if self.channels.is_empty() {
@@ -1200,7 +1225,7 @@ impl App {
         } else {
             ui.label(
                 RichText::new(
-                    "Every room in this project. Messages shown are what is still queued for \
+                    "Open channels across your active projects. Messages shown are queued for \
                      you — an inbox is not a transcript, and nothing is drained to draw this.",
                 )
                 .weak()
@@ -2532,12 +2557,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         // in. A channel between two agents need not have the human as a
         // member — most will not — and a window that listed only its
         // own memberships would show nothing while agents talked.
-        Cmd::Channels => match client.call(&Request::Channels {
-            project: String::new(),
+        Cmd::Channels(project) => match client.call(&Request::Channels {
+            project: project.clone(),
             all: false,
             agent: None,
         })? {
-            Response::Channels { channels } => Some(Msg::Channels(channels)),
+            Response::Channels { channels } => Some(Msg::Channels(project, channels)),
             _ => None,
         },
         // Never drained: this is a window looking, not a consumer
@@ -3002,6 +3027,133 @@ mod tests {
         assert_eq!(direct[0].id.as_str(), "m4");
     }
 
+    #[test]
+    fn channel_snapshots_keep_other_projects_and_refuse_departed_projects() {
+        use agentdocker_core::channel::{Channel, ChannelSubject};
+        use agentdocker_core::{AgentSpec, ChannelId, ProjectId};
+        let (commands, requests) = std::sync::mpsc::channel();
+        let (messages, results) = std::sync::mpsc::channel();
+        let mut app = App::bare(commands, results);
+        let mut agents = Vec::new();
+        for name in ["project-a", "project-a", "project-b"] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let mut project = ProjectRef::directory(format!("/fixture/{name}"));
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project);
+            agents.push(agent);
+        }
+        messages.send(Msg::Agents(agents.clone())).unwrap();
+        app.drain();
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|cmd| matches!(cmd, Cmd::Channels(_)))
+                .count(),
+            2
+        );
+        let channel = |project: &str, id: &str| Channel {
+            id: ChannelId::from(id),
+            project: ProjectId::from(project),
+            subject: ChannelSubject::Task {
+                task: "fixture".into(),
+            },
+            members: Vec::new(),
+            opened_by: None,
+            opened_at: Utc::now(),
+            closed_at: None,
+            resolution: None,
+            reviews: Vec::new(),
+        };
+        messages
+            .send(Msg::Channels(
+                "project-a".into(),
+                vec![channel("project-a", "a")],
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "b")],
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 2);
+        messages
+            .send(Msg::Channels("project-a".into(), Vec::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.channels.len(), 1);
+        assert_eq!(app.channels[0].project.as_str(), "project-b");
+        agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
+        messages.send(Msg::Agents(agents)).unwrap();
+        messages
+            .send(Msg::Channels(
+                "project-b".into(),
+                vec![channel("project-b", "stale")],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.channels.is_empty());
+    }
+
+    #[test]
+    fn channel_request_uses_explicit_project_and_no_membership_filter() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing channel request");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "channels");
+            assert_eq!(request["project"], "fixture-project");
+            assert_eq!(request["all"], false);
+            assert!(request["agent"].is_null());
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"channels\",\"channels\":[]}\n")
+                .unwrap();
+        });
+        let response = run(
+            &Client::isolated(socket),
+            Cmd::Channels("fixture-project".into()),
+        );
+        server.join().unwrap();
+        assert!(
+            matches!(response.unwrap(), Some(Msg::Channels(project, channels))
+            if project == "fixture-project" && channels.is_empty())
+        );
+    }
+
     /// The status line stops being news.
     #[test]
     fn the_status_line_lets_go_of_what_is_no_longer_news() {
@@ -3115,7 +3267,7 @@ mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 10);
+        assert_eq!(received.len(), 9);
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Activity)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
