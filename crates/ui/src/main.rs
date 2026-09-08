@@ -14,7 +14,30 @@ mod smoke;
 mod terminal;
 mod theme;
 
+/// What the window says about itself, and where.
+///
+/// eframe, winit and wgpu all report through the `log` crate, and until
+/// this was here nothing collected them: a renderer that refused to hand
+/// back a frame, a surface that could not be created, a device lost —
+/// every one of those was discarded, and a graphical failure left
+/// nothing behind but the fact that it had failed. `tracing-subscriber`
+/// bridges `log`, so one subscriber catches both.
+///
+/// Warnings and errors by default, because a window is not a daemon and
+/// its stderr is usually a terminal somebody is reading; `RUST_LOG` for
+/// when more is wanted.
+fn logging() {
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .init();
+}
+
 fn main() -> eframe::Result {
+    logging();
     let mut args = std::env::args_os().skip(1);
     let mut smoke_output = None;
     let mut expected_pid = None;

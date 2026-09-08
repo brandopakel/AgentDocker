@@ -150,6 +150,16 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         .name
         .clone()
         .unwrap_or_else(|| format!("{}-{host_pid}", args.runtime));
+    // Proof of who made this record, rather than a guess from its name.
+    //
+    // The daemon answers a registration for a process that already has
+    // an agent with that agent, so the reply alone cannot say whether it
+    // was created here or adopted. Comparing names is not enough: a
+    // second MCP server for the same host asks for the same name, would
+    // read the reply as its own work, and would deregister a still-live
+    // participant on the way out. Only the spec that was actually stored
+    // carries this nonce, so finding it back is proof.
+    let registrar = uuid::Uuid::new_v4().to_string();
     let workdir = std::env::current_dir()
         .ok()
         .map(|dir| dir.canonicalize().unwrap_or(dir));
@@ -161,7 +171,10 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         command: Vec::new(),
         workdir,
         env: BTreeMap::new(),
-        labels: BTreeMap::from([("via".to_owned(), "mcp".to_owned())]),
+        labels: BTreeMap::from([
+            ("via".to_owned(), "mcp".to_owned()),
+            ("registrar".to_owned(), registrar.clone()),
+        ]),
         isolate: false,
         tty: false,
         restore: false,
@@ -182,10 +195,15 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         .await
         .context("failed to register with agentd")?
     {
+        // Our nonce coming back means the daemon stored the spec we
+        // sent, so this record is ours to remove again. Anything else
+        // is an identity that already existed — the hooks adapter got
+        // here first, or another MCP server did — and shutdown must
+        // leave it alone.
         Response::Agent { agent } => Ok(Identity {
+            registered_here: agent.spec.labels.get("registrar") == Some(&registrar),
             id: agent.id.to_string(),
             name: agent.spec.name,
-            registered_here: true,
         }),
         other => bail!("unexpected reply to register: {other:?}"),
     }
@@ -270,7 +288,12 @@ impl<B: Backend> McpServer<B> {
                  `read_inbox` to see messages other agents sent you and `send_message` to \
                  reply, hand off work, or announce what you are doing — `to: \"project\"` \
                  reaches everyone working in the same repository. `list_agents` shows who \
-                 else is running and which project each is in. Call `observe_paths` immediately before reading or searching, then `check_stale` before editing; reread changed content.",
+                 else is running and which project each is in. Call `observe_paths` immediately before reading or searching, then `check_stale` before editing; reread changed content. \
+                 Commit through `commit` rather than running git yourself: the journal then \
+                 records the commit against you with the message you wrote, instead of \
+                 saying `external` because all it saw was HEAD move. Nothing is written into \
+                 the commit itself. Use `journal_note` for a decision or a finding that no \
+                 commit will carry.",
                 self.identity.name, self.identity.id
             ),
         })
@@ -1820,5 +1843,71 @@ mod tests {
         );
         adopted.shutdown().await;
         assert!(adopted.backend.requests.lock().unwrap().is_empty());
+    }
+
+    /// The instructions name the tools an agent will otherwise not reach for.
+    ///
+    /// `commit` is the one that matters. An agent that runs git itself
+    /// leaves a journal entry attributed to `external`, because all the
+    /// watcher saw was HEAD move — which is exactly what every commit in
+    /// this project's own journal said until the tool was named here.
+    #[test]
+    fn the_instructions_name_the_tools_an_agent_would_not_find() {
+        let s = server(vec![]);
+        let text = s.initialize(&json!({"protocolVersion": "2025-06-18"}))["instructions"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for tool in [
+            "claim",
+            "release",
+            "read_inbox",
+            "send_message",
+            "list_agents",
+            "observe_paths",
+            "check_stale",
+            "commit",
+            "journal_note",
+        ] {
+            assert!(text.contains(tool), "instructions never mention `{tool}`");
+        }
+        assert!(
+            text.contains("external"),
+            "and say what goes wrong without `commit`, not just that it exists"
+        );
+    }
+
+    /// Ownership of a registration is proved, not guessed from its name.
+    ///
+    /// The daemon answers a registration for a process that already has
+    /// an agent with that agent, so the reply alone cannot say whether
+    /// it was created here. A second MCP server for the same host asks
+    /// for the same name and would read that reply as its own work —
+    /// then deregister a still-live participant on the way out. Only
+    /// the spec that was actually stored carries the nonce.
+    #[test]
+    fn only_the_spec_we_stored_carries_our_nonce() {
+        let ours = "0f9c6a6a-2c4e-4a0f-9d3f-6d5f6a0b1c2d";
+        let mine = |registrar: &str| {
+            std::collections::BTreeMap::from([
+                ("via".to_owned(), "mcp".to_owned()),
+                ("registrar".to_owned(), registrar.to_owned()),
+            ])
+        };
+        let owned = |labels: &std::collections::BTreeMap<String, String>| {
+            labels.get("registrar") == Some(&ours.to_owned())
+        };
+        assert!(owned(&mine(ours)), "our own nonce came back: we made it");
+        assert!(
+            !owned(&mine("a-different-mcp-server")),
+            "another MCP server asking for the same name is not us"
+        );
+        assert!(
+            !owned(&std::collections::BTreeMap::from([(
+                "via".to_owned(),
+                "hook".to_owned()
+            )])),
+            "the hooks adapter got here first; not ours to remove"
+        );
     }
 }

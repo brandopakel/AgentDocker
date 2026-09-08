@@ -59,10 +59,14 @@ fn unmet(connected: bool, runtimes: usize, fixture: bool, frames: usize) -> Stri
     }
     if waiting.is_empty() {
         // Everything the window waits for has happened, so what is left
-        // is the screenshot the renderer owes us. It is asked for again
-        // every RETRY_AFTER, so reaching the deadline here means every
-        // one of those went unanswered.
-        return "the renderer to hand back a screenshot".to_owned();
+        // is the screenshot the renderer owes us — and the reason it
+        // owes it is worth naming, because it is nearly always the same
+        // one. Run with `RUST_LOG=egui_wgpu=trace` to see it said in the
+        // renderer's own words.
+        return "the renderer to hand back a screenshot (a window kept \
+                occluded never paints, and the capture happens during \
+                the paint)"
+            .to_owned();
     }
     waiting.join(", ")
 }
@@ -207,6 +211,15 @@ impl Smoke {
             && self.frames >= 3
             && self.requested.is_none()
         {
+            // Brought to the front first, and this is not a courtesy.
+            // egui-wgpu skips the whole paint for an occluded window —
+            // "Skipping frame due to occlusion" — and the screenshot is
+            // taken during the paint, so a window behind a terminal is
+            // asked for a frame it will never render. On a CI runner
+            // there is nothing to hide behind and this changes nothing;
+            // on a desk it is the difference between a run that works
+            // and an hour spent on the wrong question.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = Some(Instant::now());
         }

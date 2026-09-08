@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use agentdocker_core::journal::ago;
+use agentdocker_core::runtime::Wiring;
 use agentdocker_core::{
     Activity, AgentActivity, AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease,
     MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
@@ -18,6 +19,7 @@ use egui::{Color32, RichText};
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
+use crate::theme::{ABSENT, UNVERIFIED, WIRED};
 
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -27,6 +29,23 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 /// finishes, short enough that `watch` or `logs -f` — which never do —
 /// give the worker thread back.
 const CONSOLE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a Stop stays armed after the first click. Long enough to
+/// read what the button now says, short enough that the intent behind it
+/// has not gone stale.
+const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
+
+/// How long an agent's last report stands before the window stops
+/// treating it as news. Past this the DOING column says what it knows —
+/// that it has not heard from the agent — rather than asserting a state
+/// nobody has confirmed since.
+const QUIET_AFTER: Duration = Duration::from_secs(15 * 60);
+
+/// How long the status line keeps saying the last thing that happened.
+/// Nothing lives only there — a failed setup keeps its plan, a lost
+/// socket has its own indicator — so letting it go is safe, and a line
+/// that never expires is a line the eye stops reading.
+const STATUS_FOR: Duration = Duration::from_secs(20);
 
 /// The terminal's frame inset. Named because the grid is sized against
 /// it: a screen that measures the room it has, then draws inside a
@@ -129,6 +148,24 @@ pub struct App {
     setup_health: Option<serde_json::Value>,
     setup_history: Vec<serde_json::Value>,
     setup_busy: bool,
+    /// When [`App::status`] was last set, so it can stop being news.
+    status_at: Instant,
+    /// Console commands sent and not yet answered.
+    ///
+    /// The console runs on a lane of its own now, so a command that
+    /// takes its whole twenty seconds no longer freezes anything — which
+    /// also means nothing on the screen moves while it runs. Counted, so
+    /// the prompt can say so.
+    console_running: usize,
+    /// The agent whose Stop button is armed, and when it was armed.
+    ///
+    /// Stopping is the one thing this window does that a person cannot
+    /// take back, and the button for it sits in a dense table row next
+    /// to Attach. So it asks once. Arming rather than a modal, because a
+    /// dialog over a live table is worse than a button that changes its
+    /// mind, and it disarms itself so a click forgotten five minutes ago
+    /// cannot be completed by accident.
+    confirm_stop: Option<(String, Instant)>,
     tx: Sender<Cmd>,
     rx: Receiver<Msg>,
     screen: Screen,
@@ -229,6 +266,9 @@ impl App {
             setup_health: None,
             setup_history: Vec::new(),
             setup_busy: false,
+            status_at: Instant::now(),
+            console_running: 0,
+            confirm_stop: None,
             connected: Err("connecting…".to_owned()),
             last_seq: 0,
             status: String::new(),
@@ -273,6 +313,9 @@ impl App {
             setup_health: None,
             setup_history: Vec::new(),
             setup_busy: false,
+            status_at: Instant::now(),
+            console_running: 0,
+            confirm_stop: None,
             connected: Ok(()),
             last_seq: 0,
             status: String::new(),
@@ -302,8 +345,18 @@ impl App {
         let _ = self.tx.send(cmd);
     }
 
+    /// Say the last thing that happened, and remember when.
+    fn say(&mut self, text: impl Into<String>) {
+        self.status = text.into();
+        self.status_at = Instant::now();
+    }
+
     /// Take everything the threads sent since the last frame.
     fn drain(&mut self) {
+        // Long enough ago that it is no longer what just happened.
+        if !self.status.is_empty() && self.status_at.elapsed() >= STATUS_FOR {
+            self.status.clear();
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Agents(agents) => self.agents = agents,
@@ -337,11 +390,11 @@ impl App {
                         Ok(()) => {
                             self.answers.remove(&id);
                             self.questions.retain(|q| q.id != id);
-                            self.status = "answered".to_owned();
+                            self.say("answered");
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
-                        Err(reason) => self.status = reason,
+                        Err(reason) => self.say(reason),
                     }
                 }
                 Msg::Event(event) => self.on_event(*event),
@@ -365,7 +418,7 @@ impl App {
                     }
                 }
                 Msg::Disconnected(reason) => self.connected = Err(reason),
-                Msg::Status(text) => self.status = text,
+                Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
                 Msg::Setup(result) => {
                     self.setup_busy = false;
@@ -378,23 +431,26 @@ impl App {
                                 .as_u64()
                                 .filter(|count| *count > 0)
                             {
-                                self.status = format!(
+                                self.say(format!(
                                     "{count} saved setup receipt(s) could not be read; the files were preserved"
-                                );
+                                ));
                             }
                             self.setup_history =
                                 value["plans"].as_array().cloned().unwrap_or_default();
                         }
                         Ok(value) => {
-                            self.status =
-                                format!("Setup {}", value["phase"].as_str().unwrap_or("updated"));
+                            self.say(format!(
+                                "Setup {}",
+                                value["phase"].as_str().unwrap_or("updated")
+                            ));
                             self.setup_plan = Some(value);
                             self.send(Cmd::Runtimes);
                         }
-                        Err(error) => self.status = error,
+                        Err(error) => self.say(error),
                     }
                 }
                 Msg::Console(text) => {
+                    self.console_running = self.console_running.saturating_sub(1);
                     // Appended, not replaced: a terminal keeps what it
                     // said, and the command that produced this is
                     // already above it.
@@ -516,6 +572,23 @@ impl App {
         }
     }
 
+    /// Runtimes that are heard from only when they choose to speak.
+    ///
+    /// A hooks adapter reports every turn of a session whether the agent
+    /// asks it to or not. A runtime without one — Codex is the one
+    /// people actually run — reaches the daemon only when it calls an
+    /// AgentDocker MCP tool, so "idle" for one of those means "has not
+    /// called us", not "is doing nothing". Reporting a session that is
+    /// at this moment editing files as idle is the sort of thing that
+    /// makes a reader stop believing the rest of the table.
+    fn mute(&self) -> std::collections::BTreeSet<String> {
+        self.runtimes
+            .iter()
+            .filter(|r| r.hooks == Wiring::Unsupported)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
     /// Runtimes with no way to tell the daemon what their agents are
     /// doing, by the name an agent registers under.
     fn unwired(&self) -> std::collections::BTreeSet<String> {
@@ -539,6 +612,7 @@ impl App {
     fn agents_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         let unwired = self.unwired();
+        let mute = self.mute();
         // Grouped by project id, not by name: two checkouts of one
         // repository share a name, and the id is what actually says they
         // are the same work.
@@ -551,7 +625,16 @@ impl App {
             groups.entry(key).or_default().push(agent);
         }
         let mut stop: Option<String> = None;
+        let mut arm: Option<String> = None;
         let mut attach: Option<String> = None;
+        // An arming that has gone stale is no arming at all: a Stop
+        // clicked once and left alone must not be completable by a click
+        // that lands minutes later on a row that has since moved.
+        let confirming = self
+            .confirm_stop
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < CONFIRM_WITHIN)
+            .map(|(id, _)| id.clone());
         if groups.is_empty() {
             ui.label(
                 RichText::new("No live agents. Adopt one below, or `agentdocker run`.").weak(),
@@ -618,19 +701,32 @@ impl App {
                     // What the project is doing, in the words a reader
                     // would use: "1 blocked" is worth colour, "all idle"
                     // is worth saying, and "0 working" is neither.
+                    // Only agents we have actually heard from lately
+                    // count towards "idle". A project whose sessions all
+                    // predate the setup, or whose runtime has no hooks
+                    // adapter, is not idle — it is unheard, and saying
+                    // the first is how the summary came to disagree with
+                    // what the person could see happening.
+                    let unheard = agents
+                        .iter()
+                        .filter(|agent| {
+                            mute.contains(&agent.spec.runtime)
+                                || (now - agent.last_seen)
+                                    .to_std()
+                                    .is_ok_and(|since| since > QUIET_AFTER)
+                        })
+                        .count();
                     if blocked > 0 {
-                        ui.label(
-                            RichText::new(format!("{blocked} blocked"))
-                                .color(Color32::from_rgb(200, 140, 60)),
-                        );
+                        ui.label(RichText::new(format!("{blocked} blocked")).color(UNVERIFIED));
                     } else if working > 0 && working == agents.len() {
-                        ui.label(
-                            RichText::new("all working").color(Color32::from_rgb(60, 170, 90)),
-                        );
+                        ui.label(RichText::new("all working").color(WIRED));
                     } else if working > 0 {
+                        ui.label(RichText::new(format!("{working} working")).color(WIRED));
+                    } else if unheard == agents.len() {
+                        ui.label(RichText::new("none heard from").color(UNVERIFIED));
+                    } else if unheard > 0 {
                         ui.label(
-                            RichText::new(format!("{working} working"))
-                                .color(Color32::from_rgb(60, 170, 90)),
+                            RichText::new(format!("{unheard} not heard from")).color(UNVERIFIED),
                         );
                     } else {
                         ui.label(RichText::new("all idle").weak());
@@ -668,25 +764,56 @@ impl App {
                                             .map(|h| format!(" ({})", self.name_of(h.as_str())))
                                             .unwrap_or_default()
                                     ))
-                                    .color(Color32::from_rgb(200, 140, 60)),
+                                    .color(UNVERIFIED),
                                 )
                                 .on_hover_text("Waiting for a lease another agent holds.");
                             }
                             Some(Activity::Working { .. }) => {
-                                ui.label(
-                                    RichText::new("working").color(Color32::from_rgb(60, 170, 90)),
-                                );
+                                ui.label(RichText::new("working").color(WIRED))
+                                    .on_hover_text(
+                                        "Holding a lease, or reporting work in progress.",
+                                    );
                             }
                             Some(other) => {
-                                let label = ui.label(RichText::new(other.label()).weak());
-                                // "idle" is a real answer, and it is
-                                // also what an unwired runtime always
-                                // says. Which one this is belongs on
-                                // the cell, not in a paragraph under
-                                // the table.
+                                // "idle" is a claim about the agent.
+                                // "we have not heard from it" is a claim
+                                // about us, and saying the first when we
+                                // mean the second is how a table stops
+                                // being believed: a Codex session
+                                // editing files right now was reported
+                                // idle, because Codex has no way to say
+                                // otherwise unless it calls a tool.
+                                let quiet = (now - agent.last_seen)
+                                    .to_std()
+                                    .is_ok_and(|since| since > QUIET_AFTER);
+                                let mute = mute.contains(&agent.spec.runtime);
+                                let heard_from =
+                                    matches!(other, Activity::Idle { .. }) && !quiet && !mute;
+                                let label = ui.label(if heard_from {
+                                    RichText::new(other.label()).weak()
+                                } else {
+                                    RichText::new("not heard from").color(UNVERIFIED)
+                                });
                                 if unwired.contains(&agent.spec.runtime) {
                                     label.on_hover_text(
                                         "Not wired up, so it reports nothing — Runtimes.",
+                                    );
+                                } else if mute {
+                                    label.on_hover_text(format!(
+                                        "{} has no hooks adapter, so it is heard from only when \
+                                         it calls an AgentDocker tool. It may be busy; this says \
+                                         only that it has not called us.",
+                                        agent.spec.runtime
+                                    ));
+                                } else if quiet {
+                                    label.on_hover_text(
+                                        "Nothing since the time in SEEN. Hooks are loaded when a \
+                                         session starts, so a session older than your setup \
+                                         cannot report until it is restarted.",
+                                    );
+                                } else {
+                                    label.on_hover_text(
+                                        "Alive and quiet: between turns, or waiting on a person.",
                                     );
                                 }
                             }
@@ -704,10 +831,33 @@ impl App {
                         let held = self.leases.iter().filter(|l| l.holder == agent.id).count();
                         ui.label(held.to_string());
                         ui.label(ago(now, agent.last_seen));
-                        if ui.small_button("Stop").clicked() {
-                            stop = Some(agent.id.to_string());
+                        let armed = confirming.as_deref() == Some(agent.id.as_str());
+                        let label = if armed {
+                            RichText::new("Stop?").color(ABSENT)
+                        } else {
+                            RichText::new("Stop")
+                        };
+                        if ui
+                            .add(egui::Button::new(label).small())
+                            .on_hover_text(if armed {
+                                "Click again to stop it."
+                            } else {
+                                "Stop this agent's process. Asks once first."
+                            })
+                            .clicked()
+                        {
+                            if armed {
+                                stop = Some(agent.id.to_string());
+                            } else {
+                                arm = Some(agent.id.to_string());
+                            }
                         }
-                        if agent.spec.tty && ui.small_button("Attach").clicked() {
+                        if agent.spec.tty
+                            && ui
+                                .small_button("Attach")
+                                .on_hover_text("Open this agent's terminal in the Terminal screen.")
+                                .clicked()
+                        {
                             attach = Some(agent.id.to_string());
                         }
                         ui.end_row();
@@ -720,7 +870,11 @@ impl App {
                     ui.end_row();
                 }
             });
+        if let Some(id) = arm {
+            self.confirm_stop = Some((id, Instant::now()));
+        }
         if let Some(id) = stop {
+            self.confirm_stop = None;
             self.send(Cmd::Stop(id));
         }
         if let Some(id) = attach {
@@ -758,13 +912,24 @@ impl App {
                                 .map(|at| ago(now, at))
                                 .unwrap_or_else(|| "-".to_owned()),
                         );
-                        if ui.small_button("Adopt").clicked() {
+                        if ui
+                            .small_button("Adopt")
+                            .on_hover_text(
+                                "Register this process with the daemon so it can be messaged, \
+                                 hold leases, and appear above. The process is not restarted.",
+                            )
+                            .clicked()
+                        {
                             adopt = Some(process.pid);
                         }
                         ui.end_row();
                     }
                 });
-            if ui.button("Adopt all").clicked() {
+            if ui
+                .button("Adopt all")
+                .on_hover_text("Register every process listed here. None of them is restarted.")
+                .clicked()
+            {
                 adopt_all = true;
             }
             if let Some(pid) = adopt {
@@ -800,8 +965,12 @@ impl App {
                 .collect();
             if attachable.is_empty() {
                 ui.label(
-                    "No agent has a terminal. Start one with `agentdocker run --tty -- <command>`, \
-                     or `tty = true` in an Agentfile entry.",
+                    RichText::new(
+                        "No agent has a terminal. Start one with \
+                         `agentdocker run --tty -- <command>`, or `tty = true` in an Agentfile \
+                         entry.",
+                    )
+                    .weak(),
                 );
                 return;
             }
@@ -809,7 +978,13 @@ impl App {
             for agent in attachable {
                 ui.horizontal(|ui| {
                     ui.label(&agent.spec.name);
-                    if ui.button("Attach").clicked() {
+                    if ui
+                        .button("Attach")
+                        .on_hover_text(
+                            "Take over this agent's terminal. It keeps running either way.",
+                        )
+                        .clicked()
+                    {
                         attach = Some(agent.id.to_string());
                     }
                 });
@@ -825,9 +1000,9 @@ impl App {
             ui.label(RichText::new(format!("attached to {}", terminal.agent)).strong());
             match terminal.status() {
                 Status::Attached => {
-                    let green = Color32::from_rgb(60, 170, 90);
-                    crate::projects::bullet(ui, green);
-                    ui.label(RichText::new("live").color(green));
+                    crate::projects::bullet(ui, WIRED);
+                    ui.label(RichText::new("live").color(WIRED))
+                        .on_hover_text("Keys typed on this screen go to the agent.");
                 }
                 Status::Ended(reason) => {
                     crate::projects::bullet(ui, Color32::GRAY);
@@ -836,11 +1011,19 @@ impl App {
             }
             if terminal.scrolled_back() {
                 ui.label(RichText::new("· scrolled back").weak());
-                if ui.button("Jump to live").clicked() {
+                if ui
+                    .button("Jump to live")
+                    .on_hover_text("Back to the bottom of the scrollback.")
+                    .clicked()
+                {
                     terminal.scroll(i32::MIN / 2);
                 }
             }
-            if ui.button("Detach").clicked() {
+            if ui
+                .button("Detach")
+                .on_hover_text("Stop watching this terminal. The agent is not stopped.")
+                .clicked()
+            {
                 detach = true;
             }
         });
@@ -936,8 +1119,17 @@ impl App {
                 if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     send = true;
                 }
+                // Enabled only when there is something to send. It used
+                // to accept the click and drop it, which is the same to
+                // the person clicking as a button that does not work.
+                let ready = !draft.trim().is_empty();
                 if ui
-                    .add_enabled(!in_flight, egui::Button::new("Answer"))
+                    .add_enabled(!in_flight && ready, egui::Button::new("Answer"))
+                    .on_disabled_hover_text(if in_flight {
+                        "Waiting for the daemon to take the last answer."
+                    } else {
+                        "Type an answer first."
+                    })
                     .clicked()
                 {
                     send = true;
@@ -1021,6 +1213,20 @@ impl App {
                             run = true;
                             self.console_focused = false;
                         }
+                        // Something is still running and the transcript
+                        // will not move until it answers. Said at the
+                        // prompt, where the person is already looking.
+                        if self.console_running > 0 {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(match self.console_running {
+                                    1 => "running…".to_owned(),
+                                    many => format!("{many} running…"),
+                                })
+                                .font(font.clone())
+                                .color(palette.dim()),
+                            );
+                        }
                     });
                     ui.add_space(4.0);
                     // The transcript reads downwards inside the room left over.
@@ -1050,6 +1256,7 @@ impl App {
             }
             self.console_recall = None;
             self.console_input.clear();
+            self.console_running += 1;
             self.send(Cmd::Console(line));
         }
     }
@@ -1072,6 +1279,44 @@ impl App {
             Some(at) => self.console_history[at].clone(),
             None => String::new(),
         };
+    }
+
+    /// One connection state, in a colour, saying on hover what it means
+    /// and what would change it.
+    ///
+    /// The table printed the word on its own, which is how a reader ends
+    /// up looking at "no" and asking what it means and how to clear it.
+    /// The answer is two sentences, so it goes where two sentences fit.
+    fn wiring_cell(ui: &mut egui::Ui, channel: &str, state: Wiring, dim: bool) {
+        let (colour, meaning) = match state {
+            Wiring::Wired => (
+                WIRED,
+                "AgentDocker is registered here. That the configuration says so is not proof a \
+                 session has used it — start a fresh one to be sure.",
+            ),
+            Wiring::Missing => (
+                ABSENT,
+                "Nothing registers AgentDocker here yet. Review setup works out the change and \
+                 shows it to you; nothing is written until you apply it.",
+            ),
+            Wiring::Unverified => (
+                UNVERIFIED,
+                "Something is registered under our name that is disabled, malformed, or runs a \
+                 different command. Setup will not overwrite it — open the file and decide.",
+            ),
+            Wiring::Unsupported => (
+                ui.visuals().weak_text_color(),
+                "This runtime has no such channel, or AgentDocker has no adapter for it yet. \
+                 Nothing to do here.",
+            ),
+        };
+        let colour = if dim {
+            colour.gamma_multiply(0.5)
+        } else {
+            colour
+        };
+        ui.label(RichText::new(state.symbol()).color(colour))
+            .on_hover_text(format!("{channel}: {meaning}"));
     }
 
     fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
@@ -1125,9 +1370,10 @@ impl App {
                     } else {
                         apps
                     }));
-                    ui.label(text(runtime.mcp.symbol().to_owned()));
-                    ui.label(text(runtime.hooks.symbol().to_owned()));
-                    ui.label(text(runtime.running.to_string()));
+                    Self::wiring_cell(ui, "MCP server", runtime.mcp, dim);
+                    Self::wiring_cell(ui, "hooks", runtime.hooks, dim);
+                    ui.label(text(runtime.running.to_string()))
+                        .on_hover_text("Processes of this runtime that AgentDocker can see right now, registered or not.");
                     let needs_setup = runtime.installed()
                         && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
                     if needs_setup
@@ -1135,6 +1381,11 @@ impl App {
                             .add_enabled(
                                 !self.setup_busy,
                                 egui::Button::new("Review setup").small(),
+                            )
+                            .on_hover_text(
+                                "Work out what would have to change to wire this runtime up, \
+                                 and show it. Nothing is written until you apply it, and \
+                                 anything applied can be undone.",
                             )
                             .clicked()
                     {
@@ -1156,103 +1407,189 @@ impl App {
 
     fn setup_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        if ui
-            .add_enabled(!self.setup_busy, egui::Button::new("Check connections"))
-            .clicked()
-        {
-            self.setup_busy = true;
-            self.send(Cmd::Setup(vec!["--health".into()]));
-        }
-        if ui
-            .add_enabled(!self.setup_busy, egui::Button::new("Saved setup plans"))
-            .clicked()
-        {
-            self.setup_busy = true;
-            self.send(Cmd::Setup(vec!["--list".into()]));
-        }
         let mut selected = None;
-        for plan in &self.setup_history {
-            let id = plan["id"].as_str().unwrap_or("");
-            let phase = plan["phase"].as_str().unwrap_or("unknown");
+        ui.horizontal(|ui| {
             if ui
-                .add_enabled(
-                    !self.setup_busy,
-                    egui::Button::new(format!(
-                        "{phase} · {}",
-                        id.chars().take(8).collect::<String>()
-                    )),
+                .add_enabled(!self.setup_busy, egui::Button::new("Check connections"))
+                .on_hover_text(
+                    "Read every runtime's configuration and report what it says about \
+                     AgentDocker. Reads only; nothing is changed.",
                 )
                 .clicked()
             {
-                selected = Some(id.to_owned());
+                self.setup_busy = true;
+                self.send(Cmd::Setup(vec!["--health".into()]));
             }
+            if ui
+                .add_enabled(!self.setup_busy, egui::Button::new("Saved setup plans"))
+                .on_hover_text(
+                    "Every plan previewed on this machine, newest first. Each keeps what the \
+                     files said before it, which is what lets it be undone.",
+                )
+                .clicked()
+            {
+                self.setup_busy = true;
+                self.send(Cmd::Setup(vec!["--list".into()]));
+            }
+            if self.setup_busy {
+                ui.spinner();
+                ui.label(RichText::new("working…").weak());
+            }
+        });
+        if !self.setup_history.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                for plan in &self.setup_history {
+                    let id = plan["id"].as_str().unwrap_or("");
+                    let phase = plan["phase"].as_str().unwrap_or("unknown");
+                    if ui
+                        .add_enabled(
+                            !self.setup_busy,
+                            egui::Button::new(
+                                RichText::new(format!(
+                                    "{phase} · {}",
+                                    id.chars().take(8).collect::<String>()
+                                ))
+                                .color(phase_colour(ui, phase)),
+                            ),
+                        )
+                        .on_hover_text(format!("Open plan {id}"))
+                        .clicked()
+                    {
+                        selected = Some(id.to_owned());
+                    }
+                }
+            });
         }
         if let Some(id) = selected {
             self.setup_busy = true;
             self.send(Cmd::Setup(vec!["--show".into(), id]));
         }
-        if self.setup_busy {
-            ui.label("Checking setup…");
-        }
         if let Some(health) = &self.setup_health {
-            ui.label(format!(
-                "Daemon: {}",
-                health["daemon"].as_str().unwrap_or("unknown")
-            ));
-            ui.label("Configuration detection does not prove that a provider has used its connection. Start a fresh session after setup.");
-            for runtime in health["runtimes"].as_array().into_iter().flatten() {
-                let name = runtime["name"].as_str().unwrap_or("Runtime");
-                for check in runtime["checks"].as_array().into_iter().flatten() {
-                    if check["status"] == "unsupported" {
-                        continue;
+            ui.add_space(6.0);
+            let reachable = health["daemon_reachable"].as_bool().unwrap_or(false);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Daemon").strong());
+                ui.label(
+                    RichText::new(health["daemon"].as_str().unwrap_or("unknown"))
+                        .color(if reachable { WIRED } else { ABSENT }),
+                );
+            });
+            egui::Grid::new("setup-health")
+                .striped(true)
+                .num_columns(3)
+                .show(ui, |ui| {
+                    for runtime in health["runtimes"].as_array().into_iter().flatten() {
+                        let name = runtime["name"].as_str().unwrap_or("Runtime");
+                        for check in runtime["checks"].as_array().into_iter().flatten() {
+                            let status = check["status"].as_str().unwrap_or("unknown");
+                            if status == "unsupported" {
+                                continue;
+                            }
+                            ui.label(name);
+                            ui.label(check["channel"].as_str().unwrap_or("connection"));
+                            let detail = check["detail"].as_str().unwrap_or("unknown");
+                            // The executable behind the registration is
+                            // the thing that makes a check pass or fail,
+                            // so it belongs on the row that reports it —
+                            // on hover, where a path does not push the
+                            // columns off the screen.
+                            let row =
+                                ui.label(RichText::new(detail).color(health_colour(ui, status)));
+                            if let Some(executable) = check["executable"].as_str() {
+                                let _ = row.on_hover_text(executable);
+                            }
+                            ui.end_row();
+                        }
                     }
-                    let channel = check["channel"].as_str().unwrap_or("connection");
-                    ui.label(format!(
-                        "{name} · {channel}: {}",
-                        check["detail"].as_str().unwrap_or("unknown")
-                    ));
-                    if let Some(executable) = check["executable"].as_str() {
-                        ui.small(executable);
-                    }
-                }
-            }
+                });
+            ui.label(
+                RichText::new(
+                    "Configuration detection does not prove that a provider has used its \
+                     connection. Start a fresh session after setup.",
+                )
+                .weak()
+                .small(),
+            );
         }
         let Some(plan) = self.setup_plan.clone() else {
             return;
         };
         let phase = plan["phase"].as_str().unwrap_or("unknown");
-        ui.heading(format!("Setup: {phase}"));
-        ui.label(format!("Plan {}", plan["id"].as_str().unwrap_or("")));
+        let id = plan["id"].as_str().unwrap_or("").to_owned();
+        ui.add_space(8.0);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Setup plan").strong());
+            ui.label(RichText::new(phase).color(phase_colour(ui, phase)));
+            ui.label(RichText::new(&id).weak().small())
+                .on_hover_text("Kept under the AgentDocker home, readable only by you.");
+        });
         if let Some(executable) = plan["executable"].as_str() {
-            ui.label(format!("Connect through {executable}"));
+            ui.label(
+                RichText::new(format!("Connect through {executable}"))
+                    .weak()
+                    .small(),
+            );
         }
         let changes = plan["changes"].as_array();
-        if let Some(changes) = changes {
-            for change in changes {
-                ui.label(format!(
-                    "{} · {} · {}",
-                    change["runtime"].as_str().unwrap_or(""),
-                    change["channel"].as_str().unwrap_or(""),
-                    change["path"].as_str().unwrap_or("")
-                ));
-            }
-        }
-        if let Some(notes) = plan["notes"].as_array() {
-            for note in notes {
-                if let Some(note) = note.as_str() {
-                    ui.label(note);
+        match changes {
+            Some(changes) if !changes.is_empty() => {
+                for change in changes {
+                    ui.label(format!(
+                        "{} · {} · {}",
+                        change["runtime"].as_str().unwrap_or(""),
+                        change["channel"].as_str().unwrap_or(""),
+                        change["path"].as_str().unwrap_or("")
+                    ));
+                    // What the step does to that file, which is the only
+                    // thing separating an edit we make from a
+                    // registration the provider's own tool makes on its
+                    // own state.
+                    if let Some(action) = change["action"].as_str() {
+                        ui.label(RichText::new(format!("    {action}")).weak().small());
+                    }
                 }
             }
+            // Said out loud, because a plan with nothing in it beside a
+            // greyed-out Apply reads as a failure rather than as the
+            // good news it is.
+            _ => {
+                ui.label(
+                    RichText::new("Nothing to change — every channel here is already wired.")
+                        .color(WIRED),
+                );
+            }
         }
-        let id = plan["id"].as_str().unwrap_or("").to_owned();
+        if let Some(notes) = plan["notes"].as_array().filter(|notes| !notes.is_empty()) {
+            ui.add_space(4.0);
+            for note in notes.iter().filter_map(|note| note.as_str()) {
+                ui.label(RichText::new(format!("· {note}")).weak().small());
+            }
+        }
+        ui.add_space(4.0);
+        let applicable = matches!(phase, "prepared" | "applying")
+            && changes.is_some_and(|changes| !changes.is_empty());
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    !self.setup_busy
-                        && matches!(phase, "prepared" | "applying")
-                        && changes.is_some_and(|changes| !changes.is_empty()),
+                    !self.setup_busy && applicable,
                     egui::Button::new("Apply changes"),
                 )
+                .on_hover_text(
+                    "Write the changes above. Each file is replaced whole and only if it still \
+                     says what it said at preview, so an edit made since is never overwritten.",
+                )
+                // A disabled button that will not say why is the thing
+                // this whole screen was rebuilt to stop doing.
+                .on_disabled_hover_text(if self.setup_busy {
+                    "A setup command is still running."
+                } else if !applicable {
+                    "This plan has nothing left to apply: it has already been applied or undone, \
+                     or there was nothing to change."
+                } else {
+                    ""
+                })
                 .clicked()
             {
                 self.setup_busy = true;
@@ -1263,13 +1600,23 @@ impl App {
                     !self.setup_busy && phase != "undone",
                     egui::Button::new("Undo this setup"),
                 )
+                .on_hover_text(
+                    "Put every file back the way this plan found it, and take back any \
+                     registration it asked a provider to make.",
+                )
+                .on_disabled_hover_text(if self.setup_busy {
+                    "A setup command is still running."
+                } else {
+                    "This plan has already been undone."
+                })
                 .clicked()
             {
                 self.setup_busy = true;
                 self.send(Cmd::Setup(vec!["--undo".into(), id]));
             }
             if ui
-                .add_enabled(!self.setup_busy, egui::Button::new("Close preview"))
+                .add_enabled(!self.setup_busy, egui::Button::new("Close"))
+                .on_hover_text("Stop showing this plan. It stays saved and can be reopened.")
                 .clicked()
             {
                 self.setup_plan = None;
@@ -1457,7 +1804,11 @@ impl App {
             });
 
         ui.add_space(12.0);
-        if ui.button("Reset").clicked() {
+        if ui
+            .button("Reset")
+            .on_hover_text("Back to the palette and sizes the window ships with.")
+            .clicked()
+        {
             self.settings = crate::theme::Settings::default();
         }
         if self.settings != before {
@@ -1469,7 +1820,7 @@ impl App {
     fn leases_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         if self.leases.is_empty() {
-            ui.label("No leases held.");
+            ui.label(RichText::new("No leases held.").weak());
             return;
         }
         egui::Grid::new("leases")
@@ -1506,6 +1857,17 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl App {
+    /// One frame, without the `eframe::Frame` around it.
+    ///
+    /// Separate so a test can run it: an `eframe::Frame` cannot be built
+    /// outside eframe, and every screen's layout is worth rendering at
+    /// least once before somebody has to find out by opening the window.
+    fn draw(&mut self, ui: &mut egui::Ui) {
         self.drain();
         ui.ctx().request_repaint_after(Duration::from_millis(500));
         self.apply_settings(ui.ctx());
@@ -1536,15 +1898,17 @@ impl eframe::App for App {
                     ui.separator();
                     match &self.connected {
                         Ok(()) => {
-                            let green = Color32::from_rgb(60, 170, 90);
-                            crate::projects::bullet(ui, green);
-                            ui.label(RichText::new("connected").color(green));
+                            crate::projects::bullet(ui, WIRED);
+                            ui.label(RichText::new("connected").color(WIRED))
+                                .on_hover_text("The daemon is answering on this socket.");
                             ui.label(RichText::new(&self.socket).color(Color32::GRAY));
                         }
                         Err(reason) => {
-                            let red = Color32::from_rgb(200, 80, 60);
-                            crate::projects::bullet(ui, red);
-                            ui.label(RichText::new("disconnected").color(red));
+                            crate::projects::bullet(ui, ABSENT);
+                            ui.label(RichText::new("disconnected").color(ABSENT)).on_hover_text(
+                                "The window keeps trying. Everything on screen is the last thing \
+                                 the daemon said.",
+                            );
                             ui.label(RichText::new(reason).color(Color32::GRAY));
                         }
                     }
@@ -1571,9 +1935,14 @@ impl eframe::App for App {
                                 }
                             });
                     }
+                    // The last thing that happened, and only while it
+                    // is still the last thing that happened. A line that
+                    // never expires becomes a line nobody reads, and an
+                    // error from ten minutes ago reported as news is
+                    // worse than no line at all.
                     if !self.status.is_empty() {
                         ui.separator();
-                        ui.label(&self.status);
+                        ui.label(RichText::new(&self.status).weak());
                     }
                 });
             });
@@ -1614,6 +1983,21 @@ impl eframe::App for App {
                         } else if entry.hovered() {
                             ui.painter()
                                 .rect_filled(rect, 6.0, visuals.widgets.hovered.bg_fill);
+                        }
+                        // The one place in the window that is painted
+                        // rather than built from widgets, so it is also
+                        // the one place that has to draw its own focus.
+                        // Tab already reached these rows and Enter
+                        // already chose one; nothing said which row was
+                        // about to be chosen, which is the whole of what
+                        // a focus ring is for.
+                        if entry.has_focus() {
+                            ui.painter().rect_stroke(
+                                rect,
+                                6.0,
+                                visuals.widgets.active.fg_stroke,
+                                egui::StrokeKind::Inside,
+                            );
                         }
                         let ink = if selected {
                             Color32::WHITE
@@ -1721,6 +2105,30 @@ fn launched_in() -> Option<std::path::PathBuf> {
 }
 
 /// "45s", "3m", "2h".
+/// A health check's status in the colour the runtimes table gives the
+/// same thing, so the two panels above and below the separator do not
+/// say it two different ways.
+fn health_colour(ui: &egui::Ui, status: &str) -> Color32 {
+    match status {
+        "executable_available" => WIRED,
+        // Registered, but pointing at something this machine cannot run.
+        "missing" | "executable_missing" => ABSENT,
+        "invalid" | "disabled" | "unverified" | "incomplete" => UNVERIFIED,
+        _ => ui.visuals().text_color(),
+    }
+}
+
+/// A saved plan's phase: `applied` is in force, `undone` is not, and the
+/// two in between were interrupted and can be resumed either way.
+fn phase_colour(ui: &egui::Ui, phase: &str) -> Color32 {
+    match phase {
+        "applied" => WIRED,
+        "applying" | "undoing" => UNVERIFIED,
+        "prepared" | "undone" => ui.visuals().text_color(),
+        _ => ui.visuals().weak_text_color(),
+    }
+}
+
 fn span(secs: i64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -1731,30 +2139,76 @@ fn span(secs: i64) -> String {
 
 // ----- threads ---------------------------------------------------------------
 
+/// A thread that runs one job at a time, in the order it was given them.
+///
+/// The console and guided setup shell out to a subprocess rather than
+/// talk to the daemon, they take seconds — a guided apply waits on the
+/// provider's own tool, a console `watch` runs to its whole
+/// twenty-second limit — and both are transcripts, so their order is
+/// part of what they say. On the daemon's thread each one held up every
+/// agent list, lease and question queued behind it while the window went
+/// on painting the stale ones. A lane each, and neither waits on the
+/// other or on the socket.
+fn lane<T: Send + 'static>(
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+    mut work: impl FnMut(T) -> Msg + Send + 'static,
+) -> Sender<T> {
+    let (lane, jobs) = channel::<T>();
+    std::thread::spawn(move || {
+        while let Ok(job) = jobs.recv() {
+            let _ = tx.send(work(job));
+            ctx.request_repaint();
+        }
+    });
+    lane
+}
+
 fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: egui::Context) {
     std::thread::spawn(move || {
+        let consoles = lane(tx.clone(), ctx.clone(), |line: String| {
+            Msg::Console(console(&line))
+        });
+        let setups = lane(tx.clone(), ctx.clone(), |args: Vec<String>| {
+            Msg::Setup(setup(&args))
+        });
         while let Ok(cmd) = rx.recv() {
-            if let Cmd::Desktop(args) = cmd {
-                let tx = tx.clone();
-                let ctx = ctx.clone();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Desktop(desktop(&args)));
-                    ctx.request_repaint();
-                });
-                continue;
-            }
-            let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_) | Cmd::Desktop(_));
+            // What is left after this reaches the daemon, so a failure
+            // that is not the daemon's own answer means the socket.
+            let cmd = match cmd {
+                Cmd::Console(line) => {
+                    let _ = consoles.send(line);
+                    continue;
+                }
+                Cmd::Setup(args) => {
+                    let _ = setups.send(args);
+                    continue;
+                }
+                // Installation steps are independent of each other and
+                // of everything else, so they need no lane at all.
+                Cmd::Desktop(args) => {
+                    let tx = tx.clone();
+                    let ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::Desktop(desktop(&args)));
+                        ctx.request_repaint();
+                    });
+                    continue;
+                }
+                daemon => daemon,
+            };
             let outcome = run(&client, cmd);
-            let disconnected = outcome.as_ref().err().is_some_and(|error| {
-                talks_to_daemon && error.downcast_ref::<RemoteError>().is_none()
-            });
+            let disconnected = outcome
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.downcast_ref::<RemoteError>().is_none());
             let msg = match outcome {
                 Ok(Some(msg)) => msg,
                 Ok(None) => continue,
-                Err(err) => failure_message(err, talks_to_daemon),
+                Err(err) => failure_message(err),
             };
             let _ = tx.send(msg);
-            if !disconnected && talks_to_daemon {
+            if !disconnected {
                 let _ = tx.send(Msg::Connected);
             }
             ctx.request_repaint();
@@ -1762,8 +2216,8 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
     });
 }
 
-fn failure_message(error: anyhow::Error, talks_to_daemon: bool) -> Msg {
-    if talks_to_daemon && error.downcast_ref::<RemoteError>().is_none() {
+fn failure_message(error: anyhow::Error) -> Msg {
+    if error.downcast_ref::<RemoteError>().is_none() {
         Msg::Disconnected(error.to_string())
     } else {
         Msg::Status(error.to_string())
@@ -1887,6 +2341,9 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(err) => Msg::Status(err.to_string()),
             },
         ),
+        // The three that shell out never reach here: `spawn_worker`
+        // sends them to a lane or a thread of their own. Answered
+        // anyway, so this stays a total function over `Cmd`.
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::Console(line) => Some(Msg::Console(console(&line))),
@@ -2055,6 +2512,181 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 mod tests {
     use super::*;
 
+    /// Every screen lays itself out, with something on it.
+    ///
+    /// A layout mistake — a grid whose rows and columns disagree, a
+    /// widget that borrows what it is drawn into — is a panic at paint
+    /// time, on whichever screen the person who changed it was not
+    /// looking at. Cheap here, expensive to find by opening the window.
+    #[test]
+    fn every_screen_lays_itself_out_with_something_on_it() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (_messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        app.runtimes = serde_json::from_value(serde_json::json!([{
+            "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
+            "cli":"/fixture/claude", "version":"fixture", "apps":[],
+            "config_dir":null, "mcp":"missing", "hooks":"wired"
+        }, {
+            "name":"amp", "vendor":"Sourcegraph", "label":"Amp", "cli":null,
+            "version":null, "apps":[], "config_dir":null,
+            "mcp":"unverified", "hooks":"unsupported"
+        }]))
+        .unwrap();
+        // One of every state the panels can be in, so the colours, the
+        // hover text and the empty branches all get drawn at least once.
+        app.setup_health = Some(serde_json::json!({
+            "daemon_reachable": true, "daemon": "agentd 0.1.0",
+            "runtimes": [{"name": "claude-code", "checks": [
+                {"channel": "mcp", "status": "missing", "detail": "no registration"},
+                {"channel": "hooks", "status": "executable_available",
+                 "detail": "installed", "executable": "/fixture/agentdocker"},
+                {"channel": "other", "status": "unsupported", "detail": "n/a"}]}]
+        }));
+        app.setup_history = vec![
+            serde_json::json!({"id": "11111111-2222-3333-4444-555555555555", "phase": "applied"}),
+            serde_json::json!({"id": "66666666-7777-8888-9999-000000000000", "phase": "undone"}),
+        ];
+        app.setup_plan = Some(serde_json::json!({
+            "id": "11111111-2222-3333-4444-555555555555", "phase": "prepared",
+            "executable": "/fixture/agentdocker",
+            "changes": [
+                {"runtime":"claude-code", "channel":"hooks",
+                 "path":"/fixture/.claude/settings.json", "action":"create configuration"},
+                {"runtime":"claude-code", "channel":"mcp", "path":"/fixture/.claude.json",
+                 "action":"register through `claude mcp add`"}],
+            "notes": ["Restart the selected provider session after applying."]}));
+        app.console_output = "agentdocker ps\nno agents\n".to_owned();
+        app.console_running = 1;
+        app.status = "something happened".to_owned();
+        app.connected = Err("no daemon".to_owned());
+
+        let ctx = egui::Context::default();
+        for screen in Screen::ALL {
+            app.screen = screen;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
+            // A frame hands back the textures its painter would have
+            // uploaded, and drops loudly if nobody takes them. There is
+            // no painter here, so this is where they are taken.
+            output.textures_delta.clear();
+            assert!(
+                !ctx.tessellate(output.shapes, output.pixels_per_point)
+                    .is_empty(),
+                "{} drew nothing",
+                screen.title()
+            );
+        }
+    }
+
+    /// The window can be driven without a mouse.
+    ///
+    /// The sidebar is the one thing here painted rather than assembled
+    /// from widgets, which is exactly the kind of thing that quietly
+    /// stops being reachable from the keyboard. Tab reaches a row and
+    /// Enter chooses it, and if that ever stops being true this is what
+    /// says so.
+    #[test]
+    fn the_sidebar_is_reachable_and_choosable_from_the_keyboard() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (_messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        let ctx = egui::Context::default();
+        let frame = |events: Vec<egui::Event>, app: &mut App| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.draw(ui),
+            );
+            output.textures_delta.clear();
+        };
+        let key = |key: egui::Key, pressed: bool| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        // One frame so the rows exist to be reached, then Tab down to
+        // the third of them and choose it.
+        frame(Vec::new(), &mut app);
+        assert_eq!(app.screen, Screen::ALL[0], "starts where it starts");
+        for _ in 0..3 {
+            frame(
+                vec![key(egui::Key::Tab, true), key(egui::Key::Tab, false)],
+                &mut app,
+            );
+        }
+        frame(
+            vec![key(egui::Key::Enter, true), key(egui::Key::Enter, false)],
+            &mut app,
+        );
+        assert_eq!(
+            app.screen,
+            Screen::ALL[2],
+            "three tabs and a return should land on {}",
+            Screen::ALL[2].title()
+        );
+    }
+
+    /// An agent nobody has heard from is not reported as idle.
+    ///
+    /// This is the defect a person actually caught: a Codex session
+    /// editing files was shown as `idle`, because Codex has no hooks
+    /// adapter and reaches the daemon only when it calls a tool. The
+    /// table was asserting something about the agent when all it knew
+    /// was something about itself.
+    #[test]
+    fn an_agent_nobody_has_heard_from_is_not_reported_as_idle() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (_messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        app.runtimes = serde_json::from_value(serde_json::json!([{
+            "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
+            "cli":"/fixture/claude", "version":null, "apps":[], "config_dir":null,
+            "mcp":"wired", "hooks":"wired"
+        }, {
+            "name":"codex", "vendor":"OpenAI", "label":"Codex", "cli":"/fixture/codex",
+            "version":null, "apps":[], "config_dir":null,
+            "mcp":"wired", "hooks":"unsupported"
+        }]))
+        .unwrap();
+        let mute = app.mute();
+        assert!(mute.contains("codex"), "codex has no hooks adapter");
+        assert!(
+            !mute.contains("claude-code"),
+            "claude-code does, so its idle means idle"
+        );
+        // And neither is "unwired": both channels codex supports are
+        // wired, which is exactly why the old check missed it.
+        assert!(
+            !app.unwired().contains("codex"),
+            "codex is wired; it is simply unable to say more"
+        );
+    }
+
+    /// The status line stops being news.
+    #[test]
+    fn the_status_line_lets_go_of_what_is_no_longer_news() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        messages
+            .send(Msg::Status("half the fleet is on fire".to_owned()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.status, "half the fleet is on fire");
+        // Still true, perhaps, but no longer what just happened — and a
+        // line that never expires is a line the eye stops reading.
+        app.status_at = Instant::now()
+            .checked_sub(STATUS_FOR + Duration::from_secs(1))
+            .expect("the machine has been up longer than the status timeout");
+        app.drain();
+        assert!(app.status.is_empty());
+    }
+
     #[test]
     fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
         let (tx, requests) = channel::<Cmd>();
@@ -2075,7 +2707,6 @@ mod tests {
                     message: "launcher cannot be read".into(),
                 }
                 .into(),
-                true,
             ))
             .unwrap();
         app.drain();
@@ -2084,14 +2715,58 @@ mod tests {
         assert_eq!(app.runtimes[0].name, "codex");
         assert!(app.status.contains("launcher cannot be read"));
         assert_eq!(requests.try_iter().count(), 0);
+        // The daemon answering with an error is a status; anything else
+        // on that path is the socket. There is no third case any more:
+        // the commands that shell out never reach `failure_message`,
+        // because `spawn_worker` takes them off the daemon's thread
+        // before it runs them.
         assert!(matches!(
-            failure_message(anyhow::anyhow!("socket closed"), true),
+            failure_message(anyhow::anyhow!("socket closed")),
             Msg::Disconnected(_)
         ));
         assert!(matches!(
-            failure_message(anyhow::anyhow!("local setup failed"), false),
+            failure_message(
+                RemoteError {
+                    code: agentdocker_core::ErrorCode::Unavailable,
+                    message: "the daemon said no".into(),
+                }
+                .into()
+            ),
             Msg::Status(_)
         ));
+    }
+
+    /// Each lane keeps its own order, and no lane waits on another.
+    ///
+    /// Both halves matter. The console is a transcript, so its lines
+    /// have to come back in the order they were typed; and the reason
+    /// the console and setup left the daemon's thread at all is that a
+    /// command taking its full twenty seconds there stopped the agent
+    /// list, the leases and the questions with it.
+    #[test]
+    fn lanes_keep_their_own_order_and_never_wait_on_each_other() {
+        let (tx, rx) = channel::<Msg>();
+        let ctx = egui::Context::default();
+        let slow = lane(tx.clone(), ctx.clone(), |line: String| {
+            std::thread::sleep(Duration::from_millis(200));
+            Msg::Console(line)
+        });
+        let quick = lane(tx, ctx, Msg::Status);
+        slow.send("first".to_owned()).unwrap();
+        slow.send("second".to_owned()).unwrap();
+        quick.send("meanwhile".to_owned()).unwrap();
+        let heard: Vec<Msg> = (0..3)
+            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        let said: Vec<&str> = heard
+            .iter()
+            .map(|msg| match msg {
+                Msg::Console(line) | Msg::Status(line) => line.as_str(),
+                _ => panic!("a lane answered with something it was not given"),
+            })
+            .collect();
+        assert_eq!(said, ["meanwhile", "first", "second"]);
+        assert!(matches!(heard[0], Msg::Status(_)));
     }
 
     #[test]

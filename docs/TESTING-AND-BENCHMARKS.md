@@ -55,6 +55,18 @@ A managed-workspace launch failure keeps the original daemon response even when 
 
 Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, frames and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
+**The graphical run needs a window that is actually on screen.** The screenshot is taken during the paint, and `egui-wgpu` skips the paint entirely for an occluded surface — a minimised window, one behind another, or any window at all while the display is asleep or locked. The run then reaches its deadline having rendered thousands of frames and captured none, with `connected`, `runtime_rows` and `fixture_discovered` all true. That is not a flake and it is not a regression; it is a machine that was not showing the window. Measured on a desk against both `AgentDocker.app` and the bare executable, launched directly and through Launch Services: 1850 frames, 1850 occlusions, no capture — and the same on the commit before the change under test, which is how it was ruled out as one.
+
+The window logs through `tracing-subscriber`, which bridges the `log` records `eframe`, `winit` and `wgpu` emit, so this is one run away rather than an afternoon:
+
+```sh
+RUST_LOG=warn,egui_wgpu=trace python3 scripts/desktop_smoke.py \
+  --binary-dir <dir> --output <dir>
+# Skipping frame due to occlusion.
+```
+
+CI has nothing to occlude the window, which is why this passes there and can fail locally. On macOS run it against the packaged bundle, as `desktop.yml` does — `artifacts/desktop/AgentDocker.app/Contents/MacOS` — not against `target/release`.
+
 Socket load reports connect/write/read/decode failures by operation and retains a bounded fixture-daemon log tail. All agents register before workers start; failure to create a worker cancels already-created waiting workers. Criterion stores each campaign's samples in a fresh `artifacts/criterion.*` directory, alongside source manifests, so cached baseline metadata without its samples cannot become an implicit comparison. The original 100-client Linux failure remains open until the labeled failure is reproduced and explained.
 
 Managed workspace and relay campaigns use a private `0077` umask. This reproduced a helper-image defect: copied relay source retained root-owned `0600`, preventing the workspace UID from reading it. The image recipe now explicitly makes its embedded source readable (`0444`); host fixtures and credentials remain private. The original recipe failed with permission denied and the corrected recipe reported readiness in a real Podman VM before the fix was applied. Both engine CI relay jobs must pass on the final source.

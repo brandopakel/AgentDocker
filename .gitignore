@@ -10,3 +10,9 @@ __pycache__/
 /fuzz/artifacts/
 /fuzz/corpus/
 /artifacts/
+
+# Local secrets. Never committed: a token in the working tree is one
+# `git add -A` away from being public, and this repository is.
+env.txt
+*.env
+.env

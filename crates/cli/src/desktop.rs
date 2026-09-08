@@ -15,6 +15,10 @@ use sha2::{Digest, Sha256};
 use agentdocker_host::{command, dirs, project};
 
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
+
+/// How many times to re-follow the `current` pointer when a read of it
+/// loses the race with the `rename` that moves it. See [`Layout::follow`].
+const POINTER_ATTEMPTS: usize = 8;
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Use the managed command link for provider setup so registrations survive
@@ -253,6 +257,41 @@ impl Layout {
         Ok(())
     }
 
+    /// Follow the `current` pointer, which is moving while we read it.
+    ///
+    /// `activate` swings this symlink with `rename`, and a `readlink`
+    /// whose path is replaced mid-call can come back `EINVAL` — "not a
+    /// symbolic link" — because the vnode the lookup found was unlinked
+    /// and recycled before it was read. The pointer is a symlink to a
+    /// complete generation on both sides of that rename, and it is one
+    /// again the instant afterwards; there is nothing wrong with the
+    /// installation and nothing for a reader to report. So a read that
+    /// loses the race takes the next one, and only a pointer that says
+    /// this several times running is a pointer worth complaining about.
+    ///
+    /// Measured with `readers_under_load_observe_complete_generations`:
+    /// eight readers against six hundred activations failed inside the
+    /// first thousand reads on every run without this, and does not with
+    /// it. `readers_observe_complete_generations_during_activation` is
+    /// the same shape a thousand times smaller, which is why it failed
+    /// about once in seven full suite runs and looked like a flake.
+    fn follow(current: &Path) -> Result<PathBuf> {
+        let mut lost = None;
+        for _ in 0..POINTER_ATTEMPTS {
+            match current.read_link() {
+                Ok(generation) => return Ok(generation),
+                Err(error) if error.raw_os_error() == Some(libc::EINVAL) => lost = Some(error),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("cannot read {}", current.display()));
+                }
+            }
+            std::thread::yield_now();
+        }
+        Err(lost.expect("the loop either returns or records why not"))
+            .with_context(|| format!("{} is not a symlink", current.display()))
+    }
+
     fn active(&self) -> Result<Option<Activation>> {
         let current = self.root.join("current");
         match current.symlink_metadata() {
@@ -263,21 +302,32 @@ impl Layout {
                 "installation current pointer is not a symlink"
             ),
         }
-        let generation = current.read_link()?;
+        // Each step says which file it was reading. A reader runs while
+        // an activation is renaming things into place, so when one of
+        // these does fail it is the interleaving that matters, and a
+        // bare "Invalid argument" from an unknown call is not evidence
+        // of anything.
+        let generation = Self::follow(&current)?;
         ensure!(
             generation.parent() == Some(self.root.join("generations").as_path()),
             "current pointer escapes managed generations"
         );
         let metadata = generation.join("activation.json");
-        let file = dirs::private_file(&metadata, false, false)?;
-        let activation: Activation = serde_json::from_reader(file.take(64 * 1024))?;
+        let file = dirs::private_file(&metadata, false, false)
+            .with_context(|| format!("cannot open {}", metadata.display()))?;
+        let activation: Activation = serde_json::from_reader(file.take(64 * 1024))
+            .with_context(|| format!("cannot read {}", metadata.display()))?;
         ensure!(activation.format == 1, "unknown activation format");
         validate_release(&activation.current)?;
         if let Some(previous) = &activation.previous {
             validate_release(previous)?;
         }
+        let payload = generation.join("payload");
         ensure!(
-            generation.join("payload").read_link()? == self.payload(&activation.current),
+            payload
+                .read_link()
+                .with_context(|| format!("cannot read {}", payload.display()))?
+                == self.payload(&activation.current),
             "activation payload is inconsistent"
         );
         Ok(Some(activation))
@@ -983,6 +1033,52 @@ mod tests {
         );
         let development = tmp.path().join("checkout/target/debug/agentdocker");
         assert_eq!(stable_executable(&development).unwrap(), development);
+    }
+
+    /// The stress version of the test below, kept out of the suite
+    /// because it takes seconds rather than milliseconds. Run it by name
+    /// when the ordinary one has failed:
+    /// `cargo test -p agentdocker -- --ignored readers_under_load`.
+    #[test]
+    #[ignore = "seconds, not milliseconds; run it by name after a flake"]
+    fn readers_under_load_observe_complete_generations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let first = release(&layout, "first");
+        let second = release(&layout, "second");
+        layout.activate(first.clone(), None).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut seen = 0u64;
+                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            let active = layout
+                                .active()
+                                .unwrap_or_else(|error| panic!("after {seen} reads: {error:#}"))
+                                .unwrap();
+                            assert!(active.current == first || active.current == second);
+                            seen += 1;
+                        }
+                        seen
+                    })
+                })
+                .collect();
+            for _ in 0..300 {
+                layout
+                    .activate(second.clone(), Some(first.clone()))
+                    .unwrap();
+                layout
+                    .activate(first.clone(), Some(second.clone()))
+                    .unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for reader in readers {
+                assert!(reader.join().unwrap() > 0);
+            }
+        });
     }
 
     #[test]
