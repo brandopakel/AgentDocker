@@ -1,0 +1,1 @@
+{"request": {"op": "observe", "agent": "fixture-owner", "paths": ["new-file", "/workspace/source", "./inside"]}}
