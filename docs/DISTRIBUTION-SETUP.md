@@ -30,9 +30,11 @@ Verified by installing it and running both binaries.
 
 Every tagged release now pushes the generated formula to
 `Formula/agentdocker.rb` on its own. If the token is ever revoked the
-release job says so in its log and carries on — the formula and the cask
-are attached to the run either way and can be copied across by hand,
-because a missing distribution channel is not a reason to fail a build.
+release job warns and carries on — the formula and the cask are attached
+to the run either way and can be copied across by hand, because a
+missing distribution channel is not a reason to fail a build, and
+`publish` needs that job to finish before it can upload the release
+assets.
 
 Replacing the token, when it expires: make a *fine-grained* personal
 access token at
@@ -41,8 +43,12 @@ access token at
 it needs nothing from the AgentDocker repository — and then
 
 ```sh
-gh secret set HOMEBREW_TAP_TOKEN --body "<the token>"
+gh secret set HOMEBREW_TAP_TOKEN
 ```
+
+Typed at the prompt, or piped. Not `--body "<the token>"`: an argument
+is visible to every process on the machine while the command runs, and
+it stays in the shell history afterwards.
 
 ## The cask
 
