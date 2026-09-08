@@ -221,3 +221,21 @@ The review scope also includes newly merged #76 (`7d43ca6`) and open #77
 (`5ee565a` at inspection), which are not included in this measured candidate.
 Homebrew naming/payload/retention must agree with managed installation before
 release. A child-disown foundation does not complete live daemon transfer.
+
+### Terminal resource and lifecycle follow-up
+
+PR #79 adds terminal admission (32 messages / 64 KiB), visible whole-input
+rejection, a 256 KiB response-frame bound and a 64 KiB OSC control-string budget
+across frames. Close wakes both directions and refuses a late connection after
+detach; background workers finish without polling an idle input queue. Original
+tests at `6cb3431` reproduced unbounded message/byte admission and a surviving
+late connection on both macOS and Linux. The Windows installation-lock fixture
+now creates state with the same private-directory API as installation; both
+previously failing Windows tests passed in that campaign.
+
+The corrected terminal implementation needs its own full CI and actual PTY
+acceptance. Retain the original failures. GUI CPU profiling, transport deadlines
+for saturated connection establishment, terminal screen-dimension budgets,
+repeated load/slow-reader/soak trials and platform parity remain open. The other
+local campaign exceeded the 40 GiB registered-cache budget during this work;
+heavy builds for this follow-up run on GitHub, with no new local Cargo target.

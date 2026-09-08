@@ -130,6 +130,12 @@ it. Same thing as `agentdocker questions` and `agentdocker answer`.
 
 ### Terminal
 
+The terminal accepts up to 64 KiB of queued input across 32 entries. If it is
+full, closed, or an entry is too large, a notice identifies the rejected input;
+nothing from that entry is sent. The notice stays until dismissed. Already sent
+input is never replayed automatically. Malformed or oversized output ends the
+attachment with a reason; the agent and its daemon log remain available.
+
 The terminal of a managed agent, over `attach`. A real vt100 screen:
 colours, cursor, resize, scrollback, and every keystroke goes to the
 agent. **Detach** leaves it running.

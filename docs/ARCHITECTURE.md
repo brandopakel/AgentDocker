@@ -635,9 +635,13 @@ A complete replacement must preserve child ownership, batch stdout/stderr, PTY i
 
 A window that can only look at things is half a product: everything the CLI can do has to be reachable from it. Two different needs, and they want different answers.
 
-**Attaching** needs a real terminal. Now that a managed agent has a pty and `attach` streams it, the app should render one: a terminal view per agent, driven by the same `attach` protocol the CLI uses, with a vt parser turning the byte stream into a screen and keystrokes going back the other way. That is row 29, and it is what turns the app from a dashboard into a console.
+**Attaching** uses the managed agent's PTY and the same `attach` protocol as the CLI. The app renders its output through a VT parser and sends keystrokes and resizes back in order. Its input queue admits at most 32 messages and 64 KiB in total; a single input must also fit 64 KiB. Admission accepts the whole input or none, and rejection remains visible until dismissed. Adjacent resizes coalesce without crossing a keystroke. A rejected resize is deferred until a later UI pass; keystrokes are never automatically retried.
 
-**Everything else** should not be a form per command. The CLI is the complete surface and it keeps growing; hand-built widgets for each would always lag behind it, and every new row on this roadmap would mean a new dialogue. Instead the app gets a command bar that runs `agentdocker …` and renders the result, with buttons only for the handful of things done constantly — stop, adopt, set up a runtime, approve or block a review, close a channel. The buttons are shortcuts to the same commands, so there is one surface to keep correct rather than two.
+The terminal reader limits each newline-delimited response to 256 KiB, including the daemon's encoded 64 KiB replay. OSC control strings are separately limited to 64 KiB across responses: [vte's generic OSC bound](https://docs.rs/vte/0.15.0/vte/struct.Parser.html) does not apply with its default `std` feature. Accepted bytes reach the VT parser unchanged; malformed, incomplete or oversized output ends the attachment with a reason. These are attachment budgets, not a total process RSS ceiling or deletion of daemon logs.
+
+Closing remembers cancellation before a connection arrives, shuts down an installed socket and wakes the input worker without idle polling. Reader completion and writer failure use the same shutdown path; the background reader joins its writer while the UI remains responsive. A pending OS connection/open still inherits the client's transport and startup behavior; this is not a new deadline for a saturated listener or daemon autostart.
+
+**Other commands** run through the console, which invokes `agentdocker` and renders its result. Dedicated controls cover common actions such as stopping or adopting an agent, setup, installation maintenance and answers to questions. Console output and command recall have separate history budgets.
 
 What the app must not become is a multiplexer: panes, layouts, and tiling are herdr's and tmux's ground, and building them here would spend our effort on their strength rather than ours.
 
