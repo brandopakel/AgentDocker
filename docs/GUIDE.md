@@ -144,6 +144,10 @@ Only agents started with a terminal have one — `agentdocker run --tty`, or
 `run` for a runtime that needs one. An adopted process keeps the terminal
 it was started in; that one belongs to whatever launched it.
 
+When the managed command exits, an existing attachment finishes after its final
+output. The CLI restores terminal settings and exits without waiting for an
+extra keypress. Ctrl-] still detaches while leaving a running command intact.
+
 ### Console
 
 See [The console](#the-console).
