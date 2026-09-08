@@ -51,6 +51,7 @@ print(json.dumps({
                   "fingerprint_bytes_per_file": 4096, "socket_clients": [1, 10, 100],
         "socket_checkout_kind": "plain-unwatched",
                   "socket_format": 2, "socket_workloads": ["shared", "disjoint"],
+                  "socket_state_timing": os.environ.get("AGENTDOCKER_BENCH_DIAGNOSTICS") == "1",
                   "socket_outcomes": ["claim_release", "claim_conflict"],
                   "socket_iterations_per_client": 100},
 }, indent=2))

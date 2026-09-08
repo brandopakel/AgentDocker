@@ -101,6 +101,24 @@ and all applicable checks on the published head are required before integration.
 Failed benchmark campaigns retain a final source manifest and `benchmark-status.tsv` with the exit status of each attempted socket scenario. Each 1/10/100-client shared/disjoint scenario runs once even if an earlier socket scenario fails; the campaign remains failed. Previous outcome files are removed before a campaign. A timeout is never converted into a successful latency sample or retried by the campaign. On this Mac, the first schema-2 campaign at `1410d1b` failed during the shared 100-client claim response (errno 35 with the existing five-second request deadline); disjoint 100 was not attempted by that older script. Other-worktree fuzz/build activity overlapped that campaign. Root cause and a quiet-host acceptance campaign remain outstanding; passing Linux CI does not explain this failure.
 
 
+## Diagnosing slow state operations
+
+For a separately identified diagnostic campaign, set
+`AGENTDOCKER_BENCH_DIAGNOSTICS=1 bash scripts/verify.sh bench`, or dispatch the
+Performance workflow with `diagnostics=true`. The fixture daemon enables only
+the `agentd_state_timing` debug target. It records at most 256 lock-wait/store
+samples of 250 ms or more per daemon, with operation names and durations, and
+retains at most an 8 KiB log tail for each scenario. The benchmark manifest
+records this mode. Normal campaigns leave it disabled. Instrumented results
+are diagnostic evidence: logging can affect timings, and the five-second read
+timeout and no-retry policy are unchanged.
+
+The integrated `e008831` disjoint 100-client campaign failed at release-response
+read after its other five workloads completed. Its [source-bound failure record](verification/2026-09-07-integration-benchmark-failure.json)
+remains open; empty daemon stderr did not distinguish state contention from
+storage or host scheduling delays. Capture new evidence before assigning a
+cause or treating a later successful run as a resolution.
+
 ## Development disk budget
 
 The September 7 local campaign exhausted disk space by retaining debug outputs

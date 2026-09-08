@@ -4,12 +4,19 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnostics:
+        description: Capture bounded slow daemon lock/store timings
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   benchmarks:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      AGENTDOCKER_BENCH_DIAGNOSTICS: ${{ inputs.diagnostics && '1' || '0' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

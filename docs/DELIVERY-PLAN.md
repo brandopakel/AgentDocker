@@ -398,3 +398,13 @@ label fixes landed. The supplied normalization helper can still fall back to an
 unverified path, and a task failure silently discards the supplied directory.
 Fallible physical binding, an event-insert rollback test and a real MCP detach/
 reattach trial remain required; the peer is implementing the source follow-up.
+
+The integrated #82 head `e008831` passed standard/coverage, graphical packages,
+maintenance/PTY, engines and Windows-foundation CI, but its disjoint 100-client
+benchmark failed reading a release response with errno 11 at the existing
+five-second read timeout. The other five scenarios completed. The [original
+failed campaign](verification/2026-09-07-integration-benchmark-failure.json)
+retains exact source and partial measurements; no successful rerun or passing
+correctness suite diagnoses it. An opt-in timing campaign now separates slow
+state-lock acquisition from slow store operations, with bounded diagnostic
+output. Keep benchmark acceptance open until the failure is understood.

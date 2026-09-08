@@ -244,7 +244,34 @@ struct JournalRing {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    let started = state_timing_start();
+    let guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+    state_timing_finish("lock_wait", started);
+    guard
+}
+
+/// Opt-in diagnostics contain durations and static operation names only.
+/// The first 256 slow samples bound logging even during a prolonged stall.
+fn state_timing_start() -> Option<Instant> {
+    tracing::enabled!(target: "agentd_state_timing", tracing::Level::DEBUG).then(Instant::now)
+}
+
+fn state_timing_finish(operation: &str, started: Option<Instant>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SAMPLES: AtomicUsize = AtomicUsize::new(0);
+    let Some(elapsed) = started.map(|start| start.elapsed()) else {
+        return;
+    };
+    if elapsed >= std::time::Duration::from_millis(250)
+        && SAMPLES
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < 256).then_some(count + 1)
+            })
+            .is_ok()
+    {
+        tracing::debug!(target: "agentd_state_timing", operation,
+            elapsed_ms = elapsed.as_secs_f64() * 1000.0, "slow daemon state operation");
+    }
 }
 
 /// Whether a name can be the last component of `agent/<name>` as a git
@@ -2968,7 +2995,10 @@ impl State {
         if self.storage_error.is_some() {
             return None;
         }
-        match op(&self.store) {
+        let started = state_timing_start();
+        let result = op(&self.store);
+        state_timing_finish(what, started);
+        match result {
             Ok(value) => Some(value),
             Err(err) => {
                 error!(%what, %err, "store operation failed");
