@@ -1024,30 +1024,40 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
                 .is_some_and(|hooks| hooks.iter().any(managed))
         });
         if present {
-            if *event == "PreToolUse" {
-                let mut upgraded = Vec::new();
-                for entry in entries.iter_mut() {
-                    let Some(hooks) = entry["hooks"].as_array() else {
-                        continue;
-                    };
-                    if !hooks.iter().any(managed) || entry["matcher"] == json!(EDIT_MATCHER) {
-                        continue;
-                    }
-                    let (ours, others): (Vec<_>, Vec<_>) = hooks.iter().cloned().partition(managed);
-                    if others.is_empty() {
-                        entry["matcher"] = json!(EDIT_MATCHER);
-                    } else {
-                        // Widen only our hook's scope; preserve the user's matcher.
-                        let mut separate = entry.clone();
-                        separate["hooks"] = json!(ours);
-                        separate["matcher"] = json!(EDIT_MATCHER);
-                        entry["hooks"] = json!(others);
-                        upgraded.push(separate);
-                    }
-                    added += 1;
+            let mut upgraded = Vec::new();
+            for entry in entries.iter_mut() {
+                let Some(hooks) = entry["hooks"].as_array() else {
+                    continue;
+                };
+                let actual = entry.get("matcher").and_then(Value::as_str);
+                let covers = match matcher {
+                    Some(expected) => actual == Some(*expected) || actual == Some("*"),
+                    None => actual.is_none() || actual == Some(""),
+                };
+                if !hooks.iter().any(managed) || covers {
+                    continue;
                 }
-                entries.extend(upgraded);
+                let (ours, others): (Vec<_>, Vec<_>) = hooks.iter().cloned().partition(managed);
+                let set_matcher = |entry: &mut Value| {
+                    if let Some(matcher) = matcher {
+                        entry["matcher"] = json!(matcher);
+                    } else if let Some(object) = entry.as_object_mut() {
+                        object.remove("matcher");
+                    }
+                };
+                if others.is_empty() {
+                    set_matcher(entry);
+                } else {
+                    // Repair only our coverage; other hooks retain their scope.
+                    let mut separate = entry.clone();
+                    separate["hooks"] = json!(ours);
+                    set_matcher(&mut separate);
+                    entry["hooks"] = json!(others);
+                    upgraded.push(separate);
+                }
+                added += 1;
             }
+            entries.extend(upgraded);
             continue;
         }
         let mut entry = json!({
@@ -1725,6 +1735,28 @@ mod tests {
             std::fs::write(&file, serde_json::to_vec(&candidate).unwrap()).unwrap();
             assert_eq!(hooks_wiring(runtime, tmp.path(), "agentdocker"), expected);
         }
+    }
+
+    #[test]
+    fn codex_scope_repair_keeps_other_hooks_narrow_and_is_idempotent() {
+        let own = json!({"type":"command", "command":"agentdocker hook codex"});
+        let other = json!({"type":"command", "command":"user-check"});
+        let mut settings =
+            json!({"hooks":{"PreToolUse":[{"matcher":"Edit", "hooks":[own, other.clone()]}]}});
+        assert_eq!(
+            merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
+            7
+        );
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries[0]["matcher"], "Edit");
+        assert_eq!(entries[0]["hooks"], json!([other]));
+        assert!(entries[1].get("matcher").is_none());
+        let before = settings.clone();
+        assert_eq!(
+            merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
+            0
+        );
+        assert_eq!(settings, before);
     }
 
     #[test]
