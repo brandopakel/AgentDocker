@@ -16,7 +16,7 @@ use agentdocker_core::{
 use chrono::Utc;
 use egui::{Color32, RichText};
 
-use crate::client::Client;
+use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
 
 /// How often agents, leases and discovered processes are re-read.
@@ -1741,11 +1741,13 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
             }
             let talks_to_daemon = !matches!(cmd, Cmd::Setup(_) | Cmd::Console(_) | Cmd::Desktop(_));
             let outcome = run(&client, cmd);
-            let disconnected = outcome.is_err();
+            let disconnected = outcome.as_ref().err().is_some_and(|error| {
+                talks_to_daemon && error.downcast_ref::<RemoteError>().is_none()
+            });
             let msg = match outcome {
                 Ok(Some(msg)) => msg,
                 Ok(None) => continue,
-                Err(err) => Msg::Disconnected(err.to_string()),
+                Err(err) => failure_message(err, talks_to_daemon),
             };
             let _ = tx.send(msg);
             if !disconnected && talks_to_daemon {
@@ -1754,6 +1756,14 @@ fn spawn_worker(client: Arc<Client>, rx: Receiver<Cmd>, tx: Sender<Msg>, ctx: eg
             ctx.request_repaint();
         }
     });
+}
+
+fn failure_message(error: anyhow::Error, talks_to_daemon: bool) -> Msg {
+    if talks_to_daemon && error.downcast_ref::<RemoteError>().is_none() {
+        Msg::Disconnected(error.to_string())
+    } else {
+        Msg::Status(error.to_string())
+    }
 }
 
 /// One command against the daemon; `Ok(None)` when there is nothing to
@@ -2028,6 +2038,45 @@ fn spawn_events(client: Arc<Client>, tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_inventory_preserves_previous_rows_and_daemon_connection() {
+        let (tx, requests) = channel::<Cmd>();
+        let (messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        let rows: Vec<RuntimeInfo> = serde_json::from_value(serde_json::json!([{
+            "name":"codex", "vendor":"OpenAI", "label":"Codex",
+            "cli":"/fixture/codex", "version":"fixture", "apps":[],
+            "config_dir":null, "mcp":"missing", "hooks":"unsupported"
+        }]))
+        .unwrap();
+        messages.send(Msg::Runtimes(rows)).unwrap();
+        app.drain();
+        messages
+            .send(failure_message(
+                RemoteError {
+                    code: agentdocker_core::ErrorCode::Unavailable,
+                    message: "launcher cannot be read".into(),
+                }
+                .into(),
+                true,
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.connected.is_ok());
+        assert_eq!(app.runtimes.len(), 1);
+        assert_eq!(app.runtimes[0].name, "codex");
+        assert!(app.status.contains("launcher cannot be read"));
+        assert_eq!(requests.try_iter().count(), 0);
+        assert!(matches!(
+            failure_message(anyhow::anyhow!("socket closed"), true),
+            Msg::Disconnected(_)
+        ));
+        assert!(matches!(
+            failure_message(anyhow::anyhow!("local setup failed"), false),
+            Msg::Status(_)
+        ));
+    }
 
     #[test]
     fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
