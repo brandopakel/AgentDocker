@@ -338,3 +338,13 @@ be deferred. A separate verified checkout binding is needed when an agent's
 registered launch directory differs from the worktree used by its tools.
 The actual live coordination trial remains private; only sanitized findings
 and source-bound fixture results belong in GitHub.
+
+The integrated #78 head `57403c2` and #82 head `fa38e1c` passed the full GitHub
+standard, coverage, packaged Mac/Linux graphical, maintenance and PTY, engine,
+Windows-foundation and performance checks. These are CI gates, not completion
+of the provider or sustained-use matrix. The fresh Codex 0.153.4 trials consumed,
+echoed and journaled a synthetic MCP message with one identity, but first invoked
+no hooks under their configuration isolation. A clean provider home produced
+callbacks and exposed an exact-path comparison rejecting macOS checkout aliases.
+Preserve those failed trials; canonical checkout comparison and the documented
+interrupt timeout are follow-up fixes requiring their own candidate acceptance.

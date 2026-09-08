@@ -159,7 +159,7 @@ impl State {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        Response::Ok
+        self.storage_failure().unwrap_or(Response::Ok)
     }
 
     /// Whether it is this waiter's turn. A claim with no ticket has not

@@ -1054,6 +1054,21 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .with_context(|| format!("`hooks.{event}` must be an array"))?;
+        if runtime == "codex" && *event == "Interrupt" {
+            for entry in entries.iter_mut() {
+                if let Some(hooks) = entry["hooks"].as_array_mut() {
+                    for hook in hooks.iter_mut().filter(|hook| managed(hook)) {
+                        if hook["timeout"]
+                            .as_f64()
+                            .is_some_and(|seconds| seconds > 3.0)
+                        {
+                            hook["timeout"] = json!(3);
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
         let present = entries.iter().any(|entry| {
             entry["hooks"]
                 .as_array()
@@ -1096,8 +1111,13 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
             entries.extend(upgraded);
             continue;
         }
+        let timeout = if runtime == "codex" && *event == "Interrupt" {
+            3
+        } else {
+            15
+        };
         let mut entry = json!({
-            "hooks": [{ "type": "command", "command": command, "timeout": 15 }]
+            "hooks": [{ "type": "command", "command": command, "timeout": timeout }]
         });
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
@@ -1857,6 +1877,29 @@ mod tests {
             0
         );
         assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn codex_interrupt_timeout_obeys_provider_limit_and_preserves_foreign_hooks() {
+        let mut settings = json!({});
+        merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap();
+        assert_eq!(settings["hooks"]["Interrupt"][0]["hooks"][0]["timeout"], 3);
+        settings["hooks"]["Interrupt"][0]["hooks"][0]["timeout"] = json!(15);
+        let foreign = json!({"type":"command", "command":"user-check", "timeout":9});
+        settings["hooks"]["Interrupt"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(foreign.clone());
+        assert_eq!(
+            merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
+            1
+        );
+        assert_eq!(settings["hooks"]["Interrupt"][0]["hooks"][0]["timeout"], 3);
+        assert_eq!(settings["hooks"]["Interrupt"][0]["hooks"][1], foreign);
+        assert_eq!(
+            merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
+            0
+        );
     }
 
     #[test]

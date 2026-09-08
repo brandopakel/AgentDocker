@@ -44,6 +44,10 @@ pub(super) async fn report<B: Backend>(
         "invalid session identity"
     );
     ensure!(input.cwd.is_absolute(), "hook cwd must be absolute");
+    let checkout = input
+        .cwd
+        .canonicalize()
+        .context("cannot resolve hook checkout")?;
     let name = format!("codex-{pid}");
     let agent = match backend
         .call(Request::Inspect {
@@ -59,7 +63,7 @@ pub(super) async fn report<B: Backend>(
             let spec = AgentSpec {
                 name,
                 runtime: "codex".into(),
-                workdir: Some(input.cwd.clone()),
+                workdir: Some(checkout.clone()),
                 labels: [
                     ("via".into(), "hook".into()),
                     ("session_id".into(), input.session_id.clone()),
@@ -88,13 +92,23 @@ pub(super) async fn report<B: Backend>(
             && agent.pid == Some(pid)
             && agent.process_started_at == Some(process_started_at)
             && agent.spec.runtime == "codex"
-            && agent.spec.workdir.as_ref() == Some(&input.cwd)
             && agent
                 .spec
                 .labels
                 .get("session_id")
                 .is_none_or(|session| session == &input.session_id),
         "hook identity does not match the live Codex process"
+    );
+    let registered_checkout = agent
+        .spec
+        .workdir
+        .as_ref()
+        .context("registered Codex has no verified checkout")?
+        .canonicalize()
+        .context("cannot resolve registered Codex checkout")?;
+    ensure!(
+        registered_checkout == checkout,
+        "hook checkout does not match registered Codex checkout"
     );
     match backend
         .call(Request::ReportActivity {
@@ -221,12 +235,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_reused_pid_cannot_update_the_previous_agent() {
+        let checkout = tempfile::tempdir().unwrap();
         let now = Utc::now();
         let mut agent = agentdocker_core::AgentRecord::new(
             AgentSpec {
                 name: "codex-42".into(),
                 runtime: "codex".into(),
-                workdir: Some(PathBuf::from("/fixture")),
+                workdir: Some(checkout.path().to_owned()),
                 ..AgentSpec::default()
             },
             false,
@@ -236,7 +251,7 @@ mod tests {
         agent.process_started_at = Some(now - chrono::Duration::hours(1));
         agent.status = agentdocker_core::AgentStatus::Running;
         let backend = Mock::with(vec![Response::Agent { agent }]);
-        let input: Input = serde_json::from_value(serde_json::json!({"hook_event_name":"PostToolUse", "session_id":"fixture", "cwd":"/fixture", "tool_input":{"private":"NEVER-SEND-THIS"}, "transcript_path":"/never/read/transcript"})).unwrap();
+        let input: Input = serde_json::from_value(serde_json::json!({"hook_event_name":"PostToolUse", "session_id":"fixture", "cwd":checkout.path(), "tool_input":{"private":"NEVER-SEND-THIS"}, "transcript_path":"/never/read/transcript"})).unwrap();
         assert!(report(&backend, &input, 42, now, now).await.is_err());
         assert_eq!(backend.requests().len(), 1);
         assert!(
@@ -248,12 +263,13 @@ mod tests {
 
     #[tokio::test]
     async fn adopted_codex_keeps_its_identity_and_reports_only_activity() {
+        let checkout = tempfile::tempdir().unwrap();
         let now = Utc::now();
         let mut agent = agentdocker_core::AgentRecord::new(
             AgentSpec {
                 name: "codex-42".into(),
                 runtime: "codex".into(),
-                workdir: Some(PathBuf::from("/fixture")),
+                workdir: Some(checkout.path().to_owned()),
                 ..AgentSpec::default()
             },
             false,
@@ -269,7 +285,7 @@ mod tests {
             &Input {
                 hook_event_name: "PreToolUse".into(),
                 session_id: "test-session".into(),
-                cwd: PathBuf::from("/fixture"),
+                cwd: checkout.path().to_owned(),
             },
             42,
             now,
@@ -282,6 +298,57 @@ mod tests {
         assert!(
             matches!(&calls[1], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
         );
+    }
+
+    #[tokio::test]
+    async fn checkout_aliases_match_but_another_checkout_cannot_report() {
+        let root = tempfile::tempdir().unwrap();
+        let checkout = root.path().join("checkout");
+        let different = root.path().join("other-checkout");
+        let alias = root.path().join("alias");
+        std::fs::create_dir(&checkout).unwrap();
+        std::fs::create_dir(&different).unwrap();
+        std::os::unix::fs::symlink(&checkout, &alias).unwrap();
+        let now = Utc::now();
+        let mut record = agentdocker_core::AgentRecord::new(
+            AgentSpec {
+                name: "codex-42".into(),
+                runtime: "codex".into(),
+                workdir: Some(checkout.canonicalize().unwrap()),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        record.pid = Some(42);
+        record.process_started_at = Some(now);
+        record.status = agentdocker_core::AgentStatus::Running;
+        let mut input = Input {
+            hook_event_name: "PostToolUse".into(),
+            session_id: "fixture".into(),
+            cwd: alias,
+        };
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: record.clone(),
+            },
+            Response::Ok,
+        ]);
+        report(&backend, &input, 42, now, now).await.unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReportActivity { .. }
+        ));
+        input.cwd = different;
+        let backend = Mock::with(vec![Response::Agent { agent: record }]);
+        assert!(
+            report(&backend, &input, 42, now, now)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("checkout does not match")
+        );
+        assert_eq!(backend.requests().len(), 1);
     }
 
     #[test]

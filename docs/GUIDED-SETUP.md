@@ -20,7 +20,7 @@ agentdocker setup --undo PLAN_ID
 
 Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
 
-Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. It does not rewrite Claude's mutable `.claude.json` application state or add a second MCP identity. Codex and supported JSON MCP hosts receive the existing stdio MCP adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse and existing duplicate reconciliation still require the delivery plan's lifecycle review. Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
 ## Apply, recovery and undo
 
@@ -44,3 +44,14 @@ Provider configuration follows the installed CLI capabilities and the official [
 
 
 CLI inventory also checks standard installation directories when a native app inherits a minimal PATH. Connection checks continue to use the inspecting process's actual PATH; finding a CLI in an inventory fallback does not validate a bare MCP command. Selecting a runtime explicitly inspects only that target, so an unrelated malformed desktop launcher does not block its setup preview. Codex desktop and ChatGPT have independent inventory rows without a supported setup adapter; the Codex CLI configuration is not treated as their connection health.
+
+Codex hooks must belong to a configuration layer the running provider actually
+loads. A disposable `codex exec --ignore-user-config` trial accepted MCP
+configuration but invoked no hook callbacks, including when hook settings were
+passed as command-line overrides. A fresh private provider home loaded the
+same hook definitions. Keep configuration health unverified until an actual
+callback is observed; this is separate from a passing MCP message round trip.
+The activity adapter resolves physical checkout aliases, so macOS `/tmp` and
+`/private/tmp` do not reject a report from the same directory. A different
+checkout remains a mismatch. Codex interrupt hooks use its documented maximum
+three-second timeout; other activity hooks retain a fifteen-second outer limit.
