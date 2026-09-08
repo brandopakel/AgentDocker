@@ -200,12 +200,19 @@ fn delegated_mcp(
     }))
 }
 
-/// Whether the provider's configuration registers AgentDocker right now.
-fn registers_us(step: &Delegated) -> Result<bool> {
+/// What the provider's configuration says under our name right now:
+/// `None` for no entry at all, `Some(false)` for one that no longer runs
+/// AgentDocker, `Some(true)` for ours.
+fn present(step: &Delegated) -> Result<Option<bool>> {
     Ok(read_config(&step.path)?
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|config| config.get("mcpServers")?.get("agentdocker").cloned())
-        .is_some_and(|server| super::runs_agentdocker(&server, &step.runtime)))
+        .map(|server| super::runs_agentdocker(&server, &step.runtime)))
+}
+
+/// Whether the provider's configuration registers AgentDocker right now.
+fn registers_us(step: &Delegated) -> Result<bool> {
+    Ok(present(step)? == Some(true))
 }
 
 fn run_step(argv: &[String]) -> Result<agentdocker_host::command::Output> {
@@ -213,23 +220,13 @@ fn run_step(argv: &[String]) -> Result<agentdocker_host::command::Output> {
         .with_context(|| format!("cannot run {}", argv.first().map_or("", String::as_str)))
 }
 
-/// Make the registration, and say whether *this plan* is what made it.
+/// Make the registration the plan asked for.
 ///
-/// The answer matters more than it looks. A registration that was
-/// already there when the apply ran belongs to whoever put it there —
-/// the person, or Claude Code itself, between the preview and the apply
-/// — and an undo that removed it would be exactly the mistake the file
-/// steps refuse to make when a file has changed under them. So the plan
-/// records what it created and takes back only that.
-///
-/// `claude mcp add` exits non-zero when the entry is already present,
-/// which is not a failure of the apply: the configuration is what the
-/// plan asked for. The file, not the exit status, says whether the step
-/// arrived; the exit status only decides whose it is.
-fn register(step: &Delegated) -> Result<bool> {
-    if registers_us(step)? {
-        return Ok(false); // already there before we ran: not ours to undo
-    }
+/// `claude mcp add` can exit non-zero and still have left the
+/// configuration the way the plan wanted it, so the file — not the exit
+/// status — says whether the step arrived. Whose registration it is was
+/// settled before this ran; see [`apply`].
+fn register(step: &Delegated) -> Result<()> {
     let output = run_step(&step.add)?;
     ensure!(
         registers_us(step)?,
@@ -238,14 +235,28 @@ fn register(step: &Delegated) -> Result<bool> {
         step.path.display(),
         output.text.trim()
     );
-    // Registered now and not before, so this plan did it — unless the
-    // command failed and something else registered it in the meantime,
-    // which is not ours either.
-    Ok(output.success)
+    Ok(())
 }
 
-/// Take back a registration this plan made.
+/// Take back a registration this plan made — and only if it is still the
+/// one this plan made.
+///
+/// A person can edit the entry after the apply through their provider's
+/// own supported flows, and an undo that removed whatever now stands
+/// under our name would be throwing away that edit: exactly what the
+/// file steps refuse to do when a file has changed under them. An entry
+/// that has already gone is not a failure — the undo wanted it gone —
+/// but an entry that is no longer ours is left where it is and said so.
 fn deregister(step: &Delegated) -> Result<()> {
+    match present(step)? {
+        None => return Ok(()),
+        Some(false) => bail!(
+            "the `agentdocker` entry in {} no longer runs AgentDocker, so it is not the one this \
+             plan made; it is left as it is",
+            step.path.display()
+        ),
+        Some(true) => (),
+    }
     let output = run_step(&step.remove)?;
     ensure!(
         !registers_us(step)?,
@@ -505,15 +516,32 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     // preflight never reaches the provider's tool. Undo takes back only
     // what the apply recorded itself as having made: a registration that
     // was already there when we ran is somebody else's.
-    for step in &mut plan.delegated {
+    for index in 0..plan.delegated.len() {
         if undo {
-            if step.created {
-                deregister(step)?;
-                step.created = false;
+            if plan.delegated[index].created {
+                deregister(&plan.delegated[index])?;
+                plan.delegated[index].created = false;
             }
-        } else {
-            step.created = register(step)?;
+            continue;
         }
+        // `created` already true means an earlier run of this apply
+        // claimed the registration and may or may not have finished
+        // making it. Either way it is ours, and reading the file again
+        // here would mistake our own work for somebody else's.
+        if !plan.delegated[index].created {
+            if registers_us(&plan.delegated[index])? {
+                continue; // there before we arrived; not ours to undo
+            }
+            // Claimed, and made durable, *before* the command runs —
+            // the same order the file steps use. An apply interrupted
+            // between the two leaves a receipt saying this plan may
+            // have made the registration, which an undo can check and
+            // act on; the other order leaves one that has forgotten,
+            // and a registration nothing will ever take back.
+            plan.delegated[index].created = true;
+            save(directory, plan)?;
+        }
+        register(&plan.delegated[index])?;
     }
     plan.phase = if undo { "undone" } else { "applied" }.into();
     save(directory, plan)
@@ -687,6 +715,28 @@ mod tests {
         }
     }
 
+    /// Turn the stub `claude` into one that writes what the real
+    /// `claude mcp add|remove` writes, so an apply and an undo can be
+    /// run end to end without Claude Code on the machine.
+    fn writing_claude(home: &Path) {
+        let json = home.join(".claude.json");
+        let script = home.join("bin/claude");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+case "$2" in
+  add) printf '{{"mcpServers":{{"agentdocker":{{"command":"agentdocker","args":["mcp","--runtime","claude-code"]}}}}}}' > {json} ;;
+  remove) printf '{{}}' > {json} ;;
+esac
+"#,
+                json = json.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     /// A `claude` on the injected PATH, so the planner has something to
     /// delegate to without a real Claude Code on the machine.
     fn fake_claude(home: &Path) -> (Roots, PathBuf) {
@@ -790,10 +840,6 @@ mod tests {
             remove: refuses,
             created: false,
         };
-        assert!(
-            !register(&step).unwrap(),
-            "a registration that was already there is not ours"
-        );
         // Removing one is a real failure when the entry survives it.
         let error = deregister(&step).unwrap_err().to_string();
         assert!(error.contains("still registers"), "{error}");
@@ -801,11 +847,27 @@ mod tests {
         step.path = temp.path().join("absent.json");
         let error = register(&step).unwrap_err().to_string();
         assert!(error.contains("does not register"), "{error}");
-        // A removal that leaves the entry gone has done its job,
-        // whatever the provider's tool made of it.
-        step.path = registered.clone();
-        std::fs::write(&registered, "{}").unwrap();
+        // An entry that has already gone is what the undo wanted, so
+        // there is nothing to fail at — and the provider's tool is not
+        // even asked.
+        step.path = temp.path().join("gone.json");
+        std::fs::write(&step.path, "{}").unwrap();
         deregister(&step).unwrap();
+        // But an entry that somebody has since pointed elsewhere is
+        // theirs, and is left exactly where it is.
+        std::fs::write(
+            &step.path,
+            r#"{"mcpServers":{"agentdocker":{"command":"/opt/something-else","args":[]}}}"#,
+        )
+        .unwrap();
+        let error = deregister(&step).unwrap_err().to_string();
+        assert!(error.contains("no longer runs AgentDocker"), "{error}");
+        assert!(
+            std::fs::read_to_string(&step.path)
+                .unwrap()
+                .contains("something-else"),
+            "and it is still there"
+        );
     }
 
     /// An undo takes back only the registration the apply itself made.
@@ -819,25 +881,7 @@ mod tests {
     fn an_undo_removes_only_what_the_apply_registered() {
         let temp = tempfile::tempdir().unwrap();
         let (roots, _) = fake_claude(temp.path());
-        let claude_json = temp.path().join(".claude.json");
-        // A stand-in for `claude mcp add|remove`, writing the file the
-        // real one writes.
-        let script = temp.path().join("bin/claude");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh
-case \"$2\" in
-  add) printf '{{\"mcpServers\":{{\"agentdocker\":                 {{\"command\":\"agentdocker\",\"args\":[\"mcp\",\"--runtime\",                 \"claude-code\"]}}}}}}' > {json} ;;
-  remove) printf '{{}}' > {json} ;;
-                 esac
-",
-                json = claude_json.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
+        writing_claude(temp.path());
         let directory = directory(&temp.path().join("state")).unwrap();
         let exe = std::env::current_exe().unwrap();
 
@@ -870,6 +914,41 @@ case \"$2\" in
             registers_us(&theirs.delegated[0]).unwrap(),
             "the undo left a registration this plan never made"
         );
+    }
+
+    /// An apply that stops between claiming a registration and making it
+    /// still knows the registration may be its own.
+    ///
+    /// The claim is written to the receipt before the provider's command
+    /// runs, in the same order the file steps write their snapshots. The
+    /// other order loses a registration to any interruption: the resumed
+    /// apply would find the entry already there, read it as somebody
+    /// else's, and nothing would ever take it back.
+    #[test]
+    fn an_interrupted_delegated_add_is_still_this_plan_s_to_undo() {
+        let temp = tempfile::tempdir().unwrap();
+        let (roots, _) = fake_claude(temp.path());
+        writing_claude(temp.path());
+        let directory = directory(&temp.path().join("state")).unwrap();
+        let exe = std::env::current_exe().unwrap();
+
+        let mut plan = prepare(&roots, &["claude-code".into()], &exe).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        // Read back from disk rather than from the plan in hand: the
+        // claim is only worth anything if it survived the write.
+        let saved = load(&directory, &plan.id).unwrap();
+        assert!(saved.delegated[0].created, "the receipt kept the claim");
+
+        // The interruption itself: a receipt that claimed the
+        // registration and stopped before the command could make it.
+        let mut interrupted = load(&directory, &plan.id).unwrap();
+        interrupted.phase = "applying".into();
+        std::fs::write(temp.path().join(".claude.json"), "{}").unwrap();
+        save(&directory, &interrupted).unwrap();
+        apply(&directory, &mut interrupted, true).unwrap();
+        assert_eq!(interrupted.phase, "undone");
+        assert!(!interrupted.delegated[0].created);
     }
 
     #[test]
