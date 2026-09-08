@@ -83,6 +83,22 @@ Execute [LOCAL-TRIAL.md](LOCAL-TRIAL.md) in order. Every Stage 2 row below requi
 A feature is complete only when its invariant, relevant UI/adapter behavior, docs, tests and final-head review agree. Release readiness additionally requires the integrated candidate to pass the applicable crosswalk, actual supported-platform trials and final artifact verification. Keep unsupported platforms/channels and unresolved failures explicit. Do not turn an unavailable certificate, machine, review quota or missing test into a completed checkbox.
 
 
+### Identity review and adapter lifecycle checkpoint
+
+Source review found that `project::try_canonical` accepts nonexistent suffixes,
+so using its success as proof of an existing checkout was incorrect. Registration
+now uses filesystem canonicalization and checks for a directory. A missing path,
+ordinary file or symlink cycle is rejected without creating an agent, durable
+row or event. The alias test no longer deletes a fixed path beside its temporary
+directory; both target and alias are owned fixtures.
+
+The [packaged lifecycle report](verification/2026-09-07-identity-lifecycle.json)
+records the earlier MCP-disconnect failure and passing `242cd3b` candidate with
+real adapter processes. The fixture is now part of Mac/Linux desktop CI. It
+tests transport shutdown/reconnection, retained identity/lease/inbox and hook
+delivery/acknowledgement/SessionEnd; broader provider versions, existing duplicate
+migration and final-source review remain open.
+
 ### Desktop discovery implementation checkpoint
 
 The desktop inventory follow-up separates Codex CLI, Codex desktop and ChatGPT, adds curated Linux desktop-entry inventory with XDG overrides, and adds standard CLI installation locations for native app launches with a minimal PATH. Inventory errors preserve the last GUI rows and connection state; explicit setup is isolated from unrelated invalid launchers. Focused fixtures cover hidden overrides, special/oversized/malformed files, symlink exports, non-executed launcher declarations and distinct integration attribution. Full integrated acceptance and target-distribution trials remain required for L03; this does not close Windows desktop inventory or universal provider support.

@@ -1486,28 +1486,26 @@ impl Daemon {
         // do — it runs under the state mutex — so it happens once, now.
         let mut spec = spec;
         if let Some(workdir) = spec.workdir.take() {
-            // Never erased, and never silently substituted. `canonical`
-            // hands back its input when resolution fails, and a join
-            // failure turned into `None` would throw away a directory
-            // the caller supplied — either way an unresolved path would
-            // then be indistinguishable from an absent one, and the
-            // comparison below would treat two unknowns as agreement.
-            // So what was given survives, and only a resolution that
-            // actually succeeded replaces it.
+            // Identity needs an existing directory. The project helper
+            // permits nonexistent suffixes, which is useful for planned
+            // paths but cannot establish a registration's checkout.
             let given = workdir.clone();
-            let resolved = tokio::task::spawn_blocking(move || project::try_canonical(&workdir))
-                .await
-                .ok()
-                .and_then(Result::ok);
+            let resolved = tokio::task::spawn_blocking(move || {
+                let path = std::fs::canonicalize(&workdir)?;
+                if !path.is_dir() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "working directory is not a directory",
+                    ));
+                }
+                Ok(path)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok);
             let Some(resolved) = resolved else {
-                // Refused, because there is no honest third option. The
-                // unresolved path cannot be kept — two registrations
-                // that both failed on the same input would carry equal
-                // paths and match each other on no evidence — and it
-                // cannot be dropped either, because an absent checkout
-                // is a checkout that matches nothing and the caller did
-                // give one. So the registration does not happen, and
-                // says why.
+                // Neither retain an unverified path nor turn a supplied
+                // directory into None: both would lose identity evidence.
                 return Response::error(
                     ErrorCode::Invalid,
                     format!(
@@ -4657,8 +4655,7 @@ mod tests {
         let daemon = open(&dir);
         let me = std::process::id();
         let real = TempDir::new().unwrap();
-        let alias = real.path().parent().unwrap().join("alias-to-the-checkout");
-        let _ = std::fs::remove_file(&alias);
+        let alias = dir.path().join("alias-to-the-checkout");
         std::os::unix::fs::symlink(real.path(), &alias).unwrap();
 
         let register = async |name: &str, workdir: &std::path::Path| {
@@ -4683,7 +4680,45 @@ mod tests {
             "the same directory under another name is the same checkout"
         );
         assert_eq!(lock(&daemon.state).registry.live().count(), 1);
-        let _ = std::fs::remove_file(&alias);
+    }
+
+    #[tokio::test]
+    async fn registration_refuses_unresolved_or_non_directory_workdirs_without_state_changes() {
+        let directory = TempDir::new().unwrap();
+        let daemon = open(&directory);
+        let fixture = TempDir::new().unwrap();
+        let file = fixture.path().join("file");
+        std::fs::write(&file, "fixture").unwrap();
+        let cycle = fixture.path().join("cycle");
+        std::os::unix::fs::symlink(&cycle, &cycle).unwrap();
+        let before = daemon.recent_events(100);
+        for workdir in [fixture.path().join("missing"), file, cycle] {
+            let response = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        workdir: Some(workdir),
+                        ..spec("refused")
+                    },
+                    pid: Some(std::process::id()),
+                    session: None,
+                })
+                .await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{response:?}"
+            );
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.live().count(), 0);
+            assert!(state.store.load_agents().unwrap().is_empty());
+            drop(state);
+            assert_eq!(daemon.recent_events(100), before);
+        }
     }
 
     /// Two checkouts of one project are two agents.

@@ -1,5 +1,26 @@
 # Bounded real-provider acceptance
 
+## Packaged identity lifecycle follow-up
+
+The [September 7 lifecycle report](verification/2026-09-07-identity-lifecycle.json)
+separately exercises actual packaged MCP and Claude hook adapters against an
+owned synthetic Python host. It does not invoke a model or change provider
+configuration. At `8611292`, closing MCP marked the identity exited while that
+host remained alive. At the verified `242cd3b` package, both MCP shutdowns and
+a third connection preserved one live identity, its lease and a queued nonce.
+The actual prompt hook output the nonce and acknowledged it; SessionEnd released
+the lease and ended the joined identity. All owned fixture processes exited.
+
+`scripts/identity_smoke.py` runs the same lifecycle on packaged Mac/Linux desktop
+CI, verifies executable hashes against the package manifest and records source,
+driver hash and cleanup. Registration additionally requires a supplied workdir
+to resolve to an existing directory; invalid directories must leave no registry,
+database or event state. The alias fixture stays entirely within its owned
+temporary directory. These later fixes need their own final CI; the historical
+package result alone does not certify them or migrate existing duplicates.
+
+## Earlier real-provider trials
+
 Fresh provider sessions were tested on the development Apple Silicon Mac with a private daemon home/socket, disposable repository, new identities and a fixture peer. Existing sessions were neither adopted nor stopped. The harness checked that the user's Codex TOML and Claude Code settings hashes were unchanged. Provider authentication remained with each vendor CLI; no authentication files were copied into the fixture or repository.
 
 | Adapter | Runtime tested | Actual round trip | Result |
