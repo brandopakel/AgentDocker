@@ -415,3 +415,23 @@ with no state timing records at or above 250 ms. Its source-bound
 matching manifests and eight successful Bencher reports under a distinct
 `github-ubuntu-x86_64-state-timing` testbed. This did not reproduce the original
 `e008831` timeout and does not close its diagnosis or performance acceptance.
+
+### Delegated setup ownership follow-up
+
+Review found that runtime-name matching allowed undo to remove changed command,
+argument or environment settings, malformed JSON was treated as absence, and a
+durable `created` flag could claim an unrelated registration after interruption.
+New receipts pin the complete planned entry and a per-plan environment marker.
+Apply/undo preflight checks delegated state before file writes; recovery and undo
+require exact entry ownership. Old receipts without evidence preserve present
+entries. Add requires the exact entry afterward; remove requires actual absence.
+Regression cases cover changed fields, malformed shapes, interrupted intent,
+legacy receipts and misleading provider-command postconditions.
+
+An isolated invocation of the installed Claude CLI verified `mcp add --env`
+preserves the marker in a stdio entry and that remove clears it; the user's
+configuration hash stayed unchanged and the fixture was removed. This interface
+check does not validate the new compiled setup implementation. Final-source CI
+and packaged onboarding acceptance remain required. Independent edits racing
+inside a provider command and consistent support for `CLAUDE_CONFIG_DIR` across
+inventory, health, hooks and saved provider commands remain open.

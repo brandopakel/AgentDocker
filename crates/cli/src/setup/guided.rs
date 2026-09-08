@@ -55,12 +55,15 @@ struct Delegated {
     /// Argv that makes the registration, and argv that removes it.
     add: Vec<String>,
     remove: Vec<String>,
-    /// Whether the apply is what made this registration, and so whether
-    /// an undo may take it back. Written when the step runs; `false`
-    /// until then, and `false` for a registration that was already there
-    /// — which belongs to whoever made it, not to this plan.
+    /// Whether apply durably recorded its intent to create this entry.
+    /// Undo also requires exact ownership evidence in `expected`; intent
+    /// alone cannot distinguish our add from another writer's add.
     #[serde(default)]
     created: bool,
+    /// Exact planned entry, including a per-plan ownership nonce. Old
+    /// receipts lack this evidence and cannot remove a present entry.
+    #[serde(default)]
+    expected: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -184,8 +187,16 @@ fn delegated_mcp(
         .to_str()
         .context("the agentdocker path is not UTF-8")?
         .to_owned();
+    let ownership = uuid::Uuid::new_v4().to_string();
+    let expected = json!({
+        "type": "stdio", "command": executable,
+        "args": ["mcp", "--runtime", "claude-code"],
+        "env": {"AGENTDOCKER_SETUP_RECEIPT": ownership},
+    });
     let mut add: Vec<String> = vec![cli.clone()];
-    add.extend(["mcp", "add", "--scope", "user", "agentdocker", "--"].map(str::to_owned));
+    add.extend(["mcp", "add", "--scope", "user", "agentdocker", "--env"].map(str::to_owned));
+    add.push(format!("AGENTDOCKER_SETUP_RECEIPT={ownership}"));
+    add.push("--".into());
     add.push(executable);
     add.extend(["mcp", "--runtime", "claude-code"].map(str::to_owned));
     let mut remove: Vec<String> = vec![cli];
@@ -197,22 +208,65 @@ fn delegated_mcp(
         add,
         remove,
         created: false,
+        expected: Some(expected),
     }))
 }
 
-/// What the provider's configuration says under our name right now:
-/// `None` for no entry at all, `Some(false)` for one that no longer runs
-/// AgentDocker, `Some(true)` for ours.
-fn present(step: &Delegated) -> Result<Option<bool>> {
-    Ok(read_config(&step.path)?
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|config| config.get("mcpServers")?.get("agentdocker").cloned())
-        .map(|server| super::runs_agentdocker(&server, &step.runtime)))
+/// Read only the provider's server entry; unrelated live application state
+/// is never snapshotted or rewritten. Invalid JSON/shapes are not absence.
+fn present(step: &Delegated) -> Result<Option<Value>> {
+    let Some(raw) = read_config(&step.path)? else {
+        return Ok(None);
+    };
+    let config: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid provider JSON in {}", step.path.display()))?;
+    let object = config
+        .as_object()
+        .context("provider configuration must be an object")?;
+    let Some(servers) = object.get("mcpServers") else {
+        return Ok(None);
+    };
+    let servers = servers
+        .as_object()
+        .context("mcpServers must be an object")?;
+    Ok(servers.get("agentdocker").cloned())
 }
 
-/// Whether the provider's configuration registers AgentDocker right now.
 fn registers_us(step: &Delegated) -> Result<bool> {
-    Ok(present(step)? == Some(true))
+    Ok(present(step)?.is_some_and(|entry| super::runs_agentdocker(&entry, &step.runtime)))
+}
+
+fn require_owned(step: &Delegated, entry: &Value) -> Result<()> {
+    ensure!(
+        step.expected.as_ref() == Some(entry),
+        "the agentdocker entry in {} differs from this plan's exact registration, or its \
+         receipt lacks ownership evidence; it is left unchanged",
+        step.path.display()
+    );
+    Ok(())
+}
+
+/// Validate delegated state before any file changes and again at the command.
+fn check_delegated(step: &Delegated, undo: bool) -> Result<()> {
+    match present(step)? {
+        Some(entry) if step.created => require_owned(step, &entry),
+        Some(entry) if !undo => {
+            ensure!(
+                super::runs_agentdocker(&entry, &step.runtime),
+                "the agentdocker entry in {} belongs to another configuration; left unchanged",
+                step.path.display()
+            );
+            Ok(())
+        }
+        None if !undo => {
+            ensure!(
+                step.expected.is_some(),
+                "this older setup plan lacks registration ownership evidence; create a fresh preview"
+            );
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn run_step(argv: &[String]) -> Result<agentdocker_host::command::Output> {
@@ -224,12 +278,19 @@ fn run_step(argv: &[String]) -> Result<agentdocker_host::command::Output> {
 ///
 /// `claude mcp add` can exit non-zero and still have left the
 /// configuration the way the plan wanted it, so the file — not the exit
-/// status — says whether the step arrived. Whose registration it is was
-/// settled before this ran; see [`apply`].
+/// status — says whether the step arrived. The complete planned entry,
+/// including its nonce, must match; a runtime-name match is insufficient.
 fn register(step: &Delegated) -> Result<()> {
+    let expected = step
+        .expected
+        .as_ref()
+        .context("setup plan lacks registration ownership evidence")?;
+    if let Some(entry) = present(step)? {
+        return require_owned(step, &entry);
+    }
     let output = run_step(&step.add)?;
     ensure!(
-        registers_us(step)?,
+        present(step)?.as_ref() == Some(expected),
         "`{}` failed and {} still does not register the AgentDocker MCP server: {}",
         step.add.join(" "),
         step.path.display(),
@@ -250,17 +311,12 @@ fn register(step: &Delegated) -> Result<()> {
 fn deregister(step: &Delegated) -> Result<()> {
     match present(step)? {
         None => return Ok(()),
-        Some(false) => bail!(
-            "the `agentdocker` entry in {} no longer runs AgentDocker, so it is not the one this \
-             plan made; it is left as it is",
-            step.path.display()
-        ),
-        Some(true) => (),
+        Some(entry) => require_owned(step, &entry)?,
     }
     let output = run_step(&step.remove)?;
     ensure!(
-        !registers_us(step)?,
-        "`{}` failed and {} still registers the AgentDocker MCP server: {}",
+        present(step)?.is_none(),
+        "`{}` failed and {} still has an agentdocker entry: {}",
         step.remove.join(" "),
         step.path.display(),
         output.text.trim()
@@ -507,6 +563,9 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
             );
         }
     }
+    for step in &plan.delegated {
+        check_delegated(step, undo)?;
+    }
     if (!undo && plan.phase == "applied") || (undo && plan.phase == "undone") {
         return Ok(());
     }
@@ -549,20 +608,14 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
             }
             continue;
         }
-        // `created` already true means an earlier run of this apply
-        // claimed the registration and may or may not have finished
-        // making it. Either way it is ours, and reading the file again
-        // here would mistake our own work for somebody else's.
+        check_delegated(&plan.delegated[index], false)?;
         if !plan.delegated[index].created {
             if registers_us(&plan.delegated[index])? {
-                continue; // there before we arrived; not ours to undo
+                continue; // pre-existing registration; never ours to undo
             }
-            // Claimed, and made durable, *before* the command runs —
-            // the same order the file steps use. An apply interrupted
-            // between the two leaves a receipt saying this plan may
-            // have made the registration, which an undo can check and
-            // act on; the other order leaves one that has forgotten,
-            // and a registration nothing will ever take back.
+            // Persist intent before invoking the provider. Only the exact
+            // entry containing this receipt's nonce can satisfy recovery
+            // or undo; a later foreign add cannot acquire our ownership.
             plan.delegated[index].created = true;
             save(directory, plan)?;
         }
@@ -744,19 +797,29 @@ mod tests {
     /// `claude mcp add|remove` writes, so an apply and an undo can be
     /// run end to end without Claude Code on the machine.
     fn writing_claude(home: &Path) {
-        let json = home.join(".claude.json");
         let script = home.join("bin/claude");
         std::fs::write(
             &script,
-            format!(
-                r#"#!/bin/sh
-case "$2" in
-  add) printf '{{"mcpServers":{{"agentdocker":{{"command":"agentdocker","args":["mcp","--runtime","claude-code"]}}}}}}' > {json} ;;
-  remove) printf '{{}}' > {json} ;;
-esac
+            r#"#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+path = Path(__file__).resolve().parents[1] / ".claude.json"
+args = sys.argv[1:]
+if len(args) < 2:
+    sys.exit(0)
+value = json.loads(path.read_text()) if path.exists() else {}
+servers = value.setdefault("mcpServers", {})
+if args[1] == "add":
+    if "agentdocker" in servers:
+        sys.exit(1)
+    split = args.index("--")
+    env = dict([args[args.index("--env") + 1].split("=", 1)])
+    servers["agentdocker"] = {"type": "stdio", "command": args[split + 1],
+                              "args": args[split + 2:], "env": env}
+elif args[1] == "remove":
+    servers.pop("agentdocker", None)
+path.write_text(json.dumps(value))
 "#,
-                json = json.display()
-            ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -770,6 +833,12 @@ esac
         let claude = bin.join("claude");
         std::fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(bin.join("agentdocker"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(
+            bin.join("agentdocker"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         let mut roots = roots(home);
         roots.path.push(bin);
         (roots, claude)
@@ -790,7 +859,7 @@ esac
         let plan = prepare(
             &roots,
             &["claude-code".into()],
-            &std::env::current_exe().unwrap(),
+            &temp.path().join("bin/agentdocker"),
         )
         .unwrap();
 
@@ -802,7 +871,10 @@ esac
         );
         let add = step.add.join(" ");
         assert!(add.starts_with(claude.to_str().unwrap()), "{add}");
-        assert!(add.contains("mcp add --scope user agentdocker --"), "{add}");
+        assert!(
+            add.contains("mcp add --scope user agentdocker --env AGENTDOCKER_SETUP_RECEIPT="),
+            "{add}"
+        );
         assert!(add.ends_with("mcp --runtime claude-code"), "{add}");
         assert!(
             step.remove
@@ -846,7 +918,7 @@ esac
         let plan = prepare(
             &roots,
             &["claude-code".into()],
-            &std::env::current_exe().unwrap(),
+            &temp.path().join("bin/agentdocker"),
         )
         .unwrap();
         assert!(plan.delegated.is_empty(), "already wired; nothing to add");
@@ -864,10 +936,13 @@ esac
             add: refuses.clone(),
             remove: refuses,
             created: false,
+            expected: Some(
+                json!({"command":"/opt/agentdocker", "args":["mcp","--runtime","claude-code"]}),
+            ),
         };
         // Removing one is a real failure when the entry survives it.
         let error = deregister(&step).unwrap_err().to_string();
-        assert!(error.contains("still registers"), "{error}");
+        assert!(error.contains("still has an agentdocker entry"), "{error}");
         // And an add that leaves nothing registered is a real failure.
         step.path = temp.path().join("absent.json");
         let error = register(&step).unwrap_err().to_string();
@@ -886,7 +961,10 @@ esac
         )
         .unwrap();
         let error = deregister(&step).unwrap_err().to_string();
-        assert!(error.contains("no longer runs AgentDocker"), "{error}");
+        assert!(
+            error.contains("differs from this plan's exact registration"),
+            "{error}"
+        );
         assert!(
             std::fs::read_to_string(&step.path)
                 .unwrap()
@@ -908,11 +986,16 @@ esac
         let (roots, _) = fake_claude(temp.path());
         writing_claude(temp.path());
         let directory = directory(&temp.path().join("state")).unwrap();
-        let exe = std::env::current_exe().unwrap();
+        let exe = temp.path().join("bin/agentdocker");
 
         // The ordinary case: we make it, so we may take it back.
         let mut ours = prepare(&roots, &["claude-code".into()], &exe).unwrap();
         save(&directory, &ours).unwrap();
+        std::fs::write(
+            temp.path().join(".claude.json"),
+            r#"{"projects":{"keep":"live state"}}"#,
+        )
+        .unwrap();
         apply(&directory, &mut ours, false).unwrap();
         assert!(ours.delegated[0].created, "the apply made this one");
         assert!(registers_us(&ours.delegated[0]).unwrap());
@@ -921,6 +1004,9 @@ esac
             !registers_us(&ours.delegated[0]).unwrap(),
             "and took it back"
         );
+        let remaining: Value =
+            serde_json::from_str(&read_config(&ours.delegated[0].path).unwrap().unwrap()).unwrap();
+        assert_eq!(remaining["projects"]["keep"], "live state");
 
         // The case that used to lose somebody's work: the registration
         // appears between the preview and the apply.
@@ -955,7 +1041,7 @@ esac
         let (roots, _) = fake_claude(temp.path());
         writing_claude(temp.path());
         let directory = directory(&temp.path().join("state")).unwrap();
-        let exe = std::env::current_exe().unwrap();
+        let exe = temp.path().join("bin/agentdocker");
 
         let mut plan = prepare(&roots, &["claude-code".into()], &exe).unwrap();
         save(&directory, &plan).unwrap();
@@ -974,6 +1060,167 @@ esac
         apply(&directory, &mut interrupted, true).unwrap();
         assert_eq!(interrupted.phase, "undone");
         assert!(!interrupted.delegated[0].created);
+    }
+
+    #[test]
+    fn delegated_undo_preserves_changed_entries_before_touching_hooks() {
+        for field in ["command", "args", "env", "type", "disabled"] {
+            let temp = tempfile::tempdir().unwrap();
+            let (roots, _) = fake_claude(temp.path());
+            writing_claude(temp.path());
+            let directory = directory(&temp.path().join("state")).unwrap();
+            let mut plan = prepare(
+                &roots,
+                &["claude-code".into()],
+                &temp.path().join("bin/agentdocker"),
+            )
+            .unwrap();
+            save(&directory, &plan).unwrap();
+            apply(&directory, &mut plan, false).unwrap();
+            let hooks = read_config(&plan.changes[0].path).unwrap();
+            let mut entry = present(&plan.delegated[0]).unwrap().unwrap();
+            entry[field] = match field {
+                "command" => json!("/another/agentdocker"),
+                "args" => json!(["mcp"]),
+                "env" => json!({"AGENTDOCKER_SOCKET": "/another/socket"}),
+                "type" => json!("http"),
+                _ => json!(true),
+            };
+            let changed =
+                json!({"mcpServers":{"agentdocker":entry}, "userState":"preserve"}).to_string();
+            std::fs::write(&plan.delegated[0].path, &changed).unwrap();
+            assert!(apply(&directory, &mut plan, true).is_err(), "{field}");
+            assert_eq!(plan.phase, "applied");
+            assert_eq!(read_config(&plan.changes[0].path).unwrap(), hooks);
+            assert_eq!(
+                read_config(&plan.delegated[0].path).unwrap().unwrap(),
+                changed
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_delegated_configuration_fails_preflight_without_file_changes() {
+        for raw in [
+            "{",
+            "[]",
+            "null",
+            r#"{"mcpServers":null}"#,
+            r#"{"mcpServers":[]}"#,
+        ] {
+            for undo in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let (roots, _) = fake_claude(temp.path());
+                writing_claude(temp.path());
+                let directory = directory(&temp.path().join("state")).unwrap();
+                let mut plan = prepare(
+                    &roots,
+                    &["claude-code".into()],
+                    &temp.path().join("bin/agentdocker"),
+                )
+                .unwrap();
+                save(&directory, &plan).unwrap();
+                if undo {
+                    apply(&directory, &mut plan, false).unwrap();
+                }
+                let phase = plan.phase.clone();
+                let hooks = read_config(&plan.changes[0].path).unwrap();
+                std::fs::write(&plan.delegated[0].path, raw).unwrap();
+                assert!(
+                    apply(&directory, &mut plan, undo).is_err(),
+                    "{raw}, undo={undo}"
+                );
+                assert_eq!(plan.phase, phase);
+                assert_eq!(read_config(&plan.changes[0].path).unwrap(), hooks);
+                assert_eq!(read_config(&plan.delegated[0].path).unwrap().unwrap(), raw);
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_intent_does_not_own_a_later_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let (roots, _) = fake_claude(temp.path());
+        writing_claude(temp.path());
+        let directory = directory(&temp.path().join("state")).unwrap();
+        let mut plan = prepare(
+            &roots,
+            &["claude-code".into()],
+            &temp.path().join("bin/agentdocker"),
+        )
+        .unwrap();
+        plan.phase = "applying".into();
+        plan.delegated[0].created = true;
+        save(&directory, &plan).unwrap();
+        let mut entry = plan.delegated[0].expected.clone().unwrap();
+        entry["env"]["AGENTDOCKER_SETUP_RECEIPT"] = json!("another-plan");
+        let raw = json!({"mcpServers":{"agentdocker":entry}}).to_string();
+        std::fs::write(&plan.delegated[0].path, &raw).unwrap();
+        for undo in [false, true] {
+            let mut recovered = load(&directory, &plan.id).unwrap();
+            assert!(apply(&directory, &mut recovered, undo).is_err());
+            assert!(!plan.changes[0].path.exists());
+            assert_eq!(read_config(&plan.delegated[0].path).unwrap().unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn legacy_receipts_cannot_remove_an_entry_without_ownership_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let (roots, _) = fake_claude(temp.path());
+        writing_claude(temp.path());
+        let directory = directory(&temp.path().join("state")).unwrap();
+        let mut plan = prepare(
+            &roots,
+            &["claude-code".into()],
+            &temp.path().join("bin/agentdocker"),
+        )
+        .unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        let hooks = read_config(&plan.changes[0].path).unwrap();
+        let entry = present(&plan.delegated[0]).unwrap();
+        // Exercise deserialization of an actual older receipt shape.
+        let mut legacy = serde_json::to_value(&plan).unwrap();
+        legacy["delegated"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected");
+        let mut legacy: Plan = serde_json::from_value(legacy).unwrap();
+        assert!(apply(&directory, &mut legacy, true).is_err());
+        assert_eq!(read_config(&plan.changes[0].path).unwrap(), hooks);
+        assert_eq!(present(&plan.delegated[0]).unwrap(), entry);
+    }
+
+    #[test]
+    fn delegated_commands_require_exact_add_and_absent_remove_postconditions() {
+        for after in [
+            r#"{"mcpServers":{"agentdocker":{"command":"foreign"}}}"#,
+            "{",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let (roots, claude) = fake_claude(temp.path());
+            let plan = prepare(
+                &roots,
+                &["claude-code".into()],
+                &temp.path().join("bin/agentdocker"),
+            )
+            .unwrap();
+            let step = &plan.delegated[0];
+            std::fs::write(
+                &step.path,
+                json!({"mcpServers":{"agentdocker":step.expected}}).to_string(),
+            )
+            .unwrap();
+            // Simulate a provider command that exits successfully but leaves
+            // a replacement or malformed state. It must not complete undo.
+            std::fs::write(&claude, format!("#!/usr/bin/env python3\nfrom pathlib import Path\nPath(__file__).resolve().parents[1].joinpath('.claude.json').write_bytes({:?}.encode())\n", after)).unwrap();
+            assert!(deregister(step).is_err());
+            assert_eq!(read_config(&step.path).unwrap().unwrap(), after);
+            std::fs::remove_file(&step.path).unwrap();
+            assert!(register(step).is_err());
+            assert_eq!(read_config(&step.path).unwrap().unwrap(), after);
+        }
     }
 
     #[test]

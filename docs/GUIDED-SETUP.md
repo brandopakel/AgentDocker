@@ -26,9 +26,28 @@ Guided Claude Code setup installs the complete six-event hooks adapter in `.clau
 
 Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.
 
-All files are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
+All planned files and delegated provider entries are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
 
 A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly. Unreadable or incompatible receipts are preserved and counted while healthy plans remain visible.
+
+For delegated Claude MCP registration, a new receipt records the complete planned
+server entry and a unique ownership marker in its environment. Undo requires
+that exact entry, including command, arguments, environment and flags. A
+matching runtime name alone does not authorize removal. Existing registrations
+are left alone; an interrupted add cannot claim a later registration with a
+different marker. Older receipts without this evidence refuse to remove a
+present entry. Invalid provider JSON or an invalid `mcpServers` container fails
+preflight before hook changes. A provider command succeeds only when the exact
+planned entry appears after add, or the reserved entry is absent after remove.
+
+The provider CLI remains the writer of its live application state, using its
+[documented MCP registration interface](https://code.claude.com/docs/en/mcp).
+These checks are not a compare-and-swap transaction with that CLI: an independent
+writer can still race between validation and the provider command. Avoid
+simultaneous edits to the same MCP entry while applying or undoing. Fully
+coordinated provider mutations and alternate Claude configuration roots remain
+separate delivery work; ordinary unrelated application-state updates do not
+invalidate a receipt.
 
 ## What a connection check proves
 

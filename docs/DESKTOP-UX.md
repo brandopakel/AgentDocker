@@ -180,8 +180,10 @@ which it rewrites throughout a session; a byte-for-byte plan against it
 would fail preflight nearly always and take the hooks change down with
 it. So the plan carries the command rather than the bytes. It is still
 previewed, still listed, and still undone by the matching remove — and
-the plan takes back only a registration it made itself, never one that
-appeared between the preview and the apply.
+undo checks the complete recorded entry and its ownership marker before
+requesting removal. Changed entries and old receipts without ownership evidence
+are preserved. Provider commands are separate from the file transaction;
+concurrent edits to that same entry are not serialized by these checks.
 
 ## Journal
 
