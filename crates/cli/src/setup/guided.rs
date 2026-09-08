@@ -6,7 +6,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agentdocker_core::runtime::{McpWiring, RUNTIMES, RuntimeInfo};
+use agentdocker_core::runtime::{McpWiring, RUNTIMES, RuntimeInfo, RuntimeSpec, Wiring};
 use agentdocker_core::{Request, Response};
 use agentdocker_host::{
     dirs, project,
@@ -30,6 +30,33 @@ struct Change {
     after: String,
 }
 
+/// A registration only the provider's own tool can safely make.
+///
+/// Claude Code keeps its MCP servers in `~/.claude.json`, which is also
+/// where it keeps its live application state — every project it has
+/// opened, the account it is signed in as, what it has already told you
+/// — and it rewrites that file throughout a session. Planning a
+/// byte-for-byte replacement of it would mean a preflight that fails
+/// whenever Claude Code has written since the preview, which is nearly
+/// always, and because preflight covers every file before any edit it
+/// would take the hooks change down with it.
+///
+/// So the plan carries the command instead of the bytes: `claude mcp
+/// add` makes the entry and `claude mcp remove` takes it away, and
+/// Claude Code stays the only writer of its own file. It is still
+/// previewable and still undoable; what it is not is transactional with
+/// the file edits, and a note in the plan says so.
+#[derive(Debug, Serialize, Deserialize)]
+struct Delegated {
+    runtime: String,
+    channel: String,
+    /// The file the provider will write. Shown, never rewritten by us.
+    path: PathBuf,
+    /// Argv that makes the registration, and argv that removes it.
+    add: Vec<String>,
+    remove: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Plan {
     format: u32,
@@ -37,17 +64,38 @@ struct Plan {
     phase: String,
     executable: PathBuf,
     changes: Vec<Change>,
+    /// Absent from receipts written before delegated steps existed.
+    #[serde(default)]
+    delegated: Vec<Delegated>,
     notes: Vec<String>,
 }
 
 impl Plan {
     /// Deliberately separate from serialization of the private snapshots.
     fn view(&self) -> Value {
+        let changes = self
+            .changes
+            .iter()
+            .map(|change| {
+                json!({
+                    "runtime":change.runtime, "channel":change.channel, "path":change.path,
+                    "action": if change.before.is_some() {"add to existing configuration"} else {"create configuration"}
+                })
+            })
+            // Listed among the file changes because they are the same
+            // thing to the reader — one more registration this plan
+            // makes and can take back — and because a window that only
+            // counted file changes would grey out Apply on a plan whose
+            // one remaining step is this.
+            .chain(self.delegated.iter().map(|step| {
+                json!({
+                    "runtime":step.runtime, "channel":step.channel, "path":step.path,
+                    "action": format!("register through `{}`", step.add.join(" "))
+                })
+            }))
+            .collect::<Vec<_>>();
         json!({"id": self.id, "phase": self.phase, "executable": self.executable,
-            "changes": self.changes.iter().map(|change| json!({
-                "runtime":change.runtime, "channel":change.channel, "path":change.path,
-                "action": if change.before.is_some() {"add to existing configuration"} else {"create configuration"}
-            })).collect::<Vec<_>>(), "notes": self.notes})
+            "changes": changes, "notes": self.notes})
     }
 }
 
@@ -94,6 +142,91 @@ fn selected_inventory(roots: &Roots, names: &[String]) -> Result<Vec<RuntimeInfo
         .collect()
 }
 
+/// How long one delegated registration may take.
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The MCP registration a runtime has to make for itself, if any.
+///
+/// Only Claude Code, for the reason [`Delegated`] gives, and only when
+/// there is something to do and something to do it with:
+///
+/// - no `claude` on the machine and there is nobody to delegate to, so
+///   the ordinary file edit stands;
+/// - already wired and there is nothing to add;
+/// - anything other than a plain absence — a registration under our name
+///   that runs something else, or a file we could not parse — is for a
+///   person to look at, not for `claude mcp add` to walk into.
+fn delegated_mcp(
+    spec: &RuntimeSpec,
+    runtime: &RuntimeInfo,
+    roots: &Roots,
+    executable: &Path,
+) -> Result<Option<Delegated>> {
+    if spec.name != "claude-code" || runtime.mcp != Wiring::Missing {
+        return Ok(None);
+    }
+    let Some(cli) = runtime.cli.as_deref() else {
+        return Ok(None);
+    };
+    let path = runtimes::mcp_config_path(spec, roots)
+        .context("Claude Code has no MCP configuration path")?;
+    let cli = cli
+        .to_str()
+        .context("the Claude Code CLI path is not UTF-8")?
+        .to_owned();
+    let executable = executable
+        .to_str()
+        .context("the agentdocker path is not UTF-8")?
+        .to_owned();
+    let mut add: Vec<String> = vec![cli.clone()];
+    add.extend(["mcp", "add", "--scope", "user", "agentdocker", "--"].map(str::to_owned));
+    add.push(executable);
+    add.extend(["mcp", "--runtime", "claude-code"].map(str::to_owned));
+    let mut remove: Vec<String> = vec![cli];
+    remove.extend(["mcp", "remove", "--scope", "user", "agentdocker"].map(str::to_owned));
+    Ok(Some(Delegated {
+        runtime: runtime.name.clone(),
+        channel: "mcp".into(),
+        path,
+        add,
+        remove,
+    }))
+}
+
+/// Run one delegated step, and settle for the state it was meant to reach.
+///
+/// `claude mcp add` fails when the entry is already there and `claude
+/// mcp remove` fails when it is already gone, and neither is a reason to
+/// fail an apply or an undo: the configuration is what the plan asked
+/// for. So a non-zero exit sends us to the file to see, and only a file
+/// that disagrees is an error — with the provider's own message in it,
+/// since it knows more about the failure than we do.
+fn delegate(step: &Delegated, undo: bool) -> Result<()> {
+    let argv = if undo { &step.remove } else { &step.add };
+    let output = agentdocker_host::command::run(&std::env::current_dir()?, argv, REGISTER_TIMEOUT)
+        .with_context(|| format!("cannot run {}", argv.first().map_or("", String::as_str)))?;
+    if output.success {
+        return Ok(());
+    }
+    let registered = read_config(&step.path)?
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|config| config.get("mcpServers")?.get("agentdocker").cloned())
+        .is_some_and(|server| super::runs_agentdocker(&server, &step.runtime));
+    ensure!(
+        registered != undo,
+        "`{}` failed and {} still {} the AgentDocker MCP server: {}",
+        argv.join(" "),
+        step.path.display(),
+        if registered {
+            "registers"
+        } else {
+            "does not register"
+        },
+        output.text.trim()
+    );
+    Ok(())
+}
+
 /// Plan edits from injectable provider roots, without changing their files.
 fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
     let inventory = selected_inventory(roots, names)?;
@@ -119,6 +252,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
         phase: "prepared".into(),
         executable: executable.to_owned(),
         changes: Vec::new(),
+        delegated: Vec::new(),
         notes: Vec::new(),
     };
     for runtime in targets {
@@ -126,8 +260,12 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
             .iter()
             .find(|spec| spec.name == runtime.name)
             .context("missing runtime specification")?;
+        if let Some(step) = delegated_mcp(spec, runtime, roots, executable)? {
+            plan.delegated.push(step);
+        }
         // Hooks cover the Claude Code lifecycle without rewriting its mutable
-        // .claude.json application state or installing a duplicate MCP identity.
+        // .claude.json application state or installing a duplicate MCP identity;
+        // `delegated_mcp` above is what registers the server there instead.
         let (path, channel) = if spec.hooks {
             (roots.home.join(".claude/settings.json"), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
@@ -183,6 +321,16 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
                 runtime.label
             ));
         }
+    }
+    for step in &plan.delegated {
+        plan.notes.push(format!(
+            "{}: the {} registration is made by the provider's own tool, because {} is its live \
+             application state and only it should write there. That step runs after the file \
+             changes and is undone by the matching remove, not by restoring bytes.",
+            step.runtime,
+            step.channel,
+            step.path.display()
+        ));
     }
     plan.notes.push("Restart the selected provider session after applying. Existing sessions are not reconfigured.".into());
     plan.notes.push("Your provider may ask you to approve MCP tools. Setup preserves provider approval settings.".into());
@@ -322,6 +470,12 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         if let Some(parent) = change.target.parent() {
             std::fs::File::open(parent)?.sync_all()?;
         }
+    }
+    // After the file changes, so a plan that cannot pass its own
+    // preflight never reaches the provider's tool, and in the undo
+    // direction too: `remove` is what takes a delegated step back.
+    for step in &plan.delegated {
+        delegate(step, undo)?;
     }
     plan.phase = if undo { "undone" } else { "applied" }.into();
     save(directory, plan)
@@ -493,6 +647,116 @@ mod tests {
             desktop_dirs: vec![],
             versions: false,
         }
+    }
+
+    /// A `claude` on the injected PATH, so the planner has something to
+    /// delegate to without a real Claude Code on the machine.
+    fn fake_claude(home: &Path) -> (Roots, PathBuf) {
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut roots = roots(home);
+        roots.path.push(bin);
+        (roots, claude)
+    }
+
+    /// Claude Code's MCP registration is delegated to its own CLI, and
+    /// `.claude.json` is never one of the files the plan rewrites.
+    ///
+    /// The window used to report that registration missing — correctly,
+    /// `--health` reads the same file the provider does — while the
+    /// guided preview it offered beside the fault planned only hooks and
+    /// so could never clear it. A screen that names a fault it has no
+    /// way to fix is worse than one that names nothing.
+    #[test]
+    fn claude_code_mcp_is_delegated_to_its_own_cli_and_never_rewrites_claude_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let (roots, claude) = fake_claude(temp.path());
+        let plan = prepare(
+            &roots,
+            &["claude-code".into()],
+            &std::env::current_exe().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.delegated.len(), 1);
+        let step = &plan.delegated[0];
+        assert_eq!(
+            (step.channel.as_str(), &step.path),
+            ("mcp", &temp.path().join(".claude.json"))
+        );
+        let add = step.add.join(" ");
+        assert!(add.starts_with(claude.to_str().unwrap()), "{add}");
+        assert!(add.contains("mcp add --scope user agentdocker --"), "{add}");
+        assert!(add.ends_with("mcp --runtime claude-code"), "{add}");
+        assert!(
+            step.remove
+                .join(" ")
+                .ends_with("mcp remove --scope user agentdocker")
+        );
+
+        // Whatever else the plan does, it does not write that file.
+        assert!(!plan.changes.is_empty(), "the hooks are still planned");
+        for change in &plan.changes {
+            assert_eq!(change.channel, "hooks");
+            assert_ne!(change.path, step.path);
+        }
+        // The reader sees it among the changes all the same, which is
+        // also what keeps Apply live on a plan whose only step is this.
+        let view = plan.view();
+        let changes = view["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), plan.changes.len() + 1);
+        assert!(
+            changes.iter().any(|change| change["channel"] == "mcp"
+                && change["action"]
+                    .as_str()
+                    .is_some_and(|action| action.contains("mcp add"))),
+            "{changes:?}"
+        );
+        assert!(view["notes"].to_string().contains("live application state"));
+    }
+
+    /// Nothing is delegated when there is nothing to add, and a provider
+    /// tool that refuses because the work is already done has not failed.
+    #[test]
+    fn a_delegated_step_is_skipped_when_wired_and_settles_for_the_state_it_wanted() {
+        let temp = tempfile::tempdir().unwrap();
+        let (roots, _) = fake_claude(temp.path());
+        let registered = temp.path().join(".claude.json");
+        std::fs::write(
+            &registered,
+            r#"{"mcpServers":{"agentdocker":{"command":"/opt/agentdocker","args":["mcp","--runtime","claude-code"]}}}"#,
+        )
+        .unwrap();
+        let plan = prepare(
+            &roots,
+            &["claude-code".into()],
+            &std::env::current_exe().unwrap(),
+        )
+        .unwrap();
+        assert!(plan.delegated.is_empty(), "already wired; nothing to add");
+
+        // `claude mcp add` exits non-zero when the entry is already
+        // there, and `claude mcp remove` when it is already gone. The
+        // file, not the exit status, says whether the step arrived.
+        let refuses = ["/bin/sh", "-c", "exit 1"].map(str::to_owned).to_vec();
+        let mut step = Delegated {
+            runtime: "claude-code".into(),
+            channel: "mcp".into(),
+            path: registered.clone(),
+            add: refuses.clone(),
+            remove: refuses,
+        };
+        delegate(&step, false).unwrap();
+        let error = delegate(&step, true).unwrap_err().to_string();
+        assert!(error.contains("still registers"), "{error}");
+        std::fs::write(&registered, "{}").unwrap();
+        delegate(&step, true).unwrap();
+        step.path = temp.path().join("absent.json");
+        let error = delegate(&step, false).unwrap_err().to_string();
+        assert!(error.contains("does not register"), "{error}");
     }
 
     #[test]
