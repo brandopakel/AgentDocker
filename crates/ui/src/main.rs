@@ -146,13 +146,13 @@ fn main() -> eframe::Result {
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
-    if smoke.is_some() {
+    if let Some(smoke) = &smoke {
         // Keep renderer failures observable in explicit fixture mode. Preserve
         // the backend's recovery behavior and bound repetitive log messages.
         let original = options.wgpu_options.on_surface_status.clone();
-        let count = std::sync::atomic::AtomicU64::new(0);
+        let failures = smoke.surface_failures();
         options.wgpu_options.on_surface_status = std::sync::Arc::new(move |status| {
-            let count = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let count = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if count <= 16 || count.is_power_of_two() {
                 eprintln!("graphical acceptance surface #{count}: {status:?}");
             }

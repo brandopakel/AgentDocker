@@ -1,0 +1,68 @@
+{
+  "format": 1,
+  "scope": "Original macOS graphical CI failure retained before capture-recovery changes",
+  "pr": 91,
+  "head": "d06a1171c0743bdd781687f50371910dd9cbf0a8",
+  "workflow": 34193830081,
+  "job": 101957183075,
+  "artifact": 10043239365,
+  "archive_sha256": "ec36423d7d776ea47679577cf29b508a532a9ec745d12e09c9b7912d88927561",
+  "manifest": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "0884cb37799b389e1f1c869e011320e1946d36af",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "1f1926fd425c80ac01d346e431f25dc0fa7e3463",
+    "source_input_sha256": "d82f4627536857502e1683dd39e631e447307ae060a51c39f02c2009a7b8bb77",
+    "source_dirty": false,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "4d6011a08ece0c71ca262fecf8eb58c826c87317f8b2118478cfe179f0eb0a03",
+      "agentd": "1a45f86142218517ab780364db31cb4b344bd9d9e6032aaa624b70547ccf0da9",
+      "agentdocker-ui": "53f65b5bdb32a895f585e2577ba8813ce755c61204c0f393825f2f0d252d3558"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "b30e44ecc6a3b63b8a8b0c0affd4129122700d56ddc9971f69341fae3ec010dd",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "5a3a8c87ef3a2b193982cb8959c92d734797e76733019cbb314b4dd8c6bb50d0"
+    }
+  },
+  "merge_parent_and_tree_verified": true,
+  "result": {
+    "connected": true,
+    "elapsed_seconds": 60.008969,
+    "error": "gave up after 60s waiting for: the renderer to hand back a screenshot",
+    "fixture_discovered": true,
+    "frames": 718,
+    "result": "failed",
+    "runtime_rows": 14,
+    "screenshot_requested": true,
+    "viewport_focused": true,
+    "viewport_minimized": false,
+    "viewport_occluded": false,
+    "viewport_visible": true
+  },
+  "window_log_sha256": "c5c29718eb9d7893bf699299d5391ee8843084e08ffb902b12daf574c63c81ef",
+  "relevant_log_lines": [
+    "2s waiting for: the runtime inventory, the fixture process to be discovered, frames to render (1 so far)",
+    "graphical acceptance surface #1: Occluded",
+    "graphical acceptance screenshot requested at 1.913144917s: visible=None, occluded=None, minimized=Some(false), focused=Some(false)",
+    "graphical acceptance surface #2: Occluded",
+    "graphical acceptance surface #3: Occluded",
+    "3s waiting for: the renderer to hand back a screenshot"
+  ],
+  "source_findings": [
+    "eframe 0.36.1 drains screenshot actions before calling egui-wgpu paint_and_update_textures.",
+    "egui-wgpu 0.36.1 returns without capturing on a non-success surface acquisition; the drained capture data is lost.",
+    "This run requested capture while viewport visibility/occlusion were unknown, then reported two more Occluded acquisitions. It later became visible, focused and unoccluded, but no screenshot was reissued."
+  ],
+  "limits": [
+    "This explains a concrete dropped-capture path consistent with the retained timeline, not every prior screenshot timeout.",
+    "The development Mac lock finding is separate; this runner was visible and unoccluded at timeout.",
+    "The original sixty-second deadline is preserved; acceptance still requires an actual renderer screenshot."
+  ]
+}
