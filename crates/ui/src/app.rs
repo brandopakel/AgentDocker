@@ -2416,6 +2416,10 @@ mod tests {
                         Err(error) => panic!("fixture accept failed: {error}"),
                     }
                 };
+                // Darwin inherits O_NONBLOCK from the listener. The accept
+                // loop is polled, but this fixture's request reader uses the
+                // socket deadlines below and must wait for the request bytes.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

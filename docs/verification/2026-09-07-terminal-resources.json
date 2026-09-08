@@ -2113,5 +2113,689 @@
         "percent_change": 89.14133767157169
       }
     }
+  },
+  "repeat_at_823": {
+    "verification": {
+      "run": 34178745855,
+      "head_commit": "8230d4beb56b5dfa575a53ee93a88e32fe64b08c",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "same_content_and_environment_as_original": true,
+      "before_after_manifest_equal": true,
+      "successful_socket_scenarios": 6
+    },
+    "download": {
+      "artifact": 10038201847,
+      "archive_bytes": 24214,
+      "archive_sha256": "3f83de93f97e13e0ad5a71fce893848d980b96810c3045ffe62b76828e1de3b4"
+    },
+    "manifest": {
+      "commit": "8230d4beb56b5dfa575a53ee93a88e32fe64b08c",
+      "source_sha256": "41eae356221ab2de87305144efc3d4c8146b066571f9f95ac5576ad8b1abefd0",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "architecture": "x86_64",
+      "processor": "x86_64",
+      "cpu_count": 4,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "private_bencher_upload": {
+      "exit_code": 0,
+      "elapsed_seconds": 3.952920333016664,
+      "expected_files": 8
+    },
+    "socket_metrics": {
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.137237215
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 728.6653259467558
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 728.6653259467558
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1312148.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1645285.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 3763649.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.772157288
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1295.0729281985355
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 1295.0729281985355
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 7350406.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 11165153.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 14510954.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 8.060057111
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1240.685997913396
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 1240.685997913396
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 73117614.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 140622751.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 176064472.0
+          }
+        }
+      },
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.150528026
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 664.3281165462171
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 664.3281165462171
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1436813.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1731097.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 3934191.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.872
+          },
+          "elapsed-seconds": {
+            "value": 0.420284161
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 2379.342580078815
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 872
+          },
+          "throughput": {
+            "value": 2074.7867298287265
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 3411270.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 6374745.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 8504259.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 128
+          },
+          "throughput": {
+            "value": 304.5558502500883
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 6332543.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 11408009.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 11759651.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9856
+          },
+          "elapsed-seconds": {
+            "value": 3.514463849
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 2845.384226343766
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9856
+          },
+          "throughput": {
+            "value": 2804.410693484416
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 30864218.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 65485430.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 87411945.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 144
+          },
+          "throughput": {
+            "value": 40.97353285935023
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 54888158.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 93760952.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 112882321.0
+          }
+        }
+      }
+    },
+    "criterion_estimates": {
+      "fingerprint_100_files_400_kib/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1450950.0807507355,
+            "upper_bound": 1473761.7626912403
+          },
+          "point_estimate": 1459228.7024297386,
+          "standard_error": 6580.800009005108
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1447205.5818181818,
+            "upper_bound": 1449511.9529411765
+          },
+          "point_estimate": 1448190.3837772398,
+          "standard_error": 665.3652244960944
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 2209.0445441149805,
+            "upper_bound": 4363.763584075769
+          },
+          "point_estimate": 2791.4743258036488,
+          "standard_error": 579.3576641316865
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1450988.46521756,
+            "upper_bound": 1461594.4675672648
+          },
+          "point_estimate": 1455414.6427840993,
+          "standard_error": 2730.8971817309575
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 9419.024645551825,
+            "upper_bound": 111951.01096221837
+          },
+          "point_estimate": 66039.88128307977,
+          "standard_error": 35682.09252598103
+        }
+      },
+      "lease_conflict/1/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 174.98350222927473,
+            "upper_bound": 179.98856583835638
+          },
+          "point_estimate": 177.2126974940037,
+          "standard_error": 1.2856227033815444
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 173.79489219887097,
+            "upper_bound": 174.20739531614862
+          },
+          "point_estimate": 173.93919815628124,
+          "standard_error": 0.10176555030253004
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 0.4031997529391869,
+            "upper_bound": 0.8654370251158753
+          },
+          "point_estimate": 0.5803030447154505,
+          "standard_error": 0.11502355911639446
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 174.32841545967506,
+            "upper_bound": 175.28464089038712
+          },
+          "point_estimate": 174.74871500260602,
+          "standard_error": 0.24514234274328967
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 5.6360365347462515,
+            "upper_bound": 18.20979997172998
+          },
+          "point_estimate": 12.90187742218026,
+          "standard_error": 3.160286947847303
+        }
+      },
+      "lease_conflict/100/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17838.78694896167,
+            "upper_bound": 18063.613626196995
+          },
+          "point_estimate": 17931.978586213587,
+          "standard_error": 58.5924279831642
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17781.86959586466,
+            "upper_bound": 17898.70825008325
+          },
+          "point_estimate": 17870.074390053986,
+          "standard_error": 32.36423441464741
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 141.74251694500217,
+            "upper_bound": 203.40153291116172
+          },
+          "point_estimate": 171.03135211064546,
+          "standard_error": 15.627033926795221
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 17764.302274211903,
+            "upper_bound": 17964.02966211567
+          },
+          "point_estimate": 17834.533861597247,
+          "standard_error": 54.74464121480048
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 145.79671816930707,
+            "upper_bound": 937.5744272346078
+          },
+          "point_estimate": 588.1198094035916,
+          "standard_error": 220.1357176972565
+        }
+      },
+      "lease_conflict/1000/new/estimates.json": {
+        "mean": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179771.35860166652,
+            "upper_bound": 181837.51866963482
+          },
+          "point_estimate": 180603.84443935408,
+          "standard_error": 543.4930983318045
+        },
+        "median": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179424.38,
+            "upper_bound": 179651.91784989857
+          },
+          "point_estimate": 179537.3744152047,
+          "standard_error": 59.6548408179995
+        },
+        "median_abs_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 312.23246570676423,
+            "upper_bound": 663.1239736655132
+          },
+          "point_estimate": 482.5759016723211,
+          "standard_error": 87.36110764799042
+        },
+        "slope": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 179762.19739105963,
+            "upper_bound": 180398.25929042167
+          },
+          "point_estimate": 180041.34185163293,
+          "standard_error": 163.19296451023044
+        },
+        "std_dev": {
+          "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 1144.2520413340912,
+            "upper_bound": 8910.375464337221
+          },
+          "point_estimate": 5485.060234582725,
+          "standard_error": 2258.586893898881
+        }
+      }
+    }
+  },
+  "pty_followup_at_865": {
+    "verification": {
+      "head_commit": "865b05487611def29de9991c900a09ce07078535",
+      "tested_merge_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "package_verified": true,
+      "ci_run": 34178775442
+    },
+    "package_manifest": {
+      "format": 1,
+      "product": "agentdocker",
+      "version": "0.1.0",
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "target": "aarch64-apple-darwin",
+      "display_name": "agentdocker",
+      "signing": "local-preview",
+      "notarized": false,
+      "source_tree": "415c98bb8c73d5ad7295e927dae978b16b3aa39f",
+      "source_input_sha256": "833d145f0a783eacecdb0cfa99c0f3a32f731f43f0e23d6265a4275b972be098",
+      "source_dirty": false,
+      "state_schema": 8,
+      "installation_lock": 1,
+      "binary_sha256": {
+        "agentdocker": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f",
+        "agentd": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4",
+        "agentdocker-ui": "9581db6c74e0b30a9fcda8f7a9c14fe10da5260801e46692ce9aa6107a17dfe4"
+      },
+      "artifacts": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": "f6fb4ee96f9afb2d3d12e7090e6d5bac397ff637994710c2bdb7a41e1a2efc2f",
+        "agentdocker-desktop-aarch64-apple-darwin.dmg": "cbfe7a58321b8cdc7aa0f0a4be8eae0c405bd58f82eb5b689777d62399ef2053"
+      }
+    },
+    "mac_ci": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Darwin",
+      "os_version": "25.6.0",
+      "architecture": "arm64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 13135824,
+          "sha256": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4"
+        },
+        "agentdocker": {
+          "bytes": 7950288,
+          "sha256": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.46446308400004455,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "mac_local": {
+      "source_commit": "d3a04b64caa7297a3c248fbdfaafeaae7d3cd5a6",
+      "driver_sha256": "731ca8f9c4a1211c1616848deb8275b7a33d64fe7eb66d88457008d484156aec",
+      "os": "Darwin",
+      "os_version": "25.5.0",
+      "architecture": "arm64",
+      "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+      "binaries": {
+        "agentd": {
+          "bytes": 13135824,
+          "sha256": "a149c6deee41293dc58bf7d4b1344013c363a7826e583f3f58c917a4e88f1ab4"
+        },
+        "agentdocker": {
+          "bytes": 7950288,
+          "sha256": "6c085e2928abf58497204225368960e4ba3277fc5b5821360fc539bd7e01cc3f"
+        }
+      },
+      "checks": [
+        "attach_handshake_and_no_newline_output",
+        "unicode_input_and_ansi_output",
+        "initial_terminal_dimensions",
+        "sigwinch_resize_reaches_child",
+        "noisy_output_above_replay_capacity",
+        "ctrl_bracket_detaches_and_restores_terminal_without_stopping_child",
+        "reattach_replays_tail_with_one_live_child",
+        "natural_exit_closes_cli_with_keyboard_open_and_restores_terminal"
+      ],
+      "result": "passed",
+      "elapsed_seconds": 0.5698194579454139,
+      "cleanup": {
+        "daemon_exited": true,
+        "created_children": 1,
+        "errors": [],
+        "fixture_removed": true
+      }
+    },
+    "standard_mac_failure": {
+      "run": 34178775537,
+      "passed": 586,
+      "failed": 1,
+      "fixture": "bulk_adoption_preserves_partial_progress_and_distinguishes_remote_failure",
+      "original_log_sha256": "0c51c5c1a5fd2f0d9047b06a1a26c9022e9ad5190b9ad6c65be0904040cccf45",
+      "reason": "Darwin accepted socket inherited O_NONBLOCK; existing read timeout did not apply"
+    }
+  },
+  "cleanup_after_publication": {
+    "published_commit": "865b05487611def29de9991c900a09ce07078535",
+    "previous_report_sha256": "93b1b27cb1ce42bc564f3b06348a95cdb6bb12289f2474e99906350235ebeb02",
+    "allocated_bytes_removed": 99205120,
+    "removed": "obsolete509 preview,823 download wrapper and redundant DMG after hash and open-file checks",
+    "worktree_cargo_cache_bytes": 8192,
+    "limits": "Allocation removed is not a physical free-space delta."
   }
 }

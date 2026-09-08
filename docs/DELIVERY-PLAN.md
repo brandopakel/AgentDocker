@@ -253,6 +253,19 @@ noisy output, detach, bounded replay and exit with the keyboard kept open.
 These fixes need their own final-source CI and local acceptance before L04 can
 advance. This campaign does not automate GUI keystrokes or prove provider use.
 
+At `865b054`, the packaged Mac/Linux PTY campaigns and local Mac trial passed all
+eight scenarios. Linux standard CI, coverage, Windows foundations and engines
+also passed. An older Mac bulk-adoption fixture inherited nonblocking accepted
+sockets; its explicit blocking-mode correction now needs final-source CI.
+The separately dispatched `8230d4b` benchmark passed but varied materially from
+the first run; retain the full comparison before setting performance thresholds.
+
+Add concurrent #80 (`4354c23`) to the review/integration gate: bound its dedicated
+console/setup queues and installation worker count, preserve existing admission
+feedback and cleanup, and prove delegated MCP apply/undo preserves an entry
+changed after preview or installation. Retain viewport diagnostics while
+investigating its occlusion evidence against the original screenshot failure.
+
 Retain the original failures. GUI CPU tuning, transport deadlines
 for saturated connection establishment, terminal screen-dimension budgets,
 repeated load/slow-reader/soak trials and platform parity remain open. The other
