@@ -27,19 +27,15 @@ def group_alive(process):
 
 
 def stop(process):
-    # Every top-level fixture owns a new session. Include a hook child if
-    # its helper was interrupted while waiting for the child to complete.
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            continue
-        if not group_alive(process):
-            return
+    if process.returncode is not None:
+        return
+    # This unreaped child reserves the process-group ID. Stop the whole
+    # owned fixture group before wait() can release that identity for reuse.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
 
 
 class Lines:

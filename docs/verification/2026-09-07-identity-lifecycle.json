@@ -115,7 +115,8 @@
     "These results pin 242cd3b; subsequent registration-directory and owned-alias fixes require their own CI",
     "Each result names the exact driver hash used; the manifest-check prototype predates the final published driver",
     "The host is a Python fixture, not a model provider",
-    "Existing duplicate-record migration and true provider-version breadth remain separate acceptance work"
+    "Existing duplicate-record migration and true provider-version breadth remain separate acceptance work",
+    "Subsequent fixture cleanup review stops only unreaped child groups, before wait releases their PID; its final-source CI is separate from the recorded 2b4feaf CI."
   ],
   "published_driver_attempt": {
     "scope": "Actual packaged MCP and Claude hooks with an owned synthetic Python host; no model or real provider",
@@ -146,6 +147,135 @@
     ],
     "host_alive_after_mcp_shutdown": true,
     "elapsed_seconds": 0.2753689580131322,
+    "cleanup": {
+      "owned_processes_remaining": 0,
+      "owned_process_groups_remaining": 0,
+      "scratch_removed": true,
+      "provider_config_changed": false,
+      "production_daemon_changed": false
+    }
+  },
+  "ci_at_2b4feaf": {
+    "head": "2b4feaf3667814f0387c3b57c067c9cd0a2dd8d5",
+    "merge_parent_and_tree_verified": true,
+    "results": [
+      {
+        "platform": "macos",
+        "workflow": 34193091051,
+        "job": 101954993995,
+        "log_sha256": "be202f0f5e8255ebff7996024ab7d9951564901cb0cd3959edee3e72c815df40",
+        "result": {
+          "scope": "Actual packaged MCP and Claude hooks with an owned synthetic Python host; no model or real provider",
+          "source_commit": "12ccfdf700526bff3ff2c0e4a1ee4bea9437c778",
+          "source_tree": "1b3b207371db6ddbbc789452a75cc5e8bbc759a8",
+          "binary_sha256": {
+            "agentdocker": "2f9e05bae95fed1fa293ebaa213c849b1d32b89d626ef81c8065f83bf4a89bb6",
+            "agentd": "17b17debe5e2794fe82722208fdbc816f955f746d9d0c25c9e031ace7f7ca4cd"
+          },
+          "driver_sha256": "c35e20214cf932ee1039e8be39cc702dc11a390f0fd29023416c92eefb323076",
+          "checks": [
+            "MCP-first registration",
+            "actual SessionStart hook joins MCP identity",
+            "both actual MCP shutdowns preserve live identity, lease and inbox",
+            "MCP reconnection reuses bound identity",
+            "actual prompt hook outputs pending token then acknowledges it",
+            "actual SessionEnd releases and ends joined identity"
+          ],
+          "result": "passed",
+          "identity_count_after_hook": 1,
+          "status_after_mcp_shutdown": [
+            {
+              "state": "running"
+            },
+            {
+              "state": "running"
+            }
+          ],
+          "host_alive_after_mcp_shutdown": true,
+          "elapsed_seconds": 0.4645996250000053,
+          "cleanup": {
+            "owned_processes_remaining": 0,
+            "owned_process_groups_remaining": 0,
+            "scratch_removed": true,
+            "provider_config_changed": false,
+            "production_daemon_changed": false
+          }
+        }
+      },
+      {
+        "platform": "linux",
+        "workflow": 34193091051,
+        "job": 101954993789,
+        "log_sha256": "0d26ff53faec9e78669ff26d23bb57c6563b933ae68133854705d9d3f7e564ae",
+        "result": {
+          "scope": "Actual packaged MCP and Claude hooks with an owned synthetic Python host; no model or real provider",
+          "source_commit": "12ccfdf700526bff3ff2c0e4a1ee4bea9437c778",
+          "source_tree": "1b3b207371db6ddbbc789452a75cc5e8bbc759a8",
+          "binary_sha256": {
+            "agentdocker": "cbed3a1b83082d8e0b87b5873e81b18b8cb430820b5b9f69f8aeb334c54a9231",
+            "agentd": "845cbe443ba101747ab15c291f9bf7297346faa1af0fe8e9d69c9382e63d60ad"
+          },
+          "driver_sha256": "c35e20214cf932ee1039e8be39cc702dc11a390f0fd29023416c92eefb323076",
+          "checks": [
+            "MCP-first registration",
+            "actual SessionStart hook joins MCP identity",
+            "both actual MCP shutdowns preserve live identity, lease and inbox",
+            "MCP reconnection reuses bound identity",
+            "actual prompt hook outputs pending token then acknowledges it",
+            "actual SessionEnd releases and ends joined identity"
+          ],
+          "result": "passed",
+          "identity_count_after_hook": 1,
+          "status_after_mcp_shutdown": [
+            {
+              "state": "running"
+            },
+            {
+              "state": "running"
+            }
+          ],
+          "host_alive_after_mcp_shutdown": true,
+          "elapsed_seconds": 0.1981144590000099,
+          "cleanup": {
+            "owned_processes_remaining": 0,
+            "owned_process_groups_remaining": 0,
+            "scratch_removed": true,
+            "provider_config_changed": false,
+            "production_daemon_changed": false
+          }
+        }
+      }
+    ]
+  },
+  "reap_order_driver_attempt": {
+    "scope": "Actual packaged MCP and Claude hooks with an owned synthetic Python host; no model or real provider",
+    "source_commit": "242cd3be751a2aa0a859f663754f932882c113b0",
+    "source_tree": "f7fba401ae9422aa6eb4f201d3334f303e7ec568",
+    "binary_sha256": {
+      "agentdocker": "ec6762f9afa1b4ec1a39e42c057fc26eba35012d2f06eea1b19d17c2cc43e112",
+      "agentd": "cc47970770c3084d0b1fc2eeb68386fa3c6fff6ab66b5ce64cb4aa3369dd0aeb"
+    },
+    "driver_sha256": "27b069a56267c78437f1f2218d7dc1e8f276c8dad9e7e249301e57e842ce352b",
+    "checks": [
+      "MCP-first registration",
+      "actual SessionStart hook joins MCP identity",
+      "both actual MCP shutdowns preserve live identity, lease and inbox",
+      "MCP reconnection reuses bound identity",
+      "actual prompt hook outputs pending token then acknowledges it",
+      "actual SessionEnd releases and ends joined identity"
+    ],
+    "result": "passed",
+    "identity_count_after_hook": 1,
+    "status_after_mcp_shutdown": [
+      {
+        "state": "running"
+      },
+      {
+        "state": "running"
+      }
+    ],
+    "host_alive_after_mcp_shutdown": true,
+    "elapsed_seconds": 0.27110533392988145,
     "cleanup": {
       "owned_processes_remaining": 0,
       "owned_process_groups_remaining": 0,
