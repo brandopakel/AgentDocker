@@ -163,6 +163,8 @@ pub struct App {
     /// Applied once per change rather than every frame: setting fonts
     /// rebuilds egui's atlas, which is not something to do at 60Hz.
     applied: Option<crate::theme::Settings>,
+    /// The mark beside the title, uploaded to the GPU once and kept.
+    mark: Option<egui::TextureHandle>,
     /// Questions put to the human, and what is being typed in reply to
     /// each. The draft is keyed by message id so answering one question
     /// does not disturb another half-written answer.
@@ -240,6 +242,7 @@ impl App {
             settings: crate::theme::Settings::load(&home),
             home,
             applied: None,
+            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -283,6 +286,7 @@ impl App {
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
             applied: None,
+            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -1315,6 +1319,27 @@ impl App {
         }
     }
 
+    /// The mark, beside the name it belongs to.
+    ///
+    /// The same PNG the window sets as its icon, so the thing in the
+    /// title bar and the thing in the Dock cannot drift apart. Uploaded
+    /// on the first frame that draws it and kept: decoding a PNG every
+    /// frame to draw a 20-pixel square would be absurd.
+    fn mark(&mut self, ui: &mut egui::Ui) {
+        let texture = self.mark.get_or_insert_with(|| {
+            let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
+                .expect("the embedded icon is a valid PNG");
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            );
+            ui.ctx()
+                .load_texture("agentdocker-mark", image, egui::TextureOptions::LINEAR)
+        });
+        let side = ui.text_style_height(&egui::TextStyle::Heading);
+        ui.add(egui::Image::new(&*texture).fit_to_exact_size(egui::vec2(side, side)));
+    }
+
     /// Put the chosen sizes and spacing into the context, and only when
     /// they have changed: setting text styles rebuilds the font atlas,
     /// which is not a thing to do on every frame.
@@ -1503,6 +1528,7 @@ impl eframe::App for App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    self.mark(ui);
                     ui.heading("AgentDocker");
                     ui.separator();
                     match &self.connected {
