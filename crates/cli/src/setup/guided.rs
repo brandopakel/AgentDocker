@@ -901,7 +901,12 @@ path.write_text(json.dumps(value))
         let step = &plan.delegated[0];
         assert_eq!(
             (step.channel.as_str(), &step.path),
-            ("mcp", &temp.path().join(".claude.json"))
+            (
+                "mcp",
+                &std::fs::canonicalize(temp.path())
+                    .unwrap()
+                    .join(".claude.json")
+            )
         );
         let add = step.add.join(" ");
         assert!(add.starts_with(claude.to_str().unwrap()), "{add}");

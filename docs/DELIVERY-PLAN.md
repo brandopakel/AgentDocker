@@ -460,3 +460,11 @@ cover profile setup/health/undo with an unrelated invalid default configuration
 and child-only environment changes. Final-source CI and an actual packaged
 provider-CLI preview/apply/undo trial remain required. Concurrent writes to the
 same provider entry still lack compare-and-swap semantics.
+
+The first profile-routing candidate (`4860e96`) passed Linux standard and both
+packaged desktop jobs, but the Mac suite passed 638/639 tests: the older
+default-profile assertion expected `/var/...` instead of the newly pinned
+physical `/private/var/...` directory. The assertion now resolves the owned
+parent directory before appending the provider file name. The new profile
+apply/health/undo regression itself passed on Mac. The original CI failure
+(run `34195349392`) remains retained; final-source CI is required.
