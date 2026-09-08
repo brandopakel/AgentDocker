@@ -551,12 +551,24 @@ async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
 /// same answer for free: registering a process that already has an
 /// agent returns that agent.
 async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Option<AgentRecord>> {
+    found_by_pid(backend, input, host_pid()).await
+}
+
+/// The pid is taken rather than read so a fixture can supply one.
+/// `host_pid` walks real ancestry and is allowed to decline, and a test
+/// that skipped its assertion when it did would not be testing anything.
+async fn found_by_pid<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    pid: Option<u32>,
+) -> Result<Option<AgentRecord>> {
     if let Some(me) = current_agent(backend, input).await? {
         return Ok(Some(me));
     }
-    let Some(pid) = host_pid() else {
+    let Some(pid) = pid else {
         return Ok(None);
     };
+    let started = agentdocker_host::procinfo::start_time(pid);
     match backend
         .call(Request::List {
             all: false,
@@ -565,9 +577,25 @@ async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
         })
         .await?
     {
-        Response::Agents { agents } => Ok(agents
-            .into_iter()
-            .find(|agent| agent.pid == Some(pid) && agent.status.is_live())),
+        // The same predicate the daemon registers by, for the same
+        // reason: this hook is about to release another agent's leases
+        // and deregister it, so "shares a pid" is nowhere near enough.
+        // A recycled pid, another runtime in one host, or a second
+        // session multiplexed into this process are each a different
+        // agent, and ending one of those instead would be worse than
+        // ending nothing.
+        Response::Agents { agents } => Ok(agents.into_iter().find(|agent| {
+            agent.status.is_live()
+                && agent.pid == Some(pid)
+                && agent.process_started_at == started
+                && agent.spec.runtime == RUNTIME
+                && agent
+                    .spec
+                    .labels
+                    .get("session_id")
+                    .filter(|id| !id.is_empty())
+                    .is_none_or(|theirs| *theirs == input.session_id)
+        })),
         _ => Ok(None),
     }
 }
@@ -1299,33 +1327,82 @@ mod tests {
         assert_eq!(backend.requests().len(), 1, "one lookup");
 
         // The MCP server's name, and the pid to match. The first lookup
-        // misses and the listing finds it.
-        let mut theirs = agent("claude-code-4242", true);
-        theirs.pid = host_pid();
+        // misses and the listing finds it. The pid is injected rather
+        // than read, so this asserts on every machine.
+        let me = std::process::id();
+        let matching = |name: &str| {
+            let mut a = agent(name, true);
+            a.pid = Some(me);
+            a.process_started_at = agentdocker_host::procinfo::start_time(me);
+            a
+        };
+        let theirs = matching("claude-code-4242");
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
                 agents: vec![agent("somebody-else", true), theirs.clone()],
             },
         ]);
-        let found = session_agent(&backend, &input).await.unwrap();
-        // `host_pid` walks real ancestry, so it can decline to answer in
-        // a test harness; when it does there is nothing to match on and
-        // nothing to assert beyond not having invented an agent.
-        match host_pid() {
-            Some(_) => assert_eq!(found.unwrap().id, theirs.id, "found by pid"),
-            None => assert!(found.is_none()),
+        let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
+        assert_eq!(found.unwrap().id, theirs.id, "found by pid");
+
+        // Everything that shares the pid and is still not this session.
+        // Ending any of these instead would be worse than ending none.
+        let recycled = {
+            let mut a = matching("same-pid-older-process");
+            a.process_started_at = Some(Utc::now() - chrono::Duration::hours(24 * 30));
+            a
+        };
+        let other_runtime = {
+            let mut a = matching("codex-in-the-same-host");
+            a.spec.runtime = "codex".to_owned();
+            a
+        };
+        let other_session = {
+            let mut a = matching("claude-another-session");
+            a.spec
+                .labels
+                .insert("session_id".to_owned(), "a-different-session".to_owned());
+            a
+        };
+        for impostor in [recycled, other_runtime, other_session] {
+            let name = impostor.spec.name.clone();
+            let backend = Mock::with(vec![
+                Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
+                Response::Agents {
+                    agents: vec![impostor],
+                },
+            ]);
+            assert!(
+                found_by_pid(&backend, &input, Some(me))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name} shares the pid and is not this session"
+            );
         }
 
-        // A session that genuinely has no agent still gets None rather
-        // than the first row that happens to be listed.
+        // And the same session under the other half's name, with our own
+        // session id on it, is us.
+        let mut ours_by_id = matching("claude-code-4242");
+        ours_by_id
+            .spec
+            .labels
+            .insert("session_id".to_owned(), input.session_id.clone());
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
-                agents: vec![agent("unrelated", true)],
+                agents: vec![ours_by_id.clone()],
             },
         ]);
-        assert!(session_agent(&backend, &input).await.unwrap().is_none());
+        assert_eq!(
+            found_by_pid(&backend, &input, Some(me))
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            ours_by_id.id
+        );
     }
 
     #[test]

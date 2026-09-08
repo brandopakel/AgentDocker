@@ -306,6 +306,52 @@ fn signal_pid(pid: u32) -> Option<Pid> {
     (raw > 0).then(|| Pid::from_raw(raw))
 }
 
+/// Whether two records stand for the same agent.
+///
+/// One process is one agent, and this is what "one process" means. Each
+/// clause is load-bearing.
+///
+/// The start time goes with the pid because pids are reused: an old
+/// record and a new process that happens to land on its number are not
+/// the same process, and folding them would hand a stranger somebody
+/// else's identity. It must also be *known* — two unreadable start
+/// times are not evidence of anything.
+///
+/// The runtime and the project go with them because sharing a process
+/// is not the same as being the same agent: a host that runs several
+/// kinds of session in one process would otherwise have them all
+/// collapse into whichever registered first. Project rather than
+/// workdir, because the two halves disagree about the workdir the
+/// moment a session changes directory — the hooks adapter reports where
+/// the session is now, the MCP server where it was launched — while
+/// both still resolve to the same project.
+///
+/// And the session, where both sides name one. A provider host can
+/// multiplex several sessions into one process, and those are several
+/// agents however much the rest agrees. Only one half registers a
+/// session id, so an absent one cannot be a mismatch: absent means "the
+/// other half of a session I am already part of", while two *different*
+/// ids mean two sessions that happen to share a process.
+fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
+    let session_of = |r: &AgentRecord| {
+        r.spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty())
+            .cloned()
+    };
+    b.pid.is_some()
+        && b.process_started_at.is_some()
+        && a.pid == b.pid
+        && a.process_started_at == b.process_started_at
+        && a.spec.runtime == b.spec.runtime
+        && a.project.as_ref().map(ProjectRef::id) == b.project.as_ref().map(ProjectRef::id)
+        && match (session_of(a), session_of(b)) {
+            (Some(one), Some(other)) => one == other,
+            _ => true,
+        }
+}
+
 fn process_exists(pid: u32) -> bool {
     let Some(pid) = signal_pid(pid) else {
         return false;
@@ -433,7 +479,50 @@ impl Daemon {
     pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
         lock(&self.state).mark_exited(id, status)
     }
+    /// Retire a duplicate record left over from before one process was
+    /// one agent.
+    ///
+    /// Refusing new duplicates does not repair the ones already on
+    /// screen: both halves of a session share a live pid, so neither is
+    /// ever reaped and the pair persists for as long as the session
+    /// does. This retires the half nothing is using — no leases, no
+    /// inbox — and keeps the one that is. Where both halves are in use
+    /// it retires neither and says so, because merging two agents'
+    /// leases and messages is a guess, and the wrong guess loses work
+    /// somebody is in the middle of.
+    pub fn reconcile_duplicates(&self) {
+        let mut state = lock(&self.state);
+        let live: Vec<AgentRecord> = state.registry.live().cloned().collect();
+        let mut retire = Vec::new();
+        for (at, agent) in live.iter().enumerate() {
+            let Some(earlier) = live[..at].iter().find(|kept| same_agent(kept, agent)) else {
+                continue;
+            };
+            let idle = |a: &AgentRecord| {
+                state.leases.by_holder(&a.id).is_empty()
+                    && state.inboxes.get(&a.id).is_none_or(VecDeque::is_empty)
+            };
+            // The later registration is the one to let go of, so the
+            // name and id anything already refers to survive.
+            if idle(agent) {
+                retire.push((agent.id.clone(), earlier.id.clone()));
+            } else if idle(earlier) {
+                retire.push((earlier.id.clone(), agent.id.clone()));
+            } else {
+                warn!(
+                    duplicate = %agent.id, kept = %earlier.id,
+                    "two live records for one process are both in use;                      neither is retired — inspect them before stopping either"
+                );
+            }
+        }
+        for (going, staying) in retire {
+            info!(retired = %going, kept = %staying, "retired a duplicate record for one process");
+            state.mark_exited(&going, AgentStatus::Exited { code: Some(0) });
+        }
+    }
+
     pub fn check_liveness(&self) {
+        self.reconcile_duplicates();
         let candidates: Vec<_> = {
             let state = lock(&self.state);
             state
@@ -4174,21 +4263,12 @@ impl State {
         // hooks adapter reports where the session is now and the MCP
         // server reports where it was launched — while both still
         // resolve to the same project.
-        let same_process = |a: &AgentRecord| {
-            record.pid.is_some()
-                && record.process_started_at.is_some()
-                && a.pid == record.pid
-                && a.process_started_at == record.process_started_at
-                && a.spec.runtime == record.spec.runtime
-                && a.project.as_ref().map(ProjectRef::id)
-                    == record.project.as_ref().map(ProjectRef::id)
-        };
         let adopted = record
             .spec
             .labels
             .get("adopted")
             .is_some_and(|v| v == "true");
-        if let Some(existing) = self.registry.live().find(|a| same_process(a)) {
+        if let Some(existing) = self.registry.live().find(|a| same_agent(a, &record)) {
             if adopted {
                 return Response::error(ErrorCode::Invalid, "pid is already registered");
             }
@@ -4365,6 +4445,66 @@ mod tests {
             human.id, also_human.id,
             "no pid is not the same pid; two people are two agents"
         );
+    }
+
+    /// Duplicates that already exist are repaired, carefully.
+    ///
+    /// Refusing new ones does not help a session that is already showing
+    /// twice: both halves share a live pid, so neither is ever reaped.
+    /// The half nothing is using goes; the half holding leases or
+    /// messages stays; and where both are in use neither goes, because
+    /// merging two agents' work is a guess and the wrong guess loses
+    /// something somebody is in the middle of.
+    #[tokio::test]
+    async fn an_existing_duplicate_is_retired_only_when_nothing_is_using_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+
+        // Two records for one process, as a session registered before
+        // the rule existed. The second is doing nothing.
+        let hooks = register(&daemon, "claude-2c79ae10", Some(me)).await;
+        let stale = {
+            let mut record = AgentRecord::new(spec("claude-code-45856"), false, Utc::now());
+            record.pid = Some(me);
+            record.process_started_at = procinfo::start_time(me);
+            record.status = AgentStatus::Running;
+            match lock(&daemon.state).registry.insert(record.clone()) {
+                Ok(()) => record,
+                Err(e) => panic!("{e:?}"),
+            }
+        };
+        assert_eq!(lock(&daemon.state).registry.live().count(), 2);
+
+        daemon.reconcile_duplicates();
+        assert!(daemon.is_live(&hooks.id), "the one in use stays");
+        assert!(!daemon.is_live(&stale.id), "the one nothing uses goes");
+
+        // Now both are in use: neither is touched, because choosing
+        // between them would throw away one agent's leases.
+        let first = register(&daemon, "first", Some(1)).await;
+        let second = {
+            let mut record = AgentRecord::new(spec("second"), false, Utc::now());
+            record.pid = Some(1);
+            record.process_started_at = procinfo::start_time(1);
+            record.status = AgentStatus::Running;
+            lock(&daemon.state).registry.insert(record.clone()).unwrap();
+            record
+        };
+        for who in [&first, &second] {
+            assert!(matches!(
+                claim(
+                    &daemon,
+                    who.spec.name.as_str(),
+                    &format!("task:{}", who.spec.name)
+                )
+                .await,
+                Response::Lease { .. }
+            ));
+        }
+        daemon.reconcile_duplicates();
+        assert!(daemon.is_live(&first.id), "both hold leases");
+        assert!(daemon.is_live(&second.id), "so neither is retired");
     }
 
     /// Sharing a process is not the same as being the same agent.
