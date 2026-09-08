@@ -2701,9 +2701,11 @@ impl Daemon {
                 if let Some(error) = state.storage_failure() {
                     return error;
                 }
-                state.touch(&holder);
                 let now = Utc::now();
                 state.expire_leases_at(now);
+                if let Some(error) = state.storage_failure() {
+                    return error;
+                }
                 // Fairness: a waiter with somebody ahead of it on an
                 // overlapping resource does not try, so a newcomer
                 // cannot take what somebody has been waiting minutes
@@ -2718,6 +2720,10 @@ impl Daemon {
                     let want = amount.unwrap_or(1);
                     let committed = state.leases.committed(&resource);
                     if committed.saturating_add(want) > capacity {
+                        state.touch(&holder);
+                        if let Some(error) = state.storage_failure() {
+                            return error;
+                        }
                         return Response::Error {
                             code: ErrorCode::Conflict,
                             message: format!(
@@ -2734,7 +2740,7 @@ impl Daemon {
                     }
                 }
                 let result = if state.may_attempt(waiting.ticket()) {
-                    state.leases.claim(
+                    state.leases.clone().claim(
                         resource.clone(),
                         holder.clone(),
                         // A quota is shared by construction: it is spent,
@@ -2767,20 +2773,35 @@ impl Daemon {
                         if lease.resource.kind() == "quota" {
                             lease.amount = amount.unwrap_or(1);
                         }
-                        state.leases.restore(lease.clone());
-                        state.persist("lease", |store| store.upsert_lease(&lease));
-                        state.emit(EventKind::LeaseClaimed {
-                            lease: lease.clone(),
-                        });
+                        if !state.commit_lease_activity(
+                            &holder,
+                            Some(&lease),
+                            Some(EventKind::LeaseClaimed {
+                                lease: lease.clone(),
+                            }),
+                            now,
+                        ) {
+                            return state
+                                .storage_failure()
+                                .expect("failed lease commit freezes storage");
+                        }
                         drop(state);
                         waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
                     Ok(Claimed::Renewed(lease)) => {
-                        state.persist("lease", |store| store.upsert_lease(&lease));
-                        state.emit(EventKind::LeaseRenewed {
-                            lease: lease.clone(),
-                        });
+                        if !state.commit_lease_activity(
+                            &holder,
+                            Some(&lease),
+                            Some(EventKind::LeaseRenewed {
+                                lease: lease.clone(),
+                            }),
+                            now,
+                        ) {
+                            return state
+                                .storage_failure()
+                                .expect("failed lease commit freezes storage");
+                        }
                         drop(state);
                         waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
@@ -2793,15 +2814,20 @@ impl Daemon {
                         }
                     }
                 };
-                // One conflict event per request, however long it waits.
+                // One conflict event per request, committed with liveness.
+                let conflict = (!reported_conflict).then(|| EventKind::LeaseConflict {
+                    resource: resource.clone(),
+                    requester: holder.clone(),
+                    held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
+                });
+                if !state.commit_lease_activity(&holder, None, conflict, now) {
+                    return state
+                        .storage_failure()
+                        .expect("failed conflict commit freezes storage");
+                }
                 if !reported_conflict {
                     reported_conflict = true;
                     warn!(agent = %holder.short(), %resource, waiting = wait_secs > 0, "lease conflict");
-                    state.emit(EventKind::LeaseConflict {
-                        resource: resource.clone(),
-                        requester: holder.clone(),
-                        held_by: held_by.iter().map(|l| l.holder.clone()).collect(),
-                    });
                 }
                 // Before agreeing to wait: would waiting close a cycle?
                 // If it would, nobody in it could ever proceed, and the
@@ -2995,9 +3021,9 @@ impl State {
         }
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.next_seq += 1;
         self.persist("event", |store| store.append_event(&event));
         if self.storage_error.is_none() {
+            self.next_seq += 1;
             let _ = self.events.send(event);
         }
     }
@@ -3183,14 +3209,54 @@ impl State {
     }
 
     fn touch(&mut self, id: &AgentId) {
-        let record = {
-            let registry = &mut self.registry;
-            registry.touch(id, Utc::now());
-            registry.get(id).cloned()
-        };
-        if let Some(record) = record {
+        if let Some(mut record) = self.registry.get(id).cloned() {
+            record.last_seen = Utc::now();
             self.persist("agent", |store| store.upsert_agent(&record));
+            if self.storage_error.is_none() {
+                *self
+                    .registry
+                    .get_mut(id)
+                    .expect("liveness identity retained") = record;
+            }
         }
+    }
+
+    fn commit_lease_activity(
+        &mut self,
+        holder: &AgentId,
+        lease: Option<&Lease>,
+        kind: Option<EventKind>,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let mut record = self
+            .registry
+            .get(holder)
+            .expect("claim identity retained")
+            .clone();
+        record.last_seen = now;
+        let event = kind.map(|kind| {
+            let mut event = Event::new(kind, now);
+            event.seq = self.next_seq;
+            event
+        });
+        self.persist("lease activity", |store| {
+            store.lease_activity(&record, lease, event.as_ref())
+        });
+        if self.storage_error.is_some() {
+            return false;
+        }
+        *self
+            .registry
+            .get_mut(holder)
+            .expect("claim identity retained") = record;
+        if let Some(lease) = lease {
+            self.leases.restore(lease.clone());
+        }
+        if let Some(event) = event {
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        true
     }
 
     fn ack_inbox(&mut self, reference: &str, messages: &[MessageId]) -> Response {
@@ -3273,7 +3339,6 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        self.touch(&holder);
         if !self
             .registry
             .get(&holder)
@@ -3283,13 +3348,27 @@ impl State {
         }
         let now = Utc::now();
         self.expire_leases_at(now);
-        let result = self.leases.renew(lease, &holder, ttl(ttl_secs), now);
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        let result = self
+            .leases
+            .clone()
+            .renew(lease, &holder, ttl(ttl_secs), now);
         match result {
             Ok(lease) => {
-                self.persist("lease", |store| store.upsert_lease(&lease));
-                self.emit(EventKind::LeaseRenewed {
-                    lease: lease.clone(),
-                });
+                if !self.commit_lease_activity(
+                    &holder,
+                    Some(&lease),
+                    Some(EventKind::LeaseRenewed {
+                        lease: lease.clone(),
+                    }),
+                    now,
+                ) {
+                    return self
+                        .storage_failure()
+                        .expect("failed renewal freezes storage");
+                }
                 Response::Lease { lease }
             }
             Err(err) => lease_error(err),
@@ -3307,7 +3386,7 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        match self.leases.release(lease, &holder) {
+        match self.leases.clone().release(lease, &holder) {
             Ok(lease) => {
                 let mut released = self.finish_release(&holder, vec![lease], summary, source);
                 Response::Lease {
@@ -3328,14 +3407,18 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        let released = self.leases.release_all(&holder);
+        let released = self
+            .leases
+            .by_holder(&holder)
+            .into_iter()
+            .cloned()
+            .collect();
         let released = self.finish_release(&holder, released, summary, source);
         Response::Leases { leases: released }
     }
 
-    /// Leases already dropped from the table: persist their deletion with
-    /// the journal entry describing the release in one transaction, then
-    /// announce both. Returns the leases for the reply.
+    /// Stage deletion and the journal/replay evidence in one transaction,
+    /// then remove memory protection and announce. Returns leases for the reply.
     fn finish_release(
         &mut self,
         holder: &AgentId,
@@ -3366,6 +3449,7 @@ impl State {
             }
             return released;
         }
+        let previous_seq = self.journal_seq.clone();
         let entry = self
             .release_entry(holder, &released, summary, source)
             .map(|mut entry| {
@@ -3402,6 +3486,11 @@ impl State {
             store.release_leases(&ids, entry.as_ref(), &events)
         });
         if self.storage_error.is_none() {
+            for lease in &released {
+                self.leases
+                    .release(&lease.id, &lease.holder)
+                    .expect("release protection retained until commit");
+            }
             if let Some(entry) = entry {
                 self.cache_journal(entry);
             }
@@ -3409,6 +3498,8 @@ impl State {
             for event in events {
                 let _ = self.events.send(event);
             }
+        } else {
+            self.journal_seq = previous_seq;
         }
         released
     }
@@ -10230,6 +10321,221 @@ deny = ["send:all"]
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[1].branch.as_deref(), Some("feature"));
     }
+    async fn reject_lease_transition(operation: &str) {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let owner = register(&daemon, "owner", None).await;
+        let original = if operation == "new" {
+            None
+        } else {
+            let Response::Lease { lease } = claim(&daemon, "owner", "task:atomic").await else {
+                panic!()
+            };
+            Some(lease)
+        };
+        let before_events = daemon.recent_events(100);
+        let (before_agent, before_seq) = {
+            let state = lock(&daemon.state);
+            (
+                state.registry.get(&owner.id).unwrap().clone(),
+                state.next_seq,
+            )
+        };
+        let mut live = daemon.subscribe_events();
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test(if operation == "new" {
+                "lease_claimed"
+            } else {
+                "lease_renewed"
+            });
+        let response = if operation == "renew" {
+            daemon
+                .handle(Request::Renew {
+                    agent: "owner".into(),
+                    lease: original.as_ref().unwrap().id.clone(),
+                    ttl_secs: 3600,
+                })
+                .await
+        } else {
+            daemon
+                .handle(Request::Claim {
+                    agent: "owner".into(),
+                    resource: "task:atomic".into(),
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 3600,
+                    note: None,
+                    wait_secs: 0,
+                })
+                .await
+        };
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        let state = lock(&daemon.state);
+        let expected: Vec<_> = original.into_iter().collect();
+        assert_eq!(
+            state.store.load_leases().unwrap(),
+            expected,
+            "lease cannot commit without its replay event"
+        );
+        assert_eq!(
+            state.leases.all().into_iter().cloned().collect::<Vec<_>>(),
+            expected,
+            "memory cannot advance after rollback"
+        );
+        assert_eq!(
+            state.registry.get(&owner.id).unwrap(),
+            &before_agent,
+            "claim liveness is part of the failed transition"
+        );
+        assert_eq!(state.next_seq, before_seq);
+        drop(state);
+        assert_eq!(daemon.recent_events(100), before_events);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejected_claim_event_rolls_back_new_lease_and_liveness() {
+        reject_lease_transition("new").await;
+    }
+
+    #[tokio::test]
+    async fn rejected_reclaim_event_rolls_back_renewal_and_liveness() {
+        reject_lease_transition("reclaim").await;
+    }
+
+    #[tokio::test]
+    async fn rejected_renew_event_rolls_back_renewal_and_liveness() {
+        reject_lease_transition("renew").await;
+    }
+
+    #[tokio::test]
+    async fn rejected_claim_row_rolls_back_its_liveness_and_event() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let owner = register(&daemon, "owner", None).await;
+        let before = daemon.recent_events(100);
+        let mut live = daemon.subscribe_events();
+        lock(&daemon.state)
+            .store
+            .reject_lease_change_for_test("INSERT");
+        assert!(matches!(
+            claim(&daemon, "owner", "task:atomic").await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert!(state.leases.is_empty());
+        assert!(state.store.load_leases().unwrap().is_empty());
+        assert_eq!(state.registry.get(&owner.id), Some(&owner));
+        assert_eq!(state.store.load_agents().unwrap(), [owner]);
+        drop(state);
+        assert_eq!(daemon.recent_events(100), before);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejected_conflict_event_preserves_requester_liveness_and_held_lease() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "owner", None).await;
+        let peer = register(&daemon, "peer", None).await;
+        let Response::Lease { lease } = claim(&daemon, "owner", "task:atomic").await else {
+            panic!()
+        };
+        let before = daemon.recent_events(100);
+        let mut live = daemon.subscribe_events();
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("lease_conflict");
+        assert!(matches!(
+            claim(&daemon, "peer", "task:atomic").await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.registry.get(&peer.id), Some(&peer));
+        assert_eq!(
+            state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == peer.id),
+            Some(peer)
+        );
+        assert_eq!(state.leases.get(&lease.id), Some(&lease));
+        assert_eq!(state.store.load_leases().unwrap(), [lease]);
+        drop(state);
+        assert_eq!(daemon.recent_events(100), before);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejected_release_deletion_keeps_memory_and_replay_protection() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "owner", None).await;
+        let Response::Lease { lease } = claim(&daemon, "owner", "task:atomic").await else {
+            panic!()
+        };
+        let before = daemon.recent_events(100);
+        let mut live = daemon.subscribe_events();
+        lock(&daemon.state)
+            .store
+            .reject_lease_change_for_test("DELETE");
+        assert!(matches!(
+            daemon
+                .handle(Request::Release {
+                    agent: "owner".into(),
+                    lease: lease.id.clone(),
+                    summary: None,
+                    summary_source: SummarySource::Explicit
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.leases.get(&lease.id), Some(&lease));
+        assert_eq!(state.store.load_leases().unwrap(), [lease]);
+        drop(state);
+        assert_eq!(daemon.recent_events(100), before);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_liveness_write_does_not_advance_memory() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let owner = register(&daemon, "owner", None).await;
+        let mut state = lock(&daemon.state);
+        let mut before = state.registry.get(&owner.id).unwrap().clone();
+        before.last_seen = Utc::now() - chrono::Duration::seconds(30);
+        state.store.upsert_agent(&before).unwrap();
+        *state.registry.get_mut(&owner.id).unwrap() = before.clone();
+        state.store.reject_agent_writes_for_test();
+        state.touch(&owner.id);
+        assert!(state.storage_failure().is_some());
+        assert_eq!(state.registry.get(&owner.id).unwrap(), &before);
+        assert_eq!(state.store.load_agents().unwrap(), [before]);
+    }
+
     #[tokio::test]
     async fn journal_release_event_failures_roll_back_leases_entries_and_publication() {
         for rejected in ["lease_released", "journal_appended"] {
@@ -10258,6 +10564,11 @@ deny = ["send:all"]
                     ..
                 }
             ));
+            assert_eq!(
+                lock(&daemon.state).leases.get(&lease.id),
+                Some(&lease),
+                "failed release must retain protection in memory"
+            );
             assert!(
                 live.try_recv().is_err(),
                 "failed transaction must not publish"

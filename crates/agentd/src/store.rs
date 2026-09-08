@@ -433,6 +433,17 @@ impl Store {
     }
 
     #[cfg(test)]
+    pub(crate) fn reject_lease_change_for_test(&self, operation: &str) {
+        assert!(matches!(operation, "INSERT" | "DELETE"));
+        self.conn
+            .execute_batch(&format!(
+                "CREATE TEMP TRIGGER reject_lease_change BEFORE {operation} ON leases
+             BEGIN SELECT RAISE(FAIL, 'injected lease write failure'); END;"
+            ))
+            .unwrap();
+    }
+
+    #[cfg(test)]
     pub(crate) fn reject_writes_for_test(&self) {
         self.conn.execute_batch("PRAGMA query_only=ON").unwrap();
     }
@@ -658,6 +669,26 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         self.delete_lease(id)?;
         self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Liveness, an optional claimed/renewed lease, and its replay event are
+    /// one durable admission result. Conflicts update liveness without a lease.
+    pub fn lease_activity(
+        &self,
+        agent: &AgentRecord,
+        lease: Option<&Lease>,
+        event: Option<&Event>,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(agent)?;
+        if let Some(lease) = lease {
+            self.upsert_lease(lease)?;
+        }
+        if let Some(event) = event {
+            self.append_event(event)?;
+        }
         tx.commit()?;
         Ok(())
     }
