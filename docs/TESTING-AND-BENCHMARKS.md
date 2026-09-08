@@ -153,3 +153,19 @@ passed at `ef3fd7b` without reaching the 250 ms logging threshold. Its eight
 Bencher reports use a separate diagnostic testbed. The earlier integrated
 timeout remains unresolved; compare this campaign only with its recorded mode
 and shared-runner limitations in mind.
+
+The [d06a117 macOS failure](verification/2026-09-07-macos-capture-failure.json)
+records a capture request followed by failed `Occluded` surface acquisitions,
+then a visible, focused, unoccluded viewport at timeout. The pinned eframe
+0.36.1 source drains capture commands before acquisition, and egui-wgpu drops
+those commands when acquisition fails. A single request can therefore be lost
+even when the window later becomes visible. The inspected sources match their
+registry archives and Cargo.lock checksums.
+
+Explicit graphical acceptance now requests focus first, waits for known
+visibility and retries capture only after a newly reported surface failure,
+with at most four requests in the original 60-second deadline. Waiting alone
+does not issue additional requests. Results retain capture-attempt and surface-
+failure counts. A real renderer screenshot with the connected fixture remains
+mandatory; repeated failures still fail acceptance. This recovery path does not
+assign the same cause to earlier runs without matching evidence.

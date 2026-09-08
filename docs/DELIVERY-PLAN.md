@@ -435,3 +435,16 @@ check does not validate the new compiled setup implementation. Final-source CI
 and packaged onboarding acceptance remain required. Independent edits racing
 inside a provider command and consistent support for `CLAUDE_CONFIG_DIR` across
 inventory, health, hooks and saved provider commands remain open.
+
+### Capture recovery after a failed surface acquisition
+
+At `d06a117`, both standard Rust gates, Linux desktop acceptance, benchmark,
+engines and Windows foundations passed; macOS graphical acceptance failed at
+60 seconds. Its [source-bound failure](verification/2026-09-07-macos-capture-failure.json)
+records early occlusion after the capture request and a visible/unoccluded
+viewport at timeout. Pinned dependency source shows capture requests are dropped
+on failed surface acquisition. The fixture now focuses before capture, requires
+known visibility, and permits at most four capture requests, each subsequent
+request requiring a newly reported surface failure. It retains the deadline and
+real screenshot requirement. Final-source graphical CI must validate recovery;
+local acceptance still awaits an unlocked display.
