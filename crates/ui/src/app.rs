@@ -1917,6 +1917,21 @@ impl App {
                             ui.painter()
                                 .rect_filled(rect, 6.0, visuals.widgets.hovered.bg_fill);
                         }
+                        // The one place in the window that is painted
+                        // rather than built from widgets, so it is also
+                        // the one place that has to draw its own focus.
+                        // Tab already reached these rows and Enter
+                        // already chose one; nothing said which row was
+                        // about to be chosen, which is the whole of what
+                        // a focus ring is for.
+                        if entry.has_focus() {
+                            ui.painter().rect_stroke(
+                                rect,
+                                6.0,
+                                visuals.widgets.active.fg_stroke,
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                         let ink = if selected {
                             Color32::WHITE
                         } else {
@@ -2494,6 +2509,59 @@ mod tests {
                 screen.title()
             );
         }
+    }
+
+    /// The window can be driven without a mouse.
+    ///
+    /// The sidebar is the one thing here painted rather than assembled
+    /// from widgets, which is exactly the kind of thing that quietly
+    /// stops being reachable from the keyboard. Tab reaches a row and
+    /// Enter chooses it, and if that ever stops being true this is what
+    /// says so.
+    #[test]
+    fn the_sidebar_is_reachable_and_choosable_from_the_keyboard() {
+        let (tx, _requests) = channel::<Cmd>();
+        let (_messages, rx) = channel::<Msg>();
+        let mut app = App::bare(tx, rx);
+        let ctx = egui::Context::default();
+        let frame = |events: Vec<egui::Event>, app: &mut App| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.draw(ui),
+            );
+            output.textures_delta.clear();
+        };
+        let key = |key: egui::Key, pressed: bool| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        // One frame so the rows exist to be reached, then Tab down to
+        // the third of them and choose it.
+        frame(Vec::new(), &mut app);
+        assert_eq!(app.screen, Screen::ALL[0], "starts where it starts");
+        for _ in 0..3 {
+            frame(
+                vec![key(egui::Key::Tab, true), key(egui::Key::Tab, false)],
+                &mut app,
+            );
+        }
+        frame(
+            vec![key(egui::Key::Enter, true), key(egui::Key::Enter, false)],
+            &mut app,
+        );
+        assert_eq!(
+            app.screen,
+            Screen::ALL[2],
+            "three tabs and a return should land on {}",
+            Screen::ALL[2].title()
+        );
     }
 
     /// The status line stops being news.
