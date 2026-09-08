@@ -137,3 +137,93 @@ fn describe(ui: &mut egui::Ui, label: &str, release: &Value) {
         commit.chars().take(12).collect::<String>()
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn panel() -> Panel {
+        Panel::default()
+    }
+
+    /// The prefix is what makes a trial disposable: without it every
+    /// preview and apply writes into the reader's real home. It has to
+    /// reach the CLI on every operation, not just the ones that write.
+    #[test]
+    fn a_prefix_reaches_every_operation() {
+        let mut p = panel();
+        p.prefix = "/tmp/trial".into();
+        for operation in ["status", "install", "rollback"] {
+            let args = p.command(operation);
+            assert_eq!(
+                args.iter().position(|a| a == "--prefix"),
+                Some(0),
+                "the prefix leads, before the subcommand: {args:?}"
+            );
+            assert_eq!(args[1], "/tmp/trial");
+            assert_eq!(args[2], operation);
+        }
+    }
+
+    #[test]
+    fn no_prefix_means_no_flag_rather_than_an_empty_one() {
+        let mut p = panel();
+        p.prefix = "   ".into();
+        assert_eq!(p.command("status"), vec!["status".to_owned()]);
+    }
+
+    /// `--local-preview` relaxes which signatures are accepted, so it
+    /// must never ride along on a read-only query. `status` answering
+    /// differently depending on a checkbox would be a lie about what is
+    /// installed.
+    #[test]
+    fn a_locally_signed_build_is_allowed_for_writes_only() {
+        let mut p = panel();
+        p.local_preview = true;
+        assert!(!p.command("status").contains(&"--local-preview".to_owned()));
+        for operation in ["install", "rollback"] {
+            assert!(
+                p.command(operation).contains(&"--local-preview".to_owned()),
+                "{operation} carries it"
+            );
+        }
+    }
+
+    /// A report is the answer to the question that was asked. Changing
+    /// the source or the prefix asks a different question, so the old
+    /// answer must not stay on screen next to the new inputs — an apply
+    /// button is built from the report, and applying a stale one would
+    /// install something the reader did not choose.
+    #[test]
+    fn a_report_belongs_to_the_inputs_that_produced_it() {
+        let mut p = panel();
+        p.receive(Ok(json!({"preview": true, "source": "/a"})));
+        assert!(p.report.is_some());
+        assert!(!p.busy, "a reply ends the wait");
+
+        // What `show` does when an input changes, without a window.
+        p.report = None;
+        assert!(p.report.is_none());
+    }
+
+    #[test]
+    fn a_failure_replaces_the_report_rather_than_sitting_beside_it() {
+        let mut p = panel();
+        p.receive(Ok(json!({"preview": true})));
+        p.busy = true;
+        p.receive(Err("the payload is not a desktop artifact".into()));
+        assert!(p.report.is_none(), "no stale report under a fresh error");
+        assert_eq!(
+            p.error.as_deref(),
+            Some("the payload is not a desktop artifact")
+        );
+        assert!(!p.busy);
+
+        // And a later success clears the error, or the reader sees a
+        // complaint about something that has since worked.
+        p.receive(Ok(json!({"preview": false})));
+        assert!(p.error.is_none());
+        assert!(p.report.is_some());
+    }
+}

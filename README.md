@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/images/agentdocker.png" alt="AgentDocker" width="128" height="128">
+  <img src="docs/images/agentdocker-lockup.png" alt="AgentDocker" width="420">
 </p>
-
-<h1 align="center">AgentDocker</h1>
 
 <p align="center">
   <strong>Local orchestration for AI agents.</strong><br>

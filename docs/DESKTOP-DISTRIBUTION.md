@@ -15,7 +15,7 @@ python3 packaging/desktop/package.py \
   --version 0.1.0 --source "$(git rev-parse HEAD)" \
   --target "$native_target" --dmg
 python3 scripts/desktop_smoke.py \
-  --binary-dir artifacts/desktop/agentdocker.app/Contents/MacOS \
+  --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS \
   --output artifacts/desktop-smoke
 ```
 
@@ -51,8 +51,8 @@ This follows Apple's [distribution signing](https://developer.apple.com/document
 Open **Installation** in the native window, choose **Use this application** or provide an extracted package path, and preview the installation. A disposable prefix keeps the app launcher, commands, retained versions and activation metadata inside that directory. Apply checks the reviewed package hash and prior active version again. Changed packages or installations require a new preview. The same operations are available from the CLI:
 
 ```sh
-agentdocker desktop --prefix /tmp/agentdocker-trial install --from /path/to/agentdocker.app --local-preview --preview
-agentdocker desktop --prefix /tmp/agentdocker-trial install --from /path/to/agentdocker.app --local-preview
+agentdocker desktop --prefix /tmp/agentdocker-trial install --from /path/to/AgentDocker.app --local-preview --preview
+agentdocker desktop --prefix /tmp/agentdocker-trial install --from /path/to/AgentDocker.app --local-preview
 agentdocker desktop --prefix /tmp/agentdocker-trial status
 agentdocker desktop --prefix /tmp/agentdocker-trial rollback --local-preview --preview
 agentdocker desktop --prefix /tmp/agentdocker-trial rollback --local-preview
