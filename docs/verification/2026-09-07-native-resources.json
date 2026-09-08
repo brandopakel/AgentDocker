@@ -1382,7 +1382,7 @@
           "agentdocker-desktop-aarch64-apple-darwin.zip": "56bc6a045c94a396419caa95838e213735102c00d610a66b476a1da0643af2f3"
         }
       },
-      "status": "evidence published before retirement"
+      "status": "removed after remote evidence byte verification"
     },
     {
       "source_commit": "815f8eea8141fae7da7ad6cb2d8cb862a767dc7d",
@@ -1410,7 +1410,7 @@
           "agentdocker-desktop-aarch64-apple-darwin.zip": "49f54de8f8731c9ccb307c3f9c52acc7f7591265a0389ff663b7e390388874c2"
         }
       },
-      "status": "evidence published before retirement"
+      "status": "removed after remote evidence byte verification"
     },
     {
       "source_commit": "fc6638cb2527995c53e1176c3587e7635ef707c0",
@@ -1438,7 +1438,7 @@
           "agentdocker-desktop-aarch64-apple-darwin.zip": "add475b0f8057bd39fa7ee656b80b5d5ec41693a4caeba7ea2553561ce35af46"
         }
       },
-      "status": "evidence published before retirement"
+      "status": "removed after remote evidence byte verification"
     },
     {
       "source_commit": "35f680391a8c90aed1ec27a1b268286c587ce312",
@@ -1466,7 +1466,7 @@
           "agentdocker-desktop-aarch64-apple-darwin.zip": "372dab646734001a39197e80c79b607808f040abf658fed60a476b731a1eccd6"
         }
       },
-      "status": "evidence published before retirement"
+      "status": "removed after remote evidence byte verification"
     },
     {
       "source_commit": "58bd3b5034327231a8fe81d841233d0ed77ae608",
@@ -1493,7 +1493,7 @@
           "agentdocker-desktop-aarch64-apple-darwin.zip": "2f6ca4ad3289f1947cf055ff06bdb2217b9461a3b8985775f80a5a631b61f5b7"
         }
       },
-      "status": "evidence published before retirement"
+      "status": "removed after remote evidence byte verification"
     }
   ],
   "earlier_integrated_package_acceptance": {
@@ -1536,5 +1536,15 @@
       }
     },
     "limitation": "later pass does not resolve the earlier screenshot failure"
+  },
+  "completed_package_cleanup": {
+    "evidence_commit": "452a57a16eaba56756ee4b6dff0b762b59935ee9",
+    "evidence_sha256": "ab0942f22d02705c56f27dda54b4a20d1f34a8170654d0ed60aaf97aebf7c3af",
+    "allocated_removed_bytes": 260063232,
+    "free_before": 316246339584,
+    "free_after": 316506398720,
+    "packages_removed": 5,
+    "retained_candidate_source": "509f74641519e1ae386bae98d13dbc8bbf44d5f3",
+    "retained_candidate_app_and_archive_allocated_bytes": 52826112
   }
 }

@@ -210,6 +210,13 @@ changes. This campaign publishes sanitized evidence before pruning its cache
 and obsolete package previews. Raw captures and small failure diagnostics stay
 private; personal and unrelated application state is preserved.
 
+After byte-verifying the report on GitHub, this campaign removed 6.60 GiB of
+allocated build output under the existing Cargo locks and another 248 MiB in
+five obsolete package previews. Its worktree's cache is now 8 KiB, consisting
+of cache markers and stable lock files. One 50.4 MiB app-and-archive candidate
+remains for the next isolated acceptance tests. Private JUnit, failure logs and
+package identity records were preserved; no source or personal data was removed.
+
 The review scope also includes newly merged #76 (`7d43ca6`) and open #77
 (`5ee565a` at inspection), which are not included in this measured candidate.
 Homebrew naming/payload/retention must agree with managed installation before
