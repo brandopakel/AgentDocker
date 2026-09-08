@@ -25,6 +25,10 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    AgentActivityReported {
+        agent: AgentId,
+        observation: crate::ActivityObservation,
+    },
     ContainerUpdated {
         agent: AgentId,
     },

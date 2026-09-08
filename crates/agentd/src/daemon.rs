@@ -1010,6 +1010,9 @@ impl Daemon {
                 Err(response) => *response,
             },
             Request::Report { agent, vcs } => lock(&self.state).report(&agent, vcs),
+            Request::ReportActivity { agent, observation } => {
+                lock(&self.state).report_activity(&agent, observation, Utc::now())
+            }
             Request::Changes {
                 project,
                 since_seq,
@@ -5252,10 +5255,10 @@ mod tests {
         let holder = register(&daemon, "holder", Some(std::process::id())).await;
         let waiter = register(&daemon, "waiter", Some(std::process::id())).await;
 
-        // Both have just acted through the daemon, so both are working.
+        // Registration proves presence, not work.
         assert!(matches!(
             activity_of(&daemon, "holder").await,
-            Activity::Working { .. }
+            Activity::Unknown
         ));
 
         assert!(matches!(
@@ -5298,7 +5301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_quiet_agent_is_idle_and_a_finished_one_is_finished() {
+    async fn a_quiet_agent_is_unknown_and_a_finished_one_is_finished() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let quiet = register(&daemon, "quiet", Some(std::process::id())).await;
@@ -5310,7 +5313,7 @@ mod tests {
         }
         assert!(matches!(
             activity_of(&daemon, quiet.id.as_str()).await,
-            Activity::Idle { .. }
+            Activity::Unknown
         ));
 
         daemon
@@ -5322,6 +5325,99 @@ mod tests {
             activity_of(&daemon, quiet.id.as_str()).await,
             Activity::Finished
         );
+    }
+
+    #[tokio::test]
+    async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
+        use agentdocker_core::{ActivityObservation, ReportedActivity};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "activity-fixture", None).await;
+        let now = Utc::now();
+        let working = ActivityObservation {
+            activity: ReportedActivity::Working,
+            observed_at: now - Duration::seconds(2),
+        };
+        let idle = ActivityObservation {
+            activity: ReportedActivity::Idle,
+            observed_at: now - Duration::seconds(1),
+        };
+        let mut events = daemon.subscribe_events();
+        {
+            let mut state = lock(&daemon.state);
+            for observation in [&working, &idle] {
+                assert!(matches!(
+                    state.report_activity(agent.id.as_str(), observation.clone(), now),
+                    Response::Ok
+                ));
+                assert!(matches!(
+                    events.try_recv().unwrap().kind,
+                    EventKind::AgentActivityReported { .. }
+                ));
+            }
+            assert!(matches!(
+                state.report_activity(agent.id.as_str(), working.clone(), now),
+                Response::Ok
+            ));
+            assert!(
+                events.try_recv().is_err(),
+                "late reports do not revive a stopped turn"
+            );
+            let record = state.registry.get(&agent.id).unwrap();
+            assert_eq!(record.reported_activity, Some(idle.clone()));
+            assert_eq!(
+                state.store.load_agents().unwrap()[0].reported_activity,
+                Some(idle)
+            );
+            assert!(matches!(
+                state.activity_of(record, now),
+                Activity::Idle { .. }
+            ));
+            assert_eq!(
+                state.activity_of(record, now + Duration::minutes(5)),
+                Activity::Unknown
+            );
+            assert!(matches!(
+                state.report_activity(agent.id.as_str(), working, now + Duration::minutes(6)),
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_activity_write_publishes_no_state_or_event() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let agent = register(&daemon, "activity-write-failure", None).await;
+        let before = daemon.recent_events(100);
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).store.reject_agent_writes_for_test();
+        let response = daemon
+            .handle(Request::ReportActivity {
+                agent: agent.id.to_string(),
+                observation: agentdocker_core::ActivityObservation {
+                    activity: agentdocker_core::ReportedActivity::Working,
+                    observed_at: Utc::now(),
+                },
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Unavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert_eq!(state.registry.get(&agent.id), Some(&agent));
+        assert_eq!(state.store.load_agents().unwrap(), [agent]);
+        drop(state);
+        assert_eq!(daemon.recent_events(100), before);
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

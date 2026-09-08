@@ -272,6 +272,7 @@ impl Daemon {
             | Request::Reads { agent }
             | Request::Inbox { agent, .. }
             | Request::AckInbox { agent, .. }
+            | Request::ReportActivity { agent, .. }
             | Request::Release { agent, .. }
             | Request::ReleaseAll { agent, .. }
             | Request::JournalAdd { agent, .. } => {

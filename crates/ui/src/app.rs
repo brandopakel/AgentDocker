@@ -490,7 +490,8 @@ impl App {
             | EventKind::AgentStopping { .. }
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
-            | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
+            | EventKind::AgentVcsChanged { .. }
+            | EventKind::AgentActivityReported { .. } => self.send(Cmd::Agents),
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }
@@ -676,8 +677,10 @@ impl App {
                             RichText::new(format!("{working} working"))
                                 .color(Color32::from_rgb(60, 170, 90)),
                         );
-                    } else {
+                    } else if agents.iter().all(|a| matches!(self.activity.get(a.id.as_str()), Some(Activity::Idle { .. }))) {
                         ui.label(RichText::new("all idle").weak());
+                    } else {
+                        ui.label(RichText::new("activity unknown").weak());
                     }
                     ui.end_row();
 
@@ -719,7 +722,7 @@ impl App {
                             Some(Activity::Working { .. }) => {
                                 ui.label(
                                     RichText::new("working").color(Color32::from_rgb(60, 170, 90)),
-                                );
+                                ).on_hover_text("Recent coordination or an explicit provider activity report; not inferred from CPU use or terminal output.");
                             }
                             Some(other) => {
                                 let label = ui.label(RichText::new(other.label()).weak());
@@ -728,9 +731,9 @@ impl App {
                                 // says. Which one this is belongs on
                                 // the cell, not in a paragraph under
                                 // the table.
-                                if unwired.contains(&agent.spec.runtime) {
+                                if matches!(other, Activity::Unknown) || unwired.contains(&agent.spec.runtime) {
                                     label.on_hover_text(
-                                        "Not wired up, so it reports nothing — Runtimes.",
+                                        "No fresh activity reports. The process is present; connect its integration in Runtimes to observe its work.",
                                     );
                                 }
                             }

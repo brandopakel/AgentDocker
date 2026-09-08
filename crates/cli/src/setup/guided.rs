@@ -128,7 +128,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
             .context("missing runtime specification")?;
         // Hooks cover the Claude Code lifecycle without rewriting its mutable
         // .claude.json application state or installing a duplicate MCP identity.
-        let (path, channel) = if spec.hooks {
+        let (path, channel) = if spec.name == "claude-code" {
             (roots.home.join(".claude/settings.json"), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
             (path, "mcp")
@@ -143,7 +143,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
             continue;
         }
         let before = read_config(&path)?;
-        let after = if spec.hooks {
+        let after = if spec.name == "claude-code" {
             let mut settings: Value = match before.as_deref() {
                 Some(raw) => {
                     serde_json::from_str(raw).context("invalid Claude Code settings JSON")?
@@ -183,10 +183,36 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
                 runtime.label
             ));
         }
+        if spec.name == "codex" {
+            prepare_codex_activity(&mut plan, roots, executable)?;
+        }
     }
     plan.notes.push("Restart the selected provider session after applying. Existing sessions are not reconfigured.".into());
     plan.notes.push("Your provider may ask you to approve MCP tools. Setup preserves provider approval settings.".into());
     Ok(plan)
+}
+
+fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> Result<()> {
+    let spec = agentdocker_core::runtime::spec("codex").expect("Codex runtime");
+    let path = runtimes::hook_config_path(spec, roots);
+    let before = read_config(&path)?;
+    let mut value = match &before {
+        Some(raw) => serde_json::from_str(raw).context("invalid Codex hooks JSON")?,
+        None => json!({}),
+    };
+    let command = runtimes::hook_command(executable, "codex")?;
+    if crate::hooks::merge_hooks(&mut value, &command, "codex")? > 0 {
+        plan.changes.push(Change {
+            runtime: "codex".into(),
+            channel: "activity hooks".into(),
+            target: project::try_canonical(&path)?,
+            path,
+            before,
+            after: format!("{}\n", serde_json::to_string_pretty(&value)?),
+        });
+    }
+    plan.notes.push("Codex: activity hooks require a version supporting lifecycle hooks, enabled hooks and review/trust in /hooks. These hooks report activity only; MCP supplies coordination tools. Setup does not grant hook trust or prove live delivery.".into());
+    Ok(())
 }
 
 /// Prepare private receipt storage beneath the selected AgentDocker home.
@@ -505,7 +531,7 @@ mod tests {
         roots.desktop_dirs.push(applications);
         assert!(selected_inventory(&roots, &[]).is_err());
         let plan = prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
-        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes.len(), 2);
         assert_eq!(plan.changes[0].runtime, "codex");
         assert!(selected_inventory(&roots, &["unknown-provider".into()]).is_err());
     }
@@ -534,12 +560,50 @@ mod tests {
     }
 
     #[test]
+    fn codex_activity_setup_respects_override_and_undo_preserves_other_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut roots = roots(tmp.path());
+        let alternate = tmp.path().join("codex-profile");
+        std::fs::create_dir(&alternate).unwrap();
+        roots.codex_home = Some(alternate.clone());
+        let hooks = alternate.join("hooks.json");
+        let original = "{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"my-check\"}]}]}}\n";
+        std::fs::write(&hooks, original).unwrap();
+        let mut plan =
+            prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(plan.changes.len(), 2);
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| change.path.starts_with(&alternate))
+        );
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert!(
+            std::fs::read_to_string(&hooks)
+                .unwrap()
+                .contains("my-check")
+        );
+        assert!(
+            prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap())
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), original);
+        assert!(!alternate.join("config.toml").exists());
+        assert!(!tmp.path().join(".codex").exists());
+    }
+
+    #[test]
     fn preview_is_read_only_and_public_view_never_contains_configuration_snapshots() {
         let tmp = tempfile::tempdir().unwrap();
         let config = old_codex(tmp.path());
         let before = std::fs::read(&config).unwrap();
         let prepared = plan(tmp.path(), &["codex", "claude-code"]);
-        assert_eq!(prepared.changes.len(), 2);
+        assert_eq!(prepared.changes.len(), 3);
         assert_eq!(std::fs::read(&config).unwrap(), before);
         assert!(!tmp.path().join(".claude").exists());
         assert!(!prepared.view().to_string().contains("PRIVATE-FIXTURE-ONLY"));
@@ -571,6 +635,7 @@ mod tests {
                 .starts_with(std::str::from_utf8(&original).unwrap())
         );
         assert!(tmp.path().join(".claude/settings.json").exists());
+        assert!(tmp.path().join(".codex/hooks.json").exists());
         assert!(
             !tmp.path().join(".claude.json").exists(),
             "guided hooks do not rewrite Claude's mutable application state"
@@ -590,6 +655,7 @@ mod tests {
         assert_eq!(std::fs::read(&config).unwrap(), original);
         assert!(config.is_symlink());
         assert!(!tmp.path().join(".claude/settings.json").exists());
+        assert!(!tmp.path().join(".codex/hooks.json").exists());
         assert!(tmp.path().join(".claude").is_dir());
         assert!(
             apply(&directory, &mut loaded, false).is_err(),

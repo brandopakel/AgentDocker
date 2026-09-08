@@ -297,6 +297,28 @@ impl<B: Backend> McpServer<B> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         match name {
+            "report_activity" => {
+                let activity = arguments
+                    .get("activity")
+                    .cloned()
+                    .ok_or_else(|| (INVALID_PARAMS, "activity is required".to_owned()))?;
+                let activity =
+                    serde_json::from_value::<agentdocker_core::ReportedActivity>(activity)
+                        .map_err(|_| {
+                            (
+                                INVALID_PARAMS,
+                                "activity must be working or idle".to_owned(),
+                            )
+                        })?;
+                self.forward(Request::ReportActivity {
+                    agent: me,
+                    observation: agentdocker_core::ActivityObservation {
+                        activity,
+                        observed_at: chrono::Utc::now(),
+                    },
+                })
+                .await
+            }
             "observe_paths" | "check_stale" | "read_set" => {
                 let paths: Vec<String> = arguments
                     .get("paths")
@@ -1088,6 +1110,11 @@ fn tool_definitions() -> Vec<Value> {
         json!({"name":"check_stale","description":"Compare retained reads to current content. Reread changed paths before editing; checking repeatedly never clears staleness.","inputSchema":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}}),
         json!({"name":"read_set","description":"Show this session's durable content observations.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({
+            "name": "report_activity",
+            "description": "Report an observed working or idle turn state. Expires after five minutes; call only from actual activity evidence, not a generic heartbeat.",
+            "inputSchema": { "type": "object", "properties": { "activity": { "type": "string", "enum": ["working", "idle"] } }, "required": ["activity"], "additionalProperties": false }
+        }),
+        json!({
             "name": "whoami",
             "description": "This agent's own record in AgentDocker: id, name, runtime, status.",
             "inputSchema": { "type": "object", "properties": { "verbose": verbose.clone() }, "additionalProperties": false }
@@ -1520,6 +1547,7 @@ mod tests {
                 "observe_paths",
                 "check_stale",
                 "read_set",
+                "report_activity",
                 "whoami",
                 "list_agents",
                 "inspect_agent",

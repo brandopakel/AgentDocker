@@ -39,7 +39,9 @@ pub mod contest;
 pub use contest::{Contest, ContestId, Entry, Measure, Metric, Standing};
 
 pub mod wait;
-pub use wait::{Activity, AgentActivity, Blocked, WaitQueue, Waiter};
+pub use wait::{
+    Activity, ActivityObservation, AgentActivity, Blocked, ReportedActivity, WaitQueue, Waiter,
+};
 
 pub mod working_set;
 pub use working_set::{ReadMark, StalePath};

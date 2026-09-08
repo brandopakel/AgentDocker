@@ -4,6 +4,45 @@ Updated September 7, 2026. This is the active delivery plan requested by the use
 
 ## Product and engineering requirements
 
+### Active-session defects and coordination trial (September 7, evening)
+
+The user's live desktop trial now includes Codex and two Claude Code sessions
+using agentdocker across AgentDocker and memkv. Add these blocking acceptance
+cases to L03/L06/L08/L13, alongside the existing delivery work:
+
+- Correct false idle status. A live adopted Codex PID had no activity reports
+  since adoption, despite ongoing work. Installed MCP configuration is not an
+  active session connection. Add explicit, expiring provider activity reports
+  and Codex lifecycle hooks; distinguish unknown activity from observed idle.
+- Unify integration identity. Verified duplicate Claude rows have identical
+  PIDs and process birth times: hooks plus MCP in AgentDocker, hooks plus
+  adoption in memkv. Reuse the same live identity across adapters without
+  conflating PID reuse, distinct provider sessions, worktrees or projects.
+  Preserve existing inboxes, leases and history; do not stop live providers to
+  make duplicate rows disappear. Include MCP disconnect/reconnect and daemon
+  restore in regression coverage.
+- Exercise real cross-agent delivery with the user's authorized Claude Code
+  peer. Record queueing, adapter consumption, reply receipt and acknowledgement
+  separately. A successful send or review request is not evidence the model
+  read it. Do not drain another live session's inbox as a test.
+- Verify channel membership, scoped messages, review requests, comments,
+  approval/changes verdicts and explicit closure. Pending lane proposals remain
+  pending until the other agent answers; an open channel or contested-path
+  count is not proof of accepted work ownership or a resolved conflict.
+- Make delivery and review state understandable in the native GUI. Investigate
+  how missing Codex wiring, hooks/MCP duplicate identities and pending reviews
+  affect routing. The memkv channel cited by the user is read-only diagnostic
+  context; implementation changes remain in AgentDocker.
+- Complete Codex message injection/acknowledgement at supported lifecycle
+  boundaries, distinct from the new activity-only hooks. Test queued proposals
+  through actual model consumption and a correlated reply. Never count a
+  configured MCP server, activity report or successful queue write as that proof.
+
+Live peer coordination is authorized by the user. Source changes still use
+separate worktrees/branches; provider restarts, message loss and arbitrary work
+in other projects are not test cleanup. Raw messages/configuration remain
+private; publish only sanitized scenario results with exact source evidence.
+
 - Deliver **agentdocker**, a native desktop app that opens onto currently active local agents and their projects. Native execution is the default. Docker and Podman remain optional adapters. No browser, HTTP listener, cloud account or engine is required for native operation.
 - Target macOS, Linux and native Windows. Distinguish source builds, cross-compilation, actual platform execution, graphical acceptance and published downloads. A macOS bundle's technical `.app` suffix is not the product name.
 - Keep installed CLIs, desktop applications, running processes, registered agents and verified adapter capabilities distinct. Inventory must not imply message consumption, model context access or permission to stop somebody's existing work.

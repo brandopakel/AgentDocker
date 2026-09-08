@@ -239,6 +239,12 @@ pub enum Request {
         #[serde(default)]
         vcs: Option<VcsState>,
     },
+    /// A provider lifecycle observation, separate from process liveness.
+    /// Older observations are ignored; observations expire after five minutes.
+    ReportActivity {
+        agent: String,
+        observation: crate::ActivityObservation,
+    },
     /// Ledger entries for a project: newest `limit`, oldest first.
     Changes {
         /// A project id (any unique prefix), or an absolute path inside it.
@@ -322,7 +328,7 @@ pub enum Request {
         #[serde(default)]
         agent: Option<String>,
     },
-    /// What each agent is doing: working, idle, blocked on a named
+    /// What each agent is doing: unknown, working, idle, blocked on a named
     /// resource held by named agents, starting, or finished. Derived
     /// from the working set, never from terminal output.
     Activity {

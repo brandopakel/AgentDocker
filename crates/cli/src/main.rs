@@ -464,6 +464,13 @@ enum Command {
     },
     /// Send a message to an agent, this project (`project`), a topic (`topic:name`), or everyone (`all`).
     Send(SendArgs),
+    /// Report an observed provider turn state (expires after five minutes).
+    ReportActivity {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        #[arg(value_parser = ["working", "idle"])]
+        activity: String,
+    },
     /// Stream messages for an agent and/or matching topic patterns.
     Watch {
         /// Receive messages addressed to this agent.
@@ -1683,6 +1690,21 @@ async fn main() -> Result<()> {
         Command::Heartbeat { agent } => {
             client.call(&Request::Heartbeat { agent }).await?;
         }
+        Command::ReportActivity { agent, activity } => {
+            client
+                .call(&Request::ReportActivity {
+                    agent,
+                    observation: agentdocker_core::ActivityObservation {
+                        activity: if activity == "working" {
+                            agentdocker_core::ReportedActivity::Working
+                        } else {
+                            agentdocker_core::ReportedActivity::Idle
+                        },
+                        observed_at: chrono::Utc::now(),
+                    },
+                })
+                .await?;
+        }
         Command::Send(args) => {
             let payload: Value = match (args.json, args.text) {
                 (Some(raw), _) => serde_json::from_str(&raw).context("--json is not valid JSON")?,
@@ -2404,6 +2426,7 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Working { since } | Activity::Idle { since } => {
                     (String::new(), Some(*since))
                 }
+                Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
             vec![

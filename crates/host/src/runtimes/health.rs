@@ -11,8 +11,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{
-    Roots, hook_command_matches, hooks_configuration_matches, mcp_command_matches, mcp_config_path,
-    which,
+    Roots, hook_command_matches_for, hooks_configuration_matches_for, mcp_command_matches,
+    mcp_config_path, which,
 };
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
@@ -250,7 +250,7 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
             "No supported hooks adapter",
         )];
     }
-    let path = roots.home.join(".claude/settings.json");
+    let path = super::hook_config_path(spec, roots);
     let value = match configuration("hooks", &path, false) {
         Ok(value) => value,
         Err(check) => return vec![check],
@@ -264,7 +264,7 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
         )];
     }
     let mut checks = Vec::new();
-    if !hooks_configuration_matches(&value, marker) {
+    if !hooks_configuration_matches_for(&value, marker, spec.name) {
         checks.push(Check::new(
             "hooks",
             Some(&path),
@@ -280,7 +280,7 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
                     if hook["type"] == "command"
                         && let Some(command) = hook["command"]
                             .as_str()
-                            .filter(|command| hook_command_matches(command, marker))
+                            .filter(|command| hook_command_matches_for(command, marker, spec.name))
                         && let Some(words) = shlex::split(command)
                     {
                         commands.insert(words[0].clone());
@@ -291,6 +291,10 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     }
     for command in commands {
         checks.push(executable("hooks", &path, &command, None, roots));
+    }
+    if spec.name == "codex" {
+        checks.push(Check::new("hooks", Some(&path), Status::Unverified,
+            "Activity configuration only; Codex version, enabled hooks, exact hook trust and live delivery require a provider trial. Open /hooks in Codex to review definitions."));
     }
     checks
 }

@@ -48,7 +48,6 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
     }
     let exe = crate::desktop::setup_executable().context("cannot locate the agentdocker binary")?;
     let roots = agentdocker_host::runtimes::Roots::from_env();
-    let home = &roots.home;
     for runtime in targets {
         let Some(spec) = spec(&runtime.name) else {
             continue;
@@ -89,11 +88,15 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 _ if dry_run => eprintln!(
                     "{}: would install hooks in {}",
                     runtime.name,
-                    home.join(".claude/settings.json").display()
+                    agentdocker_host::runtimes::hook_config_path(spec, &roots).display()
                 ),
                 _ => {
                     install_hooks(&InstallArgs {
-                        host: Host::ClaudeCode,
+                        host: if spec.name == "codex" {
+                            Host::Codex
+                        } else {
+                            Host::ClaudeCode
+                        },
                         user: true,
                     })?;
                 }

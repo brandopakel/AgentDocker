@@ -102,7 +102,7 @@ agentdocker claim --as reviewer src/parser.rs        # -> conflict: held by writ
 agentdocker claim --as reviewer src/parser.rs --wait 60   # queue for it, in arrival order
 agentdocker leases
 agentdocker waiting     # who is queued for what
-agentdocker activity    # working, idle, or blocked on what, held by whom
+agentdocker activity    # observed working/idle, unknown, or blocked with its holders
 
 # 4. Talk. Messages to an offline agent queue in its inbox.
 agentdocker send --from reviewer --to writer "ping me when src/ is free"

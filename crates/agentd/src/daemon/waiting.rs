@@ -109,6 +109,57 @@ impl Drop for Waiting<'_> {
 }
 
 impl State {
+    pub(super) fn report_activity(
+        &mut self,
+        reference: &str,
+        observation: agentdocker_core::ActivityObservation,
+        now: DateTime<Utc>,
+    ) -> Response {
+        if observation.current(now).is_none() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "activity observation is stale or in the future",
+            );
+        }
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        if !record.status.is_live() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "cannot report activity for a finished agent",
+            );
+        }
+        if record
+            .reported_activity
+            .as_ref()
+            .is_some_and(|previous| previous.observed_at >= observation.observed_at)
+        {
+            return Response::Ok;
+        }
+        record.last_seen = now;
+        record.reported_activity = Some(observation.clone());
+        let mut event = agentdocker_core::Event::new(
+            agentdocker_core::EventKind::AgentActivityReported {
+                agent: id.clone(),
+                observation,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        self.persist("activity report", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if self.storage_error.is_none() {
+            *self.registry.get_mut(&id).expect("resolved agent") = record;
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        Response::Ok
+    }
+
     /// Whether it is this waiter's turn. A claim with no ticket has not
     /// waited yet and may always try.
     pub(super) fn may_attempt(&self, ticket: Option<Ticket>) -> bool {
@@ -140,7 +191,7 @@ impl State {
 
     /// What one agent is doing, from what the daemon recorded rather
     /// than from anything it printed.
-    fn activity_of(&self, record: &AgentRecord, now: DateTime<Utc>) -> Activity {
+    pub(super) fn activity_of(&self, record: &AgentRecord, now: DateTime<Utc>) -> Activity {
         if !record.status.is_live() {
             return Activity::Finished;
         }
@@ -159,14 +210,21 @@ impl State {
                 since: waiter.since,
             };
         }
-        if now - record.last_seen < ACTIVE_WINDOW {
+        if let Some(activity) = record
+            .reported_activity
+            .as_ref()
+            .and_then(|a| a.current(now))
+        {
+            return activity;
+        }
+        // Adoption/registration proves presence, not work. Nor does silence
+        // prove idleness: MCP calls are optional, and hooks may be disconnected.
+        if record.last_seen > record.created_at && now - record.last_seen < ACTIVE_WINDOW {
             Activity::Working {
                 since: record.last_seen,
             }
         } else {
-            Activity::Idle {
-                since: record.last_seen,
-            }
+            Activity::Unknown
         }
     }
 }
@@ -224,7 +282,8 @@ impl Daemon {
                     Activity::Working { .. } => 1,
                     Activity::Starting => 2,
                     Activity::Idle { .. } => 3,
-                    Activity::Finished => 4,
+                    Activity::Unknown => 4,
+                    Activity::Finished => 5,
                 },
                 a.name.clone(),
             )

@@ -35,6 +35,8 @@ use serde_json::{Value, json};
 use crate::client::{Backend, Client};
 use crate::format;
 
+mod codex;
+
 const RUNTIME: &str = "claude-code";
 /// How much of a transcript's end is read for the `Stop` summary.
 const TRANSCRIPT_TAIL: u64 = 64 * 1024;
@@ -52,6 +54,8 @@ pub struct HookArgs {
 pub enum HookCommand {
     /// Handle one Claude Code hook event, read as JSON from stdin.
     ClaudeCode(ClaudeCodeArgs),
+    /// Report Codex lifecycle activity from a hook event on stdin.
+    Codex,
     /// Write the hook configuration into a host's settings file.
     Install(InstallArgs),
 }
@@ -90,6 +94,7 @@ pub struct InstallArgs {
 #[derive(ValueEnum, Clone, Debug)]
 pub enum Host {
     ClaudeCode,
+    Codex,
 }
 
 /// The fields of a Claude Code hook event this adapter looks at.
@@ -118,6 +123,20 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     // the editor: it fails open past this.
     let client = client.with_start_timeout(Some(std::time::Duration::from_secs(1)));
     match args.command {
+        HookCommand::Codex => {
+            if let Err(error) = codex::run(&client).await {
+                eprintln!("agentdocker hook codex: {error:#}");
+            }
+            // A no-op JSON result is accepted by Stop as well as tool hooks.
+            if let Err(error) = write_output_before(
+                1,
+                b"{}\n",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            ) {
+                eprintln!("agentdocker hook codex: output delivery failed: {error}");
+            }
+            Ok(())
+        }
         HookCommand::Install(install) => install_hooks(&install),
         HookCommand::ClaudeCode(opts) => {
             // Fail open all the way down: an unreadable or malformed event is
@@ -141,6 +160,19 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     None
                 }
             };
+            // Lifecycle observations are independent of coordination output:
+            // an older daemon or failed activity report cannot discard a
+            // lease denial or acknowledge undelivered messages.
+            let activity = match input.hook_event_name.as_str() {
+                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
+                    Some(agentdocker_core::ReportedActivity::Working)
+                }
+                "Stop" if output.as_ref().is_some_and(|v| v["decision"] == "block") => {
+                    Some(agentdocker_core::ReportedActivity::Working)
+                }
+                "Stop" => Some(agentdocker_core::ReportedActivity::Idle),
+                _ => None,
+            };
             if let Some(output) = output {
                 if let Err(error) =
                     write_output_before(1, format!("{output}\n").as_bytes(), deadline)
@@ -153,6 +185,23 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 for request in pending {
                     let _ = tokio::time::timeout_at(deadline, client.call_raw(&request)).await;
                 }
+            }
+            if let Some(activity) = activity {
+                let _ = tokio::time::timeout_at(deadline, async {
+                    if let Some(agent) = current_agent(&client, &input).await? {
+                        client
+                            .call_raw(&Request::ReportActivity {
+                                agent: agent.id.to_string(),
+                                observation: agentdocker_core::ActivityObservation {
+                                    activity,
+                                    observed_at: chrono::Utc::now(),
+                                },
+                            })
+                            .await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
             }
             Ok(())
         }
@@ -892,14 +941,17 @@ impl<I: Iterator> PartitionMapBy for I {}
 // ----- install --------------------------------------------------------------
 
 pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
-    match args.host {
-        Host::ClaudeCode => {}
-    }
+    let runtime = match args.host {
+        Host::ClaudeCode => "claude-code",
+        Host::Codex => "codex",
+    };
     let path = if args.user {
-        std::env::home_dir()
-            .context("cannot find home directory")?
-            .join(".claude")
-            .join("settings.json")
+        agentdocker_host::runtimes::hook_config_path(
+            agentdocker_core::runtime::spec(runtime).expect("supported hook runtime"),
+            &agentdocker_host::runtimes::Roots::from_env(),
+        )
+    } else if runtime == "codex" {
+        PathBuf::from(".codex/hooks.json")
     } else {
         PathBuf::from(".claude").join("settings.json")
     };
@@ -915,8 +967,8 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     };
     let exe = crate::desktop::setup_executable()
         .context("cannot locate the active agentdocker binary")?;
-    let command = agentdocker_host::runtimes::claude_hook_command(&exe)?;
-    let added = merge_claude_code_hooks(&mut settings, &command)?;
+    let command = agentdocker_host::runtimes::hook_command(&exe, runtime)?;
+    let added = merge_hooks(&mut settings, &command, runtime)?;
     if added == 0 {
         // Nothing to add, so leave the file byte-for-byte alone: a rewrite
         // would re-sort and re-indent the user's whole settings document.
@@ -929,6 +981,11 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
         &format!("{}\n", serde_json::to_string_pretty(&settings)?),
     )
     .with_context(|| format!("cannot write {}", path.display()))?;
+    if runtime == "codex" {
+        eprintln!(
+            "Codex activity hooks require review and trust in /hooks; MCP remains the coordination adapter. Existing sessions may need to be resumed to load configuration."
+        );
+    }
     eprintln!(
         "{}: added {added} hook entries running `{command}`",
         path.display()
@@ -940,6 +997,10 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
 /// command already runs `hook claude-code` are left alone, so this is safe
 /// to run repeatedly. Returns how many entries were added.
 pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<usize> {
+    merge_hooks(settings, command, "claude-code")
+}
+
+pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) -> Result<usize> {
     let root = settings
         .as_object_mut()
         .context("settings must be a JSON object")?;
@@ -951,11 +1012,11 @@ pub fn merge_claude_code_hooks(settings: &mut Value, command: &str) -> Result<us
     let mut added = 0;
     let managed = |hook: &Value| {
         hook["type"] == json!("command")
-            && hook["command"]
-                .as_str()
-                .is_some_and(|c| agentdocker_host::runtimes::hook_command_matches(c, "agentdocker"))
+            && hook["command"].as_str().is_some_and(|c| {
+                agentdocker_host::runtimes::hook_command_matches_for(c, "agentdocker", runtime)
+            })
     };
-    for (event, matcher) in agentdocker_core::runtime::CLAUDE_CODE_HOOKS {
+    for (event, matcher) in agentdocker_host::runtimes::hook_events(runtime) {
         let entries = hooks
             .entry(*event)
             .or_insert_with(|| json!([]))

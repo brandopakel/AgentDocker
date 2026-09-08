@@ -1,5 +1,10 @@
 # Guided setup and connection checks
 
+Codex plans include MCP and a separate activity `hooks.json`, respecting
+`CODEX_HOME`. Both files use the same private receipt and preflight rules.
+Existing hooks are preserved; review and trust new definitions in Codex `/hooks`.
+Activity hooks do not consume messages. See [activity and messaging](ACTIVITY-AND-MESSAGING.md).
+
 In the native agentdocker window, open **Runtimes**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Saved setup plans**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
 
 The equivalent CLI flow is:

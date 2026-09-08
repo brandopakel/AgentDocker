@@ -349,6 +349,8 @@ pub struct AgentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
     pub last_seen: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_activity: Option<crate::ActivityObservation>,
 }
 
 impl AgentRecord {
@@ -371,6 +373,7 @@ impl AgentRecord {
             started_at: None,
             finished_at: None,
             last_seen: now,
+            reported_activity: None,
         }
     }
 }
