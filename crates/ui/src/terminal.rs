@@ -353,9 +353,7 @@ fn spawn_connected(
             let writer = match std::thread::Builder::new()
                 .name("agentdocker-terminal-input".into())
                 .spawn(move || {
-                    if let Err(error) = write_input(writer, &writer_state.input) {
-                        writer_state.ended(format!("terminal input failed: {error}"), &writer_ctx);
-                    }
+                    run_writer(writer, &writer_state, &writer_ctx);
                 }) {
                 Ok(writer) => writer,
                 Err(error) => {
@@ -368,6 +366,12 @@ fn spawn_connected(
             // Only this background thread waits for its owned writer to finish.
             let _ = writer.join();
         })
+}
+
+fn run_writer(writer: impl std::io::Write, shared: &Shared, ctx: &egui::Context) {
+    if let Err(error) = write_input(writer, &shared.input) {
+        shared.ended(format!("terminal input failed: {error}"), ctx);
+    }
 }
 
 fn write_input(mut writer: impl std::io::Write, input: &Input) -> std::io::Result<()> {
@@ -532,6 +536,15 @@ pub fn keystrokes(events: &[egui::Event]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn close_peer(peer: &agentdocker_host::ipc::BlockingStream) {
+        // Darwin reports ENOTCONN when the successful test already closed its
+        // peer; cleanup is complete in that case, rather than a test failure.
+        if let Err(error) = peer.shutdown(std::net::Shutdown::Both) {
+            assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
+        }
+    }
+
     fn unserved_terminal() -> Terminal {
         Terminal {
             agent: "owned-fixture".into(),
@@ -593,7 +606,7 @@ mod tests {
         peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let observed = peer.read(&mut [0]);
         // Clean up the original failing behavior before asserting its result.
-        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        close_peer(&peer);
         session.join().unwrap();
         assert!(matches!(observed, Ok(0)), "late connection: {observed:?}");
     }
@@ -680,7 +693,7 @@ mod tests {
         let observed = done.recv_timeout(Duration::from_secs(3));
         // A failing implementation must still release its fixture threads.
         terminal.shared.close();
-        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        close_peer(&peer);
         waiter.join().unwrap();
         assert!(observed.unwrap().is_ok());
         assert_eq!(terminal.status(), Status::Ended("the agent ended".into()));
@@ -689,23 +702,41 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn writer_failure_closes_the_reader_and_preserves_its_reason() {
+        use std::io::{self, Write};
         use std::sync::mpsc;
         use std::time::Duration;
+        struct FailedWriter;
+        impl Write for FailedWriter {
+            fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected write failure",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
         let mut terminal = unserved_terminal();
         let shared = terminal.shared.clone();
         let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
-        // Keep the peer's write side open: a reader cannot end by itself.
-        peer.shutdown(std::net::Shutdown::Read).unwrap();
-        let session =
-            spawn_connected(move || Ok(stream), shared, egui::Context::default()).unwrap();
-        terminal.send(b"owned fixture".to_vec());
+        assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
         let (finished, done) = mpsc::channel();
-        let waiter = std::thread::spawn(move || finished.send(session.join()).unwrap());
+        let reader = std::thread::spawn(move || {
+            let ctx = egui::Context::default();
+            let reason = read_output(stream, &shared, &ctx);
+            shared.ended(reason, &ctx);
+            finished.send(()).unwrap();
+        });
+        // Inject an error while a real socket reader waits with an open peer.
+        // SHUT_RD alone does not force an immediate EPIPE on Darwin.
+        terminal.send(b"owned fixture".to_vec());
+        run_writer(FailedWriter, &terminal.shared, &egui::Context::default());
         let observed = done.recv_timeout(Duration::from_secs(3));
         terminal.shared.close();
-        peer.shutdown(std::net::Shutdown::Both).unwrap();
-        waiter.join().unwrap();
-        assert!(observed.unwrap().is_ok());
+        close_peer(&peer);
+        reader.join().unwrap();
+        observed.unwrap();
         assert!(
             matches!(terminal.status(), Status::Ended(reason) if reason.starts_with("terminal input failed:"))
         );
