@@ -34,6 +34,17 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
+/// The three states anything in the window can be in: working, needs a
+/// look, not there. Chosen to stay legible on both the light ground and
+/// the dark one, so there is one set rather than two.
+///
+/// They live here, with the rest of what the window looks like, because
+/// the installation panel and the runtimes table both say these things
+/// and they must not say them in two different reds.
+pub const WIRED: Color32 = rgb(0x2E9E5B);
+pub const UNVERIFIED: Color32 = rgb(0xB57A0F);
+pub const ABSENT: Color32 = rgb(0xC04B3F);
+
 /// The palettes on offer, in the order the picker lists them.
 ///
 /// The first is ours. The rest are the profiles people recognise from

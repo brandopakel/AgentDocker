@@ -19,6 +19,7 @@ use egui::{Color32, RichText};
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
+use crate::theme::{ABSENT, UNVERIFIED, WIRED};
 
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -49,14 +50,6 @@ const TERMINAL_MARGIN: i8 = 6;
 /// the blue the project palette starts at, so the window has one blue
 /// rather than two that nearly match.
 const ACCENT: Color32 = Color32::from_rgb(0x2F, 0x6F, 0xED);
-
-/// The three states a connection can be in, as three colours that
-/// survive both grounds: legible on the light theme and on the dark one
-/// without a second set. Nothing else in the window uses them, so a
-/// colour here always means a connection.
-const WIRED: Color32 = Color32::from_rgb(0x2E, 0x9E, 0x5B);
-const UNVERIFIED: Color32 = Color32::from_rgb(0xB5, 0x7A, 0x0F);
-const ABSENT: Color32 = Color32::from_rgb(0xC0, 0x4B, 0x3F);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
@@ -905,8 +898,12 @@ impl App {
                 .collect();
             if attachable.is_empty() {
                 ui.label(
-                    "No agent has a terminal. Start one with `agentdocker run --tty -- <command>`, \
-                     or `tty = true` in an Agentfile entry.",
+                    RichText::new(
+                        "No agent has a terminal. Start one with \
+                         `agentdocker run --tty -- <command>`, or `tty = true` in an Agentfile \
+                         entry.",
+                    )
+                    .weak(),
                 );
                 return;
             }
@@ -1740,7 +1737,11 @@ impl App {
             });
 
         ui.add_space(12.0);
-        if ui.button("Reset").clicked() {
+        if ui
+            .button("Reset")
+            .on_hover_text("Back to the palette and sizes the window ships with.")
+            .clicked()
+        {
             self.settings = crate::theme::Settings::default();
         }
         if self.settings != before {
@@ -1752,7 +1753,7 @@ impl App {
     fn leases_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         if self.leases.is_empty() {
-            ui.label("No leases held.");
+            ui.label(RichText::new("No leases held.").weak());
             return;
         }
         egui::Grid::new("leases")
