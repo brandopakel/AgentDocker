@@ -146,10 +146,11 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
     }
 
     let host_pid = args.pid.unwrap_or_else(parent_id);
-    let name = args
+    let requested = args
         .name
         .clone()
         .unwrap_or_else(|| format!("{}-{host_pid}", args.runtime));
+    let name = requested.clone();
     let workdir = std::env::current_dir()
         .ok()
         .map(|dir| dir.canonicalize().unwrap_or(dir));
@@ -182,10 +183,14 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         .await
         .context("failed to register with agentd")?
     {
+        // A register that comes back under a different name is the
+        // daemon saying this process already has an agent — the hooks
+        // adapter got here first. That identity is not ours to take
+        // away again, so shutdown must leave it alone.
         Response::Agent { agent } => Ok(Identity {
+            registered_here: agent.spec.name == requested,
             id: agent.id.to_string(),
             name: agent.spec.name,
-            registered_here: true,
         }),
         other => bail!("unexpected reply to register: {other:?}"),
     }

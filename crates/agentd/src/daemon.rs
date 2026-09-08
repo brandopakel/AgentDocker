@@ -4145,14 +4145,40 @@ impl State {
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
-        if record
+        // One process, one agent.
+        //
+        // `adopt` has always held to that and refuses a pid it already
+        // knows. Self-registration did not, and Claude Code registers
+        // twice: its hooks adapter as `claude-<session>` and the MCP
+        // server it launches as `claude-code-<pid>`, both giving the
+        // same pid. One session appeared as two agents, each half
+        // reporting to a different row — so the MCP-side row was
+        // permanently idle while the hooks-side row did the work, and
+        // a message sent to one never reached the other.
+        //
+        // The start time is checked with the pid because pids are
+        // reused: a dead agent's record and a new process that happens
+        // to land on its number are not the same process, and treating
+        // them as one would hand a stranger somebody else's identity.
+        let same_process = |a: &AgentRecord| {
+            record.pid.is_some()
+                && a.pid == record.pid
+                && a.process_started_at == record.process_started_at
+        };
+        let adopted = record
             .spec
             .labels
             .get("adopted")
-            .is_some_and(|v| v == "true")
-            && self.registry.live().any(|a| a.pid == record.pid)
-        {
-            return Response::error(ErrorCode::Invalid, "pid is already registered");
+            .is_some_and(|v| v == "true");
+        if let Some(existing) = self.registry.live().find(|a| same_process(a)) {
+            if adopted {
+                return Response::error(ErrorCode::Invalid, "pid is already registered");
+            }
+            // Nothing changed, so nothing is emitted: this is the same
+            // agent answering a second half of itself, not a new one.
+            return Response::Agent {
+                agent: existing.clone(),
+            };
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -4284,6 +4310,57 @@ mod tests {
         }
     }
 
+    /// One process is one agent, however many of its halves register.
+    ///
+    /// Claude Code registers twice for a single session — its hooks
+    /// adapter under the session id, and the MCP server it launches
+    /// under the pid — and both give the same pid. Before this, one
+    /// session showed up as two agents: the MCP-side row never left
+    /// idle, because activity arrives through hooks, and a message sent
+    /// to one half never reached the other.
+    #[tokio::test]
+    async fn two_halves_of_one_session_register_as_one_agent() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let me = std::process::id();
+
+        let hooks = register(&daemon, "claude-2c79ae10", Some(me)).await;
+        let mcp = register(&daemon, "claude-code-45856", Some(me)).await;
+        assert_eq!(mcp.id, hooks.id, "the second half is the first half");
+        assert_eq!(
+            mcp.spec.name, "claude-2c79ae10",
+            "and keeps the name the first half registered"
+        );
+        assert_eq!(
+            lock(&daemon.state).registry.live().count(),
+            1,
+            "one process, one row"
+        );
+
+        // A different process is a different agent, and an agent with no
+        // pid at all — the human — is never folded into one.
+        let other = register(&daemon, "codex-27221", Some(1)).await;
+        assert_ne!(other.id, hooks.id);
+        let human = register(&daemon, "user", None).await;
+        let also_human = register(&daemon, "someone-else", None).await;
+        assert_ne!(
+            human.id, also_human.id,
+            "no pid is not the same pid; two people are two agents"
+        );
+    }
+
+    /// A pid no other agent in this test is using.
+    ///
+    /// One process is one agent now, so a fixture that handed several
+    /// agents the test process's own pid was describing something that
+    /// cannot happen — and got one agent back where it wanted three.
+    /// These tests want distinct agents, not live processes; the ones
+    /// that sweep for liveness ask for a real pid themselves.
+    fn distinct_pid() -> Option<u32> {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        Some(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
     async fn register(daemon: &Arc<Daemon>, name: &str, pid: Option<u32>) -> AgentRecord {
         match daemon
             .handle(Request::Register {
@@ -4382,7 +4459,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let human = me(&daemon).await;
-        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+        let asker = register(&daemon, "worker", distinct_pid()).await;
 
         let answering = {
             let daemon = daemon.clone();
@@ -4448,7 +4525,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         me(&daemon).await;
-        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+        let asker = register(&daemon, "worker", distinct_pid()).await;
 
         let response = daemon
             .handle(Request::Ask {
@@ -4531,8 +4608,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         me(&daemon).await;
-        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
-        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+        let alpha = register(&daemon, "alpha", distinct_pid()).await;
+        let beta = register(&daemon, "beta", distinct_pid()).await;
 
         // Two questions in flight, to different agents. Neither is
         // answered, so both asks are still waiting when we look.
@@ -4599,7 +4676,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let human = me(&daemon).await;
-        let worker = register(&daemon, "worker", Some(std::process::id())).await;
+        let worker = register(&daemon, "worker", distinct_pid()).await;
 
         let (tx, mut notices) = mpsc::channel(8);
         lock(&daemon.state).notifier = Some(tx);
@@ -4965,7 +5042,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let human = me(&daemon).await;
-        let asker = register(&daemon, "worker", Some(std::process::id())).await;
+        let asker = register(&daemon, "worker", distinct_pid()).await;
 
         let mut messages = lock(&daemon.state).bus.subscribe();
         let racing = {
@@ -5079,9 +5156,9 @@ mod tests {
     async fn the_agent_that_waited_longest_gets_the_lease() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let holder = register(&daemon, "holder", Some(std::process::id())).await;
-        let first = register(&daemon, "first", Some(std::process::id())).await;
-        let second = register(&daemon, "second", Some(std::process::id())).await;
+        let holder = register(&daemon, "holder", distinct_pid()).await;
+        let first = register(&daemon, "first", distinct_pid()).await;
+        let second = register(&daemon, "second", distinct_pid()).await;
 
         let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
             panic!("the first claim should succeed")
@@ -5123,9 +5200,9 @@ mod tests {
     async fn a_waiter_that_goes_away_does_not_hold_the_queue() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let holder = register(&daemon, "holder", Some(std::process::id())).await;
-        register(&daemon, "leaver", Some(std::process::id())).await;
-        let stayer = register(&daemon, "stayer", Some(std::process::id())).await;
+        let holder = register(&daemon, "holder", distinct_pid()).await;
+        register(&daemon, "leaver", distinct_pid()).await;
+        let stayer = register(&daemon, "stayer", distinct_pid()).await;
 
         let Response::Lease { lease } = claim(&daemon, "holder", "task:contested").await else {
             panic!("the first claim should succeed")
@@ -5166,8 +5243,8 @@ mod tests {
     async fn a_claim_that_would_close_a_ring_is_refused_with_the_ring() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
-        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+        let alpha = register(&daemon, "alpha", distinct_pid()).await;
+        let beta = register(&daemon, "beta", distinct_pid()).await;
 
         // alpha holds x, beta holds y.
         assert!(matches!(
@@ -5214,8 +5291,8 @@ mod tests {
     async fn plain_contention_still_waits_rather_than_being_called_a_deadlock() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        register(&daemon, "holder", Some(std::process::id())).await;
-        register(&daemon, "waiter", Some(std::process::id())).await;
+        register(&daemon, "holder", distinct_pid()).await;
+        register(&daemon, "waiter", distinct_pid()).await;
         assert!(matches!(
             claim(&daemon, "holder", "task:x").await,
             Response::Lease { .. }
@@ -5239,8 +5316,8 @@ mod tests {
     async fn activity_says_what_an_agent_is_blocked_on_and_who_has_it() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let holder = register(&daemon, "holder", Some(std::process::id())).await;
-        let waiter = register(&daemon, "waiter", Some(std::process::id())).await;
+        let holder = register(&daemon, "holder", distinct_pid()).await;
+        let waiter = register(&daemon, "waiter", distinct_pid()).await;
 
         // Both have just acted through the daemon, so both are working.
         assert!(matches!(
@@ -5291,7 +5368,7 @@ mod tests {
     async fn a_quiet_agent_is_idle_and_a_finished_one_is_finished() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let quiet = register(&daemon, "quiet", Some(std::process::id())).await;
+        let quiet = register(&daemon, "quiet", distinct_pid()).await;
         // Backdate its last contact past the activity window.
         {
             let mut state = lock(&daemon.state);
@@ -5318,8 +5395,8 @@ mod tests {
     async fn a_deadlock_refusal_says_the_wait_ended() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        register(&daemon, "alpha", Some(std::process::id())).await;
-        register(&daemon, "beta", Some(std::process::id())).await;
+        register(&daemon, "alpha", distinct_pid()).await;
+        register(&daemon, "beta", distinct_pid()).await;
         assert!(matches!(
             claim(&daemon, "alpha", "task:x").await,
             Response::Lease { .. }
@@ -6112,8 +6189,8 @@ mod tests {
         for round in 0..3 {
             let dir = TempDir::new().unwrap();
             let daemon = open(&dir);
-            let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
-            let beta = register(&daemon, "beta", Some(std::process::id())).await;
+            let alpha = register(&daemon, "alpha", distinct_pid()).await;
+            let beta = register(&daemon, "beta", distinct_pid()).await;
             assert!(matches!(
                 claim(&daemon, "alpha", "task:x").await,
                 Response::Lease { .. }
@@ -6421,7 +6498,7 @@ mod tests {
     async fn a_denied_claim_is_refused_and_says_which_rule() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        let agent = register(&daemon, "writer", distinct_pid()).await;
         write_policy(
             &daemon,
             r#"
@@ -6469,7 +6546,7 @@ deny = ["claim:task:migrations"]
     async fn a_policy_takes_effect_without_a_restart_and_a_broken_one_does_not_disarm_it() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let agent = register(&daemon, "writer", Some(std::process::id())).await;
+        let agent = register(&daemon, "writer", distinct_pid()).await;
         // Nothing written: everything allowed.
         assert!(matches!(
             claim(&daemon, agent.id.as_str(), "task:one").await,
@@ -6514,8 +6591,8 @@ deny = ["claim:task:migrations"]
     async fn a_denied_message_never_reaches_anybody() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let sender = register(&daemon, "loud", Some(std::process::id())).await;
-        let listener = register(&daemon, "quiet", Some(std::process::id())).await;
+        let sender = register(&daemon, "loud", distinct_pid()).await;
+        let listener = register(&daemon, "quiet", distinct_pid()).await;
         write_policy(
             &daemon,
             r#"
@@ -6563,8 +6640,8 @@ deny = ["send:all"]
     async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
-        let beta = register(&daemon, "beta", Some(std::process::id())).await;
+        let alpha = register(&daemon, "alpha", distinct_pid()).await;
+        let beta = register(&daemon, "beta", distinct_pid()).await;
         write_policy(&daemon, "[quota]\ntokens = 100\n");
 
         let take = |agent: String, amount: u64| {
@@ -6619,7 +6696,7 @@ deny = ["send:all"]
     async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let agent = register(&daemon, "spender", Some(std::process::id())).await;
+        let agent = register(&daemon, "spender", distinct_pid()).await;
         write_policy(&daemon, "[quota]\ntokens = 10\n");
         // A typo in a quota name must loosen nothing that was not
         // already loose, so an unmentioned quota has no ceiling.
@@ -7316,6 +7393,8 @@ deny = ["send:all"]
     async fn state_survives_restart() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
+        // A real pid, because this one does sweep for liveness at the
+        // end and expects to find alpha still there.
         let alpha = register(&daemon, "alpha", Some(std::process::id())).await;
         assert!(matches!(
             claim(&daemon, "alpha", "task:1").await,
@@ -7594,6 +7673,11 @@ deny = ["send:all"]
     async fn recycled_pid_is_not_mistaken_for_the_agent() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
+        // Both on this process's own pid, on purpose: a real one, so
+        // liveness has something to check, and the same one, so the
+        // second registration is the recycled-pid case. It is not folded
+        // into the first because their start times disagree — which is
+        // the whole reason "one process, one agent" compares both.
         let stale = register(&daemon, "stale", Some(std::process::id())).await;
         // Pretend the process that registered started long before the one
         // holding the pid now (as after a reboot).
@@ -7603,6 +7687,7 @@ deny = ["send:all"]
             .unwrap()
             .process_started_at = Some(Utc::now() - Duration::hours(24 * 30));
         let fresh = register(&daemon, "fresh", Some(std::process::id())).await;
+        assert_ne!(fresh.id, stale.id, "a recycled pid is a different agent");
         assert!(fresh.process_started_at.is_some());
 
         daemon.check_liveness();
