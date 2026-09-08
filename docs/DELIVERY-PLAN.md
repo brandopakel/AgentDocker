@@ -348,3 +348,31 @@ no hooks under their configuration isolation. A clean provider home produced
 callbacks and exposed an exact-path comparison rejecting macOS checkout aliases.
 Preserve those failed trials; canonical checkout comparison and the documented
 interrupt timeout are follow-up fixes requiring their own candidate acceptance.
+
+At `8611292`, those fixes passed the full CI matrix and real packaged-provider
+trials. Codex 0.153.4 emitted nine working observations and one idle observation,
+consumed a synthetic MCP message, replied and journaled it. Claude emitted five
+working observations and one idle observation and wrote its hook-delivered
+message token to a fixture file. Both retained one identity in their fresh
+fixtures, left provider configuration unchanged and removed owned descendants.
+These trials do not exercise the still-open #83 duplicate reconciliation or
+prove automatic Codex inbox injection. The [sanitized report](verification/2026-09-07-provider-activity.json)
+preserves all six preceding Codex attempts, exact package provenance, CI and
+eight privately uploaded Bencher results.
+
+Two local graphical attempts on that package connected, inventoried 14 runtimes
+and discovered the fixture, but timed out obtaining a frame. Their matching
+renderer logs report `Occluded`; the OS reports a locked session. Visible local
+acceptance awaits an unlocked display. The driver now preserves explicit
+`RUST_LOG` so the documented renderer tracing command works. Keep these failures
+separate from the passing CI captures and historical undiagnosed timeouts.
+
+New main work #84/#85 adds channel visibility and distinguishes a person's
+queued inbox from a transcript. It still needs integration with this branch's
+bounded queues. #86 defines daemon handover messages and descriptor transfer
+tests; actual reload still refuses. Neither that scaffold nor message queue
+acceptance completes safe upgrades or model delivery. Review of pushed #83
+`853dfd5` still finds separate session-row/event commits and missing physical
+workdir comparison at registration; a concrete transaction patch and failure
+test were sent to the authorized peer. Approval remains pending actual fixed
+source and verification.
