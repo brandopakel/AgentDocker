@@ -1175,13 +1175,18 @@ impl App {
         }
     }
 
-    /// The rooms this person is in, and what has been said in them.
+    /// Every room in the project, and what is still queued for this
+    /// person in each.
     ///
-    /// Channels were invisible here. Agents opened them, argued in them,
-    /// filed review verdicts in them, and the window — the one surface a
-    /// person actually watches — showed none of it. The person at the
-    /// keyboard is a member like any other, so their inbox already had
-    /// the messages; nothing read it.
+    /// Two corrections to the obvious design, both of which this screen
+    /// got wrong first. A channel between two agents need not have the
+    /// human as a member — most will not — so listing only this person's
+    /// memberships shows an empty screen while agents talk. And an inbox
+    /// is a queue, not a transcript: a message an agent has taken is
+    /// gone from it, so what is here is what has not been delivered yet,
+    /// never the history of the room. Durable history needs somewhere to
+    /// keep it and a bound on how much; neither exists, so this does not
+    /// pretend otherwise.
     fn channels_screen(&mut self, ui: &mut egui::Ui) {
         let now = Utc::now();
         if self.channels.is_empty() {
@@ -1192,10 +1197,25 @@ impl App {
                 )
                 .weak(),
             );
+        } else {
+            ui.label(
+                RichText::new(
+                    "Every room in this project. Messages shown are what is still queued for \
+                     you — an inbox is not a transcript, and nothing is drained to draw this.",
+                )
+                .weak()
+                .small(),
+            );
         }
         let (said, direct) = by_room(&self.inbox);
+        let me = self
+            .agents
+            .iter()
+            .find(|a| a.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
+            .map(|a| a.id.clone());
         for channel in &self.channels {
             let id = channel.id.as_str().to_owned();
+            let mine = me.as_ref().is_some_and(|me| channel.has(me));
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     crate::projects::bullet(
@@ -1208,6 +1228,14 @@ impl App {
                     );
                     ui.label(RichText::new(channel.title()).strong());
                     ui.label(RichText::new(&id).weak().small());
+                    if !mine {
+                        ui.label(RichText::new("· not a member").weak().small())
+                            .on_hover_text(
+                                "Agents opened this between themselves. It is listed because it \
+                                 is part of this project's work, not because anything from it \
+                                 reaches you.",
+                            );
+                    }
                     ui.label(
                         RichText::new(format!(
                             "· {} member{}",
@@ -1252,14 +1280,45 @@ impl App {
                     ui.label(RichText::new(format!("closed: {why}")).weak());
                 }
                 ui.add_space(2.0);
+                // What can honestly be shown here is this person's own
+                // undelivered queue, and only where they are a member.
+                // An inbox is not a transcript: a message an agent has
+                // taken is gone from it, so what is missing below is not
+                // silence — it is everything that was already read.
+                // Durable history needs somewhere to keep it, and that
+                // does not exist yet.
                 match said.get(&id) {
-                    None => {
-                        ui.label(RichText::new("Nothing said here yet.").weak().small());
-                    }
                     Some(messages) => {
                         for message in messages.iter().rev().take(20).rev() {
                             said_by(ui, now, &self.name_of(&message.from), message);
                         }
+                        ui.label(
+                            RichText::new(
+                                "Queued for you, not the room's history — anything already \
+                                 delivered has left the queue.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    }
+                    None if mine => {
+                        ui.label(
+                            RichText::new("Nothing waiting for you here.")
+                                .weak()
+                                .small(),
+                        );
+                    }
+                    // Not a member, so none of it was ever going to
+                    // arrive. Saying "nothing said here" would be a
+                    // claim about the room; this is a claim about us.
+                    None => {
+                        ui.label(
+                            RichText::new(
+                                "You are not in this room, so nothing reaches you from it.",
+                            )
+                            .weak()
+                            .small(),
+                        );
                     }
                 }
             });
@@ -2469,10 +2528,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Activity { activity } => Some(Msg::Activity(activity)),
             _ => None,
         },
+        // Every room in the project, not only the ones this person is
+        // in. A channel between two agents need not have the human as a
+        // member — most will not — and a window that listed only its
+        // own memberships would show nothing while agents talked.
         Cmd::Channels => match client.call(&Request::Channels {
             project: String::new(),
             all: false,
-            agent: Some(agentdocker_core::HUMAN.to_owned()),
+            agent: None,
         })? {
             Response::Channels { channels } => Some(Msg::Channels(channels)),
             _ => None,
