@@ -1920,7 +1920,8 @@ mod tests {
         assert!(git(&["init", "-q"]));
         assert!(git(&["commit", "-q", "--allow-empty", "-m", "root"]));
 
-        let me = agent("claude-01234567", true);
+        let mut me = agent("claude-01234567", true);
+        me.spec.workdir = Some(repo.clone());
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Messages { messages: vec![] },
@@ -1939,7 +1940,9 @@ mod tests {
         assert_eq!(reported.0, me.id.as_str());
         assert_eq!(reported.1.unwrap().branch.as_deref(), Some("main"));
 
-        // Outside a repository nothing is reported.
+        // Outside a repository nothing is reported. The fixture record and
+        // hook still describe the same verified physical checkout.
+        me.spec.workdir = Some(std::env::temp_dir());
         let quiet = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Messages { messages: vec![] },
@@ -2277,12 +2280,13 @@ mod tests {
     async fn timeout_after_reading_inbox_preserves_messages() {
         struct Slow {
             queued: RefCell<Vec<Envelope>>,
+            agent: AgentRecord,
         }
         impl Backend for Slow {
             async fn call(&self, request: Request) -> Result<Response> {
                 match request {
                     Request::Inspect { .. } => Ok(Response::Agent {
-                        agent: agent("me", true),
+                        agent: self.agent.clone(),
                     }),
                     Request::Inbox { drain, .. } => {
                         assert!(!drain, "hooks must not destructively read inboxes");
@@ -2295,7 +2299,11 @@ mod tests {
                 }
             }
         }
+        let checkout = tempfile::TempDir::new().unwrap();
+        let mut me = agent("me", true);
+        me.spec.workdir = Some(checkout.path().to_path_buf());
         let slow = Slow {
+            agent: me,
             queued: RefCell::new(vec![message("peer", "keep this")]),
         };
         let delivery = HookDelivery {
@@ -2303,7 +2311,7 @@ mod tests {
             pending: RefCell::new(Vec::new()),
         };
         let mut event = input("UserPromptSubmit");
-        event.cwd = None;
+        event.cwd = Some(checkout.path().to_path_buf());
         assert!(
             bounded_claude_code(&delivery, &event, &opts())
                 .await
