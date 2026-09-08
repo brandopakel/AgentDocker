@@ -45,9 +45,8 @@ The provider CLI remains the writer of its live application state, using its
 These checks are not a compare-and-swap transaction with that CLI: an independent
 writer can still race between validation and the provider command. Avoid
 simultaneous edits to the same MCP entry while applying or undoing. Fully
-coordinated provider mutations and alternate Claude configuration roots remain
-separate delivery work; ordinary unrelated application-state updates do not
-invalidate a receipt.
+coordinated provider mutations remain separate delivery work; ordinary unrelated
+application-state updates do not invalidate a receipt.
 
 ## What a connection check proves
 
@@ -74,3 +73,13 @@ The activity adapter resolves physical checkout aliases, so macOS `/tmp` and
 `/private/tmp` do not reject a report from the same directory. A different
 checkout remains a mismatch. Codex interrupt hooks use its documented maximum
 three-second timeout; other activity hooks retain a fifteen-second outer limit.
+
+Claude Code inventory, connection checks, user hooks and guided setup respect
+[`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars). A selected profile
+uses `settings.json` and `.claude.json` inside that directory; without an
+override the default remains `~/.claude/settings.json` and `~/.claude.json`.
+Saved delegated steps pin the selected profile directory at preview. Apply,
+resume and undo set that profile only in the provider child process; a plan for
+the default profile explicitly removes an inherited override from that child.
+Changing the invoking shell's profile after preview does not redirect the saved
+plan. Setup does not switch the profiles of existing provider sessions.

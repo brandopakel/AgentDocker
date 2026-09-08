@@ -448,3 +448,15 @@ known visibility, and permits at most four capture requests, each subsequent
 request requiring a newly reported surface failure. It retains the deadline and
 real screenshot requirement. Final-source graphical CI must validate recovery;
 local acceptance still awaits an unlocked display.
+
+### Consistent Claude profile routing
+
+The alternate-profile gap identified during delegated undo review is implemented:
+`CLAUDE_CONFIG_DIR` now selects the same MCP file, hooks file and configuration
+inventory in the host helpers used by setup and health checks. Saved delegated
+steps retain an absolute profile directory and apply it only to the provider
+child; default-profile steps explicitly clear an inherited override. Tests
+cover profile setup/health/undo with an unrelated invalid default configuration
+and child-only environment changes. Final-source CI and an actual packaged
+provider-CLI preview/apply/undo trial remain required. Concurrent writes to the
+same provider entry still lack compare-and-swap semantics.

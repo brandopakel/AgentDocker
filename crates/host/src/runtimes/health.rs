@@ -361,6 +361,7 @@ mod tests {
         let roots = Roots {
             home: home.clone(),
             codex_home: None,
+            claude_config_dir: None,
             path: vec![home.join("bin")],
             app_dirs: vec![],
             install_dirs: vec![],

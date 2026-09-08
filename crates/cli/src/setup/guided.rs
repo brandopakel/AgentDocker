@@ -64,6 +64,10 @@ struct Delegated {
     /// receipts lack this evidence and cannot remove a present entry.
     #[serde(default)]
     expected: Option<Value>,
+    /// Provider profile selected at preview; None deliberately removes any
+    /// inherited override when resuming a plan for the default profile.
+    #[serde(default)]
+    config_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,8 +181,27 @@ fn delegated_mcp(
     let Some(cli) = runtime.cli.as_deref() else {
         return Ok(None);
     };
+    let config_dir = roots
+        .claude_config_dir
+        .as_deref()
+        .map(project::try_canonical)
+        .transpose()?;
     let path = runtimes::mcp_config_path(spec, roots)
         .context("Claude Code has no MCP configuration path")?;
+    // Pin the directory, but keep the provider's file name. The provider
+    // owns how its configuration file is atomically replaced or symlinked.
+    let path = project::try_canonical(
+        path.parent()
+            .context("provider configuration has no directory")?,
+    )?
+    .join(
+        path.file_name()
+            .context("provider configuration has no file name")?,
+    );
+    ensure!(
+        path.is_absolute(),
+        "cannot resolve the provider profile location"
+    );
     let cli = cli
         .to_str()
         .context("the Claude Code CLI path is not UTF-8")?
@@ -209,6 +232,7 @@ fn delegated_mcp(
         remove,
         created: false,
         expected: Some(expected),
+        config_dir,
     }))
 }
 
@@ -269,9 +293,17 @@ fn check_delegated(step: &Delegated, undo: bool) -> Result<()> {
     }
 }
 
-fn run_step(argv: &[String]) -> Result<agentdocker_host::command::Output> {
-    agentdocker_host::command::run(&std::env::current_dir()?, argv, REGISTER_TIMEOUT)
-        .with_context(|| format!("cannot run {}", argv.first().map_or("", String::as_str)))
+fn run_step(step: &Delegated, argv: &[String]) -> Result<agentdocker_host::command::Output> {
+    agentdocker_host::command::run_with_env(
+        &std::env::current_dir()?,
+        argv,
+        REGISTER_TIMEOUT,
+        &[(
+            "CLAUDE_CONFIG_DIR",
+            step.config_dir.as_deref().map(Path::as_os_str),
+        )],
+    )
+    .with_context(|| format!("cannot run {}", argv.first().map_or("", String::as_str)))
 }
 
 /// Make the registration the plan asked for.
@@ -288,7 +320,7 @@ fn register(step: &Delegated) -> Result<()> {
     if let Some(entry) = present(step)? {
         return require_owned(step, &entry);
     }
-    let output = run_step(&step.add)?;
+    let output = run_step(step, &step.add)?;
     ensure!(
         present(step)?.as_ref() == Some(expected),
         "`{}` failed and {} still does not register the AgentDocker MCP server: {}",
@@ -313,7 +345,7 @@ fn deregister(step: &Delegated) -> Result<()> {
         None => return Ok(()),
         Some(entry) => require_owned(step, &entry)?,
     }
-    let output = run_step(&step.remove)?;
+    let output = run_step(step, &step.remove)?;
     ensure!(
         present(step)?.is_none(),
         "`{}` failed and {} still has an agentdocker entry: {}",
@@ -363,7 +395,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
         // Hooks cover the Claude Code lifecycle without rewriting its mutable
         // .claude.json application state; delegated_mcp registers that server.
         let (path, channel) = if spec.name == "claude-code" {
-            (roots.home.join(".claude/settings.json"), "hooks")
+            (runtimes::hook_config_path(spec, roots), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
             (path, "mcp")
         } else {
@@ -785,6 +817,7 @@ mod tests {
         Roots {
             home: path.to_owned(),
             codex_home: None,
+            claude_config_dir: None,
             path: vec![],
             app_dirs: vec![],
             install_dirs: vec![],
@@ -801,9 +834,10 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/usr/bin/env python3
-import json, sys
+import json, os, sys
 from pathlib import Path
-path = Path(__file__).resolve().parents[1] / ".claude.json"
+profile = os.environ.get("CLAUDE_CONFIG_DIR")
+path = (Path(profile) if profile else Path(__file__).resolve().parents[1]) / ".claude.json"
 args = sys.argv[1:]
 if len(args) < 2:
     sys.exit(0)
@@ -939,6 +973,7 @@ path.write_text(json.dumps(value))
             expected: Some(
                 json!({"command":"/opt/agentdocker", "args":["mcp","--runtime","claude-code"]}),
             ),
+            config_dir: None,
         };
         // Removing one is a real failure when the entry survives it.
         let error = deregister(&step).unwrap_err().to_string();
@@ -1012,7 +1047,7 @@ path.write_text(json.dumps(value))
         // appears between the preview and the apply.
         let mut theirs = prepare(&roots, &["claude-code".into()], &exe).unwrap();
         assert_eq!(theirs.delegated.len(), 1);
-        run_step(&theirs.delegated[0].add.clone()).unwrap();
+        run_step(&theirs.delegated[0], &theirs.delegated[0].add).unwrap();
         assert!(registers_us(&theirs.delegated[0]).unwrap());
         save(&directory, &theirs).unwrap();
         apply(&directory, &mut theirs, false).unwrap();
@@ -1221,6 +1256,62 @@ path.write_text(json.dumps(value))
             assert!(register(step).is_err());
             assert_eq!(read_config(&step.path).unwrap().unwrap(), after);
         }
+    }
+
+    #[test]
+    fn claude_profile_is_consistent_and_pinned_through_saved_apply_and_undo() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut roots, _) = fake_claude(temp.path());
+        writing_claude(temp.path());
+        let profile = temp.path().join("alternate-profile");
+        std::fs::create_dir(&profile).unwrap();
+        roots.claude_config_dir = Some(profile.clone());
+        // Default-profile corruption must not affect the selected profile.
+        let default = temp.path().join(".claude.json");
+        std::fs::write(&default, "leave this default profile untouched").unwrap();
+        let directory = directory(&temp.path().join("state")).unwrap();
+        let mut plan = prepare(
+            &roots,
+            &["claude-code".into()],
+            &temp.path().join("bin/agentdocker"),
+        )
+        .unwrap();
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| change.path.starts_with(&profile))
+        );
+        assert_eq!(
+            plan.delegated[0].config_dir,
+            Some(project::canonical(&profile))
+        );
+        save(&directory, &plan).unwrap();
+        plan = load(&directory, &plan.id).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        let spec = agentdocker_core::runtime::spec("claude-code").unwrap();
+        let inventory = runtimes::inspect(spec, &roots, "agentdocker").unwrap();
+        assert_eq!(inventory.config_dir, Some(profile.clone()));
+        assert_eq!(inventory.mcp, Wiring::Wired);
+        assert_eq!(inventory.hooks, Wiring::Wired);
+        let health = runtimes::health::inspect(spec, &roots, "agentdocker");
+        assert!(health.iter().all(|check| {
+            check
+                .configuration
+                .as_ref()
+                .is_some_and(|path| path.starts_with(&profile))
+        }));
+        assert!(
+            health
+                .iter()
+                .all(|check| check.status == runtimes::health::Status::ExecutableAvailable)
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert!(present(&plan.delegated[0]).unwrap().is_none());
+        assert!(!profile.join("settings.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(default).unwrap(),
+            "leave this default profile untouched"
+        );
     }
 
     #[test]

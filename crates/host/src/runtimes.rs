@@ -19,6 +19,8 @@ pub struct Roots {
     pub home: PathBuf,
     /// Explicit Codex host configuration root, when set by the caller.
     pub codex_home: Option<PathBuf>,
+    /// Explicit Claude Code configuration profile, separate from its default home.
+    pub claude_config_dir: Option<PathBuf>,
     /// `PATH`, split.
     pub path: Vec<PathBuf>,
     /// Standard installation directories, used for CLI inventory only.
@@ -50,6 +52,9 @@ impl Roots {
             codex_home: std::env::var_os("CODEX_HOME")
                 .filter(|p| !p.is_empty())
                 .map(PathBuf::from),
+            claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|p| !p.is_empty())
+                .map(|path| crate::project::canonical(&PathBuf::from(path))),
             install_dirs: desktop::install_dirs(&home, std::env::consts::OS),
             desktop_dirs: if cfg!(target_os = "linux") {
                 desktop::xdg_dirs(
@@ -108,6 +113,8 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
     let apps = desktop::apps(spec, roots)?;
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
+    } else if spec.name == "claude-code" {
+        roots.claude_config_dir.clone()
     } else {
         None
     }
@@ -209,7 +216,7 @@ fn app_version(bundle: &Path) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve a configuration file from injectable roots, including CODEX_HOME.
+/// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
         McpWiring::None => None,
@@ -217,6 +224,11 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
             if spec.name == "codex" {
                 if let Some(home) = &roots.codex_home {
                     return Some(home.join("config.toml"));
+                }
+            }
+            if spec.name == "claude-code" {
+                if let Some(directory) = &roots.claude_config_dir {
+                    return Some(directory.join(".claude.json"));
                 }
             }
             Some(roots.home.join(file))
@@ -342,7 +354,11 @@ pub fn hook_config_path(spec: &RuntimeSpec, roots: &Roots) -> PathBuf {
             .unwrap_or_else(|| roots.home.join(".codex"))
             .join("hooks.json")
     } else {
-        roots.home.join(".claude/settings.json")
+        roots
+            .claude_config_dir
+            .clone()
+            .unwrap_or_else(|| roots.home.join(".claude"))
+            .join("settings.json")
     }
 }
 
@@ -449,6 +465,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("Claude.app/Contents")).unwrap();
         let roots = Roots {
             codex_home: None,
+            claude_config_dir: None,
             home,
             path: vec![bin],
             install_dirs: vec![],
