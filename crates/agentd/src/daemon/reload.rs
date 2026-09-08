@@ -31,7 +31,7 @@
 //! worse than one that admits it cannot go yet.
 
 use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -124,8 +124,10 @@ pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
     // Otherwise the successor takes over holding a terminal it cannot
     // find, and the agent on the other end is attached to nothing with
     // nobody saying so.
-    let named = std::iter::once(handover.listener).chain(handover.terminals.iter().map(|t| t.fd));
-    for index in named {
+    let named: Vec<usize> = std::iter::once(handover.listener)
+        .chain(handover.terminals.iter().map(|t| t.fd))
+        .collect();
+    for &index in &named {
         if index >= fds.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -135,6 +137,44 @@ pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
                 ),
             ));
         }
+    }
+    // Each descriptor belongs to one thing. Two names for one of them —
+    // the listener also claimed as a terminal, or two agents pointed at
+    // the same pty — is a map that cannot be true, and following it
+    // would give an agent somebody else's terminal.
+    let mut once = named.clone();
+    once.sort_unstable();
+    once.dedup();
+    if once.len() != named.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handover gives one descriptor to more than one owner",
+        ));
+    }
+    // And one terminal per agent, for the same reason from the other
+    // direction.
+    let mut agents: Vec<&AgentId> = handover.terminals.iter().map(|t| &t.agent).collect();
+    let owners = agents.len();
+    agents.sort_unstable();
+    agents.dedup();
+    if agents.len() != owners {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handover gives one agent more than one terminal",
+        ));
+    }
+    // A process handed over without a birth time cannot be told from a
+    // recycled pid afterwards, so the successor would be adopting
+    // whatever now holds that number.
+    if let Some(unverified) = handover.adopted.iter().find(|a| a.started_at.is_none()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "handover adopts pid {} with no start time, which cannot be told from a \
+                 recycled one",
+                unverified.pid
+            ),
+        ));
     }
     Ok((handover, fds))
 }
@@ -152,23 +192,60 @@ pub fn answer(socket: &UnixStream, ready: &Ready) -> io::Result<()> {
 /// refusal, a malformed reply, a successor that died without saying
 /// anything, and a deadline all leave the predecessor exactly as it was.
 pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> {
-    // A deadline the wait cannot outlast — except that on macOS setting
-    // one fails with EINVAL when the peer has already closed, which is
-    // precisely the case of a successor that died before it said
-    // anything. Refusing there would report the wrong thing about the
-    // right outcome, and the read that follows cannot block on a socket
-    // with no peer, so the deadline is not needed to escape it. Anything
-    // still attached accepts the timeout, as it must for a successor
-    // that is alive and simply silent.
-    let bounded = socket.set_read_timeout(Some(within)).is_ok();
+    // Zero means "no timeout" to the kernel, which is the opposite of
+    // anything a caller passing zero could want here. Refused rather
+    // than quietly turned into an unbounded wait.
+    if within.is_zero() {
+        return Err("a successor deadline of zero would never expire".to_owned());
+    }
     let deadline = Instant::now() + within;
-    let (payload, _) = handoff::receive(socket).map_err(|e| {
-        if bounded && Instant::now() >= deadline {
+
+    // The timeout the kernel enforces is per-read, and `handoff::receive`
+    // does a header `recvmsg` and then reads the body until it has all
+    // of it. Every one of those resets the clock, so a successor that
+    // trickles a byte at a time can take as long as it likes and still
+    // come back `Serving` — and the predecessor would hand over on the
+    // word of something that took ten minutes to say it. The socket
+    // timeout only stops any single read from hanging; the deadline is
+    // what bounds the wait.
+    //
+    // The one failure tolerated in setting it is a peer that has already
+    // closed: on macOS that returns EINVAL, and it is exactly the case
+    // of a successor that died before speaking. A read on a socket with
+    // no peer cannot block, so the wait is still bounded. Any other
+    // failure leaves the read able to hang for ever, which is not
+    // something to find out later.
+    if let Err(error) = socket.set_read_timeout(Some(within))
+        && !peer_has_gone(socket)
+    {
+        return Err(format!("cannot bound the wait for the successor: {error}"));
+    }
+
+    let (payload, fds) = handoff::receive(socket).map_err(|e| {
+        if Instant::now() >= deadline {
             format!("the successor did not say it was serving within {within:?}")
         } else {
             format!("the successor said nothing: {e}")
         }
     })?;
+    // Checked after the read as well as during it: a reply that arrived
+    // in pieces can satisfy every per-read timeout and still have taken
+    // longer than the caller allowed.
+    if Instant::now() >= deadline {
+        return Err(format!(
+            "the successor did not finish saying it was serving within {within:?}"
+        ));
+    }
+    // A readiness answer carries words, not descriptors. Anything
+    // attached to one is a confused successor or not a successor at all,
+    // and taking its descriptors on trust is how a daemon ends up
+    // holding files nobody meant it to have.
+    if !fds.is_empty() {
+        return Err(format!(
+            "the successor's answer carried {} descriptors, which a readiness reply never does",
+            fds.len()
+        ));
+    }
     match serde_json::from_slice::<Ready>(&payload) {
         Ok(Ready::Serving) => Ok(()),
         Ok(Ready::Failed { reason }) => {
@@ -176,6 +253,27 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
         }
         Err(e) => Err(format!("the successor's answer made no sense: {e}")),
     }
+}
+
+/// Whether the other end has already gone.
+///
+/// Asked only to explain a failure to set a timeout, and answered
+/// without consuming anything: a peek returns 0 at end of file, and on a
+/// peer that is merely quiet it returns EAGAIN rather than blocking.
+fn peer_has_gone(socket: &UnixStream) -> bool {
+    use nix::sys::socket::{MsgFlags, recv};
+    let mut nothing = [0_u8; 1];
+    // End of file, and only that. A peer that is merely quiet answers
+    // `EAGAIN` because of `DONTWAIT`, and nothing is consumed because of
+    // `PEEK`.
+    matches!(
+        recv(
+            socket.as_raw_fd(),
+            &mut nothing,
+            MsgFlags::MSG_PEEK | MsgFlags::MSG_DONTWAIT,
+        ),
+        Ok(0)
+    )
 }
 
 impl Daemon {
@@ -210,31 +308,130 @@ mod tests {
         }
     }
 
-    /// What arrives is the same open file, not a copy of its name.
+    /// What arrives is the same *open file description*, not another
+    /// handle on the same path.
     ///
-    /// This is the property the whole upgrade rests on. A pty master
-    /// cannot be reopened — reopening gives a different terminal with
-    /// nobody on it — so if what crosses is not the *same* open file,
-    /// none of the rest is worth building.
+    /// This is the property the whole upgrade rests on, and reading the
+    /// same bytes does not prove it — two independent opens of one path
+    /// read the same bytes too. What only a shared description gives is
+    /// a shared file offset, so this seeks on one side and reads on the
+    /// other, which cannot work unless the descriptor was duplicated
+    /// rather than reopened. A pty master has no path to reopen at all,
+    /// so anything weaker would not be testing the thing that matters.
     #[test]
-    fn what_arrives_is_the_same_open_file_not_its_name() {
+    fn what_arrives_shares_the_sender_s_file_offset() {
         let (mine, theirs) = UnixStream::pair().unwrap();
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let carried = std::fs::File::open(file.path()).unwrap();
+        let path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(path.path(), b"0123456789").unwrap();
+        let carried = std::fs::File::open(path.path()).unwrap();
 
         offer(&mine, &handover(), &[carried.as_fd()]).unwrap();
         let (received, fds) = accept(&theirs).unwrap();
         assert_eq!(received, handover());
         assert_eq!(fds.len(), 1);
+        let mut arrived = std::fs::File::from(fds.into_iter().next().unwrap());
 
-        // Written after the descriptor crossed, and read back through
-        // the descriptor that arrived.
-        std::fs::write(file.path(), b"after the handover").unwrap();
-        let mut back = std::fs::File::from(fds.into_iter().next().unwrap());
-        back.rewind().unwrap();
+        // Move the offset using the sender's handle. A reopened file
+        // would start at zero however this one was moved.
+        (&carried).seek(std::io::SeekFrom::Start(6)).unwrap();
         let mut said = String::new();
-        back.read_to_string(&mut said).unwrap();
-        assert_eq!(said, "after the handover");
+        arrived.read_to_string(&mut said).unwrap();
+        assert_eq!(
+            said, "6789",
+            "the descriptor was duplicated, not reopened: the offset is shared"
+        );
+
+        // And the other way, so this is one description rather than two
+        // that happened to agree once.
+        arrived.seek(std::io::SeekFrom::Start(2)).unwrap();
+        let mut also = String::new();
+        (&carried).read_to_string(&mut also).unwrap();
+        assert_eq!(also, "23456789");
+    }
+
+    /// A map that gives one descriptor to two owners is refused.
+    #[test]
+    fn a_handover_that_double_books_a_descriptor_is_refused() {
+        let opened = |n: usize| {
+            (0..n)
+                .map(|_| std::fs::File::open("/dev/null").unwrap())
+                .collect::<Vec<_>>()
+        };
+
+        // The listener claimed as a terminal as well.
+        let files = opened(2);
+        let borrowed: Vec<_> = files.iter().map(AsFd::as_fd).collect();
+        let mut clash = handover();
+        clash.terminals.push(Terminal {
+            agent: AgentId::from("abc"),
+            fd: 0,
+        });
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        offer(&mine, &clash, &borrowed).unwrap();
+        let refused = accept(&theirs).unwrap_err();
+        assert!(
+            refused.to_string().contains("more than one owner"),
+            "{refused}"
+        );
+
+        // One agent given two terminals.
+        let files = opened(3);
+        let borrowed: Vec<_> = files.iter().map(AsFd::as_fd).collect();
+        let mut twice = handover();
+        twice.terminals = vec![
+            Terminal {
+                agent: AgentId::from("abc"),
+                fd: 1,
+            },
+            Terminal {
+                agent: AgentId::from("abc"),
+                fd: 2,
+            },
+        ];
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        offer(&mine, &twice, &borrowed).unwrap();
+        let refused = accept(&theirs).unwrap_err();
+        assert!(
+            refused.to_string().contains("more than one terminal"),
+            "{refused}"
+        );
+    }
+
+    /// A process handed over without a birth time is refused: it cannot
+    /// be told from whatever now holds that pid.
+    #[test]
+    fn an_adopted_process_with_no_birth_time_is_refused() {
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        let carried = std::fs::File::open("/dev/null").unwrap();
+        let mut vague = handover();
+        vague.adopted.push(Adopted {
+            agent: AgentId::from("abc"),
+            pid: 4242,
+            started_at: None,
+        });
+        offer(&mine, &vague, &[carried.as_fd()]).unwrap();
+        let refused = accept(&theirs).unwrap_err();
+        assert!(refused.to_string().contains("recycled one"), "{refused}");
+    }
+
+    /// A deadline of zero is refused rather than turned into for ever.
+    #[test]
+    fn a_zero_deadline_is_refused_rather_than_waiting_for_ever() {
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        let reason = await_ready(&mine, Duration::ZERO).unwrap_err();
+        assert!(reason.contains("never expire"), "{reason}");
+        drop(theirs);
+    }
+
+    /// A readiness answer carrying descriptors is refused.
+    #[test]
+    fn a_readiness_answer_never_carries_descriptors() {
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        let carried = std::fs::File::open("/dev/null").unwrap();
+        let payload = serde_json::to_vec(&Ready::Serving).unwrap();
+        handoff::send(&theirs, &payload, &[carried.as_fd()]).unwrap();
+        let reason = await_ready(&mine, Duration::from_millis(200)).unwrap_err();
+        assert!(reason.contains("never does"), "{reason}");
     }
 
     /// A listening socket crosses still bound, and still accepts.
