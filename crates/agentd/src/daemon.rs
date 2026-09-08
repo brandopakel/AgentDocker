@@ -1520,7 +1520,7 @@ impl Daemon {
             // permits nonexistent suffixes, which is useful for planned
             // paths but cannot establish a registration's checkout.
             let given = workdir.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
+            let resolved = match tokio::task::spawn_blocking(move || {
                 let path = std::fs::canonicalize(&workdir)?;
                 if !path.is_dir() {
                     return Err(std::io::Error::new(
@@ -1531,8 +1531,15 @@ impl Daemon {
                 Ok(path)
             })
             .await
-            .ok()
-            .and_then(Result::ok);
+            {
+                Ok(result) => result.ok(),
+                Err(_) => {
+                    return Response::error(
+                        ErrorCode::Internal,
+                        "the working-directory resolver failed",
+                    );
+                }
+            };
             let Some(resolved) = resolved else {
                 // Neither retain an unverified path nor turn a supplied
                 // directory into None: both would lose identity evidence.

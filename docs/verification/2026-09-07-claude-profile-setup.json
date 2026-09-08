@@ -199,7 +199,7 @@
   ],
   "limits": [
     "These are real provider configuration-CLI operations, not model turns or automatic message consumption.",
-    "The compiled candidate is pinned to a65d956; the later driver/publication commit requires its own CI.",
+    "The packaged binaries are pinned to manifest.source_commit c5b76fa71a5ecbb353e94c17bd9ed212f1286907; a65d956 is a later driver/publication head and requires its own CI.",
     "Concurrent independent provider writes still lack compare-and-swap semantics.",
     "Fixture directories were removed; private command outputs contain only the disposable profiles and remain outside the repository."
   ]

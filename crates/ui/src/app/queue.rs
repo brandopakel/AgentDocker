@@ -88,7 +88,7 @@ impl Sender {
         if bytes(&command) > COMMAND_BYTES {
             return Err(Rejected {
                 command,
-                reason: "Command not queued: it exceeds the 64 KiB command limit.",
+                reason: "It exceeds the 64 KiB command limit.",
             });
         }
         let refresh = key(&command);

@@ -181,30 +181,39 @@ def smoke(binary_dir, output, source):
         raise RuntimeError("this campaign requires native Unix PTYs")
     binary_dir = binary_dir.resolve(strict=True)
     previous_umask = os.umask(0o077)
+    try:
+        return _smoke(binary_dir, output, source)
+    finally:
+        os.umask(previous_umask)
+
+
+def _smoke(binary_dir, output, source):
     output = output.absolute()
     output.mkdir(mode=0o700)
-    root = Path(tempfile.mkdtemp(prefix="ad-pty-", dir="/tmp"))
-    project, state, endpoint = root / "project", root / "state", root / "d.sock"
-    project.mkdir()
-    (project / "Agentfile.toml").write_text('name = "terminal-fixture"\ncommand = ["sleep", "90"]\n')
-    fixture = project / "fixture.py"
-    fixture.write_text(FIXTURE)
-    env = {"HOME": str(root / "home"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
-           "AGENTDOCKER_HOME": str(state), "AGENTDOCKER_SOCKET": str(endpoint),
-           "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": "warn"}
-    Path(env["HOME"]).mkdir()
-    label = "terminal-" + uuid.uuid4().hex
+    root = None
     daemon = attached = None
     owned = {}
     checks = []
-    report = {"source_commit": source, "driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "os": platform.system(), "os_version": platform.release(), "architecture": platform.machine(),
-              "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
-              "binaries": {name: {"bytes": (binary_dir / name).stat().st_size,
-                                  "sha256": hashlib.sha256((binary_dir / name).read_bytes()).hexdigest()}
-                           for name in ["agentd", "agentdocker"]}, "checks": checks, "result": "failed"}
+    report = {"source_commit": source, "checks": checks, "result": "failed"}
     started = time.monotonic()
     try:
+        root = Path(tempfile.mkdtemp(prefix="ad-pty-", dir="/tmp"))
+        project, state, endpoint = root / "project", root / "state", root / "d.sock"
+        project.mkdir()
+        (project / "Agentfile.toml").write_text('name = "terminal-fixture"\ncommand = ["sleep", "90"]\n')
+        fixture = project / "fixture.py"
+        fixture.write_text(FIXTURE)
+        env = {"HOME": str(root / "home"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
+               "AGENTDOCKER_HOME": str(state), "AGENTDOCKER_SOCKET": str(endpoint),
+               "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": "warn"}
+        Path(env["HOME"]).mkdir()
+        label = "terminal-" + uuid.uuid4().hex
+        report.update({"driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                       "os": platform.system(), "os_version": platform.release(), "architecture": platform.machine(),
+                       "scope": "real packaged CLI and daemon PTYs; no GUI input automation or provider integration",
+                       "binaries": {name: {"bytes": (binary_dir / name).stat().st_size,
+                                           "sha256": hashlib.sha256((binary_dir / name).read_bytes()).hexdigest()}
+                                    for name in ["agentd", "agentdocker"]}})
         with (output / "daemon.log").open("w") as log, (output / "terminal.raw").open("wb") as terminal_log:
             daemon = subprocess.Popen([str(binary_dir / "agentd")], cwd=project, env=env,
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -291,7 +300,10 @@ def smoke(binary_dir, output, source):
                 daemon.wait(timeout=10)
             except Exception as error:
                 cleanup_errors.append(type(error).__name__)
-        stop(daemon)
+        try:
+            stop(daemon)
+        except Exception as error:
+            cleanup_errors.append(type(error).__name__)
         for pid, created in owned.items():
             try:
                 if created is not None and identity(pid) == created:
@@ -299,16 +311,18 @@ def smoke(binary_dir, output, source):
                     cleanup_errors.append("owned_child_survived_normal_stop")
             except Exception as error:
                 cleanup_errors.append(type(error).__name__)
+        if not cleanup_errors and root is not None:
+            try:
+                shutil.rmtree(root)
+            except Exception as error:
+                cleanup_errors.append(type(error).__name__)
         report["elapsed_seconds"] = time.monotonic() - started
         report["cleanup"] = {"daemon_exited": daemon is None or daemon.poll() is not None,
                              "created_children": len(owned), "errors": cleanup_errors,
-                             "fixture_removed": not cleanup_errors}
-        if not cleanup_errors:
-            shutil.rmtree(root)
-        else:
+                             "fixture_removed": root is None or not root.exists()}
+        if cleanup_errors:
             report["result"] = "failed"
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-        os.umask(previous_umask)
     return report
 
 

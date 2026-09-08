@@ -38,7 +38,8 @@
       "agentdocker": "c1a5ee5dc4c5097a1b49b6470066fba7e2a3b8a6cbe8e2ee8ecca0e779c1c53a",
       "agentd": "7f4e586ce441c80a70aebfb5c41783aa8e3b2434d149eaaead80b203ace42b40",
       "agentdocker-ui": "26d1324be2fcee26d64c06780169b5765138bd659c04519adafe321a3a1e8f17"
-    }
+    },
+    "binary_sha256_stage": "build output before packaging and bundle signing"
   },
   "package": {
     "format": 1,
@@ -63,7 +64,8 @@
       "agentdocker-desktop-aarch64-apple-darwin.zip": "2111fa102f3dc54df7111e7dba2332691a4f24a9011049f7398fb7dfac5dcb94"
     },
     "app_allocated_bytes": 38662144,
-    "archive_bytes": 14153477
+    "archive_bytes": 14153477,
+    "binary_sha256_stage": "packaged binaries after macOS bundle signing"
   },
   "packaged_installation": {
     "passed": true,

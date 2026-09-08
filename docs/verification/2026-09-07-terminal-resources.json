@@ -1904,6 +1904,7 @@
   },
   "limits": [
     "One shared-runner baseline/corrected pair is advisory; backend timing does not establish GUI improvement.",
+    "The first corrected pair measured 30-48% lower socket throughput and claim_release p99 latency up to 534% higher than baseline. repeat_at_823 re-measures the same corrected head closer to baseline; this is consistent with shared-runner variance, rather than establishing a confirmed regression or improvement.",
     "The 100-agent observation uses idle owned sleep commands, not actual provider work or a soak.",
     "Other desktop apps and development sessions were active on the Mac; window focus/occlusion was not recorded.",
     "The original screenshot timeout and earlier higher GUI CPU reading remain unexplained.",

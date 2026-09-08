@@ -51,12 +51,14 @@ jobs:
             ditto -c -k --sequesterRsrc --keepParent \
               "target/${BUILD_TARGET}/release/AgentDocker.app" \
               "dist/agentdocker-desktop-${BUILD_TARGET}.zip"
-            shasum -a 256 "dist/agentdocker-desktop-${BUILD_TARGET}.zip" > "dist/agentdocker-desktop-${BUILD_TARGET}.zip.sha256"
           fi
           # shellcheck disable=SC2086  # the binary list is deliberately split
-          tar -czf "dist/agentdocker-${BUILD_TARGET}.tar.gz" -C "target/${BUILD_TARGET}/release" $binaries
+          COPYFILE_DISABLE=1 tar -czf "dist/agentdocker-${BUILD_TARGET}.tar.gz" -C "target/${BUILD_TARGET}/release" $binaries
           cd dist
           shasum -a 256 "agentdocker-${BUILD_TARGET}.tar.gz" > "agentdocker-${BUILD_TARGET}.tar.gz.sha256"
+          if [ "$WITH_UI" = "true" ]; then
+            shasum -a 256 "agentdocker-desktop-${BUILD_TARGET}.zip" > "agentdocker-desktop-${BUILD_TARGET}.zip.sha256"
+          fi
       - name: Enforce download and payload size budgets
         env:
           BUILD_TARGET: ${{ matrix.target }}

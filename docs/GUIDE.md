@@ -120,7 +120,8 @@ halfway through a refactor.
 
 An agent without fresh provider observations or recent daemon coordination
 reads `unknown`. Recent coordination can establish `working`; an explicit
-provider stop can establish `idle`. Hover the cell for the observation source.
+provider stop produces a provisional `idle` observation that can expire or be
+superseded by newer activity. Hover the cell for the observation source.
 Configure integration on **Runtimes**, or with `agentdocker setup`.
 
 ### Questions

@@ -5,7 +5,7 @@
   "failure": "Merged Channels regression existed twice; earlier copy used std::sync::mpsc::Sender instead of bounded app::queue::Sender. Test compilation failed E0428/E0308 on Mac/Linux and coverage.",
   "private_log_sha256": "baa79cf2b072ead40afb43855a9f9e519dd19f4eff626aab884b22adcc951102",
   "fix": "Remove the identical old-queue copy; retain the bounded-queue regression with every original assertion. No production behavior changes.",
-  "retest": "Fresh corrected-source CI required; previous packaged acceptance is not proof the test suite passed.",
+  "retest": "Historical failed source; the corrected, superseding integration is recorded in superseding_ci. This record does not claim this failed revision passed.",
   "follow_up": {
     "source_commit": "9c987d00c84d92a05def9745a12078a6ae356c6d",
     "workflow": "https://github.com/brandopakel/AgentDocker/actions/runs/34198101390",
@@ -17,6 +17,17 @@
     "failure": "Two hook fixtures returned a record whose checkout differed from or was missing in the hook event. Verified registration correctly fell through to Register, which those mocks did not implement.",
     "private_log_sha256": "89d0d9d8aec66072a5a2abc6ea911070463b299e3453fb150fe8219b9116fdab",
     "fix": "Make each mock record and hook event identify the same physical checkout; the inbox timeout uses an owned non-repository directory. Preserve timeout, undrained inbox and pending-ack assertions. Production identity checks remain strict.",
-    "retest": "Fresh corrected-source CI required."
+    "retest": "Historical failed source. Its fixture corrections are included in the later integration identified by superseding_ci; no passing result is attributed to 9c987d00c84d92a05def9745a12078a6ae356c6d."
+  },
+  "superseding_ci": {
+    "source_commit": "116dc6cacadcf605817aa0899efca840ccf41b32",
+    "workflow": "https://github.com/brandopakel/AgentDocker/actions/runs/34276304442",
+    "result": "passed",
+    "checks": [
+      "fmt + clippy + test (ubuntu-latest)",
+      "fmt + clippy + test (macos-latest)",
+      "coverage"
+    ],
+    "scope": "Later integrated source including both fixture corrections and subsequent changes; not a reclassification or retest of the historical failing revisions."
   }
 }
