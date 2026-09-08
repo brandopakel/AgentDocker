@@ -21,6 +21,27 @@
 #[cfg(target_os = "macos")]
 const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Whether this process is inside an application bundle.
+///
+/// Asked before anything else here, because
+/// `UNUserNotificationCenter.currentNotificationCenter` does not return
+/// nil when it is not — it raises `NSInternalInconsistencyException`,
+/// "bundleProxyForCurrentProcess is nil". An Objective-C exception is
+/// not a Rust panic, so the `catch_unwind` that used to stand here
+/// caught nothing and the process aborted before it had drawn a frame:
+/// `cargo run`, `target/release/agentdocker-ui`, and the bare
+/// `agentdocker-ui` a Homebrew *formula* installs all died on startup,
+/// and the graphical acceptance run is what found it.
+///
+/// A bundle is exactly what has an identifier. A loose executable's
+/// `mainBundle` is its own directory and has none.
+#[cfg(target_os = "macos")]
+fn in_a_bundle() -> bool {
+    objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .is_some()
+}
+
 /// Ask, once, for permission to notify.
 ///
 /// Called from the running window rather than from the one-shot poster,
@@ -35,10 +56,10 @@ pub fn request_permission() {
     use objc2_foundation::NSError;
     use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
 
-    let Ok(centre) = std::panic::catch_unwind(UNUserNotificationCenter::currentNotificationCenter)
-    else {
-        return; // not in a bundle; nothing to register
-    };
+    if !in_a_bundle() {
+        return; // nothing to register a notification client against
+    }
+    let centre = UNUserNotificationCenter::currentNotificationCenter();
     let handler = RcBlock::new(|granted: objc2::runtime::Bool, error: *mut NSError| {
         if let Some(reason) = describe(error) {
             eprintln!("notifications unavailable: {reason}");
@@ -65,10 +86,12 @@ pub fn post(title: &str, body: &str) -> Result<(), String> {
     };
     use std::sync::{Arc, Mutex};
 
-    // Fails when the executable is not inside an application bundle,
+    // Refused when the executable is not inside an application bundle,
     // which is exactly when the icon would have been wrong anyway.
-    let centre = std::panic::catch_unwind(UNUserNotificationCenter::currentNotificationCenter)
-        .map_err(|_| "not running inside an application bundle".to_owned())?;
+    if !in_a_bundle() {
+        return Err("not running inside an application bundle".to_owned());
+    }
+    let centre = UNUserNotificationCenter::currentNotificationCenter();
 
     // Asking is idempotent and answered from the user's earlier choice
     // after the first time. A refusal is not an error here: the caller
@@ -188,4 +211,23 @@ pub fn post(_title: &str, _body: &str) -> Result<(), String> {
     Err("posting from the app is a macOS arrangement; \
          other platforms let the daemon post directly"
         .to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Neither of these aborts when there is no bundle around them.
+    ///
+    /// The test binary is a loose executable, which is the case that
+    /// used to take the whole process down: `currentNotificationCenter`
+    /// raises an Objective-C exception rather than returning nil, and
+    /// `catch_unwind` does not catch those. So this test is the case —
+    /// if the guard goes, this does not fail, it aborts.
+    #[test]
+    fn asking_outside_a_bundle_is_refused_rather_than_fatal() {
+        super::request_permission();
+        let refused = super::post("AgentDocker", "test").unwrap_err();
+        assert!(!refused.is_empty(), "a refusal says why");
+        #[cfg(target_os = "macos")]
+        assert!(!super::in_a_bundle(), "the test binary is not a bundle");
+    }
 }
