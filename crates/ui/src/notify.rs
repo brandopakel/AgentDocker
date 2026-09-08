@@ -12,15 +12,14 @@
 //! executable, from inside the app's own bundle, in a mode that posts
 //! one notification and exits. That is the whole trick.
 
-use std::time::{Duration, Instant};
-
 /// How long to wait for the notification centre to accept the request.
 ///
 /// This process exists only to post, so exiting before the framework has
 /// taken the request would drop it. A second is far longer than the
 /// handoff needs and short enough that a wedged notification daemon does
 /// not hold up whatever asked.
-const ACCEPT_WITHIN: Duration = Duration::from_secs(1);
+#[cfg(target_os = "macos")]
+const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Ask, once, for permission to notify.
 ///
@@ -156,19 +155,19 @@ fn describe(error: *mut objc2_foundation::NSError) -> Option<String> {
 /// blocks would wait for something that cannot arrive until it stops
 /// waiting. Draining the run loop is what lets them land.
 #[cfg(target_os = "macos")]
-fn wait_for(slot: &Outcome, within: Duration) -> Option<String> {
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
+fn wait_for(slot: &Outcome, within: std::time::Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + within;
+    while std::time::Instant::now() < deadline {
         if let Some(said) = slot.0.lock().unwrap().clone() {
             return Some(said);
         }
-        pump_run_loop(Duration::from_millis(10));
+        pump_run_loop(std::time::Duration::from_millis(10));
     }
     slot.0.lock().unwrap().clone()
 }
 
 #[cfg(target_os = "macos")]
-fn pump_run_loop(for_: Duration) {
+fn pump_run_loop(for_: std::time::Duration) {
     unsafe extern "C" {
         fn CFRunLoopRunInMode(
             mode: *const std::ffi::c_void,
