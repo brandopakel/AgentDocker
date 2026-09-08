@@ -183,11 +183,8 @@ impl Daemon {
                 {
                     break;
                 }
-                let protected = state.leases.clone();
-                let released = state.leases.release_all(&id);
-                state.finish_release(&id, released, None, SummarySource::Explicit);
+                state.release_all(id.as_str(), None, SummarySource::Explicit);
                 if state.storage_error.is_some() {
-                    state.leases = protected;
                     break;
                 }
             }

@@ -162,6 +162,8 @@ pub struct App {
     /// Applied once per change rather than every frame: setting fonts
     /// rebuilds egui's atlas, which is not something to do at 60Hz.
     applied: Option<crate::theme::Settings>,
+    /// The mark beside the title, uploaded to the GPU once and kept.
+    mark: Option<egui::TextureHandle>,
     /// Questions put to the human, and what is being typed in reply to
     /// each. The draft is keyed by message id so answering one question
     /// does not disturb another half-written answer.
@@ -190,6 +192,10 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
+        // Asked here because this is the only context macOS will
+        // register: a foreground app with a run loop. The one-shot
+        // poster the daemon runs inherits the answer.
+        crate::notify::request_permission();
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (msg_tx, msg_rx) = channel::<Msg>();
         spawn_worker(client.clone(), cmd_rx, msg_tx.clone(), cc.egui_ctx.clone());
@@ -239,6 +245,7 @@ impl App {
             settings: crate::theme::Settings::load(&home),
             home,
             applied: None,
+            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -282,6 +289,7 @@ impl App {
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
             applied: None,
+            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
@@ -1314,6 +1322,27 @@ impl App {
         }
     }
 
+    /// The mark, beside the name it belongs to.
+    ///
+    /// The same PNG the window sets as its icon, so the thing in the
+    /// title bar and the thing in the Dock cannot drift apart. Uploaded
+    /// on the first frame that draws it and kept: decoding a PNG every
+    /// frame to draw a 20-pixel square would be absurd.
+    fn mark(&mut self, ui: &mut egui::Ui) {
+        let texture = self.mark.get_or_insert_with(|| {
+            let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
+                .expect("the embedded icon is a valid PNG");
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            );
+            ui.ctx()
+                .load_texture("agentdocker-mark", image, egui::TextureOptions::LINEAR)
+        });
+        let side = ui.text_style_height(&egui::TextStyle::Heading);
+        ui.add(egui::Image::new(&*texture).fit_to_exact_size(egui::vec2(side, side)));
+    }
+
     /// Put the chosen sizes and spacing into the context, and only when
     /// they have changed: setting text styles rebuilds the font atlas,
     /// which is not a thing to do on every frame.
@@ -1502,6 +1531,7 @@ impl eframe::App for App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    self.mark(ui);
                     ui.heading("AgentDocker");
                     ui.separator();
                     match &self.connected {
@@ -1934,11 +1964,23 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 }
 
 /// The named binary next to this one, else whatever is on `PATH`.
+/// The sibling tool of this name, or the bare name for `PATH` to
+/// resolve.
+///
+/// The identity check is the point. macOS volumes are case-insensitive
+/// by default, so a bundle whose executable is `AgentDocker` answers
+/// `is_file()` for `agentdocker` — and the window then runs *itself*
+/// with a CLI argument and reports "unknown argument: setup" from every
+/// button that shells out. Comparing against our own path costs one
+/// `canonicalize` and rules that out however the bundle is laid out.
 fn beside(name: &str) -> std::path::PathBuf {
-    agentdocker_host::procinfo::executable_path()
-        .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join(name)))
+    let me = agentdocker_host::procinfo::executable_path().ok();
+    let real = |path: &std::path::Path| path.canonicalize().ok();
+    me.as_deref()
+        .and_then(|me| me.parent())
+        .map(|dir| dir.join(name))
         .filter(|sibling| sibling.is_file())
+        .filter(|sibling| real(sibling) != me.as_deref().and_then(real))
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 

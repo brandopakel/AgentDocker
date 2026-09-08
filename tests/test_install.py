@@ -141,6 +141,36 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(bundled.exists(), carries_bundle, result.stdout)
                 self.assertTrue((install / "agentdocker-ui").exists(), result.stdout)
 
+    def test_the_mark_is_present_and_square(self):
+        """The icon is composed around artwork now, not drawn, so the
+        artwork has to be there and has to be the shape the pipeline
+        assumes: square, so centring it needs no judgement."""
+        mark = ROOT / "docs/images/agentdocker-mark.png"
+        head = mark.read_bytes()[:24]
+        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = struct.unpack(">II", head[16:24])
+        self.assertEqual(width, height, "the mark is square")
+        self.assertGreaterEqual(width, 512, "large enough for a 1024 icon")
+
+    def test_the_embedded_window_icon_matches_the_pipeline(self):
+        """The app sets its own icon at runtime — it has to, or eframe
+        sets its logo instead — from a PNG compiled into the binary. That
+        copy has to stay the one the iconset is built from, or the Dock
+        and Finder end up showing different marks again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(
+                ["python3", str(ROOT / "scripts/icon.py"), tmp],
+                check=True,
+                capture_output=True,
+            )
+            fresh = (Path(tmp) / "AgentDocker.iconset/icon_256x256.png").read_bytes()
+            embedded = (ROOT / "crates/ui/src/icon.png").read_bytes()
+            self.assertEqual(
+                embedded,
+                fresh,
+                "crates/ui/src/icon.png is stale; regenerate it from scripts/icon.py",
+            )
+
     def test_icon_renders_every_size_the_iconset_needs(self):
         """The icon has a source rather than a stored file, so the source
         has to actually produce one. A PNG here is checked by its header
@@ -187,13 +217,13 @@ class InstallerTests(unittest.TestCase):
             for x, y in [(middle, middle), (120, middle), (size - 120, middle)]:
                 self.assertEqual(alpha(x, y), 255, f"body at {x},{y} is not solid")
 
-    def test_the_smallest_icon_is_simplified_rather_than_reduced(self):
-        """At 16pt the body is thirteen pixels across, and three
-        connectors converging on a disc become one grey smudge there. So
-        below 24pt the connectors are dropped and the discs grow. The
-        check is that 16 and 32 really are different drawings rather than
-        the same one resampled: the grey the connectors are made of
-        covers far less of the small one."""
+    def test_the_smallest_icon_is_given_more_of_the_tile(self):
+        """At 16pt the body is thirteen pixels across. Every pixel spent
+        on breathing room is one not spent on the shape, and what
+        survives of a detailed mark at that size is a smudge either way —
+        so the small sizes fill the tile and the large ones keep their
+        margin. The check is that they really are laid out differently
+        rather than being one drawing resampled."""
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(
                 ["python3", str(ROOT / "scripts/icon.py"), tmp],
@@ -202,39 +232,51 @@ class InstallerTests(unittest.TestCase):
             )
             iconset = Path(tmp) / "AgentDocker.iconset"
 
-            def grey_share(name, size):
+            def mark_share(name, size):
+                """How much of the canvas the mark itself covers.
+
+                The mark is the blue; the tile behind it is nearly black.
+                Anything with a blue channel well above the ground is the
+                artwork rather than the tile it sits on.
+                """
                 rows, _ = _read_png(iconset / name)
-                # The connectors and the host are the only greys, and
-                # they are the only thing near this value.
-                grey = sum(
+                blue = sum(
                     1
                     for y in range(size)
                     for x in range(size)
-                    if abs(rows[y][x * 4] - 0x8A) < 24
-                    and abs(rows[y][x * 4 + 1] - 0x93) < 24
-                    and abs(rows[y][x * 4 + 2] - 0xA5) < 24
-                    and rows[y][x * 4 + 3] > 200
+                    if rows[y][x * 4 + 3] > 200 and rows[y][x * 4 + 2] > 90
                 )
-                return grey / (size * size)
+                return blue / (size * size)
 
-            small = grey_share("icon_16x16.png", 16)
-            large = grey_share("icon_32x32.png", 32)
-            self.assertGreater(large, 0.0, "the connectors are there at 32pt")
-            self.assertLess(
+            small = mark_share("icon_16x16.png", 16)
+            large = mark_share("icon_512x512.png", 512)
+            self.assertGreater(large, 0.05, "the mark is on the large tile at all")
+            self.assertGreater(
                 small,
-                large / 2,
-                f"16pt drops the connectors: {small:.3f} against {large:.3f}",
+                large * 1.15,
+                f"16pt gives the mark more room: {small:.3f} against {large:.3f}",
             )
 
     @unittest.skipUnless(sys.platform == "darwin", "iconutil is macOS-only")
-    def test_bundle_names_the_app_for_macos(self):
-        """A bare executable is named after its file in the Dock and the
-        app switcher. The bundle is the only thing that changes that, so
-        what it says about itself is worth asserting."""
+    def test_bundle_names_the_app_without_shadowing_the_cli(self):
+        """The bundle carries the product's name; the executable keeps
+        its own.
+
+        Naming the executable `AgentDocker` looked tidier and broke every
+        window button that shells out. macOS volumes are case-insensitive
+        by default, so `Contents/MacOS/agentdocker` then resolved to the
+        *GUI*, and the app ran itself with a CLI argument: "unknown
+        argument: setup". The name belongs in CFBundleName, and the
+        commands have to be reachable beside it.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "agentdocker-ui"
             binary.write_text("#!/bin/sh\nexit 0\n")
             binary.chmod(0o755)
+            for tool in ["agentdocker", "agentd"]:
+                beside = Path(tmp) / tool
+                beside.write_text(f"#!/bin/sh\necho {tool}\n")
+                beside.chmod(0o755)
             out = Path(tmp) / "dist"
             out.mkdir()
             subprocess.run(
@@ -243,12 +285,72 @@ class InstallerTests(unittest.TestCase):
                 capture_output=True,
             )
             app = out / "AgentDocker.app"
+            macos = app / "Contents/MacOS"
             plist = (app / "Contents/Info.plist").read_text()
-            for key in ["<string>AgentDocker</string>", "<string>9.9.9</string>"]:
-                self.assertIn(key, plist)
-            self.assertTrue((app / "Contents/MacOS/AgentDocker").exists())
-            self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
+            self.assertIn("<string>AgentDocker</string>", plist, "the bundle is named")
+            self.assertIn("<string>agentdocker-ui</string>", plist, "the executable is not")
+            self.assertIn("<string>9.9.9</string>", plist)
             self.assertTrue((app / "Contents/Resources/AgentDocker.icns").exists())
+            self.assertEqual((app / "Contents/PkgInfo").read_text(), "APPL????")
+
+            for tool in ["agentdocker-ui", "agentdocker", "agentd"]:
+                self.assertTrue((macos / tool).exists(), f"{tool} ships in the bundle")
+
+            # The defect itself: on a case-insensitive volume two names
+            # that differ only in case are one file, so the window found
+            # itself when it went looking for the CLI.
+            names = sorted(entry.name for entry in macos.iterdir())
+            folded = [name.lower() for name in names]
+            self.assertEqual(
+                len(folded),
+                len(set(folded)),
+                f"no two executables differ only in case: {names}",
+            )
+            self.assertNotEqual(
+                (macos / "agentdocker").resolve(),
+                (macos / "agentdocker-ui").resolve(),
+                "looking for the CLI must not find the window",
+            )
+
+    def test_the_cask_is_generated_only_with_real_desktop_archives(self):
+        """A cask pointing at a download that is not there is worse than
+        no cask, so a release without packaged desktop archives must
+        produce none rather than one with a placeholder in it."""
+        spec = importlib.util.spec_from_file_location(
+            "formula", ROOT / "packaging/homebrew/generate.py"
+        )
+        formula = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(formula)
+        with tempfile.TemporaryDirectory() as tmp:
+            sums = Path(tmp)
+            # The commands ship on four targets; the app on two.
+            for target in [
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+                "aarch64-unknown-linux-musl",
+                "x86_64-unknown-linux-musl",
+            ]:
+                (sums / f"agentdocker-{target}.tar.gz.sha256").write_text(
+                    "a" * 64 + f"  agentdocker-{target}.tar.gz\n"
+                )
+            # The formula is happy on its own.
+            self.assertIn("0.1.0", formula.generate("v0.1.0", sums))
+            # The cask is not, until the app archives are there.
+            with self.assertRaises(FileNotFoundError):
+                formula.generate_cask("v0.1.0", sums)
+            for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"]:
+                (sums / f"agentdocker-desktop-{target}.zip.sha256").write_text(
+                    "b" * 64 + f"  agentdocker-desktop-{target}.zip\n"
+                )
+            cask = formula.generate_cask("v0.1.0", sums)
+            self.assertIn('cask "agentdocker-app"', cask)
+            self.assertIn("b" * 64, cask)
+            self.assertNotIn("@", cask, "no placeholder survives")
+            self.assertIn(
+                "no-quarantine",
+                cask,
+                "an ad-hoc signed app says how to open it",
+            )
 
     def test_formula_requires_real_hashes_for_every_target(self):
         spec = importlib.util.spec_from_file_location("formula", ROOT / "packaging/homebrew/generate.py")
