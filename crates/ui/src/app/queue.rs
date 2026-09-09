@@ -9,10 +9,18 @@ pub(super) const COMMAND_BYTES: usize = 64 * 1024;
 /// Bound retained command allocations as well as the number of commands.
 fn bytes(command: &Cmd) -> usize {
     match command {
-        Cmd::Journal(text) | Cmd::Channels(text) | Cmd::Stop(text) | Cmd::Console(text) => {
-            text.capacity()
+        Cmd::Stop(text) => text.capacity(),
+        Cmd::Journal(id, selector) | Cmd::Channels(id, selector) => {
+            id.capacity().saturating_add(selector.capacity())
         }
+        Cmd::Console(text, cwd) => text
+            .capacity()
+            .saturating_add(cwd.as_ref().map_or(0, |p| p.capacity())),
         Cmd::Answer(_, text) => text.capacity(),
+        Cmd::ChannelSend(id, text) => id.capacity().saturating_add(text.capacity()),
+        Cmd::Launch(spec) => {
+            serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
+        }
         Cmd::Setup(args) | Cmd::Desktop(args) => args.iter().fold(
             args.capacity().saturating_mul(size_of::<String>()),
             |total, arg| total.saturating_add(arg.capacity()),
@@ -41,8 +49,8 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Leases => Key::Leases,
         Cmd::Runtimes => Key::Runtimes,
         Cmd::Discovered => Key::Discovered,
-        Cmd::Journal(project) => Key::Journal(project.clone()),
-        Cmd::Channels(project) => Key::Channels(project.clone()),
+        Cmd::Journal(project, _) => Key::Journal(project.clone()),
+        Cmd::Channels(project, _) => Key::Channels(project.clone()),
         Cmd::Inbox => Key::Inbox,
         Cmd::Activity => Key::Activity,
         Cmd::Me => Key::Me,

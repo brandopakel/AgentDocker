@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# eframe/egui 0.36 need a newer compiler than the rest of the workspace.
+# The desktop toolkit needs a newer compiler than the CLI.
 # Kept here so `cargo install --path crates/cli` still builds on 1.87.
 rust-version = "1.95"
 
@@ -18,18 +18,24 @@ agentdocker-core.workspace = true
 agentdocker-host.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
-eframe.workspace = true
-egui.workspace = true
+iced.workspace = true
+png.workspace = true
+tokio.workspace = true
+rfd.workspace = true
+accesskit.workspace = true
+raw-window-handle.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
 vt100.workspace = true
+tempfile.workspace = true
 
 # Posting a notification that carries our icon is only possible from
 # inside our own bundle: macOS attributes a notification to the bundle
 # of the process that posts it, and every way of overriding that has
 # been closed. So the app posts, and the daemon asks it to.
 [target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = "0.26.3"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString"] }
@@ -45,4 +51,10 @@ objc2-user-notifications = { version = "0.3", features = [
 
 [dev-dependencies]
 libc.workspace = true
-tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+accesskit_unix = "0.21.1"
+x11-dl = "2.21"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+accesskit_windows = "0.32.1"

@@ -1,8 +1,5 @@
 //! Shared visual roles; status is always accompanied by a text label.
-use iced::{
-    Border, Color, Theme, color,
-    widget::{button, container},
-};
+use iced::{Border, Color, Theme, color, widget::container};
 
 #[derive(Clone, Copy)]
 pub struct Colors {
@@ -13,7 +10,6 @@ pub struct Colors {
     pub muted: Color,
     pub line: Color,
     pub accent: Color,
-    pub selected: Color,
     pub green: Color,
     pub amber: Color,
 }
@@ -29,7 +25,6 @@ impl Colors {
                 muted: color!(0xa0aabb),
                 line: color!(0x303743),
                 accent: color!(0x8cb4ff),
-                selected: color!(0x25364f),
                 green: color!(0x83c9a4),
                 amber: color!(0xe2b86d),
             }
@@ -42,7 +37,6 @@ impl Colors {
                 muted: color!(0x626d7e),
                 line: color!(0xe4e8ee),
                 accent: color!(0x285fc4),
-                selected: color!(0xe9f0fd),
                 green: color!(0x28724f),
                 amber: color!(0x946321),
             }
@@ -73,30 +67,6 @@ impl Colors {
                 radius: 10.0.into(),
             },
             ..Default::default()
-        }
-    }
-
-    pub fn quiet(self, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-        move |_, status| {
-            let focused = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            button::Style {
-                background: Some(
-                    if selected {
-                        self.selected
-                    } else if focused {
-                        self.line
-                    } else {
-                        Color::TRANSPARENT
-                    }
-                    .into(),
-                ),
-                text_color: if selected { self.accent } else { self.text },
-                border: Border {
-                    radius: 7.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
         }
     }
 }

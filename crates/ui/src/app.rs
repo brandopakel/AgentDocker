@@ -8,22 +8,24 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod queue;
+mod shell;
+mod style;
+mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
+pub use shell::Message;
 use std::time::{Duration, Instant};
 
+use crate::wake::Wake;
 use agentdocker_core::journal::ago;
-use agentdocker_core::runtime::Wiring;
 use agentdocker_core::{
     Activity, AgentActivity, AgentRecord, DiscoveredProcess, Event, EventKind, JournalEntry, Lease,
     MessageId, ProjectRef, Question, Request, Response, RuntimeInfo,
 };
 use anyhow::Context;
-use chrono::{DateTime, Utc};
-use egui::{Color32, RichText};
+use chrono::Utc;
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
-use crate::theme::{ABSENT, UNVERIFIED, WIRED};
 
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -50,18 +52,8 @@ const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 /// that never expires is a line the eye stops reading.
 const STATUS_FOR: Duration = Duration::from_secs(20);
 
-/// The terminal's frame inset. Named because the grid is sized against
-/// it: a screen that measures the room it has, then draws inside a
-/// border it forgot to subtract, is a screen that overflows.
-const TERMINAL_MARGIN: i8 = 6;
-
-/// One accent, used for the selected thing and nothing else. Taken from
-/// the blue the project palette starts at, so the window has one blue
-/// rather than two that nearly match.
-const ACCENT: Color32 = Color32::from_rgb(0x2F, 0x6F, 0xED);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Screen {
+pub enum Screen {
     Agents,
     Questions,
     Channels,
@@ -74,36 +66,6 @@ enum Screen {
     Desktop,
 }
 
-impl Screen {
-    const ALL: [Screen; 10] = [
-        Screen::Agents,
-        Screen::Questions,
-        Screen::Channels,
-        Screen::Terminal,
-        Screen::Console,
-        Screen::Runtimes,
-        Screen::Journal,
-        Screen::Leases,
-        Screen::Settings,
-        Screen::Desktop,
-    ];
-
-    fn title(self) -> &'static str {
-        match self {
-            Screen::Agents => "Agents",
-            Screen::Questions => "Questions",
-            Screen::Channels => "Channels",
-            Screen::Terminal => "Terminal",
-            Screen::Console => "Console",
-            Screen::Runtimes => "Runtimes",
-            Screen::Journal => "Journal",
-            Screen::Leases => "Leases",
-            Screen::Settings => "Settings",
-            Screen::Desktop => "Installation",
-        }
-    }
-}
-
 /// What the worker is asked to do.
 #[derive(Debug)]
 enum Cmd {
@@ -111,8 +73,8 @@ enum Cmd {
     Leases,
     Runtimes,
     Discovered,
-    Journal(String),
-    Channels(String),
+    Journal(String, String),
+    Channels(String, String),
     Inbox,
     Activity,
     /// Register the person at the keyboard, so agents can address them.
@@ -126,7 +88,9 @@ enum Cmd {
     Desktop(Vec<String>),
     /// Any `agentdocker` command, so the window is not limited to the
     /// few actions that have buttons.
-    Console(String),
+    Console(String, Option<std::path::PathBuf>),
+    Launch(Box<agentdocker_core::AgentSpec>),
+    ChannelSend(String, String),
 }
 
 /// What comes back to the window.
@@ -150,9 +114,13 @@ enum Msg {
     Setup(Result<serde_json::Value, String>),
     Desktop(Result<serde_json::Value, String>),
     Console(String),
+    Launched(Result<String, String>),
+    ChannelSent(String, Result<(), String>),
 }
 
 pub struct App {
+    shell: shell::State,
+    wake: Wake,
     worker_stop: Arc<std::sync::atomic::AtomicBool>,
     desktop: crate::desktop::Panel,
     smoke: Option<crate::smoke::Smoke>,
@@ -213,16 +181,10 @@ pub struct App {
     /// arrow currently is in it. `None` is the live line.
     console_history: Vec<String>,
     console_recall: Option<usize>,
-    console_focused: bool,
     /// What the reader has chosen about how this looks, and where it is
     /// kept between runs.
     settings: crate::theme::Settings,
     home: std::path::PathBuf,
-    /// Applied once per change rather than every frame: setting fonts
-    /// rebuilds egui's atlas, which is not something to do at 60Hz.
-    applied: Option<crate::theme::Settings>,
-    /// The mark beside the title, uploaded to the GPU once and kept.
-    mark: Option<egui::TextureHandle>,
     /// Questions put to the human, and what is being typed in reply to
     /// each. The draft is keyed by message id so answering one question
     /// does not disturb another half-written answer.
@@ -231,9 +193,6 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
-    /// Show only this project, by id. `None` is everything, which is the
-    /// right default: the window exists to show a fleet.
-    focus: Option<String>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
@@ -245,7 +204,8 @@ impl App {
         self
     }
 
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new() -> Self {
+        let wake = Wake::default();
         let client = Arc::new(Client::from_env());
         // The same directory the daemon uses, so a throwaway
         // AGENTDOCKER_HOME gets its own appearance too rather than
@@ -260,10 +220,10 @@ impl App {
             client.clone(),
             cmd_rx,
             msg_tx.clone(),
-            cc.egui_ctx.clone(),
+            wake.clone(),
             worker_stop.clone(),
         );
-        spawn_events(client.clone(), msg_tx, cc.egui_ctx.clone());
+        spawn_events(client.clone(), msg_tx, wake.clone());
         // The window is a person being present, so the person is an
         // agent for as long as it is open.
         for cmd in [
@@ -277,7 +237,16 @@ impl App {
         ] {
             let _ = cmd_tx.send(cmd);
         }
+        let shell = shell::State::load(&home);
+        let settings = shell
+            .catalog
+            .appearance
+            .clone()
+            .unwrap_or_else(|| crate::theme::Settings::load(&home))
+            .clamped();
         Self {
+            shell,
+            wake,
             worker_stop,
             desktop: Default::default(),
             tx: cmd_tx,
@@ -312,16 +281,12 @@ impl App {
             console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
-            console_focused: false,
-            settings: crate::theme::Settings::load(&home),
+            settings,
             home,
-            applied: None,
-            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
-            focus: None,
         }
     }
 
@@ -329,6 +294,8 @@ impl App {
     #[cfg(test)]
     fn bare(tx: CommandSender, rx: Receiver<Msg>) -> Self {
         Self {
+            shell: Default::default(),
+            wake: Wake::default(),
             worker_stop: Default::default(),
             desktop: Default::default(),
             tx,
@@ -363,16 +330,12 @@ impl App {
             console_truncated: false,
             console_history: Vec::new(),
             console_recall: None,
-            console_focused: false,
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
-            applied: None,
-            mark: None,
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
-            focus: None,
         }
     }
 
@@ -384,9 +347,17 @@ impl App {
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
-                Cmd::Console(_) => {
+                Cmd::Console(_, _) => {
                     self.console_running = self.console_running.saturating_sub(1);
                     self.append_console(&format!("Command not queued: {reason}\n"));
+                }
+                Cmd::Launch(_) => self.shell.launching = false,
+                Cmd::ChannelSend(id, _) => {
+                    self.shell
+                        .channel_drafts
+                        .entry(id)
+                        .or_default()
+                        .complete(Err(reason.into()));
                 }
                 Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
                 // Full queues may omit refreshes: events and periodic refresh
@@ -418,7 +389,7 @@ impl App {
                     self.channels
                         .retain(|channel| projects.contains(&channel.project.to_string()));
                     for project in projects {
-                        self.send(Cmd::Channels(project));
+                        self.request_channels(project);
                     }
                 }
                 Msg::Leases(leases) => self.leases = leases,
@@ -484,7 +455,10 @@ impl App {
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
-                        Err(reason) => self.say(reason),
+                        Err(reason) => {
+                            self.shell.answer_errors.insert(id, reason.clone());
+                            self.say(reason);
+                        }
                     }
                 }
                 Msg::Event(event) => self.on_event(*event),
@@ -504,7 +478,7 @@ impl App {
                             self.send(cmd);
                         }
                         if let Some(project) = &self.journal_project {
-                            self.send(Cmd::Journal(project.clone()));
+                            self.request_journal(project.clone());
                         }
                     }
                 }
@@ -537,7 +511,10 @@ impl App {
                             self.setup_plan = Some(value);
                             self.send(Cmd::Runtimes);
                         }
-                        Err(error) => self.say(error),
+                        Err(error) => {
+                            self.shell.setup_error = Some(error.clone());
+                            self.say(error);
+                        }
                     }
                 }
                 Msg::Console(text) => {
@@ -547,7 +524,30 @@ impl App {
                     // already above it.
                     self.append_console(text.trim_end());
                     self.append_console("\n");
-                    self.screen = Screen::Console;
+                }
+                Msg::Launched(result) => {
+                    self.shell.launching = false;
+                    match result {
+                        Ok(id) => {
+                            self.shell.launch = false;
+                            self.shell.selected = Some(id);
+                            self.send(Cmd::Agents);
+                            self.say("Agent launched");
+                        }
+                        Err(error) => self.shell.error = Some(error),
+                    }
+                }
+                Msg::ChannelSent(id, result) => {
+                    let success = result.is_ok();
+                    self.shell
+                        .channel_drafts
+                        .entry(id)
+                        .or_default()
+                        .complete(result);
+                    if success {
+                        self.send(Cmd::Inbox);
+                        self.say("Message sent");
+                    }
                 }
             }
         }
@@ -570,12 +570,6 @@ impl App {
         if self.connected.is_ok() && self.last_runtimes.elapsed() >= RUNTIMES_REFRESH {
             self.last_runtimes = Instant::now();
             self.send(Cmd::Runtimes);
-        }
-        if self.journal_project.is_none()
-            && let Some((id, _)) = self.projects().into_iter().next()
-        {
-            self.journal_project = Some(id.clone());
-            self.send(Cmd::Journal(id));
         }
     }
 
@@ -626,60 +620,6 @@ impl App {
         }
     }
 
-    /// The projects agents work in: (id, name), by name.
-    fn projects(&self) -> Vec<(String, String)> {
-        let mut seen: BTreeMap<String, String> = BTreeMap::new();
-        for project in self.agents.iter().filter_map(|a| a.project.as_ref()) {
-            seen.entry(project.id().as_str().to_owned())
-                .or_insert_with(|| project.name());
-        }
-        let mut list: Vec<(String, String)> = seen.into_iter().collect();
-        list.sort_by(|a, b| a.1.cmp(&b.1));
-        list
-    }
-
-    /// The project an agent works in: its id and its name.
-    fn project_of(&self, agent: &str) -> Option<(String, String)> {
-        self.agents
-            .iter()
-            .find(|a| a.id.as_str() == agent)
-            .and_then(|a| a.project.as_ref())
-            .map(|p| (p.id().as_str().to_owned(), p.name()))
-    }
-
-    /// A project as a dot and its name, in its own colour. Used wherever
-    /// rows from several projects are mixed together, because there the
-    /// colour alone asks the reader to remember which is which.
-    fn project_label(&self, ui: &mut egui::Ui, agent: &str) {
-        ui.horizontal(|ui| match self.project_of(agent) {
-            Some((id, name)) => {
-                crate::projects::dot(ui, &id);
-                ui.label(RichText::new(name).color(crate::projects::colour(&id)));
-            }
-            None => {
-                ui.label(RichText::new("—").weak());
-            }
-        });
-    }
-
-    /// Whether a row belonging to this agent survives the project filter.
-    fn in_focus(&self, agent: &str) -> bool {
-        match &self.focus {
-            None => true,
-            Some(only) => self.project_of(agent).is_some_and(|(id, _)| id == *only),
-        }
-    }
-
-    /// Runtimes whose configuration needs review. This is a setup hint,
-    /// not evidence about an individual session's current activity.
-    fn unwired(&self) -> std::collections::BTreeSet<String> {
-        self.runtimes
-            .iter()
-            .filter(|r| r.mcp.needs_review() || r.hooks.needs_review())
-            .map(|r| r.name.clone())
-            .collect()
-    }
-
     fn name_of(&self, id: &str) -> String {
         self.agents
             .iter()
@@ -690,502 +630,9 @@ impl App {
 
     // ----- screens -------------------------------------------------------
 
-    fn agents_screen(&mut self, ui: &mut egui::Ui) {
-        let now = Utc::now();
-        let unwired = self.unwired();
-        // Grouped by project id, not by name: two checkouts of one
-        // repository share a name, and the id is what actually says they
-        // are the same work.
-        let mut groups: BTreeMap<(String, String), Vec<&AgentRecord>> = BTreeMap::new();
-        for agent in self.agents.iter().filter(|a| a.status.is_live()) {
-            let key = match &agent.project {
-                Some(project) => (project.name(), project.id().as_str().to_owned()),
-                None => ("no project".to_owned(), String::new()),
-            };
-            groups.entry(key).or_default().push(agent);
-        }
-        let mut stop: Option<String> = None;
-        let mut arm: Option<String> = None;
-        let mut attach: Option<String> = None;
-        // An arming that has gone stale is no arming at all: a Stop
-        // clicked once and left alone must not be completable by a click
-        // that lands minutes later on a row that has since moved.
-        let confirming = self
-            .confirm_stop
-            .as_ref()
-            .filter(|(_, at)| at.elapsed() < CONFIRM_WITHIN)
-            .map(|(id, _)| id.clone());
-        if groups.is_empty() {
-            ui.label(
-                RichText::new("No live agents. Adopt one below, or `agentdocker run`.").weak(),
-            );
-        }
-        // One grid for every project rather than one each, so the columns
-        // line up down the whole screen. Separate grids size themselves
-        // independently, and the result reads as several tables that
-        // happen to be stacked.
-        egui::Grid::new("agents")
-            .striped(true)
-            .num_columns(8)
-            .show(ui, |ui| {
-                // Headers once, at the top. Repeating them per project
-                // was noise: the columns are shared now, so the reader
-                // only needs telling what they are once.
-                for header in [
-                    "NAME", "RUNTIME", "DOING", "BRANCH", "LEASES", "SEEN", "", "",
-                ] {
-                    ui.label(RichText::new(header).strong());
-                }
-                ui.end_row();
-                for ((project, project_id), agents) in &groups {
-                    if self.focus.as_ref().is_some_and(|only| only != project_id) {
-                        continue;
-                    }
-                    // The project's own row: its colour, its name, and
-                    // what its agents are doing, so a glance answers "is
-                    // anything stuck here?" without reading the rows.
-                    ui.horizontal(|ui| {
-                        crate::projects::dot(ui, project_id);
-                        ui.label(
-                            RichText::new(project)
-                                .heading()
-                                .color(crate::projects::colour(project_id)),
-                        );
-                    });
-                    let blocked = agents
-                        .iter()
-                        .filter(|a| {
-                            matches!(
-                                self.activity.get(a.id.as_str()),
-                                Some(Activity::Blocked { .. })
-                            )
-                        })
-                        .count();
-                    let working = agents
-                        .iter()
-                        .filter(|a| {
-                            matches!(
-                                self.activity.get(a.id.as_str()),
-                                Some(Activity::Working { .. })
-                            )
-                        })
-                        .count();
-                    ui.label(
-                        RichText::new(format!(
-                            "{} agent{}",
-                            agents.len(),
-                            if agents.len() == 1 { "" } else { "s" }
-                        ))
-                        .weak(),
-                    );
-                    // What the project is doing, in the words a reader
-                    // would use: "1 blocked" is worth colour, "all idle"
-                    // is worth saying, and "0 working" is neither.
-                    let unheard = agents
-                        .iter()
-                        .filter(|agent| matches!(self.activity.get(agent.id.as_str()), None | Some(Activity::Unknown)))
-                        .count();
-                    if blocked > 0 {
-                        ui.label(RichText::new(format!("{blocked} blocked")).color(UNVERIFIED));
-                    } else if working > 0 && working == agents.len() {
-                        ui.label(RichText::new("all working").color(WIRED));
-                    } else if working > 0 {
-                        ui.label(RichText::new(format!("{working} working")).color(WIRED));
-                    } else if unheard == agents.len() {
-                        ui.label(RichText::new("activity unknown").color(UNVERIFIED));
-                    } else if unheard > 0 {
-                        ui.label(
-                            RichText::new(format!("{unheard} unknown")).color(UNVERIFIED),
-                        );
-                    } else if agents.iter().all(|a| matches!(self.activity.get(a.id.as_str()), Some(Activity::Idle { .. }))) {
-                        ui.label(RichText::new("all idle").weak());
-                    } else {
-                        ui.label(RichText::new("activity unknown").weak());
-                    }
-                    ui.end_row();
-
-                    for agent in agents {
-                        // The dot repeats the project's colour on every
-                        // row, so a row read on its own still says whose
-                        // it is.
-                        ui.horizontal(|ui| {
-                            crate::projects::dot(ui, project_id);
-                            ui.label(&agent.spec.name);
-                        });
-                        if agent.spec.runtime == "human" {
-                            ui.label(RichText::new("you").italics()).on_hover_text(
-                                "The person at this keyboard, registered like any other \
-                                     agent so the others can put questions to you and hold \
-                                     leases against you.",
-                            );
-                        } else {
-                            ui.label(&agent.spec.runtime);
-                        }
-                        // What it is doing, not merely that its process
-                        // exists: blocked agents say what by.
-                        match self.activity.get(agent.id.as_str()) {
-                            Some(Activity::Blocked {
-                                resource, held_by, ..
-                            }) => {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "blocked on {resource}{}",
-                                        held_by
-                                            .first()
-                                            .map(|h| format!(" ({})", self.name_of(h.as_str())))
-                                            .unwrap_or_default()
-                                    ))
-                                    .color(UNVERIFIED),
-                                )
-                                .on_hover_text("Waiting for a lease another agent holds.");
-                            }
-                            Some(Activity::Working { .. }) => {
-                                ui.label(RichText::new("working").color(WIRED)).on_hover_text(
-                                    "Recent coordination or an explicit provider activity report; not inferred from CPU use or terminal output.",
-                                );
-                            }
-                            None | Some(Activity::Unknown) => {
-                                let label = ui.label(RichText::new("unknown").color(UNVERIFIED));
-                                if unwired.contains(&agent.spec.runtime) {
-                                    label.on_hover_text("No fresh activity report. Check this integration in Runtimes; the process may still be working.");
-                                } else {
-                                    label.on_hover_text("No fresh activity report. Configuration alone does not prove this session is connected or idle.");
-                                }
-                            }
-                            Some(Activity::Idle { .. }) => {
-                                ui.label(RichText::new("idle").weak()).on_hover_text(
-                                    "The provider recently reported a turn ending or being interrupted. This observation expires without another report.",
-                                );
-                            }
-                            Some(other) => {
-                                ui.label(RichText::new(other.label()).weak());
-                            }
-                        }
-                        ui.label(
-                            agent
-                                .vcs
-                                .as_ref()
-                                .map(|v| v.describe())
-                                .unwrap_or_else(|| "-".to_owned()),
-                        );
-                        let held = self.leases.iter().filter(|l| l.holder == agent.id).count();
-                        ui.label(held.to_string());
-                        ui.label(ago(now, agent.last_seen));
-                        let armed = confirming.as_deref() == Some(agent.id.as_str());
-                        let label = if armed {
-                            RichText::new("Stop?").color(ABSENT)
-                        } else {
-                            RichText::new("Stop")
-                        };
-                        if ui
-                            .add(egui::Button::new(label).small())
-                            .on_hover_text(if armed {
-                                "Click again to stop it."
-                            } else {
-                                "Stop this agent's process. Asks once first."
-                            })
-                            .clicked()
-                        {
-                            if armed {
-                                stop = Some(agent.id.to_string());
-                            } else {
-                                arm = Some(agent.id.to_string());
-                            }
-                        }
-                        if agent.spec.tty
-                            && ui
-                                .small_button("Attach")
-                                .on_hover_text("Open this agent's terminal in the Terminal screen.")
-                                .clicked()
-                        {
-                            attach = Some(agent.id.to_string());
-                        }
-                        ui.end_row();
-                    }
-                    // A blank row between projects: the striping alone
-                    // does not separate them once they share a grid.
-                    for _ in 0..8 {
-                        ui.label("");
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some(id) = arm {
-            self.confirm_stop = Some((id, Instant::now()));
-        }
-        if let Some(id) = stop {
-            self.confirm_stop = None;
-            self.send(Cmd::Stop(id));
-        }
-        if let Some(id) = attach {
-            self.attach(id, ui.ctx().clone());
-            self.screen = Screen::Terminal;
-        }
-        ui.separator();
-        ui.heading("Running, not registered");
-        if self.discovered.is_empty() {
-            ui.label(RichText::new("Nothing found.").weak());
-        } else {
-            let mut adopt: Option<u32> = None;
-            let mut adopt_all = false;
-            egui::Grid::new("discovered")
-                .striped(true)
-                .num_columns(5)
-                .show(ui, |ui| {
-                    for header in ["PID", "RUNTIME", "PROJECT", "STARTED", ""] {
-                        ui.label(RichText::new(header).strong());
-                    }
-                    ui.end_row();
-                    for process in &self.discovered {
-                        ui.label(process.pid.to_string());
-                        ui.label(&process.runtime);
-                        ui.label(
-                            process
-                                .project
-                                .as_ref()
-                                .map(ProjectRef::name)
-                                .unwrap_or_else(|| "-".to_owned()),
-                        );
-                        ui.label(
-                            process
-                                .started_at
-                                .map(|at| ago(now, at))
-                                .unwrap_or_else(|| "-".to_owned()),
-                        );
-                        if ui
-                            .small_button("Adopt")
-                            .on_hover_text(
-                                "Register this process with the daemon so it can be messaged, \
-                                 hold leases, and appear above. The process is not restarted.",
-                            )
-                            .clicked()
-                        {
-                            adopt = Some(process.pid);
-                        }
-                        ui.end_row();
-                    }
-                });
-            if ui
-                .button("Adopt all")
-                .on_hover_text("Register every process listed here. None of them is restarted.")
-                .clicked()
-            {
-                adopt_all = true;
-            }
-            if let Some(pid) = adopt {
-                self.send(Cmd::Adopt(pid));
-            }
-            if adopt_all {
-                self.send(Cmd::AdoptAll);
-            }
-        }
-    }
-
-    /// An agent's terminal, or the list of agents that have one.
-    fn terminal_screen(&mut self, ui: &mut egui::Ui) {
-        let palette = self.settings.palette();
-        let size = self.settings.terminal_size;
-        // Measured, not assumed. This was a constant for a 13pt cell,
-        // which was true until the font size became something the
-        // reader chooses: at 20pt the real cell is half again as wide,
-        // so a grid computed from the constant is half again too wide
-        // and the agent lays itself out past the edge of the window.
-        let font = egui::FontId::monospace(size);
-        // Ten of them and divide: one glyph's laid-out width carries a
-        // rounding error that a whole row of cells multiplies up.
-        let ruler =
-            ui.painter()
-                .layout_no_wrap("MMMMMMMMMM".to_owned(), font.clone(), Color32::WHITE);
-        let cell = (ruler.rect.width() / 10.0, ruler.rect.height());
-        let Some(terminal) = &mut self.terminal else {
-            let attachable: Vec<&AgentRecord> = self
-                .agents
-                .iter()
-                .filter(|a| a.status.is_live() && a.spec.tty)
-                .collect();
-            if attachable.is_empty() {
-                ui.label(
-                    RichText::new(
-                        "No agent has a terminal. Start one with \
-                         `agentdocker run --tty -- <command>`, or `tty = true` in an Agentfile \
-                         entry.",
-                    )
-                    .weak(),
-                );
-                return;
-            }
-            let mut attach: Option<String> = None;
-            for agent in attachable {
-                ui.horizontal(|ui| {
-                    ui.label(&agent.spec.name);
-                    if ui
-                        .button("Attach")
-                        .on_hover_text(
-                            "Take over this agent's terminal. It keeps running either way.",
-                        )
-                        .clicked()
-                    {
-                        attach = Some(agent.id.to_string());
-                    }
-                });
-            }
-            if let Some(agent) = attach {
-                self.attach(agent, ui.ctx().clone());
-            }
-            return;
-        };
-
-        let mut detach = false;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("attached to {}", terminal.agent)).strong());
-            match terminal.status() {
-                Status::Attached => {
-                    crate::projects::bullet(ui, WIRED);
-                    ui.label(RichText::new("live").color(WIRED))
-                        .on_hover_text("Keys typed on this screen go to the agent.");
-                }
-                Status::Ended(reason) => {
-                    crate::projects::bullet(ui, Color32::GRAY);
-                    ui.label(RichText::new(reason).color(Color32::GRAY));
-                }
-            }
-            if terminal.scrolled_back() {
-                ui.label(RichText::new("· scrolled back").weak());
-                if ui
-                    .button("Jump to live")
-                    .on_hover_text("Back to the bottom of the scrollback.")
-                    .clicked()
-                {
-                    terminal.scroll(i32::MIN / 2);
-                }
-            }
-            if ui
-                .button("Detach")
-                .on_hover_text("Stop watching this terminal. The agent is not stopped.")
-                .clicked()
-            {
-                detach = true;
-            }
-        });
-        ui.separator();
-
-        // The room inside the frame, not the room the frame is given:
-        // its margin comes off both axes before the grid is worked out,
-        // or the last column and the last row land under the border.
-        let inset = TERMINAL_MARGIN as f32 * 2.0;
-        let space = (ui.available_size() - egui::vec2(inset, inset)).max(egui::Vec2::ZERO);
-        terminal.resize(
-            (space.x / cell.0).floor().max(1.0) as u16,
-            (space.y / cell.1).floor().max(1.0) as u16,
-        );
-        // Everything typed while this screen is up goes to the agent, and
-        // the wheel moves through the history the parser kept rather than
-        // through a scroll area that only ever holds one screen.
-        let (events, wheel) = ui.input(|i| (i.events.clone(), i.smooth_scroll_delta.y));
-        if terminal.status() == Status::Attached {
-            let bytes = crate::terminal::keystrokes(&events);
-            if !bytes.is_empty() {
-                terminal.send(bytes);
-            }
-        }
-        if wheel.abs() >= 1.0 {
-            terminal.scroll((wheel / cell.1).round() as i32);
-        }
-        // On the palette's own ground, so the agent's terminal and the
-        // console are visibly the same surface.
-        egui::Frame::new()
-            .fill(palette.ground)
-            .inner_margin(egui::Margin::same(TERMINAL_MARGIN))
-            .corner_radius(6)
-            .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
-                egui::ScrollArea::horizontal().show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    terminal.ui(ui, palette, size);
-                });
-            });
-        if detach {
-            self.terminal = None;
-        }
-    }
-
-    fn attach(&mut self, agent: String, ctx: egui::Context) {
+    fn attach(&mut self, agent: String, ctx: Wake) {
         if let Some(client) = &self.client {
             self.terminal = Some(Terminal::attach(client.clone(), agent, ctx));
-        }
-    }
-
-    /// What agents are waiting on the person at the keyboard.
-    ///
-    /// An agent that asks a question is blocked until it is answered, so
-    /// this screen is the one part of the window where doing nothing has
-    /// a cost. The question and the answer box sit together: reading it
-    /// and replying to it should not be two places.
-    fn questions_screen(&mut self, ui: &mut egui::Ui) {
-        if self.questions.is_empty() {
-            ui.label(RichText::new("Nothing is waiting on you.").weak());
-            return;
-        }
-        let mut answered: Option<(MessageId, String)> = None;
-        let questions = self.questions.clone();
-        for question in &questions {
-            let in_flight = self.sending.contains(&question.id);
-            let left = (question.expires_at - Utc::now()).num_seconds().max(0);
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(self.name_of(&question.from)).strong());
-                    // Which project is asking: the same question text can
-                    // mean different things in different repositories.
-                    if let Some((id, name)) = self.project_of(&question.from) {
-                        ui.label(
-                            RichText::new(format!("· {name}")).color(crate::projects::colour(&id)),
-                        );
-                    }
-                    ui.label(RichText::new(format!("· {} left", span(left))).weak());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(question.id.to_string()).weak().monospace());
-                    });
-                });
-                ui.add_space(2.0);
-                ui.label(&question.text);
-                ui.add_space(4.0);
-                let draft = self.answers.entry(question.id.clone()).or_default();
-                let mut send = false;
-                let entry = ui.add(
-                    egui::TextEdit::singleline(draft)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("your answer"),
-                );
-                if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    send = true;
-                }
-                // Enabled only when there is something to send. It used
-                // to accept the click and drop it, which is the same to
-                // the person clicking as a button that does not work.
-                let ready = !draft.trim().is_empty();
-                if ui
-                    .add_enabled(!in_flight && ready, egui::Button::new("Answer"))
-                    .on_disabled_hover_text(if in_flight {
-                        "Waiting for the daemon to take the last answer."
-                    } else {
-                        "Type an answer first."
-                    })
-                    .clicked()
-                {
-                    send = true;
-                }
-                if send && !in_flight && !draft.trim().is_empty() {
-                    answered = Some((question.id.clone(), draft.clone()));
-                }
-            });
-            ui.add_space(4.0);
-        }
-        if let Some((id, text)) = answered {
-            // The draft and the question both stay until the daemon says
-            // it took the answer. Dropping them first would lose what was
-            // typed if the send failed.
-            self.sending.insert(id.clone());
-            self.send(Cmd::Answer(id, text));
         }
     }
 
@@ -1205,265 +652,26 @@ impl App {
         self.agents
             .iter()
             .filter_map(|agent| agent.project.as_ref())
+            .chain(self.shell.catalog.selected().map(|entry| &entry.project))
             .map(|project| project.id().to_string())
             .collect()
     }
 
-    fn channels_screen(&mut self, ui: &mut egui::Ui) {
-        let now = Utc::now();
-        if self.channels.is_empty() {
-            ui.label(
-                RichText::new(
-                    "No channels. One opens when two checkouts change the same path, or when \
-                     an agent opens one for a task.",
-                )
-                .weak(),
-            );
-        } else {
-            ui.label(
-                RichText::new(
-                    "Open channels across your active projects. Messages shown are queued for \
-                     you — an inbox is not a transcript, and nothing is drained to draw this.",
-                )
-                .weak()
-                .small(),
-            );
-        }
-        let (said, direct) = by_room(&self.inbox);
-        let me = self
-            .agents
+    fn project_selector(&self, id: &str) -> String {
+        self.agents
             .iter()
-            .find(|a| a.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
-            .map(|a| a.id.clone());
-        for channel in &self.channels {
-            let id = channel.id.as_str().to_owned();
-            let mine = me.as_ref().is_some_and(|me| channel.has(me));
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    crate::projects::bullet(
-                        ui,
-                        if channel.is_open() {
-                            WIRED
-                        } else {
-                            ui.visuals().weak_text_color()
-                        },
-                    );
-                    ui.label(RichText::new(channel.title()).strong());
-                    ui.label(RichText::new(&id).weak().small());
-                    if !mine {
-                        ui.label(RichText::new("· not a member").weak().small())
-                            .on_hover_text(
-                                "Agents opened this between themselves. It is listed because it \
-                                 is part of this project's work, not because anything from it \
-                                 reaches you.",
-                            );
-                    }
-                    ui.label(
-                        RichText::new(format!(
-                            "· {} member{}",
-                            channel.members.len(),
-                            if channel.members.len() == 1 { "" } else { "s" }
-                        ))
-                        .weak(),
-                    );
-                    ui.label(RichText::new(format!("· {}", ago(now, channel.opened_at))).weak());
-                });
-                ui.label(
-                    RichText::new(
-                        channel
-                            .members
-                            .iter()
-                            .map(|m| self.name_of(m.as_str()))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    )
-                    .weak()
-                    .small(),
-                );
-                // A verdict is the point of a room like this, so it is
-                // not buried in the transcript with everything else.
-                for review in &channel.reviews {
-                    use agentdocker_core::channel::Verdict;
-                    let (word, colour) = match review.verdict {
-                        Verdict::Approve => ("approved", WIRED),
-                        Verdict::Changes => ("changes requested", UNVERIFIED),
-                        Verdict::Comment => ("commented", ui.visuals().text_color()),
-                    };
-                    ui.label(
-                        RichText::new(format!(
-                            "{word} by {} on {}'s work",
-                            review.by_name, review.of_name
-                        ))
-                        .color(colour),
-                    )
-                    .on_hover_text(&review.note);
-                }
-                if let Some(why) = &channel.resolution {
-                    ui.label(RichText::new(format!("closed: {why}")).weak());
-                }
-                ui.add_space(2.0);
-                // What can honestly be shown here is this person's own
-                // undelivered queue, and only where they are a member.
-                // An inbox is not a transcript: a message an agent has
-                // taken is gone from it, so what is missing below is not
-                // silence — it is everything that was already read.
-                // Durable history needs somewhere to keep it, and that
-                // does not exist yet.
-                match said.get(&id) {
-                    Some(messages) => {
-                        for message in messages.iter().rev().take(20).rev() {
-                            said_by(ui, now, &self.name_of(&message.from), message);
-                        }
-                        ui.label(
-                            RichText::new(
-                                "Queued for you, not the room's history — anything already \
-                                 delivered has left the queue.",
-                            )
-                            .weak()
-                            .small(),
-                        );
-                    }
-                    None if mine => {
-                        ui.label(
-                            RichText::new("Nothing waiting for you here.")
-                                .weak()
-                                .small(),
-                        );
-                    }
-                    // Not a member, so none of it was ever going to
-                    // arrive. Saying "nothing said here" would be a
-                    // claim about the room; this is a claim about us.
-                    None => {
-                        ui.label(
-                            RichText::new(
-                                "You are not in this room, so nothing reaches you from it.",
-                            )
-                            .weak()
-                            .small(),
-                        );
-                    }
-                }
-            });
-            ui.add_space(4.0);
-        }
-        if !direct.is_empty() {
-            ui.add_space(8.0);
-            ui.label(RichText::new("Sent to you directly").strong());
-            for message in direct.iter().rev().take(30).rev() {
-                said_by(ui, now, &self.name_of(&message.from), message);
-            }
-        }
+            .filter_map(|a| a.project.as_ref())
+            .chain(self.shell.catalog.projects.iter().map(|e| &e.project))
+            .find(|p| p.id().as_str() == id)
+            .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
-
-    /// Any command the CLI has, run from the window.
-    ///
-    /// Not a shell, and not a second system terminal — the machine has
-    /// one of those and being another is somebody else's job. What it
-    /// takes from the terminal is the feel: the same monospace on the
-    /// same dark ground, a prompt that stays at the foot of a
-    /// transcript, the last commands on the up arrow, and output that
-    /// accumulates instead of a box that is replaced.
-    fn console_screen(&mut self, ui: &mut egui::Ui) {
-        if self.console_truncated {
-            ui.label("Earlier output omitted. Showing the latest 256 KiB.");
-        }
-        let mut run = false;
-        let palette = self.settings.palette();
-        let font = egui::FontId::monospace(self.settings.terminal_size);
-        egui::Frame::new()
-            .fill(palette.ground)
-            .inner_margin(egui::Margin::same(10))
-            .corner_radius(6)
-            .show(ui, |ui| {
-                ui.set_min_size(ui.available_size());
-                ui.spacing_mut().item_spacing.y = 2.0;
-                // Laid out from the bottom, so the prompt sits on the
-                // floor of the panel the way a shell's does and the
-                // transcript grows down towards it.
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("agentdocker")
-                                .font(font.clone())
-                                .color(palette.accent),
-                        );
-                        let entry = ui.add(
-                            egui::TextEdit::singleline(&mut self.console_input)
-                                .font(font.clone())
-                                .text_color(palette.text)
-                                // No box around it: the prompt is part of
-                                // the transcript, not a field on top of it.
-                                .frame(egui::Frame::NONE)
-                                .desired_width(f32::INFINITY)
-                                .hint_text(
-                                    RichText::new("ps --all   ·   journal --new   ·   runtimes")
-                                        .font(font.clone())
-                                        .color(palette.dim()),
-                                ),
-                        );
-                        // A console nobody has clicked into is a console
-                        // that ignores what is typed at it.
-                        if !self.console_focused {
-                            entry.request_focus();
-                            self.console_focused = true;
-                        }
-                        if entry.has_focus() {
-                            let (up, down) = ui.input(|i| {
-                                (
-                                    i.key_pressed(egui::Key::ArrowUp),
-                                    i.key_pressed(egui::Key::ArrowDown),
-                                )
-                            });
-                            if up || down {
-                                self.recall(up);
-                            }
-                        }
-                        if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            run = true;
-                            self.console_focused = false;
-                        }
-                        // Something is still running and the transcript
-                        // will not move until it answers. Said at the
-                        // prompt, where the person is already looking.
-                        if self.console_running > 0 {
-                            ui.spinner();
-                            ui.label(
-                                RichText::new(match self.console_running {
-                                    1 => "running…".to_owned(),
-                                    many => format!("{many} running…"),
-                                })
-                                .font(font.clone())
-                                .color(palette.dim()),
-                            );
-                        }
-                    });
-                    ui.add_space(4.0);
-                    // The transcript reads downwards inside the room left over.
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        egui::ScrollArea::both()
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(self.console_output.trim_end())
-                                            .font(font.clone())
-                                            .color(palette.text),
-                                    )
-                                    .wrap_mode(egui::TextWrapMode::Extend),
-                                );
-                            });
-                    });
-                });
-            });
-        if run && !self.console_input.trim().is_empty() {
-            let line = self.console_input.trim().to_owned();
-            self.append_console(&format!("agentdocker {line}\n"));
-            self.remember_console_command(&line);
-            self.console_input.clear();
-            self.console_running += 1;
-            self.send(Cmd::Console(line));
-        }
+    fn request_channels(&mut self, id: String) {
+        let selector = self.project_selector(&id);
+        self.send(Cmd::Channels(id, selector));
+    }
+    fn request_journal(&mut self, id: String) {
+        let selector = self.project_selector(&id);
+        self.send(Cmd::Journal(id, selector));
     }
 
     fn remember_console_command(&mut self, line: &str) {
@@ -1529,582 +737,6 @@ impl App {
             None => String::new(),
         };
     }
-
-    /// One connection state, in a colour, saying on hover what it means
-    /// and what would change it.
-    ///
-    /// The table printed the word on its own, which is how a reader ends
-    /// up looking at "no" and asking what it means and how to clear it.
-    /// The answer is two sentences, so it goes where two sentences fit.
-    fn wiring_cell(ui: &mut egui::Ui, channel: &str, state: Wiring, dim: bool) {
-        let (colour, meaning) = match state {
-            Wiring::Wired => (
-                WIRED,
-                "AgentDocker is registered here. That the configuration says so is not proof a \
-                 session has used it — start a fresh one to be sure.",
-            ),
-            Wiring::Missing => (
-                ABSENT,
-                "Nothing registers AgentDocker here yet. Review setup works out the change and \
-                 shows it to you; nothing is written until you apply it.",
-            ),
-            Wiring::Unverified => (
-                UNVERIFIED,
-                "Something is registered under our name that is disabled, malformed, or runs a \
-                 different command. Setup will not overwrite it — open the file and decide.",
-            ),
-            Wiring::Unsupported => (
-                ui.visuals().weak_text_color(),
-                "This runtime has no such channel, or AgentDocker has no adapter for it yet. \
-                 Nothing to do here.",
-            ),
-        };
-        let colour = if dim {
-            colour.gamma_multiply(0.5)
-        } else {
-            colour
-        };
-        ui.label(RichText::new(state.symbol()).color(colour))
-            .on_hover_text(format!("{channel}: {meaning}"));
-    }
-
-    fn runtimes_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Agent tools on this machine.").weak());
-        let mut setup: Option<String> = None;
-        let mut sorted: Vec<&RuntimeInfo> = self.runtimes.iter().collect();
-        sorted.sort_by_key(|r| !r.installed());
-        egui::Grid::new("runtimes")
-            .striped(true)
-            .num_columns(8)
-            .show(ui, |ui| {
-                for header in [
-                    "RUNTIME", "VENDOR", "CLI", "VERSION", "APP", "MCP", "HOOKS", "RUNNING",
-                ] {
-                    ui.label(RichText::new(header).strong());
-                }
-                ui.label("");
-                ui.end_row();
-                for runtime in sorted {
-                    let dim = !runtime.installed();
-                    let text = |s: String| {
-                        if dim {
-                            RichText::new(s).color(Color32::GRAY)
-                        } else {
-                            RichText::new(s)
-                        }
-                    };
-                    ui.label(text(runtime.label.clone()));
-                    ui.label(text(runtime.vendor.clone()));
-                    ui.label(text(
-                        runtime
-                            .cli
-                            .as_ref()
-                            .map(|c| c.display().to_string())
-                            .unwrap_or_else(|| "-".to_owned()),
-                    ));
-                    ui.label(text(
-                        runtime.version.clone().unwrap_or_else(|| "-".to_owned()),
-                    ));
-                    let apps = runtime
-                        .apps
-                        .iter()
-                        .map(|a| match &a.version {
-                            Some(v) => format!("{} {v}", a.label),
-                            None => a.label.clone(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    ui.label(text(if apps.is_empty() {
-                        "-".to_owned()
-                    } else {
-                        apps
-                    }));
-                    Self::wiring_cell(ui, "MCP server", runtime.mcp, dim);
-                    Self::wiring_cell(ui, "hooks", runtime.hooks, dim);
-                    ui.label(text(runtime.running.to_string()))
-                        .on_hover_text("Processes of this runtime that AgentDocker can see right now, registered or not.");
-                    let needs_setup = runtime.installed()
-                        && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
-                    if needs_setup
-                        && ui
-                            .add_enabled(
-                                !self.setup_busy,
-                                egui::Button::new("Review setup").small(),
-                            )
-                            .on_hover_text(
-                                "Work out what would have to change to wire this runtime up, \
-                                 and show it. Nothing is written until you apply it, and \
-                                 anything applied can be undone.",
-                            )
-                            .clicked()
-                    {
-                        setup = Some(runtime.name.clone());
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some(name) = setup {
-            self.setup_busy = true;
-            self.send(Cmd::Setup(vec![name, "--preview".into()]));
-        }
-        ui.add_space(8.0);
-        if ui.button("Refresh").clicked() {
-            self.send(Cmd::Runtimes);
-        }
-        self.setup_panel(ui);
-    }
-
-    fn setup_panel(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        let mut selected = None;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!self.setup_busy, egui::Button::new("Check connections"))
-                .on_hover_text(
-                    "Read every runtime's configuration and report what it says about \
-                     AgentDocker. Reads only; nothing is changed.",
-                )
-                .clicked()
-            {
-                self.setup_busy = true;
-                self.send(Cmd::Setup(vec!["--health".into()]));
-            }
-            if ui
-                .add_enabled(!self.setup_busy, egui::Button::new("Saved setup plans"))
-                .on_hover_text(
-                    "Every plan previewed on this machine, newest first. Each keeps what the \
-                     files said before it, which is what lets it be undone.",
-                )
-                .clicked()
-            {
-                self.setup_busy = true;
-                self.send(Cmd::Setup(vec!["--list".into()]));
-            }
-            if self.setup_busy {
-                ui.spinner();
-                ui.label(RichText::new("working…").weak());
-            }
-        });
-        if !self.setup_history.is_empty() {
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                for plan in &self.setup_history {
-                    let id = plan["id"].as_str().unwrap_or("");
-                    let phase = plan["phase"].as_str().unwrap_or("unknown");
-                    if ui
-                        .add_enabled(
-                            !self.setup_busy,
-                            egui::Button::new(
-                                RichText::new(format!(
-                                    "{phase} · {}",
-                                    id.chars().take(8).collect::<String>()
-                                ))
-                                .color(phase_colour(ui, phase)),
-                            ),
-                        )
-                        .on_hover_text(format!("Open plan {id}"))
-                        .clicked()
-                    {
-                        selected = Some(id.to_owned());
-                    }
-                }
-            });
-        }
-        if let Some(id) = selected {
-            self.setup_busy = true;
-            self.send(Cmd::Setup(vec!["--show".into(), id]));
-        }
-        if let Some(health) = &self.setup_health {
-            ui.add_space(6.0);
-            let reachable = health["daemon_reachable"].as_bool().unwrap_or(false);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Daemon").strong());
-                ui.label(
-                    RichText::new(health["daemon"].as_str().unwrap_or("unknown"))
-                        .color(if reachable { WIRED } else { ABSENT }),
-                );
-            });
-            egui::Grid::new("setup-health")
-                .striped(true)
-                .num_columns(3)
-                .show(ui, |ui| {
-                    for runtime in health["runtimes"].as_array().into_iter().flatten() {
-                        let name = runtime["name"].as_str().unwrap_or("Runtime");
-                        for check in runtime["checks"].as_array().into_iter().flatten() {
-                            let status = check["status"].as_str().unwrap_or("unknown");
-                            if status == "unsupported" {
-                                continue;
-                            }
-                            ui.label(name);
-                            ui.label(check["channel"].as_str().unwrap_or("connection"));
-                            let detail = check["detail"].as_str().unwrap_or("unknown");
-                            // The executable behind the registration is
-                            // the thing that makes a check pass or fail,
-                            // so it belongs on the row that reports it —
-                            // on hover, where a path does not push the
-                            // columns off the screen.
-                            let row =
-                                ui.label(RichText::new(detail).color(health_colour(ui, status)));
-                            if let Some(executable) = check["executable"].as_str() {
-                                let _ = row.on_hover_text(executable);
-                            }
-                            ui.end_row();
-                        }
-                    }
-                });
-            ui.label(
-                RichText::new(
-                    "Configuration detection does not prove that a provider has used its \
-                     connection. Start a fresh session after setup.",
-                )
-                .weak()
-                .small(),
-            );
-        }
-        let Some(plan) = self.setup_plan.clone() else {
-            return;
-        };
-        let phase = plan["phase"].as_str().unwrap_or("unknown");
-        let id = plan["id"].as_str().unwrap_or("").to_owned();
-        ui.add_space(8.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Setup plan").strong());
-            ui.label(RichText::new(phase).color(phase_colour(ui, phase)));
-            ui.label(RichText::new(&id).weak().small())
-                .on_hover_text("Kept under the AgentDocker home, readable only by you.");
-        });
-        if let Some(executable) = plan["executable"].as_str() {
-            ui.label(
-                RichText::new(format!("Connect through {executable}"))
-                    .weak()
-                    .small(),
-            );
-        }
-        let changes = plan["changes"].as_array();
-        match changes {
-            Some(changes) if !changes.is_empty() => {
-                for change in changes {
-                    ui.label(format!(
-                        "{} · {} · {}",
-                        change["runtime"].as_str().unwrap_or(""),
-                        change["channel"].as_str().unwrap_or(""),
-                        change["path"].as_str().unwrap_or("")
-                    ));
-                    // What the step does to that file, which is the only
-                    // thing separating an edit we make from a
-                    // registration the provider's own tool makes on its
-                    // own state.
-                    if let Some(action) = change["action"].as_str() {
-                        ui.label(RichText::new(format!("    {action}")).weak().small());
-                    }
-                }
-            }
-            // Said out loud, because a plan with nothing in it beside a
-            // greyed-out Apply reads as a failure rather than as the
-            // good news it is.
-            _ => {
-                ui.label(
-                    RichText::new("Nothing to change — every channel here is already wired.")
-                        .color(WIRED),
-                );
-            }
-        }
-        if let Some(notes) = plan["notes"].as_array().filter(|notes| !notes.is_empty()) {
-            ui.add_space(4.0);
-            for note in notes.iter().filter_map(|note| note.as_str()) {
-                ui.label(RichText::new(format!("· {note}")).weak().small());
-            }
-        }
-        ui.add_space(4.0);
-        let applicable = matches!(phase, "prepared" | "applying")
-            && changes.is_some_and(|changes| !changes.is_empty());
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !self.setup_busy && applicable,
-                    egui::Button::new("Apply changes"),
-                )
-                .on_hover_text(
-                    "Write the changes above. Each file is replaced whole and only if it still \
-                     says what it said at preview, so an edit made since is never overwritten.",
-                )
-                // A disabled button that will not say why is the thing
-                // this whole screen was rebuilt to stop doing.
-                .on_disabled_hover_text(if self.setup_busy {
-                    "A setup command is still running."
-                } else if !applicable {
-                    "This plan has nothing left to apply: it has already been applied or undone, \
-                     or there was nothing to change."
-                } else {
-                    ""
-                })
-                .clicked()
-            {
-                self.setup_busy = true;
-                self.send(Cmd::Setup(vec!["--apply".into(), id.clone()]));
-            }
-            if ui
-                .add_enabled(
-                    !self.setup_busy && phase != "undone",
-                    egui::Button::new("Undo this setup"),
-                )
-                .on_hover_text(
-                    "Put every file back the way this plan found it, and take back any \
-                     registration it asked a provider to make.",
-                )
-                .on_disabled_hover_text(if self.setup_busy {
-                    "A setup command is still running."
-                } else {
-                    "This plan has already been undone."
-                })
-                .clicked()
-            {
-                self.setup_busy = true;
-                self.send(Cmd::Setup(vec!["--undo".into(), id]));
-            }
-            if ui
-                .add_enabled(!self.setup_busy, egui::Button::new("Close"))
-                .on_hover_text("Stop showing this plan. It stays saved and can be reopened.")
-                .clicked()
-            {
-                self.setup_plan = None;
-            }
-        });
-    }
-
-    fn journal_screen(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!(
-            "Latest {JOURNAL_WINDOW} entries. Earlier entries remain in the project journal."
-        ));
-        let projects = self.projects();
-        let mut changed: Option<String> = None;
-        ui.horizontal(|ui| {
-            let current = self
-                .journal_project
-                .as_ref()
-                .and_then(|id| projects.iter().find(|p| p.0 == *id))
-                .map(|p| p.1.clone())
-                .unwrap_or_else(|| "project".to_owned());
-            egui::ComboBox::from_label("Project")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for (id, name) in &projects {
-                        let selected = self.journal_project.as_deref() == Some(id.as_str());
-                        if ui.selectable_label(selected, name).clicked() && !selected {
-                            changed = Some(id.clone());
-                        }
-                    }
-                });
-            if ui.button("Refresh").clicked()
-                && let Some(id) = self.journal_project.clone()
-            {
-                self.send(Cmd::Journal(id));
-            }
-        });
-        if let Some(id) = changed {
-            self.journal_project = Some(id.clone());
-            self.journal.clear();
-            self.send(Cmd::Journal(id));
-        }
-        ui.separator();
-        let now = Utc::now();
-        if self.journal.is_empty() {
-            ui.label(RichText::new("Nothing in the journal yet.").weak());
-        }
-        for entry in &self.journal {
-            ui.horizontal(|ui| {
-                ui.monospace(format!("{:>6}", entry.seq));
-                ui.label(RichText::new(ago(now, entry.at)).color(Color32::GRAY));
-                ui.label(entry.line());
-            });
-        }
-    }
-
-    /// The mark, beside the name it belongs to.
-    ///
-    /// The same PNG the window sets as its icon, so the thing in the
-    /// title bar and the thing in the Dock cannot drift apart. Uploaded
-    /// on the first frame that draws it and kept: decoding a PNG every
-    /// frame to draw a 20-pixel square would be absurd.
-    fn mark(&mut self, ui: &mut egui::Ui) {
-        let texture = self.mark.get_or_insert_with(|| {
-            let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
-                .expect("the embedded icon is a valid PNG");
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [icon.width as usize, icon.height as usize],
-                &icon.rgba,
-            );
-            ui.ctx()
-                .load_texture("agentdocker-mark", image, egui::TextureOptions::LINEAR)
-        });
-        let side = ui.text_style_height(&egui::TextStyle::Heading);
-        ui.add(egui::Image::new(&*texture).fit_to_exact_size(egui::vec2(side, side)));
-    }
-
-    /// Put the chosen sizes and spacing into the context, and only when
-    /// they have changed: setting text styles rebuilds the font atlas,
-    /// which is not a thing to do on every frame.
-    fn apply_settings(&mut self, ctx: &egui::Context) {
-        if self.applied.as_ref() == Some(&self.settings) {
-            return;
-        }
-        let text = self.settings.text_size;
-        let mono = self.settings.terminal_size;
-        let roomy = self.settings.roomy;
-        // A light terminal palette inside a dark window is two products
-        // in one frame, so the palette decides the window as well.
-        ctx.set_theme(if self.settings.palette().is_light() {
-            egui::ThemePreference::Light
-        } else {
-            egui::ThemePreference::Dark
-        });
-        // Both themes, so a viewer switching light/dark keeps the sizes.
-        ctx.all_styles_mut(|style| {
-            use egui::{FontFamily, FontId, TextStyle};
-            style.text_styles = [
-                (TextStyle::Small, FontId::proportional(text - 2.0)),
-                (TextStyle::Body, FontId::proportional(text)),
-                (TextStyle::Button, FontId::proportional(text)),
-                (TextStyle::Heading, FontId::proportional(text + 4.0)),
-                (
-                    TextStyle::Monospace,
-                    FontId::new(mono, FontFamily::Monospace),
-                ),
-            ]
-            .into();
-            // Docker Desktop's tables breathe; ours were tight enough to
-            // read as a spreadsheet. This is the whole difference.
-            let room = if roomy { 10.0 } else { 5.0 };
-            style.spacing.item_spacing = egui::vec2(10.0, room);
-            style.spacing.button_padding = egui::vec2(8.0, room);
-            style.visuals.selection.bg_fill = ACCENT;
-            style.visuals.widgets.hovered.corner_radius = 5.into();
-            style.visuals.widgets.active.corner_radius = 5.into();
-            style.visuals.widgets.inactive.corner_radius = 5.into();
-        });
-        self.applied = Some(self.settings.clone());
-    }
-
-    /// What the window looks like.
-    fn settings_screen(&mut self, ui: &mut egui::Ui) {
-        let before = self.settings.clone();
-        let palette = self.settings.palette();
-        egui::Grid::new("appearance")
-            .num_columns(2)
-            .spacing([16.0, 10.0])
-            .show(ui, |ui| {
-                ui.label(RichText::new("Palette").strong());
-                egui::ComboBox::from_id_salt("palette")
-                    .selected_text(self.settings.palette.clone())
-                    .show_ui(ui, |ui| {
-                        for choice in crate::theme::PALETTES {
-                            ui.selectable_value(
-                                &mut self.settings.palette,
-                                choice.name.to_owned(),
-                                choice.name,
-                            );
-                        }
-                    });
-                ui.end_row();
-
-                ui.label(RichText::new("Terminal size").strong());
-                ui.add(
-                    egui::Slider::new(&mut self.settings.terminal_size, 9.0..=24.0)
-                        .fixed_decimals(0),
-                );
-                ui.end_row();
-
-                ui.label(RichText::new("Text size").strong());
-                ui.add(
-                    egui::Slider::new(&mut self.settings.text_size, 10.0..=24.0).fixed_decimals(0),
-                );
-                ui.end_row();
-
-                ui.label(RichText::new("Roomy rows").strong());
-                ui.checkbox(&mut self.settings.roomy, "");
-                ui.end_row();
-            });
-
-        // The palette on the palette's own ground, because a swatch on
-        // the window's ground says nothing about what it will look like.
-        ui.add_space(12.0);
-        egui::Frame::new()
-            .fill(palette.ground)
-            .inner_margin(egui::Margin::same(10))
-            .corner_radius(6)
-            .show(ui, |ui| {
-                let font = egui::FontId::monospace(self.settings.terminal_size);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("agentdocker")
-                            .font(font.clone())
-                            .color(palette.accent),
-                    );
-                    ui.label(
-                        RichText::new("ps --all")
-                            .font(font.clone())
-                            .color(palette.text),
-                    );
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for colour in palette.ansi {
-                        ui.label(RichText::new("██").font(font.clone()).color(colour));
-                    }
-                });
-            });
-
-        ui.add_space(12.0);
-        if ui
-            .button("Reset")
-            .on_hover_text("Back to the palette and sizes the window ships with.")
-            .clicked()
-        {
-            self.settings = crate::theme::Settings::default();
-        }
-        if self.settings != before {
-            self.settings = std::mem::take(&mut self.settings).clamped();
-            self.settings.save(&self.home);
-        }
-    }
-
-    fn leases_screen(&mut self, ui: &mut egui::Ui) {
-        let now = Utc::now();
-        if self.leases.is_empty() {
-            ui.label(RichText::new("No leases held.").weak());
-            return;
-        }
-        egui::Grid::new("leases")
-            .striped(true)
-            .num_columns(6)
-            .show(ui, |ui| {
-                for header in ["PROJECT", "RESOURCE", "HOLDER", "MODE", "EXPIRES", "NOTE"] {
-                    ui.label(RichText::new(header).strong());
-                }
-                ui.end_row();
-                for lease in &self.leases {
-                    // A lease belongs to whichever project its holder is
-                    // in, and this list mixes them — so each row is
-                    // named, not merely coloured.
-                    if !self.in_focus(lease.holder.as_str()) {
-                        continue;
-                    }
-                    self.project_label(ui, lease.holder.as_str());
-                    ui.label(lease.resource.as_str());
-                    ui.label(self.name_of(lease.holder.as_str()));
-                    ui.label(format!("{:?}", lease.mode).to_lowercase());
-                    let left = (lease.expires_at - now).num_seconds();
-                    ui.label(if left > 0 {
-                        format!("in {}", span(left))
-                    } else {
-                        "expired".to_owned()
-                    });
-                    ui.label(lease.note.clone().unwrap_or_default());
-                    ui.end_row();
-                }
-            });
-    }
 }
 
 impl Drop for App {
@@ -2114,237 +746,7 @@ impl Drop for App {
     }
 }
 
-impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Hidden windows still consume bounded replies and events, without
-        // depending on a rendered frame to release backend backpressure.
-        self.drain();
-        let delay = if ctx.input(|input| input.viewport().visible()) == Some(false) {
-            Duration::from_secs(2)
-        } else {
-            Duration::from_millis(500)
-        };
-        ctx.request_repaint_after(delay);
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.draw(ui);
-    }
-}
-
-impl App {
-    /// Draw separately from eframe's window so every screen can be tested.
-    fn draw(&mut self, ui: &mut egui::Ui) {
-        self.apply_settings(ui.ctx());
-
-        // The sidebar and the title bar sit on their own ground, the
-        // way every desktop control panel worth copying does: the list
-        // of places is not the same surface as the place you are in.
-        let sidebar = {
-            let dark = ui.visuals().dark_mode;
-            let base = ui.visuals().window_fill;
-            let shift = if dark { -8 } else { 10 };
-            Color32::from_rgb(
-                base.r().saturating_add_signed(shift),
-                base.g().saturating_add_signed(shift),
-                base.b().saturating_add_signed(shift),
-            )
-        };
-        egui::Panel::top("top")
-            .frame(
-                egui::Frame::new()
-                    .fill(sidebar)
-                    .inner_margin(egui::Margin::symmetric(10, 8)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    self.mark(ui);
-                    ui.heading("agentdocker");
-                    ui.separator();
-                    match &self.connected {
-                        Ok(()) => {
-                            crate::projects::bullet(ui, WIRED);
-                            ui.label(RichText::new("connected").color(WIRED))
-                                .on_hover_text("The daemon is answering on this socket.");
-                            ui.label(RichText::new(&self.socket).color(Color32::GRAY));
-                        }
-                        Err(reason) => {
-                            crate::projects::bullet(ui, ABSENT);
-                            ui.label(RichText::new("disconnected").color(ABSENT)).on_hover_text(
-                                "The window keeps trying. Everything on screen is the last thing \
-                                 the daemon said.",
-                            );
-                            ui.label(RichText::new(reason).color(Color32::GRAY));
-                        }
-                    }
-                    // One project at a time, when a fleet is too much at
-                    // once. Placed here rather than per screen because it
-                    // means the same thing on all of them.
-                    let projects = self.projects();
-                    if projects.len() > 1 {
-                        ui.separator();
-                        let showing = self
-                            .focus
-                            .as_ref()
-                            .and_then(|id| projects.iter().find(|(pid, _)| pid == id))
-                            .map(|(_, name)| name.clone())
-                            .unwrap_or_else(|| "All projects".to_owned());
-                        egui::ComboBox::from_id_salt("project-focus")
-                            .selected_text(showing)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.focus, None, "All projects");
-                                for (id, name) in &projects {
-                                    let label =
-                                        RichText::new(name).color(crate::projects::colour(id));
-                                    ui.selectable_value(&mut self.focus, Some(id.clone()), label);
-                                }
-                            });
-                    }
-                    // The last thing that happened, and only while it
-                    // is still the last thing that happened. A line that
-                    // never expires becomes a line nobody reads, and an
-                    // error from ten minutes ago reported as news is
-                    // worse than no line at all.
-                    if !self.status.is_empty() {
-                        ui.separator();
-                        ui.label(RichText::new(&self.status).weak());
-                    }
-                });
-            });
-        egui::Panel::left("nav")
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(sidebar)
-                    .inner_margin(egui::Margin::symmetric(8, 10)),
-            )
-            .show(ui, |ui| {
-                ui.set_min_width(150.0);
-                for screen in Screen::ALL {
-                    // The count belongs beside the name, not inside it:
-                    // "Questions" is the place, "3" is what is in it.
-                    let count = match screen {
-                        Screen::Agents => {
-                            Some(self.agents.iter().filter(|a| a.status.is_live()).count())
-                        }
-                        Screen::Questions if !self.questions.is_empty() => {
-                            Some(self.questions.len())
-                        }
-                        Screen::Leases => Some(self.leases.len()),
-                        _ => None,
-                    };
-                    let selected = self.screen == screen;
-                    // Drawn rather than assembled from widgets: the row
-                    // is the target, the name is left and the count is
-                    // right, and no built-in gives all three at once.
-                    let (rect, entry) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 28.0),
-                        egui::Sense::click(),
-                    );
-                    if ui.is_rect_visible(rect) {
-                        let visuals = ui.visuals();
-                        if selected {
-                            ui.painter().rect_filled(rect, 6.0, ACCENT);
-                        } else if entry.hovered() {
-                            ui.painter()
-                                .rect_filled(rect, 6.0, visuals.widgets.hovered.bg_fill);
-                        }
-                        // The one place in the window that is painted
-                        // rather than built from widgets, so it is also
-                        // the one place that has to draw its own focus.
-                        // Tab already reached these rows and Enter
-                        // already chose one; nothing said which row was
-                        // about to be chosen, which is the whole of what
-                        // a focus ring is for.
-                        if entry.has_focus() {
-                            ui.painter().rect_stroke(
-                                rect,
-                                6.0,
-                                visuals.widgets.active.fg_stroke,
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        let ink = if selected {
-                            Color32::WHITE
-                        } else {
-                            visuals.text_color()
-                        };
-                        let font = egui::TextStyle::Body.resolve(ui.style());
-                        ui.painter().text(
-                            rect.left_center() + egui::vec2(10.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            screen.title(),
-                            font.clone(),
-                            ink,
-                        );
-                        if let Some(n) = count {
-                            ui.painter().text(
-                                rect.right_center() - egui::vec2(10.0, 0.0),
-                                egui::Align2::RIGHT_CENTER,
-                                n,
-                                font,
-                                if selected {
-                                    ink
-                                } else {
-                                    visuals.weak_text_color()
-                                },
-                            );
-                        }
-                    }
-                    if entry.clicked() {
-                        self.screen = screen;
-                    }
-                }
-            });
-        egui::CentralPanel::default().show(ui, |ui| {
-            // The terminal draws its own scroll region and wants every
-            // keystroke, so it is not inside the shared scroll area.
-            if self.screen == Screen::Terminal {
-                self.terminal_screen(ui);
-                return;
-            }
-            // The journal grows downward; every other screen is a list
-            // the reader scrolls from the top.
-            let follow = self.screen == Screen::Journal;
-            // Tables can be wider than the window — a project name, a
-            // long branch and a note do not shrink to fit — so they are
-            // reachable sideways rather than cut off at the edge. The
-            // screens that lay themselves out to the width they are
-            // given must not have that: an unbounded width would let
-            // the console's panel grow without limit.
-            let wide = matches!(
-                self.screen,
-                Screen::Agents | Screen::Runtimes | Screen::Leases | Screen::Journal
-            );
-            egui::ScrollArea::new([wide, true])
-                .stick_to_bottom(follow)
-                .show(ui, |ui| match self.screen {
-                    Screen::Agents => self.agents_screen(ui),
-                    Screen::Questions => self.questions_screen(ui),
-                    Screen::Channels => self.channels_screen(ui),
-                    Screen::Console => self.console_screen(ui),
-                    Screen::Terminal => {}
-                    Screen::Runtimes => self.runtimes_screen(ui),
-                    Screen::Journal => self.journal_screen(ui),
-                    Screen::Leases => self.leases_screen(ui),
-                    Screen::Settings => self.settings_screen(ui),
-                    Screen::Desktop => {
-                        if let Some(args) = self.desktop.show(ui) {
-                            self.send(Cmd::Desktop(args));
-                        }
-                    }
-                });
-        });
-        if let Some(smoke) = &mut self.smoke {
-            smoke.tick(
-                ui.ctx(),
-                self.connected.is_ok(),
-                self.runtimes.len(),
-                &self.discovered,
-            );
-        }
-    }
-}
+impl App {}
 
 /// Where the person running this window is working, if that can be
 /// said at all.
@@ -2410,54 +812,6 @@ fn inbox_request() -> Request {
     }
 }
 
-/// One line of a conversation: who, when, and what they actually said.
-///
-/// A message's payload is whatever the sender put there, so `text` is
-/// taken when it is there and the rest is shown as it came rather than
-/// dropped — an agent that sends a structured payload is still saying
-/// something.
-fn said_by(
-    ui: &mut egui::Ui,
-    now: DateTime<Utc>,
-    from: &str,
-    message: &agentdocker_core::Envelope,
-) {
-    ui.horizontal_top(|ui| {
-        ui.label(RichText::new(from).strong());
-        ui.label(RichText::new(ago(now, message.sent_at)).weak().small());
-        if message.kind != "chat" {
-            ui.label(RichText::new(&message.kind).weak().small());
-        }
-    });
-    let body = match message.payload["text"].as_str() {
-        Some(text) => text.to_owned(),
-        None => message.payload.to_string(),
-    };
-    ui.label(body);
-    ui.add_space(2.0);
-}
-
-fn health_colour(ui: &egui::Ui, status: &str) -> Color32 {
-    match status {
-        "executable_available" => WIRED,
-        // Registered, but pointing at something this machine cannot run.
-        "missing" | "executable_missing" => ABSENT,
-        "invalid" | "disabled" | "unverified" | "incomplete" => UNVERIFIED,
-        _ => ui.visuals().text_color(),
-    }
-}
-
-/// A saved plan's phase: `applied` is in force, `undone` is not, and the
-/// two in between were interrupted and can be resumed either way.
-fn phase_colour(ui: &egui::Ui, phase: &str) -> Color32 {
-    match phase {
-        "applied" => WIRED,
-        "applying" | "undoing" => UNVERIFIED,
-        "prepared" | "undone" => ui.visuals().text_color(),
-        _ => ui.visuals().weak_text_color(),
-    }
-}
-
 fn span(secs: i64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
@@ -2474,7 +828,7 @@ const SHELL_QUEUE_CAPACITY: usize = 4;
 
 fn lane<T: Send + 'static>(
     tx: SyncSender<Msg>,
-    ctx: egui::Context,
+    ctx: Wake,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     mut work: impl FnMut(T) -> Msg + Send + 'static,
 ) -> (SyncSender<T>, std::thread::JoinHandle<()>) {
@@ -2511,7 +865,7 @@ fn spawn_worker(
     client: Arc<Client>,
     rx: CommandReceiver,
     tx: SyncSender<Msg>,
-    ctx: egui::Context,
+    ctx: Wake,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -2519,7 +873,9 @@ fn spawn_worker(
             tx.clone(),
             ctx.clone(),
             cancelled.clone(),
-            |line: String| Msg::Console(console(&line)),
+            |(line, cwd): (String, Option<std::path::PathBuf>)| {
+                Msg::Console(console(&line, cwd.as_deref()))
+            },
         );
         let (setups, setup_worker) = lane(
             tx.clone(),
@@ -2540,12 +896,17 @@ fn spawn_worker(
             // Admission never waits behind a subprocess. A rejected job
             // returns the usual completion shape to clear the UI's busy state.
             let rejected = match cmd {
-                Cmd::Console(line) => submit(&consoles, line, Msg::Console),
+                Cmd::Console(line, cwd) => submit(&consoles, (line, cwd), Msg::Console),
                 Cmd::Setup(args) => submit(&setups, args, |error| Msg::Setup(Err(error))),
                 Cmd::Desktop(args) => submit(&desktops, args, |error| Msg::Desktop(Err(error))),
                 daemon => {
                     let answer = match &daemon {
                         Cmd::Answer(id, _) => Some(id.clone()),
+                        _ => None,
+                    };
+                    let launch = matches!(&daemon, Cmd::Launch(_));
+                    let channel = match &daemon {
+                        Cmd::ChannelSend(id, _) => Some(id.clone()),
                         _ => None,
                     };
                     let outcome = run(&client, daemon);
@@ -2557,6 +918,16 @@ fn spawn_worker(
                         Ok(Some(msg)) => msg,
                         Ok(None) => continue,
                         Err(err) => {
+                            if launch && tx.send(Msg::Launched(Err(format!("{err:#}")))).is_err() {
+                                break;
+                            }
+                            if let Some(id) = channel
+                                && tx
+                                    .send(Msg::ChannelSent(id, Err(format!("{err:#}"))))
+                                    .is_err()
+                            {
+                                break;
+                            }
                             if let Some(id) = answer {
                                 // Preserve the draft even when no daemon reply arrived.
                                 if tx.send(Msg::Answered(id, Err(format!("{err:#}")))).is_err() {
@@ -2607,7 +978,7 @@ fn failure_message(error: anyhow::Error) -> Msg {
 fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
     Ok(match cmd {
         Cmd::Agents => match client.call(&Request::List {
-            all: false,
+            all: true,
             project: None,
             labels: BTreeMap::new(),
         })? {
@@ -2629,8 +1000,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Processes { processes } => Some(Msg::Discovered(processes)),
             _ => None,
         },
-        Cmd::Journal(project) => match client.call(&Request::Journal {
-            project: project.clone(),
+        Cmd::Journal(project, selector) => match client.call(&Request::Journal {
+            project: selector,
             since_seq: None,
             until_seq: None,
             agent: None,
@@ -2664,8 +1035,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         // in. A channel between two agents need not have the human as a
         // member — most will not — and a window that listed only its
         // own memberships would show nothing while agents talked.
-        Cmd::Channels(project) => match client.call(&Request::Channels {
-            project: project.clone(),
+        Cmd::Channels(project, selector) => match client.call(&Request::Channels {
+            project: selector,
             all: false,
             agent: None,
         })? {
@@ -2738,9 +1109,23 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 agent.chars().take(12).collect::<String>()
             )))
         }
+        Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
+            Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
+            _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
+        },
+        Cmd::ChannelSend(channel, text) => {
+            client.call(&Request::Send {
+                from: agentdocker_core::HUMAN.into(),
+                to: format!("channel:{channel}"),
+                kind: "message".into(),
+                payload: serde_json::Value::String(text),
+                reply_to: None,
+            })?;
+            Some(Msg::ChannelSent(channel, Ok(())))
+        }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
-        Cmd::Console(line) => Some(Msg::Console(console(&line))),
+        Cmd::Console(line, cwd) => Some(Msg::Console(console(&line, cwd.as_deref()))),
     })
 }
 
@@ -2748,7 +1133,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
 /// command line is the complete surface and it keeps growing; a window
 /// that mirrored it in widgets would always lag behind, so the window
 /// runs the real thing and shows what it said.
-fn console(line: &str) -> String {
+fn console(line: &str, project: Option<&std::path::Path>) -> String {
     let words = match shell_words(line) {
         Some(words) if !words.is_empty() => words,
         Some(_) => return String::new(),
@@ -2764,7 +1149,11 @@ fn console(line: &str) -> String {
         return "the CLI path is not UTF-8".to_owned();
     };
     let argv: Vec<String> = std::iter::once(cli.clone()).chain(args).collect();
-    let cwd = match std::env::current_dir() {
+    let cwd = match project
+        .map(std::path::Path::to_owned)
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)
+    {
         Ok(cwd) => cwd,
         Err(err) => return err.to_string(),
     };
@@ -2869,7 +1258,7 @@ fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("Invalid installation reply: {error}"))
 }
 
-fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: egui::Context) {
+fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
     std::thread::spawn(move || {
         loop {
             let tx_events = tx.clone();
@@ -2904,220 +1293,6 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every screen lays itself out, with something on it.
-    ///
-    /// A layout mistake — a grid whose rows and columns disagree, a
-    /// widget that borrows what it is drawn into — is a panic at paint
-    /// time, on whichever screen the person who changed it was not
-    /// looking at. Cheap here, expensive to find by opening the window.
-    #[test]
-    fn every_screen_lays_itself_out_with_something_on_it() {
-        let (tx, _requests) = queue::channel();
-        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
-        let mut app = App::bare(tx, rx);
-        app.runtimes = serde_json::from_value(serde_json::json!([{
-            "name":"claude-code", "vendor":"Anthropic", "label":"Claude Code",
-            "cli":"/fixture/claude", "version":"fixture", "apps":[],
-            "config_dir":null, "mcp":"missing", "hooks":"wired"
-        }, {
-            "name":"amp", "vendor":"Sourcegraph", "label":"Amp", "cli":null,
-            "version":null, "apps":[], "config_dir":null,
-            "mcp":"unverified", "hooks":"unsupported"
-        }]))
-        .unwrap();
-        // One of every state the panels can be in, so the colours, the
-        // hover text and the empty branches all get drawn at least once.
-        app.setup_health = Some(serde_json::json!({
-            "daemon_reachable": true, "daemon": "agentd 0.1.0",
-            "runtimes": [{"name": "claude-code", "checks": [
-                {"channel": "mcp", "status": "missing", "detail": "no registration"},
-                {"channel": "hooks", "status": "executable_available",
-                 "detail": "installed", "executable": "/fixture/agentdocker"},
-                {"channel": "other", "status": "unsupported", "detail": "n/a"}]}]
-        }));
-        app.setup_history = vec![
-            serde_json::json!({"id": "11111111-2222-3333-4444-555555555555", "phase": "applied"}),
-            serde_json::json!({"id": "66666666-7777-8888-9999-000000000000", "phase": "undone"}),
-        ];
-        app.setup_plan = Some(serde_json::json!({
-            "id": "11111111-2222-3333-4444-555555555555", "phase": "prepared",
-            "executable": "/fixture/agentdocker",
-            "changes": [
-                {"runtime":"claude-code", "channel":"hooks",
-                 "path":"/fixture/.claude/settings.json", "action":"create configuration"},
-                {"runtime":"claude-code", "channel":"mcp", "path":"/fixture/.claude.json",
-                 "action":"register through `claude mcp add`"}],
-            "notes": ["Restart the selected provider session after applying."]}));
-        app.channels = serde_json::from_value(serde_json::json!([{
-            "id": "1ff5d0b3d5ec", "project": "p1",
-            "subject": {"kind": "task", "task": "Agent identity and activity reporting"},
-            "members": ["aaaa", "bbbb"], "opened_by": "aaaa",
-            "opened_at": "2026-09-08T03:23:43Z",
-            "reviews": [{"by": "bbbb", "by_name": "codex-27221", "of": "aaaa",
-                         "of_name": "claude-code-45856", "verdict": "changes",
-                         "note": "three remaining blockers", "at": "2026-09-08T03:43:28Z"}]
-        }, {
-            "id": "ee3cbc67d8b7", "project": "p1",
-            "subject": {"kind": "contested", "paths": ["/x/mcp.rs"]},
-            "members": ["aaaa"], "opened_at": "2026-09-08T03:27:37Z",
-            "closed_at": "2026-09-08T03:40:00Z", "resolution": "everyone left"
-        }]))
-        .unwrap();
-        app.inbox = serde_json::from_value(serde_json::json!([{
-            "id": "m1", "from": "bbbb", "to": {"kind": "channel", "value": "1ff5d0b3d5ec"},
-            "kind": "coordination", "payload": {"channel": "1ff5d0b3d5ec", "text": "in the room"},
-            "sent_at": "2026-09-08T03:24:46Z"
-        }, {
-            "id": "m2", "from": "bbbb", "to": {"kind": "agent", "value": "aaaa"},
-            "kind": "chat", "payload": {"text": "and one straight to you"},
-            "sent_at": "2026-09-08T03:25:00Z"
-        }, {
-            "id": "m3", "from": "bbbb", "to": {"kind": "agent", "value": "aaaa"},
-            "kind": "notice", "payload": {"structured": "no text field at all"},
-            "sent_at": "2026-09-08T03:26:00Z"
-        }]))
-        .unwrap();
-        app.console_output = "agentdocker ps\nno agents\n".to_owned();
-        app.console_running = 1;
-        app.status = "something happened".to_owned();
-        app.connected = Err("no daemon".to_owned());
-
-        let ctx = egui::Context::default();
-        for screen in Screen::ALL {
-            app.screen = screen;
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.draw(ui));
-            // A frame hands back the textures its painter would have
-            // uploaded, and drops loudly if nobody takes them. There is
-            // no painter here, so this is where they are taken.
-            output.textures_delta.clear();
-            assert!(
-                !ctx.tessellate(output.shapes, output.pixels_per_point)
-                    .is_empty(),
-                "{} drew nothing",
-                screen.title()
-            );
-        }
-    }
-
-    /// The window can be driven without a mouse.
-    ///
-    /// The sidebar is the one thing here painted rather than assembled
-    /// from widgets, which is exactly the kind of thing that quietly
-    /// stops being reachable from the keyboard. Tab reaches a row and
-    /// Enter chooses it, and if that ever stops being true this is what
-    /// says so.
-    #[test]
-    fn the_sidebar_is_reachable_and_choosable_from_the_keyboard() {
-        let (tx, _requests) = queue::channel();
-        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
-        let mut app = App::bare(tx, rx);
-        let ctx = egui::Context::default();
-        let frame = |events: Vec<egui::Event>, app: &mut App| {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ui| app.draw(ui),
-            );
-            output.textures_delta.clear();
-        };
-        let key = |key: egui::Key, pressed: bool| egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
-
-        // One frame so the rows exist to be reached, then Tab down to
-        // the third of them and choose it.
-        frame(Vec::new(), &mut app);
-        assert_eq!(app.screen, Screen::ALL[0], "starts where it starts");
-        for _ in 0..3 {
-            frame(
-                vec![key(egui::Key::Tab, true), key(egui::Key::Tab, false)],
-                &mut app,
-            );
-        }
-        frame(
-            vec![key(egui::Key::Enter, true), key(egui::Key::Enter, false)],
-            &mut app,
-        );
-        assert_eq!(
-            app.screen,
-            Screen::ALL[2],
-            "three tabs and a return should land on {}",
-            Screen::ALL[2].title()
-        );
-    }
-
-    #[test]
-    fn activity_rows_follow_reports_instead_of_runtime_capability_guesses() {
-        let (tx, _requests) = queue::channel();
-        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
-        let mut app = App::bare(tx, rx);
-        let now = Utc::now();
-        let mut agent = AgentRecord::new(
-            agentdocker_core::AgentSpec {
-                name: "owned-codex".into(),
-                runtime: "codex".into(),
-                ..Default::default()
-            },
-            false,
-            now,
-        );
-        agent.status = agentdocker_core::AgentStatus::Running;
-        let id = agent.id.as_str().to_owned();
-        app.agents.push(agent);
-        app.runtimes = serde_json::from_value(serde_json::json!([{
-            "name":"codex", "vendor":"OpenAI", "label":"Codex", "cli":"/fixture/codex",
-            "version":null, "apps":[], "config_dir":null,
-            "mcp":"wired", "hooks":"unsupported"
-        }]))
-        .unwrap();
-        let ctx = egui::Context::default();
-        for (state, expected) in [
-            (None, "unknown"),
-            (Some(Activity::Unknown), "unknown"),
-            (Some(Activity::Idle { since: now }), "idle"),
-            (Some(Activity::Working { since: now }), "working"),
-        ] {
-            app.activity.clear();
-            if let Some(state) = state {
-                app.activity.insert(id.clone(), state);
-            }
-            let mut output = ctx.run_ui(Default::default(), |ui| app.agents_screen(ui));
-            output.textures_delta.clear();
-            fn collect(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
-                match shape {
-                    egui::epaint::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
-                    egui::epaint::Shape::Vec(shapes) => {
-                        for shape in shapes {
-                            collect(shape, texts);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let mut texts = Vec::new();
-            for shape in output.shapes {
-                collect(&shape.shape, &mut texts);
-            }
-            assert!(
-                texts.iter().any(|text| text == expected),
-                "expected {expected}; saw {texts:?}"
-            );
-            if expected == "unknown" {
-                assert!(
-                    !texts
-                        .iter()
-                        .any(|text| text == "idle" || text == "all idle")
-                );
-            }
-        }
-    }
 
     /// The window looks at the conversation; it does not consume it.
     ///
@@ -3200,7 +1375,7 @@ mod tests {
         });
         let response = run(
             &Client::isolated(socket),
-            Cmd::Channels("fixture-project".into()),
+            Cmd::Channels("fixture-project".into(), "fixture-project".into()),
         );
         server.join().unwrap();
         assert!(
@@ -3248,7 +1423,7 @@ mod tests {
         app.send(Cmd::Setup(vec!["--health".into()]));
         assert!(!app.setup_busy);
         app.console_running = 1;
-        app.send(Cmd::Console("ps".into()));
+        app.send(Cmd::Console("ps".into(), None));
         assert_eq!(app.console_running, 0);
         assert!(app.console_output.contains("queue is full"));
         app.drain();
@@ -3344,16 +1519,22 @@ mod tests {
     fn channel_and_inbox_refreshes_coalesce_without_losing_other_projects() {
         let (commands, requests) = queue::channel();
         for _ in 0..10_000 {
-            commands.send(Cmd::Channels("project-a".into())).unwrap();
-            commands.send(Cmd::Channels("project-b".into())).unwrap();
+            commands
+                .send(Cmd::Channels("project-a".into(), "project-a".into()))
+                .unwrap();
+            commands
+                .send(Cmd::Channels("project-b".into(), "project-b".into()))
+                .unwrap();
             commands.send(Cmd::Inbox).unwrap();
         }
         let pending: Vec<_> = requests.try_iter().collect();
         assert_eq!(pending.len(), 3);
-        assert!(matches!(&pending[0], Cmd::Channels(project) if project == "project-a"));
-        assert!(matches!(&pending[1], Cmd::Channels(project) if project == "project-b"));
+        assert!(matches!(&pending[0], Cmd::Channels(project, _) if project == "project-a"));
+        assert!(matches!(&pending[1], Cmd::Channels(project, _) if project == "project-b"));
         assert!(matches!(&pending[2], Cmd::Inbox));
-        commands.send(Cmd::Channels("project-a".into())).unwrap();
+        commands
+            .send(Cmd::Channels("project-a".into(), "project-a".into()))
+            .unwrap();
         commands.send(Cmd::Inbox).unwrap();
         assert_eq!(requests.try_iter().count(), 2);
     }
@@ -3385,7 +1566,7 @@ mod tests {
         assert_eq!(
             requests
                 .try_iter()
-                .filter(|cmd| matches!(cmd, Cmd::Channels(_)))
+                .filter(|cmd| matches!(cmd, Cmd::Channels(_, _)))
                 .count(),
             2
         );
@@ -3605,7 +1786,7 @@ mod tests {
             Arc::new(Client::isolated(socket)),
             requests,
             messages,
-            egui::Context::default(),
+            Wake::default(),
             Default::default(),
         );
         commands.send(cmd).unwrap();
@@ -3624,7 +1805,7 @@ mod tests {
     fn channel_requests_name_a_project_without_filtering_to_human_membership() {
         use serde_json::json;
         let replies = command_with_replies(
-            Cmd::Channels("fixture-project".into()),
+            Cmd::Channels("fixture-project".into(), "fixture-project".into()),
             vec![(
                 json!({"op":"channels", "project":"fixture-project", "all":false, "agent":null}),
                 Some(json!({"type":"channels", "channels":[]})),
@@ -3724,7 +1905,7 @@ mod tests {
             client,
             requests,
             messages,
-            egui::Context::default(),
+            Wake::default(),
             Default::default(),
         );
         commands.send(cmd).unwrap();
@@ -3828,7 +2009,7 @@ mod tests {
         let mut first = true;
         let (slow, slow_worker) = lane(
             tx.clone(),
-            egui::Context::default(),
+            Wake::default(),
             cancelled.clone(),
             move |line: String| {
                 if first {
@@ -3839,7 +2020,7 @@ mod tests {
                 Msg::Console(line)
             },
         );
-        let (quick, quick_worker) = lane(tx, egui::Context::default(), cancelled, Msg::Status);
+        let (quick, quick_worker) = lane(tx, Wake::default(), cancelled, Msg::Status);
         slow.try_send("first".into()).unwrap();
         running.recv_timeout(Duration::from_secs(3)).unwrap();
         for index in 0..SHELL_QUEUE_CAPACITY {
@@ -3878,7 +2059,7 @@ mod tests {
         let (release, gate) = sync_channel(1);
         let (jobs, worker) = lane(
             tx,
-            egui::Context::default(),
+            Wake::default(),
             cancelled.clone(),
             move |line: String| {
                 started.send(()).unwrap();
@@ -3912,7 +2093,7 @@ mod tests {
         assert_eq!(app.answers[&id], answer);
         assert!(!app.sending.contains(&id));
         app.console_running = 1;
-        app.send(Cmd::Console(answer));
+        app.send(Cmd::Console(answer, None));
         assert_eq!(app.console_running, 0);
         assert!(app.console_output.contains("64 KiB"));
         app.setup_busy = true;
@@ -3945,7 +2126,7 @@ mod tests {
         assert!(
             received
                 .iter()
-                .any(|cmd| matches!(cmd, Cmd::Journal(project) if project == "project-a"))
+                .any(|cmd| matches!(cmd, Cmd::Journal(project, _) if project == "project-a"))
         );
     }
 

@@ -5,18 +5,22 @@
 //! keyboard, an agent's terminal, a console for any CLI command, the
 //! runtimes on this machine, the journal, leases, and appearance.
 
+mod accessibility;
 mod app;
+mod catalog;
 mod client;
+mod color;
+mod controls;
 mod desktop;
 mod notify;
-mod projects;
 mod smoke;
 mod terminal;
 mod theme;
+mod wake;
 
 /// What the window says about itself, and where.
 ///
-/// eframe, winit and wgpu all report through the `log` crate, and until
+/// Iced, winit and the native adapters all report through the `log` crate, and until
 /// this was here nothing collected them: a renderer that refused to hand
 /// back a frame, a surface that could not be created, a device lost —
 /// every one of those was discarded, and a graphical failure left
@@ -36,7 +40,7 @@ fn logging() {
         .init();
 }
 
-fn main() -> eframe::Result {
+fn main() -> iced::Result {
     logging();
     let _installation_pin = agentdocker_host::installation::pin_current_executable()
         .unwrap_or_else(|error| usage_error(&format!("cannot open installed release: {error}")));
@@ -44,6 +48,7 @@ fn main() -> eframe::Result {
     let mut smoke_output = None;
     let mut expected_pid = None;
     let mut smoke_deadline = None;
+    let mut smoke_scenario = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version" | "-V") => {
@@ -57,6 +62,13 @@ fn main() -> eframe::Result {
                         .unwrap_or_else(|| {
                             usage_error("--smoke-test requires an output directory")
                         }),
+                );
+            }
+            Some("--smoke-scenario") => {
+                smoke_scenario = Some(
+                    args.next()
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| usage_error("--smoke-scenario requires a JSON file")),
                 );
             }
             Some("--expect-pid") => {
@@ -100,7 +112,7 @@ fn main() -> eframe::Result {
             Some("--help" | "-h") => {
                 println!(
                     "agentdocker-ui [--version] [--notify TITLE BODY] \
-                     [--smoke-test OUTPUT --expect-pid PID --smoke-deadline SECONDS]"
+                     [--smoke-test OUTPUT --expect-pid PID --smoke-deadline SECONDS --smoke-scenario JSON]"
                 );
                 return Ok(());
             }
@@ -111,59 +123,52 @@ fn main() -> eframe::Result {
             }
         }
     }
-    if smoke_output.is_none() && (expected_pid.is_some() || smoke_deadline.is_some()) {
-        usage_error("--expect-pid and --smoke-deadline require --smoke-test");
+    if smoke_output.is_none()
+        && (expected_pid.is_some() || smoke_deadline.is_some() || smoke_scenario.is_some())
+    {
+        usage_error("Smoke options require --smoke-test");
     }
     let (smoke, outcome) = match smoke_output {
-        Some(output) => match smoke::Smoke::new(output, expected_pid, smoke_deadline) {
-            Ok((smoke, outcome)) => (Some(smoke), Some(outcome)),
-            Err(error) => {
-                eprintln!("{error:#}");
-                std::process::exit(2);
+        Some(output) => {
+            match smoke::Smoke::new(output, expected_pid, smoke_deadline, smoke_scenario) {
+                Ok((smoke, outcome)) => (Some(smoke), Some(outcome)),
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    std::process::exit(2);
+                }
             }
-        },
+        }
         None => (None, None),
     };
-    // Set the process icon as well as the bundle icon, so the running Dock
-    // tile uses the same artwork as Finder.
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
-        .expect("the bundled icon is a valid PNG");
-    let mut options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(icon)
-            .with_title("agentdocker")
-            .with_inner_size([1100.0, 720.0])
-            // Small enough to be honest about: below this the agent
-            // table's columns start colliding, and a window that cannot
-            // show its own contents is worse than one that scrolls.
-            .with_min_inner_size([680.0, 460.0])
-            // The preferred size is a preference, not a demand. A 1100
-            // by 720 window does not fit a 1280 by 800 laptop once the
-            // menu bar and the Dock have taken their share, and a window
-            // that opens larger than the screen opens with its own
-            // controls off the edge. Off by default everywhere but
-            // Linux, so it has to be asked for.
-            .with_clamp_size_to_monitor_size(true),
+    let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!("icon.png")))
+        .read_info()
+        .expect("embedded icon");
+    let mut rgba = vec![0; reader.output_buffer_size().expect("icon buffer")];
+    let info = reader.next_frame(&mut rgba).expect("embedded PNG");
+    rgba.truncate(info.buffer_size());
+    let icon = iced::window::icon::from_rgba(rgba, info.width, info.height).expect("RGBA icon");
+    let result = iced::application(
+        move || {
+            let (app, task) = app::App::boot();
+            (app.with_smoke(smoke.clone()), task)
+        },
+        app::App::update,
+        app::App::view,
+    )
+    .title("agentdocker")
+    .theme(app::App::theme)
+    .scale_factor(app::App::scale_factor)
+    .subscription(app::App::subscription)
+    .window(iced::window::Settings {
+        size: iced::Size::new(1180.0, 760.0),
+        min_size: Some(iced::Size::new(720.0, 540.0)),
+        visible: false,
+        exit_on_close_request: false,
+        icon: Some(icon),
         ..Default::default()
-    };
-    if let Some(smoke) = &smoke {
-        // Keep renderer failures observable in explicit fixture mode. Preserve
-        // the backend's recovery behavior and bound repetitive log messages.
-        let original = options.wgpu_options.on_surface_status.clone();
-        let failures = smoke.surface_failures();
-        options.wgpu_options.on_surface_status = std::sync::Arc::new(move |status| {
-            let count = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if count <= 16 || count.is_power_of_two() {
-                eprintln!("graphical acceptance surface #{count}: {status:?}");
-            }
-            original(status)
-        });
-    }
-    let result = eframe::run_native(
-        "agentdocker",
-        options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc).with_smoke(smoke)))),
-    );
+    })
+    .centered()
+    .run();
     if outcome.is_some_and(|state| state.load(std::sync::atomic::Ordering::Relaxed) != 1) {
         std::process::exit(1);
     }
@@ -177,35 +182,22 @@ fn usage_error(message: &str) -> ! {
 
 #[cfg(test)]
 mod tests {
-    /// The window must carry its own icon, and this is why.
-    ///
-    /// eframe falls back to *its* logo when the viewport has no icon,
-    /// and then calls `setApplicationIconImage` with it. macOS shows the
-    /// bundle's icon for an app that is not running and the process's
-    /// icon for one that is, so the app looked right in Finder and wore
-    /// egui's hexagon in the Dock the moment it opened. Nothing about
-    /// the bundle could have fixed that.
     #[test]
     fn the_window_carries_our_own_icon() {
-        let icon = eframe::icon_data::from_png_bytes(include_bytes!("icon.png"))
-            .expect("the embedded icon is a valid PNG");
-        assert_eq!(icon.width, 256, "big enough for a retina Dock tile");
-        assert_eq!(icon.height, 256);
-        assert_ne!(
-            icon,
-            egui::IconData::default(),
-            "an empty icon is the same as not setting one, and eframe \
-             would fall back to its own"
-        );
-
-        // And it is our mark rather than something else that happens to
-        // be 256 square: the tile is dark and the cube is blue, so the
-        // blue channel leads by a wide margin over the whole image.
+        let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!("icon.png")))
+            .read_info()
+            .unwrap();
+        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut bytes).unwrap();
+        assert_eq!((info.width, info.height), (256, 256));
         let (mut red, mut blue) = (0u64, 0u64);
-        for pixel in icon.rgba.as_chunks::<4>().0 {
+        for pixel in bytes[..info.buffer_size()].as_chunks::<4>().0 {
             red += u64::from(pixel[0]);
             blue += u64::from(pixel[2]);
         }
-        assert!(blue > red * 2, "the mark is blue: {blue} against {red}");
+        assert!(
+            blue > red * 2,
+            "The window carries the blue AgentDocker mark"
+        );
     }
 }

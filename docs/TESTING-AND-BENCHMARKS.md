@@ -53,26 +53,25 @@ The performance workflow contains an optional trusted-main reporting job, but th
 
 A managed-workspace launch failure keeps the original daemon response even when no agent record exists. The fixture attempts ownership collection for partially created containers separately; inspection or log-capture errors cannot replace the primary failure. Both workspace and relay runs write a failed result plus at most 2 MiB of daemon log beside the requested result path, where CI retains them. Authentication directories and databases are not copied.
 
-Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, frames and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
+Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, update ticks and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
 **Keep the graphical fixture visible and retain renderer diagnostics.**
-Screenshot capture happens during painting, which the renderer can skip for
-an occluded surface. The #80 investigation reported a separate local run with
-1850 frames and 1850 occlusions without a capture, including an older commit.
-That observation supplies a hypothesis for other timeouts; it does not identify
-the cause of the original integration failure without matching source and
-viewport/renderer evidence. This integration records viewport counters and
-requests focus before capture, while preserving the original failure record.
-
-The window logs through `tracing-subscriber`, which bridges the `log` records `eframe`, `winit` and `wgpu` emit, so this is one run away rather than an afternoon:
+The current desktop uses Iced with tiny-skia. Run `scripts/desktop_smoke.py` for
+native window/discovery acceptance and `scripts/iced_workflow_smoke.py` for the
+rendered action and restoration scenarios. These explicit fixture modes require
+isolated home/socket settings, fresh output directories and a bounded deadline.
+The workflow report identifies completed steps, native accessibility checks and
+binary hashes. Private progress files help diagnose a stalled step.
 
 ```sh
-RUST_LOG=warn,egui_wgpu=trace python3 scripts/desktop_smoke.py \
-  --binary-dir <dir> --output <dir>
-# Skipping frame due to occlusion.
+RUST_LOG=warn,iced_winit=debug python3 scripts/desktop_smoke.py \
+  --binary-dir <dir> --output <fresh-dir>
 ```
 
-CI and local compositor conditions differ; inspect each run rather than assuming CI cannot occlude a window. On macOS use the packaged bundle, as `desktop.yml` does: `artifacts/desktop/AgentDocker.app/Contents/MacOS`.
+The earlier egui surface-failure investigations below remain historical evidence,
+not claims about Iced. CI and local compositor conditions differ. Retain each
+run's renderer and source provenance, and keep local captures private because
+discovery may include other sessions on the computer.
 
 Socket load reports connect/write/read/decode failures by operation and retains a bounded fixture-daemon log tail. All agents register before workers start; failure to create a worker cancels already-created waiting workers. Criterion stores each campaign's samples in a fresh `artifacts/criterion.*` directory, alongside source manifests, so cached baseline metadata without its samples cannot become an implicit comparison. The original 100-client Linux failure remains open until the labeled failure is reproduced and explained.
 
@@ -163,10 +162,10 @@ those commands when acquisition fails. A single request can therefore be lost
 even when the window later becomes visible. The inspected sources match their
 registry archives and Cargo.lock checksums.
 
-Explicit graphical acceptance now requests focus first, waits for known
-visibility and retries capture only after a newly reported surface failure,
+The previous egui graphical acceptance requested focus first, waited for known
+visibility and retried capture only after a newly reported surface failure,
 with at most four requests in the original 60-second deadline. Waiting alone
-does not issue additional requests. Results retain capture-attempt and surface-
+did not issue additional requests. Its results retained capture-attempt and surface-
 failure counts. A real renderer screenshot with the connected fixture remains
 mandatory; repeated failures still fail acceptance. This recovery path does not
 assign the same cause to earlier runs without matching evidence.

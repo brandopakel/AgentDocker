@@ -1,219 +1,129 @@
-# A quieter desktop with Iced
+# The Iced desktop
 
-Status: design proposal and working native preview, starting from `862162a`.
-The existing egui application remains the production entry point. The Iced
-preview uses fictional data and never contacts a daemon or provider. It exists
-to make navigation, hierarchy, and state transitions reviewable before porting
-the operational workflows.
+The production `agentdocker-ui` entry point uses Iced. It reads the same local
+daemon as the CLI and replaces the previous egui window. The separate fictional
+design preview has been removed; its original design and captures remain in
+history at `8be9d82`. Packaging still ships the CLI, daemon and desktop together.
 
-## What needs to change
+## Project model
 
-The current window offers ten peer destinations: Agents, Questions, Channels,
-Terminal, Console, Runtimes, Journal, Leases, Settings, and Installation. That
-mirrors implementation features. A person must assemble project context by
-moving between them. The frame also gives a socket path permanent prominence,
-while most of the window can remain empty beneath a short agent table.
+Projects combine two paths into one catalog:
 
-The central questions should be:
+- **Discovered projects** appear when the daemon observes registered or supported
+  running agents and can identify their working directory.
+- **Add project…** chooses an existing folder and pins its project. Adding does
+  not launch anything, create repository files, or edit provider configuration.
 
-1. What is happening in this project?
-2. What needs my attention?
-3. What can I do with this session?
+Identity follows the existing host project discovery rules. A canonical physical
+repository root joins pinned folders, discovered processes and registered
+sessions. Registered project fingerprints supersede weaker discovery metadata.
+Linked worktrees stay grouped under their repository; individual sessions retain
+checkout and branch details. A launch uses the selected repository root shown
+in the header. Unassigned sessions have their own entry when a project cannot
+be established. An installed desktop provider alone does not reveal its projects.
 
-Changing frameworks alone will not answer those questions. The redesign also
-changes navigation, language, grouping, and the visibility of advanced tools.
+The app restores the last selected project and appearance on launch. Restoring
+only changes the view; it does not restart sessions. Projects remain after their
+agents finish. A missing folder keeps its saved entry and offers a recheck.
+Unpin keeps a recent project; Forget removes the catalog entry without touching
+files or sessions. Active discovery may subsequently restore a forgotten project.
 
-## Proposed structure
+`workspace.json` lives in the AgentDocker state directory. Its project catalog
+is bounded to 512 entries and 2 MiB. Atomic private-file replacement, one save in
+flight and generation tracking prevent late writes from reverting newer choices.
+Closing the window waits for the current preference changes. Corrupt or unsafe
+preferences are preserved and reported instead of overwritten. Existing `ui.json`
+appearance preferences are read when no new appearance has been saved.
 
-| Destination | Contents | Current screens it brings together |
-| --- | --- | --- |
-| Projects | Project list, sessions, recent activity, selected session details | Agents; project-scoped Journal and Leases |
-| Inbox | Human questions, answers, review requests, and explicit outcomes | Questions; relevant Channels content |
-| Connections | Installed tools, supported capabilities, verified health, reviewed setup and undo | Runtimes |
-| Settings | Appearance, installation, updates, retained releases, diagnostics | Settings; Installation |
+## Navigation and visual decisions
 
-Terminal belongs to a selected session and should preserve that session's
-identity when switching projects. Advanced CLI commands belong in an optional
-command panel. Durable project channels remain available inside their project;
-they must not become a fabricated chat transcript or silently drained inbox.
-The later migration must retain these workflows even though their old sidebar
-items disappear.
+| Destination | Everyday purpose |
+| --- | --- |
+| Projects | Sessions and contextual Activity, Channels, Coordination and Commands |
+| Inbox | Questions, retained answer drafts and messages addressed to the user |
+| Connections | Installed tools, explicit capabilities, reviewed setup, health and undo |
+| Settings | Appearance, installation, retained versions and diagnostics |
 
-Projects are listed beneath the primary navigation. The agreed launch behavior
-is to restore the last selected project (confirmed September 8, 2026). This
-restores the view only; it does not restart agents. A project with no sessions
-has a useful empty state. If its folder is unavailable, preserve the selection
-and explain the missing location. First launch opens discovered projects or a
-useful empty state. Persistence is part of the operational migration; the
-current sample-only preview still starts from its in-memory fixture.
+Light and dark appearances share the same hierarchy. Blue marks selection and
+primary actions; status always has words. The existing icon and system fonts
+avoid an additional decorative asset bundle. Session details sit beside a wide
+list and below a narrow one. Long content scrolls; focused controls are revealed.
+Socket paths and installation internals live in diagnostics and detailed reports.
 
-### How projects enter the workspace
+## Interaction contracts
 
-Automatic discovery remains the primary path. The daemon recognizes supported
-agent processes and resolves their working directories to a Git repository,
-an `Agentfile.toml` root, or the directory itself. Linked worktrees retain their
-checkout identity beneath their repository project. Discovery is limited by
-adapter support and access to the process working directory; an installed
-desktop application does not establish which projects its sessions are using.
+- Observed process, installed tool, configured integration and current activity
+  are separate facts. The app displays daemon observations and keeps unknown
+  states explicit. Disconnection retains the last snapshot with a stale notice.
+- Questions preserve drafts across navigation and failed sends. Duplicate sends
+  are disabled while waiting. A successful reply means delivery, not proof that
+  an agent consumed it or resumed work.
+- Each channel has its own draft and pending send. A late acknowledgement clears
+  only the text it sent. Channels show membership, reviews, resolution and queued
+  human messages; reading never drains the queue or invents a complete transcript.
+- Launch uses an installed supported CLI, explicit arguments, the selected folder
+  and a managed PTY. It does not restart on window launch. Stop requires a second
+  explicit activation within five seconds; detaching leaves the agent running.
+- Terminal transport retains bounded input/output, resize coalescing, scrollback,
+  replay and shutdown behavior. The Iced widget draws the real VT grid, including
+  ANSI/true colors, styles, wide Unicode cells and a cursor. Input supports native
+  IME, Unicode, clipboard paste and application cursor mode. Copy currently copies
+  the visible screen; selecting an arbitrary cell range is not implemented.
+- Commands run the actual bundled CLI in the selected project, without a shell.
+  Output, history, request queues and execution deadlines remain bounded. Late
+  results do not steal navigation focus.
+- Setup and installation preserve their existing exact-preview/apply and
+  undo/rollback checks. A framework migration does not relax process identity,
+  release lifetime pins, queue limits or private state requirements.
 
-Recommended addition: **Add project…** selects and pins an existing local
-folder, even when no agent is running there. Reuse the existing project identity
-rules so a manually pinned folder and a later discovered session join the same
-project. Keep recent/pinned projects visible when their sessions finish. Adding
-a folder does not launch an agent, alter provider configuration, or create a
-repository. Those remain separate explicit actions. Removing a pin does not
-delete files or stop sessions; live discovery can still surface that project.
-This folder-pinning workflow is a proposal, not an implemented capability.
+## Keyboard and native accessibility
 
-## Visual direction
+All action buttons participate in Tab/Shift-Tab traversal and activate with
+Enter/Space. Repeated key events do not repeat an activation. Escape closes
+forms/details; Command/Ctrl+1–4 switch primary sections. F6 leaves terminal input;
+Control+] detaches. Button focus follows stable identity when session rows move.
+Text inputs use Iced's native input-method support.
 
-A quiet desktop utility with a compact sidebar, generous spacing between
-sections, and compact session rows. Light and dark appearances use the same
-hierarchy. Keep the existing brand; avoid bundling a decorative font or inventing
-a replacement icon system.
+The rendered controls supply AccessKit labels, roles, values, actions, focus and
+physical-pixel bounds. The native adapter is installed before showing the window.
+macOS uses NSAccessibility, Linux AT-SPI, and Windows UI Automation. Keyboard
+widget tests and native capture automation complement these adapters; they do
+not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
 
-- Blue means selection or a primary action. It is not also a project identity.
-- Green accompanies a positive observation; amber marks a question or problem
-  that needs attention. Unknown activity uses neutral text.
-- Every status has words as well as colour.
-- Session names lead each row; provider and branch are secondary.
-- A question gets a short attention row with a direct route to the Inbox.
-- Details appear after selection. A wide window places the inspector beside
-  the sessions; a narrow window places it below them in the scrollable content.
-- Socket paths, process identifiers, lease keys, and build metadata belong in
-  contextual details and diagnostics. They should not dominate the app frame.
+## Build and validation
 
-The prototype has Command/Ctrl+1–4 section shortcuts, Escape to dismiss session
-details, and Tab/Shift-Tab operations for text-input focus. Iced 0.14's stock
-buttons handle pointer/touch events but do not participate in focus traversal;
-the preview does not yet provide a complete keyboard path through its buttons.
-That is an explicit migration gap, not an accessibility claim. Production
-cutover requires focusable actions and platform screen-reader, contrast,
-scaling, and input-method trials.
+[Iced 0.14](https://docs.rs/iced/0.14.0/iced/) supplies the
+[state/message/update/view model](https://book.iced.rs/architecture.html),
+`Task` effects and `Subscription` observations. `app/shell.rs` owns transitions,
+`app/view.rs` renders daemon state, and the existing bounded workers own blocking
+I/O. The build enables `tiny-skia`, `crisp`, Tokio, X11/Wayland and advanced widgets.
+It excludes the default GPU renderer and image codecs. PNG decoding serves the
+existing window icon. CLI-only installs do not pull the GUI dependencies.
 
-## Interaction contracts to preserve
-
-An observed process, an installed tool, configured wiring, and fresh activity
-are different facts. An unknown state is a legitimate result. Sending an answer
-does not prove the recipient consumed it or resumed work.
-
-Keep answer drafts across navigation, disconnection, and failed delivery.
-Display action failures beside the action and preserve the input needed to
-retry. Disconnection retains the last snapshot with an explicit stale-state
-notice. Setup and installation continue to preview exact changes before apply,
-and retain their undo/rollback checks. Stop remains a clearly confirmed action;
-detach remains distinct from stopping a process.
-
-Preserve command queue and byte limits, late-reply rejection, terminal output
-bounds, process identity checks, and release lifetime pins. Moving to Iced is
-not permission to relax the already tested behavior.
-
-## Why Iced, and what we are measuring
-
-The current stable release checked on September 8, 2026 is
-[Iced 0.14.0](https://docs.rs/iced/0.14.0/iced/). Its
-[state/message/update/view model](https://book.iced.rs/architecture.html)
-provides explicit boundaries between presentation, state transitions, and
-effects. `Task` and `Subscription` support commands and ongoing observations;
-they still need application-level deadlines, cancellation and bounded queues.
-
-The optional preview enables the `tiny-skia` software renderer, a Tokio
-executor, X11/Wayland support, and image handling for the existing icon. It
-does not enable Iced's default GPU renderer. The lockfile may contain optional
-GPU dependencies; the resolved preview build graph determines what is compiled.
-This is a renderer experiment. Scrolling, terminal output, CPU and idle power
-must be measured before selecting a production renderer.
-
-Iced's declared compiler minimum is 1.88. The CLI's existing minimum remains
-1.87. The current egui application already declares 1.95. New dependencies are
-confined to the optional preview target and are not shipped in the current app.
-
-The previous verified Apple Silicon package is 13.7 MB compressed / 32 MB
-installed, with a 7.1 MB CLI/daemon download. A design preview with sample data
-cannot establish that a complete Iced port is smaller or faster. Retain the
-existing release size gates and measure equivalent complete packages at cutover.
-
-The local Apple Silicon preview measures approximately 2.5 MB compressed and
-5.3 MB installed, including its icon. This is only the design app: it contains
-neither the daemon/CLI nor a working terminal. The capture manifest records the
-exact byte counts and source/binary hashes. The review bundle is locally signed,
-not a notarized public release.
-
-## Migration in reviewable increments
-
-1. **Design preview (this change).** Native Projects, Inbox, Connections and
-   Settings; search, project selection, contextual inspector, draft retention,
-   appearance changes, empty and disconnected scenes, actual window captures.
-2. **Read-only operational view.** Extract the existing framework-independent
-   client/snapshot boundary. Feed typed daemon observations into Iced away from
-   the UI thread. Preserve physical project/session identity, bounded refreshes,
-   stale-state notices and rejection of replies for an old selection. Persist
-   the last project selection and support quiet/missing-folder launch states.
-   Add the proposed folder-pinning workflow without fabricating agent activity.
-3. **Actions and attention.** Port questions/answers, reviewed setup, adoption,
-   stop confirmation and project channels with the current failure semantics.
-   Keep effects separate from view construction and never infer success from a
-   button press.
-4. **Terminal and advanced workflows.** Preserve parser/transport behavior,
-   attach/detach, resize, replay bounds, Unicode/IME input and keyboard handling.
-   Port the console, journal, coordination details and installation workflows.
-5. **Cutover.** Run equivalent packaged acceptance on macOS/Linux and the
-   supported Windows foundations. Check keyboard/screen-reader behavior,
-   scaling, memory, CPU, launch time and complete package size. Switch the
-   production entry point and remove egui/eframe only after parity is verified.
-
-A second GUI toolkit does not provide the missing Windows daemon/ConPTY/service
-adapters. The full Windows application remains separate platform work.
-
-## Run the preview
-
-Use a single build cache for this campaign:
+Use one cache for a build campaign:
 
 ```sh
-export CARGO_TARGET_DIR=/private/tmp/agentdocker-iced-build
+export CARGO_TARGET_DIR=/private/tmp/agentdocker-iced-production
 python3 scripts/build_storage.py
-cargo run --locked -p agentdocker-design --features preview --release
+bash scripts/verify.sh check
+python3 scripts/build_native.py
+python3 scripts/iced_workflow_smoke.py \
+  --binary-dir "$CARGO_TARGET_DIR/release" \
+  --output artifacts/iced-workflows
 ```
 
-The `preview` feature is required, so normal workspace builds do not compile
-this binary. Release packaging continues to select the existing CLI, daemon and
-GUI executables. To capture an actual preview window and exit:
+The workflow driver opens actual native windows in private disposable state.
+It drives the rendered controls' callbacks through question delivery, draft
+navigation, terminal attachment, channel messaging, setup preview/apply/undo,
+folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance
+and a second launch. Daemon and on-disk assertions verify outcomes. macOS also
+probes the app's native NSAccessibility hierarchy. The driver does not claim
+physical keyboard injection, provider consumption or a screen-reader trial.
 
-```sh
-cargo run --locked -p agentdocker-design --features preview --release -- \
-  --details --screenshot /private/tmp/iced-project.png
-```
-
-The PNG path must not already exist. Other options: `--dark`, `--empty`,
-`--offline`, `--width 720`, and `--page inbox|connections|settings|projects`.
-The preview keeps all interactions in memory. It is not a new installed release.
-
-Validate the optional target explicitly and capture the review scenes:
-
-```sh
-python3 scripts/build_storage.py
-cargo test --locked -p agentdocker-design --features preview --release
-cargo clippy --locked -p agentdocker-design --features preview \\
-  --all-targets --release -- -D warnings
-python3 scripts/iced_design.py \\
-  --binary "$CARGO_TARGET_DIR/release/agentdocker-design" \\
-  --output artifacts/iced-design/local-review
-```
-
-The output directory must be new. The driver captures ten actual rendered
-windows, including narrow layouts, and packages a local macOS review app.
-These captures check layout; the model tests check draft/selection retention
-and disconnected answer handling. They do not establish operational parity,
-full pointer/keyboard acceptance, or production performance.
-
-## Decisions for the next discussion
-
-- Should an optional all-project overview be available alongside restoring the
-  last project? The launch default is settled.
-- Inspector beside the list, or a full detail screen after selection?
-- Keep the proposed light default, or follow the operating system?
-- Is the main daily workflow monitoring several agents, or working closely
-  with one agent's terminal and questions?
-
-The first prototype assumes focused project work and a quiet native utility.
-These choices are intentionally visible and reversible before a full migration.
+The standard suite includes strict lint, nextest, doctests, installer/package
+checks and release builds. Desktop CI packages and runs native workflow acceptance
+on macOS and Linux; Windows compiles the desktop/adapters and tests its existing
+core/host foundations. Full Windows daemon/ConPTY/service packaging remains
+separate platform work. Equivalent package size, launch time, memory and CPU
+measurements must accompany release decisions, using exact binary provenance.
+See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates.
