@@ -442,9 +442,6 @@ impl App {
             note(format!("Last seen {}", ago(Utc::now(), agent.last_seen)), c)
         ]
         .spacing(12);
-        if let Some(activity) = self.activity.get(&id) {
-            body = body.push(note(format!("Observation: {activity:?}"), c));
-        }
         if agent.managed && agent.spec.tty && agent.status.is_live() {
             body = body.push(action(
                 "attach-session",
@@ -982,7 +979,8 @@ impl App {
     }
 
     fn setup_view(&self, plan: &serde_json::Value, c: Colors) -> Element<'_, Message> {
-        let id = value(plan, "id");
+        let plan_id = plan["id"].as_str().filter(|id| !id.is_empty());
+        let id = plan_id.unwrap_or("unknown").to_owned();
         let phase = value(plan, "phase");
         let mut body = column![
             heading("Review integration changes", 20),
@@ -1022,7 +1020,7 @@ impl App {
         let applicable = !self.setup_busy
             && matches!(phase.as_str(), "prepared" | "applying")
             && changes.is_some_and(|c| !c.is_empty())
-            && !id.is_empty();
+            && plan_id.is_some();
         body = body.push(
             row![
                 action(
@@ -1034,7 +1032,7 @@ impl App {
                 action(
                     "undo-setup",
                     "Undo this setup",
-                    (!self.setup_busy && phase != "undone")
+                    (!self.setup_busy && phase != "undone" && plan_id.is_some())
                         .then_some(Message::Setup(vec!["--undo".into(), id])),
                     false
                 ),

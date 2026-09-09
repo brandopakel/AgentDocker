@@ -21,6 +21,8 @@ pub struct Smoke {
     requested: bool,
     ticks: usize,
     ready: bool,
+    connected: bool,
+    fixture: bool,
     runtimes: usize,
     outcome: Arc<AtomicU8>,
     pub scenario: Option<scenario::Scenario>,
@@ -53,6 +55,8 @@ impl Smoke {
                 requested: false,
                 ticks: 0,
                 ready: false,
+                connected: false,
+                fixture: false,
                 runtimes: 0,
                 outcome: outcome.clone(),
                 native_nodes: None,
@@ -73,6 +77,8 @@ impl Smoke {
             .expected_pid
             .is_none_or(|pid| discovered.iter().any(|p| p.pid == pid));
         self.ready = connected && runtimes > 0 && fixture;
+        self.connected = connected;
+        self.fixture = fixture;
         if self.started.elapsed() > self.deadline {
             self.finish(Err(format!("Timed out: scenario={},  connected={connected}, runtime_rows={runtimes}, fixture_discovered={fixture}, capture_requested={}",self.scenario.as_ref().map_or_else(||"none".into(), |s|s.waiting()), self.requested)));
             return iced::exit();
@@ -157,7 +163,7 @@ impl Smoke {
     fn finish(&mut self, result: Result<(), String>) {
         use std::io::Write;
         let passed = result.is_ok();
-        let report = serde_json::json!({"result":if passed{"passed"}else{"failed"},"error":result.err(),"renderer":"iced tiny-skia","native_accessibility_nodes":self.native_nodes,"connected":self.ready,"runtime_rows":self.runtimes,"fixture_discovered":self.ready,"screenshot_requested":self.requested,"capture_attempts":usize::from(self.requested),"scenario_steps_completed":self.scenario.as_ref().map(|s|s.completed),"scenario_steps_total":self.scenario.as_ref().map(|s|s.total),"ticks":self.ticks,"elapsed_seconds":self.started.elapsed().as_secs_f64()});
+        let report = serde_json::json!({"result":if passed{"passed"}else{"failed"},"error":result.err(),"renderer":"iced tiny-skia","native_accessibility_nodes":self.native_nodes,"connected":self.connected,"runtime_rows":self.runtimes,"fixture_discovered":self.fixture,"screenshot_requested":self.requested,"capture_attempts":usize::from(self.requested),"scenario_steps_completed":self.scenario.as_ref().map(|s|s.completed),"scenario_steps_total":self.scenario.as_ref().map(|s|s.total),"ticks":self.ticks,"elapsed_seconds":self.started.elapsed().as_secs_f64()});
         let write = (|| -> anyhow::Result<()> {
             agentdocker_host::dirs::private_file(&self.output.join("result.json"), true, false)?
                 .write_all(&serde_json::to_vec_pretty(&report)?)?;
@@ -174,7 +180,7 @@ fn native_accessibility(id: window::Id) -> Task<Message> {
     window::run(id, |window| {
         #[cfg(target_os = "macos")]
         {
-            use objc2::{msg_send, rc::Retained, runtime::AnyObject};
+            use objc2::{msg_send, rc::Retained, runtime::AnyObject, sel};
             use objc2_foundation::{NSArray, NSString};
             fn titles(node: &AnyObject, depth: usize, names: &mut Vec<String>) {
                 if depth > 4 || names.len() > 512 {
@@ -182,16 +188,20 @@ fn native_accessibility(id: window::Id) -> Task<Message> {
                 }
                 // These objects belong to this app's NSAccessibility hierarchy;
                 // the calls run on the window thread while the NSView is retained.
-                let title: Option<Retained<NSString>> =
-                    unsafe { msg_send![node, accessibilityTitle] };
-                if let Some(title) = title {
-                    names.push(title.to_string());
+                if unsafe { msg_send![node, respondsToSelector: sel!(accessibilityTitle)] } {
+                    let title: Option<Retained<NSString>> =
+                        unsafe { msg_send![node, accessibilityTitle] };
+                    if let Some(title) = title {
+                        names.push(title.to_string());
+                    }
                 }
-                let children: Option<Retained<NSArray<AnyObject>>> =
-                    unsafe { msg_send![node, accessibilityChildren] };
-                if let Some(children) = children {
-                    for child in children.iter().take(512) {
-                        titles(&child, depth + 1, names);
+                if unsafe { msg_send![node, respondsToSelector: sel!(accessibilityChildren)] } {
+                    let children: Option<Retained<NSArray<AnyObject>>> =
+                        unsafe { msg_send![node, accessibilityChildren] };
+                    if let Some(children) = children {
+                        for child in children.iter().take(512) {
+                            titles(&child, depth + 1, names);
+                        }
                     }
                 }
             }

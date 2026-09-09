@@ -51,6 +51,7 @@ impl Catalog {
         catalog
             .projects
             .dedup_by(|a, b| a.project.root == b.project.root);
+        catalog.sort_projects();
         if catalog.selected.is_some() && catalog.selected().is_none() {
             catalog.selected = catalog.projects.first().map(|e| e.project.root.clone());
         }
@@ -84,12 +85,7 @@ impl Catalog {
             project,
             pinned: pin,
         });
-        self.projects.sort_by(|a, b| {
-            a.project
-                .name()
-                .cmp(&b.project.name())
-                .then_with(|| a.project.root.cmp(&b.project.root))
-        });
+        self.sort_projects();
         if self.selected.is_none() && !self.unassigned {
             self.selected = Some(self.projects[0].project.root.clone());
         }
@@ -100,6 +96,15 @@ impl Catalog {
         self.projects
             .iter()
             .find(|e| Some(&e.project.root) == self.selected.as_ref())
+    }
+
+    fn sort_projects(&mut self) {
+        self.projects.sort_by(|a, b| {
+            a.project
+                .name()
+                .cmp(&b.project.name())
+                .then_with(|| a.project.root.cmp(&b.project.root))
+        });
     }
 
     pub fn pin(&mut self, project: ProjectRef) -> anyhow::Result<()> {
@@ -146,6 +151,21 @@ pub fn resolve(folder: &Path) -> anyhow::Result<ProjectRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_name_order_survives_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut catalog = Catalog::default();
+        for suffix in ["a-parent/z-project", "z-parent/a-project"] {
+            let folder = dir.path().join(suffix);
+            std::fs::create_dir_all(&folder).unwrap();
+            catalog.pin(resolve(&folder).unwrap()).unwrap();
+        }
+        assert_eq!(catalog.projects[0].project.name(), "a-project");
+        let home = dir.path().join("state");
+        catalog.save(&home).unwrap();
+        assert_eq!(Catalog::load(&home).unwrap(), catalog);
+    }
+
     #[test]
     fn a_pin_and_later_discovery_share_identity_and_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();

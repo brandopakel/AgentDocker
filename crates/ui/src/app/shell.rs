@@ -320,20 +320,9 @@ impl App {
             }
             Message::FolderResolved(result) => match result {
                 Ok(project) => {
-                    if self.shell.catalog.projects.len() >= 512
-                        && !self
-                            .shell
-                            .catalog
-                            .projects
-                            .iter()
-                            .any(|p| p.project.root == project.root)
-                    {
-                        self.shell.error = Some("The workspace holds at most 512 projects. Forget an old project first.".into());
+                    if let Err(error) = self.shell.catalog.pin(project) {
+                        self.shell.error = Some(error.to_string());
                     } else {
-                        if let Err(error) = self.shell.catalog.pin(project) {
-                            self.shell.error = Some(error.to_string());
-                            return Task::none();
-                        }
                         self.shell.adding = false;
                         self.shell.add_path.clear();
                         self.shell.selected = None;

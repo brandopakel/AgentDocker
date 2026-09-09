@@ -68,7 +68,7 @@ Updates affect the next app/CLI launch. They do not stop a live daemon or its ag
 
 ## Remove launchers and clean up retained versions
 
-The native Installation panel offers **Preview removal** and **Preview cleanup**.
+**Settings → Manage installation and retained versions** offers **Preview removal** and **Preview cleanup**.
 It lists the exact removals and retention reasons; **Apply reviewed cleanup**
 refuses a changed plan. CLI equivalents are:
 

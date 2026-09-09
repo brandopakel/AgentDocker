@@ -35,8 +35,8 @@ enum Key {
     Leases,
     Runtimes,
     Discovered,
-    Journal(String),
-    Channels(String),
+    Journal(String, String),
+    Channels(String, String),
     Inbox,
     Activity,
     Me,
@@ -49,8 +49,8 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Leases => Key::Leases,
         Cmd::Runtimes => Key::Runtimes,
         Cmd::Discovered => Key::Discovered,
-        Cmd::Journal(project, _) => Key::Journal(project.clone()),
-        Cmd::Channels(project, _) => Key::Channels(project.clone()),
+        Cmd::Journal(project, selector) => Key::Journal(project.clone(), selector.clone()),
+        Cmd::Channels(project, selector) => Key::Channels(project.clone(), selector.clone()),
         Cmd::Inbox => Key::Inbox,
         Cmd::Activity => Key::Activity,
         Cmd::Me => Key::Me,
@@ -150,5 +150,24 @@ impl Receiver {
         self.inner
             .try_iter()
             .inspect(|command| self.dispatched(command))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshes_with_distinct_roots_are_not_dropped() {
+        let (sender, receiver) = channel();
+        for selector in ["/clone-one", "/clone-two", "/clone-two"] {
+            sender
+                .send(Cmd::Journal("same-fingerprint".into(), selector.into()))
+                .unwrap();
+            sender
+                .send(Cmd::Channels("same-fingerprint".into(), selector.into()))
+                .unwrap();
+        }
+        assert_eq!(receiver.try_iter().count(), 4);
     }
 }
