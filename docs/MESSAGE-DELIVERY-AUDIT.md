@@ -156,5 +156,16 @@ The provider gives **no transport acknowledgement of processing** and can silent
 ignore events when the channel is not enabled. A successful write must therefore
 retain uncertain delivery state until an explicit correlated receipt/reply. This
 interface has been verified against documentation with the parallel Claude
-session; an actual idle-start and mixed-input trial has not yet passed.
+session; production integration and busy/mixed-input trials remain open.
 [Official channel contract](https://code.claude.com/docs/en/channels-reference).
+
+An owned interactive Claude 2.1.267 fixture then passed the idle capability trial:
+after its initial READY turn completed, one MCP channel event started another
+turn, called the nonce receipt tool once after 2.675 seconds, and replied RECEIVED.
+No further stdin was submitted before the receipt. The fixture completed the
+documented local-development confirmation and logged channel registration; it
+exited cleanly. Two preceding print/stream-json probes connected ordinary MCP
+but produced no receipt within 40 seconds, including a retry pinned to protocol
+2025-06-18. This is evidence for the interactive opt-in path, not automatic support
+for every launch mode or a completed AgentDocker delivery implementation.
+[Sanitized provider trial](verification/2026-09-10-claude-channel-probe.json).

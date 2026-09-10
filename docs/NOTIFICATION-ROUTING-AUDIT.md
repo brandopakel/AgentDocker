@@ -75,8 +75,14 @@ steps and two cold-launch steps in 9.92 seconds, with eight routing/draft checks
 unchanged executable hashes and no surviving fixture children. Captures show the
 older direct and channel target in view. The combined standard gate passed 695
 Rust tests (six skipped), 48 Python checks and 105 release workflow steps.
-Native posting/clicks, signed builds and old/new bundle registration still require
-results. The user's installed launcher and daemon remain unchanged.
+The packaged local preview also passed all 23 navigation steps in 10.31 seconds.
+An explicit native post returned exit 1 and `Notifications are not allowed for
+this application (1)`; the foreground window reported the same permission refusal.
+The bundle is ad-hoc signed and this machine reports zero valid signing identities.
+That evidence does not isolate membership, signing or bundle-registration causation.
+No native click could be tested from the refused post. Signed builds and old/new
+bundle registration remain open; the installed launcher and daemon are unchanged.
+[Exact-source verification](verification/2026-09-10-notification-routing.json).
 
 ## Work and acceptance
 
