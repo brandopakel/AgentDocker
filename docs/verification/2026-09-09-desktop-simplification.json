@@ -1,0 +1,140 @@
+{
+  "date": "2026-09-09",
+  "result": "passed",
+  "scope": "Local Apple Silicon build and packaged Iced workflow; source changes are uncommitted. Subsequent guide/report-only edits are outside the package input hash.",
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "ee2ea44b6aabf54118aee2e125f288b2e6e2b250",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "32f880efff8c95ee23aaf4c812ead71f4ef33784",
+    "source_input_sha256": "25042ac879d86c2a1016b24169473acee14e0bdf4c31141fe51df2eb24f004b2",
+    "source_dirty": true,
+    "state_schema": 8,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 25437109,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 10888778
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "e63baa0708ed9250e32ba9fab1dd9460acdabc60d207efe11ac71e1626bbda64",
+      "agentd": "d60e5e367334dd5102351b418546d30091c664d56931dbd7c8dd8a9a107ab463",
+      "agentdocker-ui": "5301d3812336606cbf55b38a75ba4adccdcb8e50388030de47c3fb26b0cb45d0"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "f413c500fd83ac16c50c3554c62eb3cdda0359f8fe5b29e588b5ee9a12bbcdc3"
+    }
+  },
+  "source_file_sha256": {
+    "crates/agentd/src/daemon.rs": "3f06730111d146308e70723f889548b995f68a888dc897d9ac9a034a7e7f4404",
+    "crates/host/src/procinfo.rs": "8f2e2c652422ad8540a08367f70568701eef7c7aab2f3ce5e5c5072c2a9d65fe",
+    "crates/ui/src/app.rs": "0e4418f4b99424c8f202e9064b4e47a24282d45cff8a8681a1e3b56ee021e865",
+    "crates/ui/src/app/shell.rs": "6b4b046dff5d923f00170c50a0cde81493447b8d99ad5485244e599b2b8b6c06",
+    "crates/ui/src/app/view.rs": "0af5020b49b23767ee8b4f6f299273496d5fe045cac9252636cee94d637263d9",
+    "crates/ui/src/app/sessions.rs": "f6cd8d25ac54d84fc1674157e65db362d086979de5d167aa91c86c2684a40226",
+    "crates/ui/src/smoke/scenario.rs": "c4c8d7837a462a90b704c2873349ad2e8c3478faf837fa6c45f6199f2baf6db7",
+    "scripts/iced_workflow_smoke.py": "82e29529eb452e68c01e759a3c581b5d7fc44c91265d6dce21c021b68f5f5ddc"
+  },
+  "standard_gate": {
+    "command": "bash scripts/verify.sh check",
+    "result": "passed",
+    "rust_passed": 671,
+    "rust_skipped": 6,
+    "python_passed": 43,
+    "includes": [
+      "format",
+      "strict workspace Clippy",
+      "nextest",
+      "doctests",
+      "Python installer/package checks",
+      "cargo package",
+      "release build"
+    ],
+    "scope": "Before the final one-line launch-form selection reset; final UI tests, Clippy and release build repeated afterward."
+  },
+  "final_ui_checks": {
+    "rust_passed": 83,
+    "clippy": "passed",
+    "release_build": "passed"
+  },
+  "native_workflows": {
+    "result": "passed",
+    "checks": [
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "steps": {
+      "workflows": 96,
+      "restored": 6
+    },
+    "native_accessibility_nodes": 19,
+    "socket_sampling": {
+      "first": {
+        "samples": 140,
+        "elapsed_seconds": 19.801148083000044,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "restored": {
+        "samples": 13,
+        "elapsed_seconds": 1.7381120420000116,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      }
+    }
+  },
+  "idle_observation": {
+    "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+    "summary": {
+      "window": {
+        "median_rss_bytes": 169607168.0,
+        "maximum_rss_bytes": 169623552,
+        "median_ps_cpu_percent": 0.5
+      },
+      "daemon": {
+        "median_rss_bytes": 17055744.0,
+        "maximum_rss_bytes": 17055744,
+        "median_ps_cpu_percent": 0.0
+      }
+    },
+    "maximum_ps_cpu_percent": {
+      "window": 11.1,
+      "daemon": 0.8
+    }
+  },
+  "retained_failures": [
+    "Initial UI test invocation: 74 passed and 8 fixture Unix-socket binds denied by the sandbox; all 82 passed after authorized rerun outside sandbox.",
+    "Intermediate new attention test used nonexistent ProjectRef::default; replaced with ProjectRef::directory before the standard gate.",
+    "Local ad-hoc package reported native notifications unavailable; signing and notification permission acceptance remain open."
+  ],
+  "limits": [
+    "Not signed/notarized for public distribution.",
+    "No installed launcher or running user daemon was switched.",
+    "No legacy duplicate registry migration, provider-message consumption trial, physical keyboard injection, human screen-reader/IME trial, long soak, or other-platform acceptance is claimed.",
+    "Original native captures and raw logs remain local under ignored artifacts; they can include unrelated discovered project names.",
+    "Idle sampling is short and includes a CPU spike; median measurements are not a sustained performance budget."
+  ]
+}

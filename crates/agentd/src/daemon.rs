@@ -1915,13 +1915,14 @@ impl Daemon {
         let mine = std::process::id();
         tokio::task::spawn_blocking(move || {
             let table = procinfo::processes().map_err(|e| e.to_string())?;
+            let launchers = procinfo::codex_launchers(&table);
             // Ancestry needs the whole table, and only agents are asked
             // about, so it is built once rather than per candidate.
             let by_pid: BTreeMap<u32, procinfo::Process> =
                 table.iter().map(|p| (p.pid, p.clone())).collect();
             let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
-                .filter(|p| p.pid != mine)
+                .filter(|p| p.pid != mine && !launchers.contains(&p.pid))
                 .filter_map(|p| {
                     let runtime = procinfo::runtime_of(&p.argv)?;
                     let cwd = procinfo::cwd(p.pid);

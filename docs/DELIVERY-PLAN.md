@@ -2,6 +2,12 @@
 
 Updated September 7, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
 
+
+For the September 9 desktop cleanup and a consolidated distinction between open
+engineering, acceptance and manual release work, start with
+[Remaining work](REMAINING-WORK.md). The dated checkpoints below retain historical
+evidence; an old “pending” entry is not by itself a current implementation gap.
+
 ## Product and engineering requirements
 
 ### Active-session defects and coordination trial (September 7, evening)

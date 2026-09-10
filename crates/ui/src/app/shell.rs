@@ -9,6 +9,11 @@ pub(super) struct State {
     pub catalog: Catalog,
     pub selected: Option<String>,
     pub search: String,
+    pub session_filter: super::sessions::Filter,
+    pub more: bool,
+    pub session_details: bool,
+    pub connection_details: Option<String>,
+    pub other_tools: bool,
     pub width: f32,
     pub height: f32,
     pub dpi: f32,
@@ -97,6 +102,11 @@ pub enum Message {
     SelectSession(String),
     CloseSession,
     Search(String),
+    SessionFilter(super::sessions::Filter),
+    More,
+    SessionDetails,
+    ConnectionDetails(String),
+    OtherTools,
     AddPath(String),
     ShowAdd,
     PickFolder,
@@ -248,6 +258,7 @@ impl App {
             }
             Message::Navigate(screen) => {
                 self.screen = screen;
+                self.shell.more = false;
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                 }
@@ -261,6 +272,7 @@ impl App {
                 self.shell.catalog.selected = None;
                 self.shell.selected = None;
                 self.shell.search.clear();
+                self.reset_session_view();
                 self.screen = Screen::Agents;
                 self.shell.changed();
                 self.refresh_project_context();
@@ -277,13 +289,29 @@ impl App {
                     self.shell.catalog.selected = Some(path);
                     self.shell.selected = None;
                     self.shell.search.clear();
+                    self.reset_session_view();
                     self.screen = Screen::Agents;
                     self.shell.changed();
                     self.refresh_project_context();
                 }
             }
-            Message::SelectSession(id) => self.shell.selected = Some(id),
+            Message::SelectSession(id) => {
+                self.shell.selected = Some(id);
+                self.shell.session_details = false;
+            }
             Message::CloseSession => self.shell.selected = None,
+            Message::SessionFilter(filter) => {
+                self.shell.session_filter = filter;
+                self.shell.selected = None;
+                self.confirm_stop = None;
+            }
+            Message::More => self.shell.more = !self.shell.more,
+            Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::ConnectionDetails(name) => {
+                self.shell.connection_details =
+                    (self.shell.connection_details.as_ref() != Some(&name)).then_some(name);
+            }
+            Message::OtherTools => self.shell.other_tools = !self.shell.other_tools,
             Message::Search(text) => {
                 self.shell.search = text.chars().take(1024).collect();
                 self.shell.selected = None;
@@ -326,6 +354,7 @@ impl App {
                         self.shell.adding = false;
                         self.shell.add_path.clear();
                         self.shell.selected = None;
+                        self.reset_session_view();
                         self.screen = Screen::Agents;
                         self.shell.changed();
                         self.refresh_project_context();
@@ -430,7 +459,13 @@ impl App {
                     }
                 }
             }
-            Message::ShowLaunch => self.shell.launch = !self.shell.launch,
+            Message::ShowLaunch => {
+                self.shell.launch = !self.shell.launch;
+                if self.shell.launch {
+                    self.shell.selected = None;
+                    self.shell.session_filter = super::sessions::Filter::Current;
+                }
+            }
             Message::LaunchRuntime(runtime) => self.shell.launch_runtime = Some(runtime),
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
@@ -673,6 +708,7 @@ impl App {
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
+                        self.shell.more = false;
                     }
                     Key::Character(key) if modifiers.command() => match key.as_str() {
                         "1" => self.screen = Screen::Agents,

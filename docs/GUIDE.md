@@ -24,8 +24,9 @@ If you want the reasoning instead of the instructions, read
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh
 ```
 
-That puts `agentdocker`, `agentd` and the desktop app under `~/.local/bin`,
-and on macOS installs `AgentDocker.app` as well. From a checkout:
+That installs the released CLI and daemon under `~/.local/bin`. Older macOS
+release archives also include the desktop app; current packaging separates the
+CLI archive and desktop download. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -52,7 +53,7 @@ agentdocker ui              # open the app
 ```
 
 `setup` is the step that matters most, and the one that is easy to skip.
-An agent that has not been wired up is still *seen* — it appears in `ps`
+An agent that has not been wired up is still *seen* — it appears in `discover`
 and in the app — but it cannot tell the daemon what it is holding or
 reading, so it reports nothing it is doing. See
 [Why an agent reads "idle"](#why-an-agent-reads-idle).
@@ -68,182 +69,74 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 
 ## The desktop app
 
-A native window over the same Unix socket as the CLI. No HTTP, no browser,
-no localhost. `agentdocker ui` opens it, and on macOS it opens
-`agentdocker-ui` beside the CLI when available. Otherwise it looks for
-`AgentDocker.app`, whose bundle supplies the Dock and app-switcher identity;
-a bare executable uses the generic executable identity.
+`agentdocker ui` opens the native Iced window. Its four destinations are
+**Projects**, **Inbox**, **Connections**, and **Settings**. The app uses the local
+daemon directly. See [the desktop guide](DESKTOP-UX.md) for every interaction and
+[remaining work](REMAINING-WORK.md) for engineering and release limitations.
 
-Agents are grouped by project, and every project keeps one colour
-everywhere it appears — the heading, the dot on each of its rows, the
-lease list. The colour comes from the project's id, so it is the same
-colour in every session and on every machine. The **All projects** menu in
-the title bar narrows every screen to one project at a time.
+### Projects and sessions
 
-### Installation and cleanup
+Choose a project in the sidebar or use **Add project…** to pin an existing folder.
+The app remembers the selected project and keeps quiet projects available.
 
-The **Installation** panel previews local package installation, rollback,
-launcher removal and retained-version cleanup. Applying a reviewed plan refuses
-changed inputs. Cleanup preserves running sessions and settings, protects active
-and rollback versions, and retains older releases without lifetime locks.
-Installed user services require explicit service removal first. See
-[desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and full limits.
+- **Current** shows live sessions. **History** keeps completed runs, including
+  older runs with the same name. No records are deleted by these filters.
+- **Needs input** shows unanswered questions from this project. Select a session
+  and use **Reply in Inbox** to answer it.
+- Select a session for **Open terminal**, **Stop session…**, or **Details**.
+  Stopping requires **Confirm stop** within five seconds. External agents stay
+  in the terminal or application where they started.
+- **Launch agent…** starts an installed CLI in the selected project. **Connect**
+  adopts a process under **Available to connect** for coordination; it does not
+  install provider integrations.
+- **Activity** shows the recent project journal, newest first. **Channels** shows
+  project rooms and messages queued for you. **More** holds Coordination,
+  Commands, and project pin/forget actions.
 
-### Agents
+On narrow windows the selected session replaces the list, with **Back to sessions**
+to return. Wide windows show actions beside the list. The human `user` identity
+remains available for coordination and inbox delivery but is omitted from the
+session list.
 
-Who is running, grouped under their project, with a summary line per
-project — `2 agents · 1 working`, or `all idle`, or `1 blocked`.
+### Why an agent reads "idle"
 
-Per agent: its name, runtime, what it is doing, the branch and commit it
-is on, how many leases it holds, when it was last seen, and buttons to
-stop it or attach to its terminal.
+Without fresh provider observations or recent coordination, activity is unknown.
+Recent coordination can establish working; an explicit provider stop produces
+provisional idle that expires or is superseded by newer activity. Process
+presence, provider configuration and observed activity are separate facts.
+See [Activity and messaging](ACTIVITY-AND-MESSAGING.md).
 
-Below the live agents, **Running, not registered** lists agent processes
-the daemon found that nobody registered — press **Adopt** to bring one in.
+### Inbox and connections
 
-#### What is `user`, with runtime `human`?
+**Inbox** holds questions and direct messages. Answer drafts survive navigation
+and failed sends. Successful delivery does not prove the agent consumed an answer.
 
-You. `agentdocker me` registers the person at the keyboard as an agent
-named `user`, and the app does it for you when it starts. Being an agent
-is what lets the others address you: they can send you messages, queue
-them while you are away, put questions to you that block until you answer,
-and see that you hold a lease on a file so they leave it alone. It shows
-as **you** in the runtime column.
+**Connections** starts with installed tools. **Details** reveals executable paths,
+versions and MCP/hooks configuration. **Other supported tools** expands the rest
+of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
+setup** use saved plans. **Check connections** provides bounded diagnostics;
+actual provider delivery requires a real round trip.
 
-#### Why an agent reads "idle"
+### Terminal and settings
 
-**DOING** is derived from what the daemon actually knows: the leases an
-agent holds and the working set it has reported. It is never guessed from
-terminal output, because output is not evidence — an agent printing a
-paragraph may be doing nothing, and an agent printing nothing may be
-halfway through a refactor.
+**Open terminal** attaches to a managed live PTY. **Detach** leaves the agent
+running. Copy takes the visible screen, paste respects bracketed-paste mode,
+F6 leaves terminal focus, and Control+] detaches. Rejected input is reported;
+already sent input is never automatically replayed.
 
-An agent without fresh provider observations or recent daemon coordination
-reads `unknown`. Recent coordination can establish `working`; an explicit
-provider stop produces a provisional `idle` observation that can expire or be
-superseded by newer activity. Hover the cell for the observation source.
-Configure integration on **Runtimes**, or with `agentdocker setup`.
-
-### Questions
-
-Questions agents have put to you. Each one has an agent blocked on the
-answer, and each gives up when its time runs out — this is the one screen
-where doing nothing has a cost. Type the reply under the question and send
-it. Same thing as `agentdocker questions` and `agentdocker answer`.
-
-### Terminal
-
-The terminal accepts up to 64 KiB of queued input across 32 entries. If it is
-full, closed, or an entry is too large, a notice identifies the rejected input;
-nothing from that entry is sent. The notice stays until dismissed. Already sent
-input is never replayed automatically. Malformed or oversized output ends the
-attachment with a reason; the agent and its daemon log remain available.
-
-The terminal of a managed agent, over `attach`. A real vt100 screen:
-colours, cursor, resize, scrollback, and every keystroke goes to the
-agent. **Detach** leaves it running.
-
-Only agents started with a terminal have one — `agentdocker run --tty`, or
-`run` for a runtime that needs one. An adopted process keeps the terminal
-it was started in; that one belongs to whatever launched it.
-
-When the managed command exits, an existing attachment finishes after its final
-output. The CLI restores terminal settings and exits without waiting for an
-extra keypress. Ctrl-] still detaches while leaving a running command intact.
-
-### Console
-
-See [The console](#the-console).
-
-### Runtimes
-
-Every agent tool AgentDocker knows about, whether it is installed here,
-its version, and whether we are wired into it:
-
-- **MCP** — a supported registration is present in configuration. Check connections and a real tool call to verify it works.
-- **HOOKS** — the complete supported hooks configuration is present. A real session must still verify delivery.
-- **RUNNING** — processes of that runtime with no registered agent.
-
-**Set up** wires one in, the same as `agentdocker setup <runtime>`.
-
-Desktop applications and their CLIs have separate identities where their integration differs. Codex desktop and ChatGPT installation does not imply the Codex CLI MCP adapter is available inside those apps. Linux recognizes curated launcher IDs, including user overrides. A failed scan leaves the last displayed inventory visible with an error; those rows may be stale.
-
-### Journal
-
-The project's narrative: releases, notes, commits, arrivals, departures
-and handoffs, oldest at the top, newest at the bottom, following itself
-as entries arrive. Pick the project from the menu. Same thing as
-`agentdocker journal`.
-
-**What is in it, and what is not.** One line per *event worth
-remembering*: a commit, a branch switch, an agent arriving or leaving, a
-note somebody wrote, a release, a handoff, a review. It is not a log of
-edits — those are in the ledger (`agentdocker changes`, `blame`), which
-records every file the watcher saw change. An hour of editing produces
-ledger rows and no journal entries until something is committed.
-
-**How it stays current.** The daemon writes each entry to SQLite as it
-happens and publishes it on the event stream. The app appends live from
-that stream, and re-reads the newest 200 entries whenever it opens,
-reconnects, or you switch projects — so closing the app loses nothing.
-The daemon holds the journal, not the app; it is still being written
-while no window is open.
-
-**Which directories it watches.** Every checkout of the project, not
-only the one an agent registered in: the main checkout plus each linked
-worktree, up to 32 of them per project. This matters more than it
-sounds. A repository's refs are shared, so a commit in a worktree writes
-into the main checkout's `.git`, and a daemon watching one directory
-sees the write without ever looking at the checkout it came from. That
-is how a fleet can commit twenty-seven times and have four of them
-recorded — and how `overlap` can answer "nothing collides" while looking
-at a single checkout.
-
-A checkout the daemon has just learned about has its position recorded
-silently the first time: its history did not happen while anything was
-watching, and announcing it would be inventing a timeline.
-
-### Leases
-
-Every lease held right now, across projects: the resource, who holds it,
-exclusive or shared, when it expires, and the note the holder left.
-
-### Settings
-
-What the window looks like, kept in `~/.agentdocker/ui.json` so it
-survives a restart, and per `AGENTDOCKER_HOME` so a throwaway daemon gets
-its own.
-
-- **Palette** — the terminal palette, used by both the console and the
-  agent terminal. A light palette turns the whole window light, because
-  a light terminal inside a dark window is two products in one frame.
-- **Terminal size** / **Text size** — point sizes for the monospace
-  surfaces and for everything else.
-- **Roomy rows** — more space per row, for a window being watched across
-  the desk rather than read up close.
-
-The palette list is the profiles people recognise — Basic, Pro,
-Homebrew, Solarized, Novel — reproduced by name rather than read off the
-machine. **Matching your terminal automatically is not something this
-does, on purpose.** Terminal.app keeps its profiles in a binary plist of
-`NSKeyedArchiver` colour blobs; iTerm2, Ghostty, WezTerm and Alacritty
-each keep theirs somewhere else in some other format; and the app is
-normally started from the Dock, so there is no terminal to inherit from.
-A palette that is *nearly* right looks broken, so the choice is yours.
+**Settings** controls light/dark appearance, text sizes, terminal palette and row
+spacing. Project selection and appearance are saved privately in `workspace.json`;
+`ui.json` remains the settings compatibility file. Settings also opens installation,
+rollback, launcher removal and retained-version cleanup. These operations preview
+exact changes and preserve running releases; see [desktop distribution](DESKTOP-DISTRIBUTION.md).
 
 ---
 
 ## The console
 
-Any `agentdocker` command, run from the window, with its output rendered
-where you typed it.
-
-It is deliberately **not a shell**. It runs `agentdocker` subcommands and
-nothing else. There is a terminal on this machine already and being a
-second one is somebody else's job — what the console borrows is the feel:
-the same monospace on the same dark ground, a prompt on the floor of the
-panel, the up arrow for what you typed before, and a transcript that
-accumulates.
+Open **Projects → More → Commands** to run a bundled `agentdocker` subcommand
+in the selected project. Output stays in the window; **Previous** and **Next**
+recall commands. This field runs CLI arguments without a shell.
 
 Type the command without the leading `agentdocker` (though typing it
 anyway is forgiven):

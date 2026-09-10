@@ -15,6 +15,7 @@ pub enum Step {
     Click { id: String },
     Fill { id: String, text: String },
     WaitText { text: String },
+    WaitControl { id: String, present: bool },
     Focus { id: String },
     WaitFocus { id: String },
     Capture { name: String },
@@ -103,6 +104,12 @@ impl Scenario {
                     n.value().is_some_and(|v| v.contains(text))
                         || n.label().is_some_and(|v| v.contains(text))
                 }) {
+                    return Task::none();
+                }
+                Task::none()
+            }
+            Step::WaitControl { id, present } => {
+                if control(id).is_some() != *present {
                     return Task::none();
                 }
                 Task::none()

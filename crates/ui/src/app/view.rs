@@ -37,7 +37,7 @@ impl App {
     fn selected_root(&self) -> Option<&std::path::Path> {
         self.shell.catalog.selected.as_deref()
     }
-    fn has_project(&self, project: Option<&ProjectRef>) -> bool {
+    pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
         match self.selected_root() {
             Some(root) => project.is_some_and(|p| p.root == root),
             None => project.is_none(),
@@ -70,26 +70,23 @@ impl App {
             }
             .into()
         };
-        let subtitle = if in_project {
-            self.shell
-                .catalog
-                .selected()
-                .map(|e| e.project.root.display().to_string())
-                .unwrap_or_else(|| "Choose a folder or discover agents already working.".into())
-        } else {
-            match self.screen {
-                Screen::Questions => "Questions and messages addressed to you.",
-                Screen::Runtimes => "Installed tools, supported connections, and reviewed setup.",
-                _ => "Appearance, installation, and diagnostics.",
-            }
-            .into()
-        };
-        let header = column![heading(title, 28), note(subtitle, c)]
-            .spacing(6)
-            .width(Fill);
+        let mut header = column![heading(title, 28)].spacing(6).width(Fill);
+        if in_project && let Some(entry) = self.shell.catalog.selected() {
+            header = header.push(note(entry.project.root.display().to_string(), c));
+        }
         let mut content = column![header].spacing(20).width(Fill);
         if let Err(error) = &self.connected {
-            content=content.push(card(column![heading("Connection unavailable",15).color(c.amber),note(format!("{error}\nThe last snapshot remains visible. Drafts are retained and daemon actions are paused."),c)].spacing(7),c));
+            content = content.push(card(
+                column![
+                    heading("Connection unavailable", 15).color(c.amber),
+                    note(
+                        format!("{error}\nShowing the last update. Reconnecting…"),
+                        c
+                    )
+                ]
+                .spacing(7),
+                c,
+            ));
         }
         if let Some(error) = &self.shell.error {
             content = content.push(card(
@@ -115,8 +112,6 @@ impl App {
                 (Screen::Agents, "Sessions"),
                 (Screen::Journal, "Activity"),
                 (Screen::Channels, "Channels"),
-                (Screen::Leases, "Coordination"),
-                (Screen::Console, "Commands"),
             ] {
                 tabs = tabs.push(action(
                     format!("project-tab-{screen:?}"),
@@ -125,6 +120,12 @@ impl App {
                     self.screen == screen,
                 ));
             }
+            tabs = tabs.push(action(
+                "project-more",
+                "More",
+                Some(Message::More),
+                self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console),
+            ));
             if self.shell.width / self.scale_factor() < 900.0 {
                 content = content.push(scrollable(tabs).id("project-tabs").direction(
                     iced::widget::scrollable::Direction::Horizontal(
@@ -135,8 +136,69 @@ impl App {
                 content = content.push(tabs);
             }
         }
+        if in_project && self.shell.more {
+            let mut more = column![
+                action(
+                    "project-tab-Leases",
+                    "Coordination",
+                    Some(Message::Navigate(Screen::Leases)),
+                    self.screen == Screen::Leases
+                ),
+                action(
+                    "project-tab-Console",
+                    "Commands",
+                    Some(Message::Navigate(Screen::Console)),
+                    self.screen == Screen::Console
+                ),
+            ]
+            .spacing(6);
+            if let Some(entry) = self.shell.catalog.selected() {
+                more = more
+                    .push(action(
+                        "pin-selected",
+                        if entry.pinned {
+                            "Unpin project"
+                        } else {
+                            "Pin project"
+                        },
+                        Some(Message::Unpin),
+                        entry.pinned,
+                    ))
+                    .push(action(
+                        "forget-project",
+                        "Forget project",
+                        Some(Message::ForgetProject),
+                        false,
+                    ));
+            }
+            content = content.push(card(more, c));
+        }
         if self.shell.adding {
-            content=content.push(card(column![heading("Add an existing project",18),note("Choose a folder. It stays in your workspace even when no agents are running.",c),input("project-path","Project folder",&self.shell.add_path,Message::AddPath),row![action("browse-folder","Browse…",Some(Message::PickFolder),false),action("pin-folder","Add project",(!self.shell.add_path.trim().is_empty()).then_some(Message::ResolveFolder),true),action("cancel-add","Cancel",Some(Message::ShowAdd),false)].spacing(6)].spacing(12),c));
+            content = content.push(card(
+                column![
+                    heading("Add an existing project", 18),
+                    input(
+                        "project-path",
+                        "Project folder",
+                        &self.shell.add_path,
+                        Message::AddPath
+                    ),
+                    row![
+                        action("browse-folder", "Browse…", Some(Message::PickFolder), false),
+                        action(
+                            "pin-folder",
+                            "Add project",
+                            (!self.shell.add_path.trim().is_empty())
+                                .then_some(Message::ResolveFolder),
+                            true
+                        ),
+                        action("cancel-add", "Cancel", Some(Message::ShowAdd), false)
+                    ]
+                    .spacing(6)
+                ]
+                .spacing(12),
+                c,
+            ));
         }
         let body = match self.screen {
             Screen::Agents => self.sessions(c),
@@ -282,38 +344,30 @@ impl App {
         let mut panel = column![]
             .spacing(if self.settings.roomy { 22 } else { 14 })
             .width(Fill);
-        if let Some(entry) = self.shell.catalog.selected() {
-            panel = panel.push(
-                row![
+        if self.shell.catalog.selected().is_some() {
+            panel = panel.push(action(
+                "launch-agent",
+                "Launch agent…",
+                (self.connected.is_ok() && self.shell.project_available != Some(false))
+                    .then_some(Message::ShowLaunch),
+                true,
+            ));
+        }
+        if self.shell.project_available == Some(false) {
+            panel = panel.push(card(
+                column![
+                    heading("Project folder unavailable", 18),
+                    note("Restore the folder or choose another project.", c),
                     action(
-                        "launch-agent",
-                        "Launch agent…",
-                        (self.connected.is_ok() && self.shell.project_available != Some(false))
-                            .then_some(Message::ShowLaunch),
-                        self.shell.launch
-                    ),
-                    action(
-                        "pin-selected",
-                        if entry.pinned {
-                            "Unpin project"
-                        } else {
-                            "Pin project"
-                        },
-                        Some(Message::Unpin),
-                        entry.pinned
-                    ),
-                    action(
-                        "forget-project",
-                        "Forget project",
-                        Some(Message::ForgetProject),
+                        "retry-project-folder",
+                        "Check folder again",
+                        Some(Message::RetryProject),
                         false
                     )
                 ]
-                .spacing(6),
-            );
-        }
-        if self.shell.project_available == Some(false) {
-            panel=panel.push(card(column![heading("Project folder unavailable",18),note("The saved location is missing or cannot be read. The project stays selected; restore the folder or choose another project.",c),action("retry-project-folder","Check folder again",Some(Message::RetryProject),false)].spacing(10),c));
+                .spacing(10),
+                c,
+            ));
         }
         if self.shell.launch {
             panel = panel.push(self.launch_view(c));
@@ -324,72 +378,129 @@ impl App {
             &self.shell.search,
             Message::Search,
         ));
-        let needle = self.shell.search.to_lowercase();
-        let mut count = 0;
-        for agent in self.agents.iter().filter(|a| {
-            a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
-                && self.has_project(a.project.as_ref())
-        }) {
-            if !format!(
-                "{} {} {}",
-                agent.spec.name,
-                agent.spec.runtime,
-                agent.vcs.as_ref().map(|v| v.describe()).unwrap_or_default()
-            )
-            .to_lowercase()
-            .contains(&needle)
-            {
-                continue;
-            }
-            count += 1;
+        use super::sessions::Filter;
+        let current = self.session_records(Filter::Current);
+        let attention = self.session_records(Filter::NeedsInput);
+        let history = self.session_records(Filter::History);
+        let available = self.available_processes();
+        let filter = self.shell.session_filter;
+        panel = panel.push(
+            row![
+                action(
+                    "sessions-current",
+                    format!("Current ({})", current.len() + available.len()),
+                    Some(Message::SessionFilter(Filter::Current)),
+                    filter == Filter::Current
+                ),
+                action(
+                    "sessions-attention",
+                    format!("Needs input ({})", attention.len()),
+                    Some(Message::SessionFilter(Filter::NeedsInput)),
+                    filter == Filter::NeedsInput
+                ),
+                action(
+                    "sessions-history",
+                    format!("History ({})", history.len()),
+                    Some(Message::SessionFilter(Filter::History)),
+                    filter == Filter::History
+                ),
+            ]
+            .spacing(4)
+            .wrap(),
+        );
+        let records = match filter {
+            Filter::Current => current,
+            Filter::NeedsInput => attention,
+            Filter::History => history,
+        };
+        let count = records.len()
+            + if filter == Filter::Current {
+                available.len()
+            } else {
+                0
+            };
+        let mut rows = column![].spacing(if self.settings.roomy { 8 } else { 3 });
+        for agent in records {
             let id = agent.id.to_string();
-            let activity = if agent.status.is_live() {
+            let activity = if self.needs_input(&id) {
+                "needs input".to_owned()
+            } else if agent.status.is_live() {
                 self.activity
                     .get(&id)
                     .map(Activity::label)
-                    .unwrap_or("unknown")
+                    .unwrap_or("activity unknown")
+                    .to_owned()
             } else {
-                "finished"
+                agent.status.to_string()
             };
-            let branch = agent.vcs.as_ref().map(|v| v.describe()).unwrap_or_default();
-            let question = self.questions.iter().any(|q| q.from == id);
+            let branch = agent.vcs.as_ref().and_then(|v| v.branch.as_deref());
             let label = format!(
-                "{}\n{}{}   ·   {}",
+                "{}\n{}{} · {}",
                 agent.spec.name,
                 agent.spec.runtime,
-                if branch.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {branch}")
-                },
-                if question { "needs input" } else { activity }
+                branch.map(|b| format!(" · {b}")).unwrap_or_default(),
+                activity
             );
-            panel = panel.push(card(
-                block_button(
-                    format!("session-{id}"),
-                    label,
-                    Some(Message::SelectSession(id.clone())),
-                    self.shell.selected.as_deref() == Some(id.as_str()),
-                ),
-                c,
+            rows = rows.push(block_button(
+                format!("session-{id}"),
+                label,
+                Some(Message::SelectSession(id.clone())),
+                self.shell.selected.as_deref() == Some(id.as_str()),
             ));
         }
-        for process in self
-            .discovered
-            .iter()
-            .filter(|p| self.has_project(p.project.as_ref()))
-        {
-            if !format!("{} {}", process.runtime, process.command)
-                .to_lowercase()
-                .contains(&needle)
-            {
-                continue;
+        panel = panel.push(rows);
+        if filter == Filter::Current && !available.is_empty() {
+            let mut discovered = column![
+                heading("Available to connect", 16),
+                note("Running outside AgentDocker", c)
+            ]
+            .spacing(8);
+            for process in available {
+                discovered = discovered.push(
+                    row![
+                        column![
+                            text(process.default_name()).size(14),
+                            note(process.runtime.clone(), c)
+                        ]
+                        .width(Fill),
+                        action(
+                            format!("adopt-{}", process.pid),
+                            "Connect",
+                            self.connected
+                                .is_ok()
+                                .then_some(Message::Adopt(process.pid)),
+                            false
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                );
             }
-            count += 1;
-            panel=panel.push(card(column![heading(process.default_name(),16),note(format!("{} · pid {} · activity unknown",process.runtime,process.pid),c),note("Discovered process. Registering makes it visible to coordination; integration capabilities remain separate.",c),action(format!("adopt-{}",process.pid),"Register session",self.connected.is_ok().then_some(Message::Adopt(process.pid)),false)].spacing(8),c));
+            panel = panel.push(card(discovered, c));
         }
         if count == 0 {
-            panel=panel.push(card(column![heading(if needle.is_empty(){"No sessions here yet"}else{"No matching sessions"},20),note(if needle.is_empty(){"Start a supported agent in this folder, or launch one here. Your project stays available while it is quiet."}else{"Try another name, tool, or branch."},c)].spacing(10),c));
+            let (title, hint) = if !self.shell.search.is_empty() {
+                ("No matching sessions", "Try another name, tool, or branch.")
+            } else {
+                match filter {
+                    Filter::Current => (
+                        "No current sessions",
+                        "Launch an agent here, or start one in this folder.",
+                    ),
+                    Filter::NeedsInput => (
+                        "Nothing needs your input",
+                        "Questions from this project will appear here.",
+                    ),
+                    Filter::History => (
+                        "No finished sessions",
+                        "Completed sessions will appear here.",
+                    ),
+                }
+            };
+            panel = panel.push(card(
+                column![heading(title, 20), note(hint, c)].spacing(10),
+                c,
+            ));
         }
         if let Some(agent) = self
             .shell
@@ -403,7 +514,7 @@ impl App {
                     .spacing(20)
                     .into();
             }
-            panel = panel.push(inspector);
+            return inspector;
         }
         panel.into()
     }
@@ -420,28 +531,28 @@ impl App {
                 format!(
                     "{} · {}",
                     agent.spec.runtime,
-                    self.activity
-                        .get(&id)
-                        .map(Activity::label)
-                        .unwrap_or("activity unknown")
+                    if agent.status.is_live() {
+                        self.activity
+                            .get(&id)
+                            .map(Activity::label)
+                            .unwrap_or("activity unknown")
+                            .to_owned()
+                    } else {
+                        agent.status.to_string()
+                    }
                 ),
                 c
             ),
-            note(
-                agent
-                    .project
-                    .as_ref()
-                    .map(|p| p.dir().display().to_string())
-                    .unwrap_or_else(|| "No working directory reported".into()),
-                c
-            ),
-            note(
-                agent.vcs.as_ref().map(|v| v.describe()).unwrap_or_default(),
-                c
-            ),
-            note(format!("Last seen {}", ago(Utc::now(), agent.last_seen)), c)
         ]
         .spacing(12);
+        if self.needs_input(&id) {
+            body = body.push(action(
+                "session-reply",
+                "Reply in Inbox",
+                Some(Message::Navigate(Screen::Questions)),
+                true,
+            ));
+        }
         if agent.managed && agent.spec.tty && agent.status.is_live() {
             body = body.push(action(
                 "attach-session",
@@ -451,14 +562,47 @@ impl App {
                     .then_some(Message::Attach(id.clone())),
                 true,
             ));
-        } else {
+        } else if agent.status.is_live() {
             body = body.push(note(
-                "Terminal access requires a live PTY session managed by AgentDocker.",
+                "Continue in the app or terminal where this agent started.",
                 c,
             ));
         }
-        if let Some(session) = &agent.session {
-            body = body.push(note(format!("External multiplexer: {session:?}"), c));
+        body = body.push(action(
+            "session-details",
+            if self.shell.session_details {
+                "Hide details"
+            } else {
+                "Details"
+            },
+            Some(Message::SessionDetails),
+            self.shell.session_details,
+        ));
+        if self.shell.session_details {
+            body = body
+                .push(note(format!("Session {}", agent.id), c))
+                .push(note(
+                    agent
+                        .spec
+                        .workdir
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "Working folder unknown".into()),
+                    c,
+                ))
+                .push(note(
+                    format!("Last seen {}", ago(Utc::now(), agent.last_seen)),
+                    c,
+                ));
+            if let Some(pid) = agent.pid {
+                body = body.push(note(format!("Process {pid}"), c));
+            }
+            if let Some(vcs) = &agent.vcs {
+                body = body.push(note(vcs.describe(), c));
+            }
+            if let Some(session) = &agent.session {
+                body = body.push(note(format!("External terminal: {session:?}"), c));
+            }
         }
         if agent.status.is_live() {
             body = body.push(action(
@@ -480,7 +624,7 @@ impl App {
         }
         body = body.push(action(
             "close-session",
-            "Close details",
+            "Back to sessions",
             Some(Message::CloseSession),
             false,
         ));
@@ -488,7 +632,11 @@ impl App {
     }
 
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
-        let mut tools=column![heading("Launch in this project",20),note("Choose an installed command-line agent. This starts a new supervised terminal session; it does not restart on app launch.",c)].spacing(10);
+        let mut tools = column![
+            heading("Launch in this project", 20),
+            note("Choose a tool to start in this folder.", c)
+        ]
+        .spacing(10);
         for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
             tools = tools.push(action(
                 format!("launch-tool-{}", runtime.name),
@@ -602,7 +750,7 @@ impl App {
             ]
             .spacing(12);
             if question.expired(Utc::now()) {
-                body=body.push(note("This question has expired; its draft is retained until the next authoritative refresh.",c));
+                body = body.push(note("This question has expired.", c));
             }
             if let Some(error) = self.shell.answer_errors.get(&id) {
                 body = body.push(text(error.clone()).size(13).color(c.amber));
@@ -650,7 +798,7 @@ impl App {
     fn channels_view(&self, c: Colors) -> Element<'_, Message> {
         let selected = self.shell.catalog.selected().map(|e| e.project.id());
         let (messages, _) = by_room(&self.inbox);
-        let mut list=column![note("Messages shown are queued for you and remain unread by this view. They are not a complete conversation history.",c)].spacing(14);
+        let mut list = column![note("Queued messages for you · partial history", c)].spacing(14);
         let mut count = 0;
         for channel in self
             .channels
@@ -741,7 +889,7 @@ impl App {
             list = list.push(card(body, c));
         }
         if count == 0 {
-            list=list.push(note("No channels in this project. Agents can open one for a task or when work needs coordination.",c));
+            list = list.push(note("No channels in this project yet.", c));
         }
         list.into()
     }
@@ -814,7 +962,15 @@ impl App {
         let Some(terminal) = &self.terminal else {
             return note("Select a managed session and open its terminal.", c).into();
         };
-        let mut pane=column![row![heading(self.name_of(&terminal.agent),20),action("detach-terminal","Detach",Some(Message::Detach),false)].spacing(12),note("F6 moves focus out of the terminal. Ctrl+] detaches. Copy copies the visible screen; paste sends clipboard text.",c)].spacing(12);
+        let mut pane = column![
+            row![
+                heading(self.name_of(&terminal.agent), 20),
+                action("detach-terminal", "Detach", Some(Message::Detach), false)
+            ]
+            .spacing(12),
+            note("F6: leave terminal focus · Ctrl+]: detach", c)
+        ]
+        .spacing(12);
         if let Status::Ended(reason) = terminal.status() {
             pane = pane.push(text(reason).size(14).color(c.amber));
         }
@@ -850,7 +1006,44 @@ impl App {
     }
 
     fn console_view(&self, c: Colors) -> Element<'_, Message> {
-        column![heading("AgentDocker commands",20),note("Run the bundled CLI in the selected project folder. Commands have bounded output and a 20-second deadline.",c),input("console-command","agentdocker command",&self.console_input,Message::ConsoleInput),row![action("run-command",if self.console_running>0{"Run another command"}else{"Run command"},(!self.console_input.trim().is_empty()).then_some(Message::RunConsole),true),action("previous-command","Previous",Some(Message::Recall(true)),false),action("next-command","Next",Some(Message::Recall(false)),false)].spacing(8),card(text(self.console_output.clone()).font(Font::MONOSPACE).size(self.settings.terminal_size),c)].spacing(14).into()
+        column![
+            heading("AgentDocker commands", 20),
+            note("Run an AgentDocker command in this project.", c),
+            input(
+                "console-command",
+                "agentdocker command",
+                &self.console_input,
+                Message::ConsoleInput
+            ),
+            row![
+                action(
+                    "run-command",
+                    if self.console_running > 0 {
+                        "Run another command"
+                    } else {
+                        "Run command"
+                    },
+                    (!self.console_input.trim().is_empty()).then_some(Message::RunConsole),
+                    true
+                ),
+                action(
+                    "previous-command",
+                    "Previous",
+                    Some(Message::Recall(true)),
+                    false
+                ),
+                action("next-command", "Next", Some(Message::Recall(false)), false)
+            ]
+            .spacing(8),
+            card(
+                text(self.console_output.clone())
+                    .font(Font::MONOSPACE)
+                    .size(self.settings.terminal_size),
+                c
+            )
+        ]
+        .spacing(14)
+        .into()
     }
 
     fn connections(&self, c: Colors) -> Element<'_, Message> {
@@ -875,7 +1068,7 @@ impl App {
         if !self.discovered.is_empty() {
             list = list.push(action(
                 "register-all-discovered",
-                "Register all discovered sessions on this computer",
+                "Connect all discovered sessions",
                 self.connected.is_ok().then_some(Message::AdoptAll),
                 false,
             ));
@@ -920,49 +1113,39 @@ impl App {
             }
             list = list.push(card(report, c));
         }
-        let mut runtimes: Vec<_> = self.runtimes.iter().collect();
+        let mut runtimes: Vec<_> = self
+            .runtimes
+            .iter()
+            .filter(|r| self.shell.other_tools || r.installed())
+            .collect();
         runtimes.sort_by_key(|r| !r.installed());
+        if runtimes.is_empty() {
+            list = list.push(note(
+                "No supported tools found. Install an agent tool, then check connections.",
+                c,
+            ));
+        }
         for runtime in runtimes {
-            let cli = runtime
-                .cli
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "No CLI found".into());
-            let mut row = column![
-                heading(runtime.label.clone(), 18),
-                note(
-                    format!(
-                        "{} · {}",
-                        runtime.vendor,
-                        runtime
-                            .version
-                            .clone()
-                            .unwrap_or_else(|| if runtime.installed() {
-                                "Installed"
-                            } else {
-                                "Not installed"
-                            }
-                            .into())
-                    ),
-                    c
-                ),
-                note(cli, c),
-                note(
-                    format!(
-                        "MCP: {:?} · Hooks: {:?} · {} unregistered process(es)",
-                        runtime.mcp, runtime.hooks, runtime.running
-                    ),
-                    c
-                )
-            ]
-            .spacing(8);
-            for app in &runtime.apps {
-                row = row.push(note(format!("Application: {}", app.label), c));
-            }
+            let expanded = self.shell.connection_details.as_deref() == Some(runtime.name.as_str());
             let supported =
                 runtime.installed() && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
+            let mut actions = row![
+                column![
+                    heading(runtime.label.clone(), 18),
+                    note(
+                        if runtime.installed() {
+                            "Installed"
+                        } else {
+                            "Not installed"
+                        },
+                        c
+                    )
+                ]
+                .width(Fill)
+            ]
+            .spacing(8);
             if supported {
-                row = row.push(action(
+                actions = actions.push(action(
                     format!("setup-{}", runtime.name),
                     "Review setup",
                     (!self.setup_busy).then_some(Message::Setup(vec![
@@ -972,8 +1155,53 @@ impl App {
                     false,
                 ));
             }
-            row=row.push(note("Installation and configuration do not establish session activity or message consumption.",c));
-            list = list.push(card(row, c));
+            actions = actions.push(action(
+                format!("connection-details-{}", runtime.name),
+                if expanded { "Hide details" } else { "Details" },
+                Some(Message::ConnectionDetails(runtime.name.clone())),
+                expanded,
+            ));
+            let mut details = column![actions.wrap()].spacing(8);
+            if expanded {
+                details = details
+                    .push(note(
+                        format!(
+                            "{} · {}",
+                            runtime.vendor,
+                            runtime.version.as_deref().unwrap_or("Version unknown")
+                        ),
+                        c,
+                    ))
+                    .push(note(
+                        runtime
+                            .cli
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "No CLI found".into()),
+                        c,
+                    ))
+                    .push(note(
+                        format!("MCP: {:?} · Hooks: {:?}", runtime.mcp, runtime.hooks),
+                        c,
+                    ));
+                for app in &runtime.apps {
+                    details = details.push(note(format!("Application: {}", app.label), c));
+                }
+            }
+            list = list.push(card(details, c));
+        }
+        let other_count = self.runtimes.iter().filter(|r| !r.installed()).count();
+        if other_count > 0 {
+            list = list.push(action(
+                "other-tools",
+                if self.shell.other_tools {
+                    "Hide other tools".into()
+                } else {
+                    format!("Other supported tools ({other_count})")
+                },
+                Some(Message::OtherTools),
+                false,
+            ));
         }
         list.into()
     }

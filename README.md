@@ -35,6 +35,10 @@ If you know [herdr](https://github.com/herdrdev/herdr), the two are complements 
 
 > Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux have native host support and desktop packaging with graphical CI. Published signed desktop releases, target-distribution acceptance and full native Windows support remain unfinished; Windows CI currently covers core/host foundations. Before real-agent trials, read the [engineering audit and known blockers](docs/AUDIT-2026-09-06.md) and [trial plan](docs/LOCAL-TRIAL.md).
 
+The [current remaining-work tracker](docs/REMAINING-WORK.md) separates engineering
+gaps from release setup and manual acceptance. The desktop now opens on current
+sessions, with finished runs in History and advanced actions under More.
+
 ## The Docker analogy
 
 | Docker | AgentDocker | What it is |
@@ -68,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/v0.1.0/inst
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
 
-Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Use `--rev <reviewed-commit>` for newer source, or a release tag for a released version. Set `AGENTDOCKER_VERSION=v0.1.0` when invoking the installer to pin the downloaded release too. The installer verifies the published SHA-256 checksum, not a signature. The release includes a generated Homebrew formula; a maintained tap/cask and registry-based Cargo installation are not established distribution channels yet. See the [platform and distribution matrix](docs/PRODUCT-DIRECTION.md#platforms-and-distribution).
+Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Use `--rev <reviewed-commit>` for newer source, or a release tag for a released version. Set `AGENTDOCKER_VERSION=v0.1.0` when invoking the installer to pin the downloaded release too. The installer verifies the published SHA-256 checksum, not a signature. The [Homebrew tap](https://github.com/brandopakel/homebrew-tap) carries the v0.1.0 formula (`brew install brandopakel/tap/agentdocker`). The desktop cask and registry-based Cargo installation are not established distribution channels yet. See the [platform and distribution matrix](docs/PRODUCT-DIRECTION.md#platforms-and-distribution).
 
 The daemon starts on demand the first time a client needs it, so the last step is only for surviving reboots. `agentdocker daemon status` shows what is running and where.
 

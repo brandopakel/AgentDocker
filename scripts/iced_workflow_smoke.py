@@ -115,6 +115,9 @@ def smoke(binary_dir, output):
                 except OSError:
                     return False
             until(ready)
+            previous = rpc(endpoint, {"op": "register", "spec": {"name": "terminal-fixture", "runtime": "fixture",
+                           "workdir": str(project)}})["agent"]
+            rpc(endpoint, {"op": "deregister", "agent": previous["id"]})
             agent = rpc(endpoint, {"op": "run", "spec": {"name": "terminal-fixture", "runtime": "fixture",
                          "command": [sys.executable, "-u", str(fixture)], "workdir": str(project),
                          "tty": True, "restore": False}})["agent"]
@@ -124,20 +127,31 @@ def smoke(binary_dir, output):
                 answer = pool.submit(rpc, endpoint, {"op": "ask", "from": agent["id"], "to": human["id"],
                                      "question": "Use the fixture API?", "timeout_secs": 150}, 160)
                 question = until(lambda: rpc(endpoint, {"op": "questions", "agent": human["id"]}).get("questions"))[0]
-                steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("capture", name="projects-live"),
+                steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
+                         step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
+                         step("click", id="sessions-history"), step("wait_control", id=f"session-{previous['id']}", present=True),
+                         step("wait_control", id=f"session-{agent['id']}", present=False), step("capture", name="session-history"),
+                         step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
+                         step("click", id="sessions-current"),
                          step("click", id="inbox"), step("fill", id=f"answer-{question['id']}", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
                          step("wait_text", text="answered"), step("click", id="projects"),
-                         step("click", id=f"session-{agent['id']}"), step("click", id="attach-session"),
+                         step("click", id=f"session-{agent['id']}"), step("resize", width=720, height=540), step("wait_control", id="attach-session", present=True),
+                         step("capture", name="compact-session"), step("click", id="close-session"),
+                         step("wait_control", id=f"session-{agent['id']}", present=True),
+                         step("click", id=f"session-{agent['id']}"), step("resize", width=1180, height=760),
+                         step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="terminal"),
                          step("focus", id="detach-terminal"), step("wait_focus", id="detach-terminal"), step("click", id="detach-terminal"),
                          step("click", id="project-tab-Channels"), step("click", id=f"reply-channel-{room['id']}"),
                          step("fill", id="channel-message", text="Fixture channel message"), step("click", id="send-channel"),
                          step("wait_text", text="Message sent"), step("capture", name="channels"),
                          step("click", id="project-tab-Journal"), step("capture", name="activity"),
-                         step("click", id="project-tab-Leases"), step("capture", name="coordination"),
-                         step("click", id="connections"), step("click", id="setup-codex"),
+                         step("click", id="project-more"), step("click", id="project-tab-Leases"), step("capture", name="coordination"),
+                         step("click", id="connections"), step("capture", name="connections"),
+                         step("click", id="connection-details-codex"), step("wait_text", text="MCP:"),
+                         step("click", id="connection-details-codex"), step("click", id="setup-codex"),
                          step("wait_text", text="Review integration changes"), step("capture", name="setup-review"),
                          step("click", id="apply-setup"), step("wait_text", text="Setup applied"),
                          step("click", id="undo-setup"), step("wait_text", text="Setup undone"), step("click", id="close-setup"),
@@ -148,7 +162,7 @@ def smoke(binary_dir, output):
                          step("wait_text", text="Agent launched"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
-                         step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
+                         step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
                          step("click", id="run-command"), step("wait_text", text="launched-from-iced"), step("capture", name="commands"),
                          step("click", id="settings"), step("click", id="dark-theme"), step("capture", name="settings-dark"),
                          step("resize", width=720, height=540), step("click", id="larger-ui"), step("click", id="larger-ui"),
@@ -177,7 +191,7 @@ def smoke(binary_dir, output):
                     stop(window)
                     stop(daemon)
                     raise
-            checks.extend(["rendered_actions", "answer_and_draft_navigation", "native_vt_rendering", "terminal_attach_detach", "channels", "setup_review_apply_undo", "launch_and_confirmed_stop", "focused_control_reveal", "compact_zoom"])
+            checks.extend(["rendered_actions", "answer_and_draft_navigation", "native_vt_rendering", "terminal_attach_detach", "channels", "setup_review_apply_undo", "launch_and_confirmed_stop", "focused_control_reveal", "compact_zoom", "current_history_separation", "project_attention", "compact_session_navigation"])
             catalog = json.loads((state / "workspace.json").read_text())
             assert catalog["selected"] == str(pinned), catalog
             entries = [entry for entry in catalog["projects"] if entry["project"]["root"] == str(pinned)]
@@ -188,7 +202,7 @@ def smoke(binary_dir, output):
             assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-last-project")])
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No current sessions"), step("capture", name="restored-last-project"), step("click", id="sessions-history"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-history")])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"

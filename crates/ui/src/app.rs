@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod queue;
+mod sessions;
 mod shell;
 mod style;
 mod view;

@@ -46,9 +46,20 @@ appearance preferences are read when no new appearance has been saved.
 
 Light and dark appearances share the same hierarchy. Blue marks selection and
 primary actions; status always has words. The existing icon and system fonts
-avoid an additional decorative asset bundle. Session details sit beside a wide
-list and below a narrow one. Long content scrolls; focused controls are revealed.
+avoid an additional decorative asset bundle. Session actions sit beside a wide
+list and replace a narrow one, with an explicit return button. Long content scrolls; focused controls are revealed.
 Socket paths and installation internals live in diagnostics and detailed reports.
+Current sessions are the default; finished runs live in History and unanswered
+questions have a project-scoped Needs input filter. Current rows prioritize
+questions, then newest sessions, with ID as a stable tie-breaker. Search includes
+name, runtime, branch and session ID. Filter counts reflect that search.
+Coordination, Commands and project management live under More. Connections shows
+installed tools first and expands technical details on request. Full daemon
+records remain intact: these are view filters, not registry deletion or migration.
+Discovery suppresses known Codex Node launchers with a native child; the UI also
+suppresses overlapping discovery/registration snapshots with matching known
+PID and birth time. Unknown identities and distinct registered sessions remain
+separate. Legacy duplicate registry reconciliation remains engineering work.
 
 ## Interaction contracts
 
@@ -77,6 +88,9 @@ Socket paths and installation internals live in diagnostics and detailed reports
   release lifetime pins, queue limits or private state requirements.
 
 ## Keyboard and native accessibility
+
+See [the current engineering and release backlog](REMAINING-WORK.md) for open
+implementation and acceptance work.
 
 All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes

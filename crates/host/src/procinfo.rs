@@ -190,6 +190,29 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Node's Codex package launches a native child and then waits for it. Only
+/// that child is a session. Do not apply a generic parent/child rule: agents
+/// can launch other agents, and those must remain independently discoverable.
+pub fn codex_launchers(table: &[Process]) -> std::collections::BTreeSet<u32> {
+    let parents: std::collections::BTreeSet<_> = table
+        .iter()
+        .filter(|p| {
+            p.argv.first().is_some_and(|exe| basename(exe) == "codex")
+                && runtime_of(&p.argv) == Some("codex")
+        })
+        .map(|p| p.ppid)
+        .collect();
+    table
+        .iter()
+        .filter(|p| {
+            parents.contains(&p.pid)
+                && p.argv.first().is_some_and(|exe| basename(exe) == "node")
+                && runtime_of(&p.argv) == Some("codex")
+        })
+        .map(|p| p.pid)
+        .collect()
+}
+
 #[cfg(windows)]
 pub fn processes() -> std::io::Result<Vec<Process>> {
     imp::processes()
@@ -409,6 +432,26 @@ mod tests {
         assert_eq!(runtime_of(&argv("node /x/some/other.js")), None);
         assert_eq!(runtime_of(&argv("/bin/zsh -l")), None);
         assert_eq!(runtime_of(&[]), None);
+    }
+
+    #[test]
+    fn codex_node_launcher_is_not_a_second_session() {
+        let process = |pid, ppid, command: &str| Process {
+            pid,
+            ppid,
+            argv: command.split_whitespace().map(str::to_owned).collect(),
+        };
+        let wrapper = process(10, 1, "node /x/@openai/codex/bin/codex.js");
+        let native = process(11, 10, "/x/vendor/bin/codex");
+        assert_eq!(
+            codex_launchers(&[wrapper.clone(), native.clone()]),
+            [10].into()
+        );
+        // A standalone JS runtime, a nested native agent, and an unrelated
+        // node host are all separate observations.
+        assert!(codex_launchers(&[wrapper]).is_empty());
+        assert!(codex_launchers(&[native.clone(), process(12, 11, "codex")]).is_empty());
+        assert!(codex_launchers(&[process(10, 1, "node /app/server.js"), native]).is_empty());
     }
 
     #[test]
