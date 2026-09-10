@@ -326,7 +326,7 @@ fn button_style(
         (Kind::Quiet | Kind::Tab, false) => (None, c.text),
     };
     let lift = |amount: f32| match (kind, selected) {
-        (Kind::Primary, _) => mix(c.accent, iced::Color::WHITE, amount),
+        (Kind::Primary, _) => mix(c.accent, iced::Color::BLACK, amount),
         (Kind::Danger, _) => alpha(c.red, 0.18 + amount),
         (Kind::Tab, _) => alpha(c.raised, 0.7 + amount),
         (_, true) => mix(c.accent_soft, c.accent, amount * 0.6),
@@ -544,6 +544,42 @@ pub fn input_enabled<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_labels_keep_contrast_during_pointer_interaction() {
+        use crate::app::style::Colors;
+        use iced::widget::button::Status;
+
+        let luminance = |color: iced::Color| {
+            let linear = |channel: f32| {
+                if channel <= 0.04045 {
+                    channel / 12.92
+                } else {
+                    ((channel + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+        };
+        for dark in [false, true] {
+            let theme = Colors::new(dark).theme();
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let style = button_style(&theme, status, Kind::Primary, false);
+                let Some(iced::Background::Color(background)) = style.background else {
+                    panic!("primary button needs a solid background");
+                };
+                assert_eq!(style.text_color.a, 1.0);
+                assert_eq!(background.a, 1.0);
+                let foreground = luminance(style.text_color) + 0.05;
+                let background = luminance(background) + 0.05;
+                let contrast = foreground.max(background) / foreground.min(background);
+                assert!(
+                    contrast >= 4.5,
+                    "dark={dark}, status={status:?}: {contrast}"
+                );
+            }
+        }
+    }
+
     fn press(key: keyboard::Key, repeat: bool) -> Event {
         Event::Keyboard(keyboard::Event::KeyPressed {
             modified_key: key.clone(),
