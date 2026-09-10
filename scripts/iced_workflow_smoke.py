@@ -57,8 +57,9 @@ def measure_idle(binary_dir, env, cwd, daemon, output):
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             time.sleep(3)
             for _ in range(12):
-                if window.poll() is not None or daemon.poll() is not None:
-                    raise RuntimeError("idle measurement process exited")
+                window_exit, daemon_exit = window.poll(), daemon.poll()
+                if window_exit is not None or daemon_exit is not None:
+                    raise RuntimeError(f"idle measurement process exited: window={window_exit}, daemon={daemon_exit}, completed_samples={len(samples)}")
                 sample = {}
                 for name, process in [("window", window), ("daemon", daemon)]:
                     row = subprocess.check_output(["ps", "-p", str(process.pid), "-o", "rss=,pcpu="], text=True, timeout=5).split()
