@@ -473,7 +473,7 @@ enum Command {
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
     },
-    /// Stream messages for an agent and/or matching topic patterns.
+    /// Stream messages without consuming them; acknowledge with inbox --drain.
     Watch {
         /// Receive messages addressed to this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]

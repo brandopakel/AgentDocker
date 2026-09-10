@@ -70,7 +70,7 @@ impl Notification {
 /// Wait only for posting acceptance, never for dismissal or a human response.
 /// No private text is included in the returned failure reason.
 pub fn post(notification: &Notification) -> Result<(), String> {
-    let commands = candidates(notification);
+    let commands = candidates(notification)?;
     if commands.is_empty() {
         return Err("AgentDocker notification app is unavailable".into());
     }
@@ -85,26 +85,28 @@ pub fn post(notification: &Notification) -> Result<(), String> {
     Err("Native notification posting failed; check app notification permission and signing. The message remains in Inbox.".into())
 }
 
-fn candidates(notification: &Notification) -> Vec<Vec<String>> {
+fn candidates(notification: &Notification) -> Result<Vec<Vec<String>>, String> {
     if cfg!(target_os = "macos") {
-        desktop_app()
+        let encoded = serde_json::to_string(notification)
+            .map_err(|_| "Cannot encode the notification destination.".to_owned())?;
+        Ok(desktop_app()
             .into_iter()
             .map(|app| {
                 vec![
                     app.to_string_lossy().into_owned(),
                     "--notify-json".into(),
-                    serde_json::to_string(notification).expect("notification serializes"),
+                    encoded.clone(),
                 ]
             })
-            .collect()
+            .collect())
     } else {
-        vec![vec![
+        Ok(vec![vec![
             "notify-send".into(),
             "--app-name=AgentDocker".into(),
             "--".into(),
             notification.title.clone(),
             notification.body.clone(),
-        ]]
+        ]])
     }
 }
 
@@ -181,7 +183,7 @@ mod tests {
         };
         let encoded = serde_json::to_string(&notification).unwrap();
         assert_eq!(Notification::parse(&encoded).unwrap(), notification);
-        let candidates = candidates(&notification);
+        let candidates = candidates(&notification).unwrap();
         assert!(
             candidates
                 .iter()
@@ -196,6 +198,30 @@ mod tests {
                 assert_eq!(argv[3], notification.title);
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_utf8_origin_returns_a_bounded_error_without_posting_or_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+        let notice = Notification {
+            title: "private title".into(),
+            body: "private body".into(),
+            action: Some(Action {
+                home: PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/private-\xff".to_vec())),
+                socket: PathBuf::from("/tmp/agentd.sock"),
+                target: agentdocker_core::NotificationTarget {
+                    message: "message".to_owned().into(),
+                    agent: "agent".into(),
+                    project: None,
+                    channel: None,
+                },
+            }),
+        };
+        assert_eq!(
+            post(&notice).unwrap_err(),
+            "Cannot encode the notification destination."
+        );
     }
 
     #[test]

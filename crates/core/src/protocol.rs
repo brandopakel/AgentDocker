@@ -277,14 +277,15 @@ pub enum Request {
         reply_to: Option<MessageId>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
-    /// connection closes. Queued inbox messages are flushed first.
+    /// connection closes. Queued messages are replayed first and retained
+    /// until explicit Inbox draining or AckInbox, including after disconnect.
     Subscribe {
         #[serde(default)]
         agent: Option<String>,
         #[serde(default)]
         topics: Vec<String>,
     },
-    /// Messages delivered to an agent while it was not subscribed.
+    /// Unacknowledged messages, including those offered to live subscribers.
     Inbox {
         agent: String,
         #[serde(default)]
@@ -652,6 +653,9 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    /// Accepted work already fills a recipient's queue. Nothing was published;
+    /// acknowledge existing messages before retrying this submission.
+    Backpressure,
     EngineUnavailable,
     BuildFailed,
     /// A part of the daemon is off — the restricted container endpoint

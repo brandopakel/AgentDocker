@@ -68,6 +68,8 @@ launcher or the daemon hosting existing sessions.
   click trials remain open in the notification audit; the installed launcher is
   unchanged. Bundled Inter font licenses now accompany Mac and Linux packages.
 
+Schema 10 now retains addressed messages during streaming and rejects full inboxes without silent eviction. Its full standard gate passed 701 Rust tests (six skipped), 48 Python checks and lint/package/release gates. Actual-daemon trials passed reconnect/crash recovery, over-limit schema-9 migration, atomic full-recipient rejection, byte pressure and downgrade refusal. Provider input/wake adapters remain open below.
+
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
@@ -82,6 +84,7 @@ launcher or the daemon hosting existing sessions.
 | Platform | Linux delivery acceptance | ARM64/x86-64 Linux and Mac graphical/package CI passed code checkpoint `bf39280`. Target-distribution desktop/service/package trials and independent hardware acceptance remain gates. | [Current verification](verification/2026-09-10-desktop-delivery.json), [product direction](PRODUCT-DIRECTION.md), [local trial](LOCAL-TRIAL.md) |
 | Platform | Full native Windows product | Integrate the daemon and clients with named pipes; finish supervised lifecycle, ConPTY, identity-safe stopping/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Core/host/desktop adapter coverage is only a foundation. | [Windows port](WINDOWS-PORT.md), [architecture](ARCHITECTURE.md) |
 | Follow-up | Terminal selection and richer interaction | Implement arbitrary terminal cell-range selection/copy; test physical keyboard focus, text editing and input methods with users, and repair observed usability/accessibility defects. Current copy takes the visible screen. | [Iced contracts](ICED-DESIGN.md), [desktop guide](DESKTOP-UX.md) |
+| Follow-up | Spurious conflicts when a temporary checkout is removed | A live Claude baseline-worktree cleanup generated a channel with 138 purported contested files while the main checkout was unchanged. Reproduce this in a private fixture, distinguish a removed checkout from edits to shared files, and avoid misleading conflict escalation. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [architecture](ARCHITECTURE.md) |
 | Follow-up | Concurrent provider configuration mutation | Coordinate changes to the same provider entry during delegated apply/undo. Existing exact-entry checks and receipts preserve ownership, but the provider CLI is not a compare-and-swap transaction. | [Guided setup](GUIDED-SETUP.md), [delivery checkpoints](DELIVERY-PLAN.md) |
 | Later | Optional expansion | Authenticated federation/host namespaces and cross-host lease/routing semantics; additional provider/desktop adapters and engine capabilities such as image-declared volumes. Keep these behind a dependable single-host desktop. | [Product direction](PRODUCT-DIRECTION.md), [architecture](ARCHITECTURE.md), [containers](CONTAINER-ENGINES.md) |
 

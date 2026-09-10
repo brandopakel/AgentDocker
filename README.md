@@ -47,7 +47,7 @@ sessions, with finished runs in History and advanced actions under More.
 | container | **agent** | One running instance with an id, name, status, pid, and logs |
 | `dockerd` | **`agentd`** | Per-host daemon: registry, supervisor, message bus, lease arbiter, watcher, event log |
 | `docker` CLI | **`agentdocker`** | `ps`, `run`, `stop`, `logs`, `inspect`, `send`, `watch`, `claim`, `journal`... |
-| network | **messages & topics** | Direct, project-wide, topic (pub/sub), and broadcast messaging with offline inboxes |
+| network | **messages & topics** | Direct, project-wide, topic (pub/sub), and broadcast messaging with durable addressed inboxes |
 | volume lock | **lease** | Time-limited exclusive/shared claim on a file, directory, branch, task, or anything |
 | compose project | **project** | Derived from the working directory: the repository (every worktree of it), else the directory. Agents group by it automatically |
 | layer | **worktree** | An agent's own writable checkout (`run --isolate`), integrated when validated |
@@ -114,7 +114,7 @@ agentdocker leases
 agentdocker waiting     # who is queued for what
 agentdocker activity    # observed working/idle, unknown, or blocked with its holders
 
-# 4. Talk. Messages to an offline agent queue in its inbox.
+# 4. Talk. Addressed messages remain queued until acknowledged.
 agentdocker send --from reviewer --to writer "ping me when src/ is free"
 agentdocker inbox --as writer
 agentdocker watch --as writer &                       # live delivery from here on
@@ -351,7 +351,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 **Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. The journal hands a newcomer what happened while it was away. Generic adopted processes are not automatically observed.
 
-**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Direct and broadcast messages to an agent without a live subscription queue in its inbox, so polling agents (hooks, cron-style loops) and streaming agents both work. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Addressed messages remain in each recipient's inbox until acknowledged, including messages shown by `watch`. A full inbox rejects the whole send without discarding earlier messages. Polling and streaming consumers can recover unacknowledged messages after reconnecting; topic traffic is live-only. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 

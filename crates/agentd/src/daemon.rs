@@ -58,8 +58,14 @@ mod waiting;
 mod working;
 mod worktrees;
 
-/// Messages queued per agent while it has no live subscription.
+/// Unacknowledged addressed messages per agent. Live streams do not consume them.
 const INBOX_CAPACITY: usize = 1000;
+const INBOX_BYTES: usize = 4 * 1024 * 1024;
+
+fn message_bytes(message: &Envelope) -> usize {
+    // Refuse admission if a future envelope representation cannot be encoded.
+    serde_json::to_vec(message).map_or(usize::MAX, |bytes| bytes.len())
+}
 /// Leases longer than this are clamped; a TTL is a liveness bound, not a
 /// reservation.
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -185,6 +191,7 @@ struct State {
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
+    inbox_bytes: HashMap<AgentId, usize>,
     live_subscribers: HashMap<AgentId, usize>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     container_busy: HashSet<AgentId>,
@@ -928,6 +935,17 @@ impl Daemon {
             leases.restore(lease);
         }
         let inboxes = store.load_inboxes()?;
+        let inbox_bytes = inboxes
+            .iter()
+            .map(|(agent, messages)| {
+                (
+                    agent.clone(),
+                    messages.iter().fold(0usize, |size, message| {
+                        size.saturating_add(message_bytes(message))
+                    }),
+                )
+            })
+            .collect();
         let projects: HashMap<PathBuf, Option<String>> = store
             .load_projects()?
             .into_iter()
@@ -989,6 +1007,7 @@ impl Daemon {
                 registry,
                 leases,
                 inboxes,
+                inbox_bytes,
                 live_subscribers: HashMap::new(),
                 supervised: HashMap::new(),
                 container_busy: HashSet::new(),
@@ -2871,7 +2890,7 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
-                let backlog = state.read_inbox(id, true)?;
+                let backlog = state.read_inbox(id, false)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
                 backlog
             }
@@ -3357,6 +3376,7 @@ impl State {
         }
         self.registry.remove(&id);
         self.inboxes.remove(&id);
+        self.inbox_bytes.remove(&id);
         self.journal_cursors
             .retain(|(reader, _), _| reader != id.as_str());
         self.persist("agent", |store| store.delete_agent(&id));
@@ -3531,7 +3551,15 @@ impl State {
             return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
-            queue.retain(|message| !messages.contains(&message.id));
+            let bytes = self.inbox_bytes.entry(id.clone()).or_default();
+            queue.retain(|message| {
+                if messages.contains(&message.id) {
+                    *bytes = bytes.saturating_sub(message_bytes(message));
+                    false
+                } else {
+                    true
+                }
+            });
         }
         self.next_seq += 1;
         let _ = self.events.send(event);
@@ -3552,8 +3580,8 @@ impl State {
         Response::Messages { messages }
     }
 
-    /// Snapshot before removal; commit its exact IDs and replay event together
-    /// before exposing a destructive read or changing live delivery routing.
+    /// Snapshot before removal; an explicit destructive read commits its exact
+    /// IDs and replay event together. Opening a stream never acknowledges work.
     fn read_inbox(&mut self, id: &AgentId, drain: bool) -> Result<Vec<Envelope>, Box<Response>> {
         if let Some(error) = self.storage_failure() {
             return Err(Box::new(error));
@@ -4358,14 +4386,28 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
-        let offline: Vec<AgentId> = {
-            let live = &self.live_subscribers;
-            recipients
-                .iter()
-                .filter(|id| !live.contains_key(*id))
-                .cloned()
-                .collect()
-        };
+        let bytes = message_bytes(&envelope);
+        if let Some(full) = recipients.iter().find(|id| {
+            self.inboxes
+                .get(*id)
+                .is_some_and(|queue| queue.len() >= INBOX_CAPACITY)
+                || self
+                    .inbox_bytes
+                    .get(*id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(bytes)
+                    > INBOX_BYTES
+        }) {
+            return Response::error(
+                ErrorCode::Backpressure,
+                format!(
+                    "Inbox for {} is full (limit {INBOX_CAPACITY} messages / {} MiB). Acknowledge existing messages before retrying; nothing was sent.",
+                    full.short(),
+                    INBOX_BYTES / (1024 * 1024)
+                ),
+            );
+        }
         let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
             .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
             .map(|pending| pending.id.clone());
@@ -4407,7 +4449,7 @@ impl State {
         self.persist("message", |store| {
             store.publish_message(
                 &envelope,
-                &offline,
+                &recipients,
                 INBOX_CAPACITY,
                 sender.as_ref(),
                 question.as_ref(),
@@ -4418,12 +4460,10 @@ impl State {
         if let Some(error) = self.storage_failure() {
             return error;
         }
-        for id in &offline {
+        for id in &recipients {
             let queue = self.inboxes.entry(id.clone()).or_default();
-            if queue.len() >= INBOX_CAPACITY {
-                queue.pop_front();
-            }
             queue.push_back(envelope.clone());
+            *self.inbox_bytes.entry(id.clone()).or_default() += bytes;
         }
         if let Some(sender) = sender {
             let current = self
@@ -4660,8 +4700,8 @@ impl State {
     }
 }
 
-/// A live message subscription. Dropping it releases the agent's live slot
-/// so later messages queue in its inbox again.
+/// A live view of messages. Both replay and newly streamed addressed messages
+/// remain in the durable inbox until explicitly acknowledged.
 pub struct Subscription {
     daemon: Arc<Daemon>,
     agent: Option<AgentId>,
@@ -4673,7 +4713,7 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Messages that were queued while the agent was offline.
+    /// Unacknowledged messages present when this stream opened.
     pub fn take_backlog(&mut self) -> Vec<Envelope> {
         std::mem::take(&mut self.backlog)
     }
@@ -8492,73 +8532,64 @@ deny = ["send:all"]
 
     #[tokio::test]
     async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
-        for subscribe in [false, true] {
-            for event_failure in [false, true] {
-                let dir = TempDir::new().unwrap();
-                let daemon = open(&dir);
-                let receiver = register(&daemon, "receiver", None).await;
-                assert!(matches!(
-                    daemon
-                        .handle(Request::Send {
-                            from: "user".into(),
-                            to: "receiver".into(),
-                            kind: "chat".into(),
-                            payload: json!({"text":"retain after failed drain"}),
-                            reply_to: None,
-                        })
-                        .await,
-                    Response::Sent { .. }
-                ));
-                let queued = inbox(&daemon, "receiver", false).await;
-                let mut events = daemon.subscribe_events();
-                let next_seq = {
-                    let state = lock(&daemon.state);
-                    if event_failure {
-                        state.store.reject_event_for_test("inbox_acknowledged");
-                    } else {
-                        state.store.reject_writes_for_test();
-                    }
-                    state.next_seq
-                };
-                let response = if subscribe {
-                    match daemon.subscribe(Some("receiver"), Vec::new()) {
-                        Err(error) => *error,
-                        Ok(_) => panic!("failed storage allowed an inbox subscription"),
-                    }
-                } else {
-                    daemon
-                        .handle(Request::Inbox {
-                            agent: "receiver".into(),
-                            drain: true,
-                        })
-                        .await
-                };
-                assert!(
-                    matches!(
-                        response,
-                        Response::Error {
-                            code: ErrorCode::StorageUnavailable,
-                            ..
-                        }
-                    ),
-                    "{response:?}"
-                );
+        for event_failure in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let receiver = register(&daemon, "receiver", None).await;
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: "user".into(),
+                        to: "receiver".into(),
+                        kind: "chat".into(),
+                        payload: json!({"text":"retain after failed drain"}),
+                        reply_to: None,
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
+            let queued = inbox(&daemon, "receiver", false).await;
+            let mut events = daemon.subscribe_events();
+            let next_seq = {
                 let state = lock(&daemon.state);
-                assert_eq!(
-                    state.inboxes[&receiver.id]
-                        .iter()
-                        .map(|message| &message.id)
-                        .collect::<Vec<_>>(),
-                    queued.iter().map(|message| &message.id).collect::<Vec<_>>()
-                );
-                assert_eq!(
-                    state.store.load_inboxes().unwrap()[&receiver.id].len(),
-                    queued.len()
-                );
-                assert_eq!(state.next_seq, next_seq);
-                assert!(!state.live_subscribers.contains_key(&receiver.id));
-                assert!(events.try_recv().is_err());
-            }
+                if event_failure {
+                    state.store.reject_event_for_test("inbox_acknowledged");
+                } else {
+                    state.store.reject_writes_for_test();
+                }
+                state.next_seq
+            };
+            let response = daemon
+                .handle(Request::Inbox {
+                    agent: "receiver".into(),
+                    drain: true,
+                })
+                .await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::StorageUnavailable,
+                        ..
+                    }
+                ),
+                "{response:?}"
+            );
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.inboxes[&receiver.id]
+                    .iter()
+                    .map(|message| &message.id)
+                    .collect::<Vec<_>>(),
+                queued.iter().map(|message| &message.id).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                state.store.load_inboxes().unwrap()[&receiver.id].len(),
+                queued.len()
+            );
+            assert_eq!(state.next_seq, next_seq);
+            assert!(!state.live_subscribers.contains_key(&receiver.id));
+            assert!(events.try_recv().is_err());
         }
     }
 
@@ -8607,54 +8638,230 @@ deny = ["send:all"]
 
     #[tokio::test]
     async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery() {
-        for subscribe in [false, true] {
-            let dir = TempDir::new().unwrap();
-            let daemon = open(&dir);
-            let receiver = register(&daemon, "receiver", None).await;
-            for text in ["first", "second"] {
-                assert!(matches!(
-                    daemon
-                        .handle(Request::Send {
-                            from: "user".into(),
-                            to: "receiver".into(),
-                            kind: "chat".into(),
-                            payload: json!({"text":text}),
-                            reply_to: None,
-                        })
-                        .await,
-                    Response::Sent { .. }
-                ));
-            }
-            let mut events = daemon.subscribe_events();
-            let delivered = if subscribe {
-                let (subscription, _) = daemon.subscribe(Some("receiver"), Vec::new()).unwrap();
-                subscription.backlog.clone()
-            } else {
-                inbox(&daemon, "receiver", true).await
-            };
-            assert_eq!(delivered.len(), 2);
-            let event = events.try_recv().unwrap();
-            assert!(
-                matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
-                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
-            );
-            let state = lock(&daemon.state);
-            assert!(
-                state
-                    .inboxes
-                    .get(&receiver.id)
-                    .is_none_or(|queue| queue.is_empty())
-            );
-            assert!(
-                !state
-                    .store
-                    .load_inboxes()
-                    .unwrap()
-                    .contains_key(&receiver.id)
-            );
-            assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
-            assert!(events.try_recv().is_err());
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        for text in ["first", "second"] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: "user".into(),
+                        to: "receiver".into(),
+                        kind: "chat".into(),
+                        payload: json!({"text":text}),
+                        reply_to: None,
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
         }
+        let mut events = daemon.subscribe_events();
+        let delivered = inbox(&daemon, "receiver", true).await;
+        assert_eq!(delivered.len(), 2);
+        let event = events.try_recv().unwrap();
+        assert!(
+            matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
+                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
+        );
+        let state = lock(&daemon.state);
+        assert!(
+            state
+                .inboxes
+                .get(&receiver.id)
+                .is_none_or(|queue| queue.is_empty())
+        );
+        assert!(
+            !state
+                .store
+                .load_inboxes()
+                .unwrap()
+                .contains_key(&receiver.id)
+        );
+        assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_reconnect_and_restart_replay_unacknowledged_human_and_peer_input() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        register(&daemon, "peer", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let (mut stream, mut live) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        let mut accepted = stream.take_backlog();
+        assert_eq!(accepted.len(), 1);
+        for from in ["peer", "user", "peer"] {
+            assert!(matches!(
+                send(&daemon, from, "receiver").await,
+                Response::Sent { .. }
+            ));
+            accepted.push(live.try_recv().unwrap());
+        }
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted);
+        drop(stream);
+        drop(live);
+        let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(reconnected.take_backlog(), accepted);
+        drop(reconnected);
+        drop(daemon);
+        let daemon = open(&dir);
+        let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(reconnected.take_backlog(), accepted);
+        assert_eq!(
+            lock(&daemon.state).inbox_bytes[&receiver.id],
+            accepted.iter().map(message_bytes).sum::<usize>()
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: accepted
+                        .iter()
+                        .take(2)
+                        .map(|message| message.id.clone())
+                        .collect(),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted[2..]);
+        assert_eq!(
+            lock(&daemon.state).inbox_bytes[&receiver.id],
+            accepted[2..].iter().map(message_bytes).sum::<usize>()
+        );
+        drop(reconnected);
+        drop(daemon);
+        assert_eq!(inbox(&open(&dir), "receiver", false).await, accepted[2..]);
+    }
+
+    #[tokio::test]
+    async fn subscription_does_not_write_an_acknowledgement() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).store.reject_writes_for_test();
+        let (mut stream, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(stream.take_backlog(), accepted);
+        assert!(events.try_recv().is_err());
+        assert!(lock(&daemon.state).storage_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn full_inbox_rejects_entire_broadcast_without_evicting_accepted_work() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let full = register(&daemon, "full", None).await;
+        let other = register(&daemon, "other", None).await;
+        let (stream, mut live) = daemon.subscribe(Some("other"), vec![]).unwrap();
+        for _ in 0..INBOX_CAPACITY {
+            assert!(matches!(
+                send(&daemon, "user", "full").await,
+                Response::Sent { .. }
+            ));
+        }
+        // Discard this raw bus receiver's unrelated traffic before checking
+        // that the rejected broadcast never reaches even a healthy recipient.
+        while live.try_recv().is_ok() {}
+        let accepted = inbox(&daemon, "full", false).await;
+        let mut events = daemon.subscribe_events();
+        let next_seq = lock(&daemon.state).next_seq;
+        let response = send(&daemon, "user", "all").await;
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Backpressure,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert!(live.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.next_seq, next_seq);
+            assert!(state.storage_error.is_none());
+            let stored = state.store.load_inboxes().unwrap();
+            assert_eq!(
+                stored[&full.id].iter().cloned().collect::<Vec<_>>(),
+                accepted
+            );
+            assert!(!stored.contains_key(&other.id));
+        }
+        assert_eq!(inbox(&daemon, "full", true).await, accepted);
+        assert!(matches!(
+            send(&daemon, "user", "all").await,
+            Response::Sent { .. }
+        ));
+        assert_eq!(inbox(&daemon, "full", false).await.len(), 1);
+        assert_eq!(inbox(&daemon, "other", false).await.len(), 1);
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capacity() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        let payload = json!({"text": "x".repeat(512 * 1024)});
+        let request = Request::Send {
+            from: "user".into(),
+            to: "receiver".into(),
+            kind: "chat".into(),
+            payload,
+            reply_to: None,
+        };
+        for _ in 0..7 {
+            assert!(matches!(
+                daemon.handle(request.clone()).await,
+                Response::Sent { .. }
+            ));
+        }
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted);
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: vec![accepted[0].id.clone()]
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            daemon.handle(request).await,
+            Response::Sent { .. }
+        ));
+        let remaining = inbox(&daemon, "receiver", false).await;
+        assert_eq!(remaining.len(), 7);
+        assert_eq!(remaining[..6], accepted[1..]);
     }
 
     #[tokio::test]

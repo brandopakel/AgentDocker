@@ -23,6 +23,8 @@ event do not complete this requirement, and an inbox acknowledgement does not
 prove provider acceptance. The audit document defines the required artifacts and
 negative-path acceptance cases.
 
+The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.
+
 ### Notification clicks open Script Editor (September 10)
 
 The user reports that notification clicks repeatedly open a blank Script Editor

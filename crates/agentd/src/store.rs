@@ -17,9 +17,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-// v9 retains pending question routes across restart. Older daemons would ignore
-// them and leave durable questions unanswerable or resurrect answered questions.
-pub(crate) const SCHEMA_VERSION: i64 = 9;
+// v9 retains pending questions. v10 retains addressed messages while subscribed
+// and refuses inbox overflow. Older daemons would drain/evict that accepted work.
+pub(crate) const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -559,7 +559,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=8)) => {
+            Some(Ok(1..=9)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -777,6 +777,15 @@ impl Store {
     }
 
     fn insert_inbox(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM inbox WHERE agent = ?1",
+            [agent.as_str()],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            usize::try_from(count)? < capacity,
+            "recipient inbox is full"
+        );
         self.conn.execute(
             "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
             params![
@@ -784,12 +793,6 @@ impl Store {
                 message.id.as_str(),
                 serde_json::to_string(message)?
             ],
-        )?;
-        self.conn.execute(
-            "DELETE FROM inbox WHERE agent = ?1 AND seq NOT IN (
-                 SELECT seq FROM inbox WHERE agent = ?1 ORDER BY seq DESC LIMIT ?2
-             )",
-            params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
         )?;
         Ok(())
     }
@@ -1420,18 +1423,19 @@ mod tests {
     }
 
     #[test]
-    fn inbox_keeps_newest_up_to_capacity() {
+    fn full_inbox_refuses_new_work_and_preserves_every_accepted_message() {
         let store = Store::in_memory().unwrap();
         let agent = AgentId::from("a");
-        for i in 0..5 {
+        for i in 0..3 {
             store.enqueue(&agent, &envelope(&i.to_string()), 3).unwrap();
         }
+        assert!(store.enqueue(&agent, &envelope("refused"), 3).is_err());
         let inboxes = store.load_inboxes().unwrap();
         let texts: Vec<String> = inboxes[&agent]
             .iter()
             .map(|m| m.payload["text"].as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(texts, vec!["2", "3", "4"]);
+        assert_eq!(texts, vec!["0", "1", "2"]);
 
         let ids = inboxes[&agent]
             .iter()
@@ -1503,8 +1507,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_schemas_upgrade_to_pending_question_guard() {
-        for version in 1..=8 {
+    fn legacy_schemas_upgrade_to_durable_delivery_guard() {
+        for version in 1..SCHEMA_VERSION {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1521,7 +1525,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "9");
+            assert_eq!(version, SCHEMA_VERSION.to_string());
         }
     }
 
