@@ -79,3 +79,63 @@ does not establish their behavior.
 This audit and the implemented queue/wake acceptance are required before marking
 incoming-message delivery complete. The existing hook bridge and successful
 round trips are supporting evidence, not completion of this requirement.
+
+## Initial source audit
+
+Read-only tracing against code checkpoint `bf39280` confirms distinct paths:
+
+```mermaid
+flowchart LR
+    U[User typing in attached terminal] --> T[TerminalInput and PTY]
+    T --> P[Provider submitted input]
+    H[User inbox or channel action] --> S[Request Send]
+    A[Peer MCP send_message] --> S
+    S --> D[Daemon routing]
+    D --> Q[Durable inbox without live subscriber]
+    D --> L[Live subscriber stream]
+    Q --> R[Agent-initiated read or wait tool]
+    Q --> K[Lifecycle hook invocation]
+    R --> C[Tool result or hook context]
+    K --> C
+    C --> M[Provider agent loop]
+    P --> M
+    Q -. Required input and wake adapter .-> P
+```
+
+The dotted adapter is planned. Human channel/inbox actions already share daemon
+messaging with peers; typing into the attached provider terminal uses a different
+path. The new requirement reaches the provider's submitted-input queue.
+
+| Finding | Evidence | Consequence for implementation |
+| --- | --- | --- |
+| Terminal typing and peer messaging diverge | [`TerminalInput`](../crates/ui/src/app/shell.rs#L504) calls the terminal transport; [`ChannelSend`](../crates/ui/src/app.rs#L1155) and [`send_message`](../crates/cli/src/mcp.rs#L480) issue daemon envelopes. | A provider input adapter must join these workflows; adding a notification alone cannot do it. |
+| Live subscribers bypass durable inbox insertion | [`publish_question`](../crates/agentd/src/daemon.rs#L4316) persists only recipients without live subscribers, then broadcasts. [`subscribe`](../crates/agentd/src/daemon.rs#L2853) drains the backlog when opening a subscription. | Audit disconnect/slow-subscriber windows. A live stream is not a durable provider-acceptance receipt. |
+| Inbox overflow discards old messages | The daemon limit is 1,000; [`insert_inbox`](../crates/agentd/src/store.rs#L779) keeps the newest entries and memory drops the oldest. | The required submitted-work queue needs explicit backpressure/retention semantics; current bounded inbox behavior can evict previously accepted messages. |
+| MCP reads can remove messages before provider acceptance | [`wait_for_messages`](../crates/cli/src/mcp.rs#L691) polls with `drain: true`; [`read_inbox`](../crates/agentd/src/daemon.rs#L3552) acknowledges during the request. | Separate provider acceptance from adapter reads, including failures returning the MCP tool result. |
+| Hook output is not an idle input submission | [`Codex delivery`](../crates/cli/src/hooks/codex.rs#L232) prepares lifecycle context and acknowledges after output. | Retain existing evidence, but add actual idle-start and provider-queue receipts before claiming parity. |
+
+These are source-confirmed behaviors. Loss/retry windows still need focused
+fault-injection reproductions in the new audit; no live user's inbox was drained
+to investigate them.
+
+## Provider interfaces to prototype
+
+Codex's documented app-server interface accepts submitted input with `turn/start`
+and active-turn input with `turn/steer`; steering requires the expected active turn
+ID. The installed Codex 0.153.4 schema generator confirms these methods and an
+optional `clientUserMessageId`. That field's presence alone does not prove retry
+idempotency. Audit busy behavior and ownership of the existing thread before
+choosing an adapter. This is a supported integration candidate, not evidence that
+arbitrary discovered CLI sessions are remotely controllable.
+[Official app-server reference](https://learn.chatgpt.com/docs/app-server).
+
+Claude's Agent SDK documents persistent streaming input with sequential queued
+messages and interruption support. The installed CLI advertises
+`--input-format stream-json` and `--replay-user-messages` in print mode. This is a
+candidate for sessions whose input stream AgentDocker owns; taking over an
+already running external terminal session remains unproven.
+[Official streaming-input reference](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode).
+
+Only help/schema inspection and documentation reads were used for these leads.
+No provider daemon was started or attached, no message was submitted, and no user
+provider configuration was changed by this inspection.
