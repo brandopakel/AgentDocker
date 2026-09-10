@@ -167,3 +167,5 @@ but produced no receipt within 40 seconds, including a retry pinned to protocol
 2025-06-18. This is evidence for the interactive opt-in path, not automatic support
 for every launch mode or a completed AgentDocker delivery implementation.
 [Sanitized provider trial](verification/2026-09-10-claude-channel-probe.json).
+
+The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clean source `a9b54b5` and matching immutable binaries: 701 Rust tests, 48 Python checks, five actual queue scenarios, seven restart/upgrade checks, 105 native workflow steps and 23 notification-navigation steps passed. Provider input acceptance/idle wake and physical Notification Center clicks remain distinct open gates.

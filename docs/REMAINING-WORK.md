@@ -151,3 +151,5 @@ labels retain the tested contrast during hover and press in both themes. The
 packaged CLI/daemon hashes match the preceding delivery/crash-recovery trial;
 the UI has its own new binary and workflow evidence. Notification click routing
 and provider idle wake remain open requirements.
+
+The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clean source `a9b54b5` and matching immutable binaries: 701 Rust tests, 48 Python checks, five actual queue scenarios, seven restart/upgrade checks, 105 native workflow steps and 23 notification-navigation steps passed. Provider input acceptance/idle wake and physical Notification Center clicks remain distinct open gates.

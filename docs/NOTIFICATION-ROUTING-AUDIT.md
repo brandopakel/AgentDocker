@@ -113,3 +113,5 @@ bundle registration remain open; the installed launcher and daemon are unchanged
 This work complements the [provider input queue audit](MESSAGE-DELIVERY-AUDIT.md).
 A human clicking a desktop notification is distinct from an idle provider being
 woken through its input queue. Neither behavior establishes the other.
+
+The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clean source `a9b54b5` and matching immutable binaries: 701 Rust tests, 48 Python checks, five actual queue scenarios, seven restart/upgrade checks, 105 native workflow steps and 23 notification-navigation steps passed. Provider input acceptance/idle wake and physical Notification Center clicks remain distinct open gates.
