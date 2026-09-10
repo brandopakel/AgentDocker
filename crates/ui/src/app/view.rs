@@ -91,17 +91,19 @@ fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
         .style(move |_| c.dot(fill))
         .into()
 }
-/// A dot that says what it means when pointed at. The words are still
-/// written next to it wherever there is room; this is for the places
-/// where there is not.
+/// A dot that says what it means when pointed at. Used only where the
+/// words are not already printed beside it (the rail's project dots); a
+/// tooltip that repeats visible text is noise.
 fn status_dot<'a>(
     fill: iced::Color,
     size: f32,
     label: impl Into<String>,
     c: Colors,
 ) -> Element<'a, Message> {
+    // The dot is small; the thing you point at is not. Padding widens the
+    // hover target to a comfortable size without moving the dot.
     iced::widget::tooltip(
-        dot(fill, size, c),
+        container(dot(fill, size, c)).padding(5),
         container(text(label.into()).size(12).color(c.text))
             .padding([5, 9])
             .style(move |_| container::Style {
@@ -186,6 +188,20 @@ fn kv<'a>(label: &'a str, value: impl Into<String>, c: Colors) -> Element<'a, Me
 }
 fn value(json: &serde_json::Value, key: &str) -> String {
     json[key].as_str().unwrap_or("unknown").to_owned()
+}
+/// How much of a window from `start` to `end` is still ahead of `now`, as
+/// a fraction from 0 (over) to 1 (not begun). A window of no length is over.
+fn remaining_fraction(
+    start: chrono::DateTime<Utc>,
+    end: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+) -> f32 {
+    let total = (end - start).num_milliseconds();
+    if total <= 0 {
+        return 0.0;
+    }
+    let left = (end - now).num_milliseconds();
+    (left as f64 / total as f64).clamp(0.0, 1.0) as f32
 }
 /// What a message says. Agents and the CLI send `{"text": ...}`, channel
 /// notices add a title and room around it; only a payload with no text at
@@ -407,24 +423,37 @@ impl App {
         }
         if in_project {
             let mut tabs = row![].spacing(14);
-            for (screen, label) in [
-                (Screen::Agents, "Sessions"),
-                (Screen::Journal, "Activity"),
-                (Screen::Channels, "Channels"),
+            for (screen, label, glyph) in [
+                (Screen::Agents, "Sessions", Icon::Sessions),
+                (Screen::Journal, "Activity", Icon::Activity),
+                (Screen::Channels, "Channels", Icon::Channels),
             ] {
+                let selected = self.screen == screen
+                    || (screen == Screen::Agents && self.screen == Screen::Terminal);
                 tabs = tabs.push(tab(
                     format!("project-tab-{screen:?}"),
                     label,
+                    Some(icon(
+                        glyph,
+                        if selected { c.accent_ink } else { c.muted },
+                        14.0,
+                    )),
                     Some(Message::Navigate(screen)),
-                    self.screen == screen
-                        || (screen == Screen::Agents && self.screen == Screen::Terminal),
+                    selected,
                 ));
             }
+            let more_selected =
+                self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console);
             tabs = tabs.push(tab(
                 "project-more",
                 "More",
+                Some(icon(
+                    Icon::More,
+                    if more_selected { c.accent_ink } else { c.muted },
+                    14.0,
+                )),
                 Some(Message::More),
-                self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console),
+                more_selected,
             ));
             let tabs: Element<'_, Message> = if narrow {
                 scrollable(tabs)
@@ -853,16 +882,24 @@ impl App {
                 activity
             );
             let spoken = format!("{}\n{} · {}", agent.spec.name, agent.spec.runtime, meta);
+            let mut lines = column![
+                text(agent.spec.name.clone())
+                    .size(14)
+                    .font(weight(iced::font::Weight::Medium)),
+                small(meta, c)
+            ]
+            .spacing(2)
+            .width(Fill);
+            if let Some(left) = self.soonest_answer_window(&id) {
+                lines = lines.push(
+                    container(meter(left, if left < 0.2 { c.red } else { c.amber }, c))
+                        .width(160)
+                        .padding([3, 0]),
+                );
+            }
             let content = row![
-                status_dot(self.activity_color(agent, c), 8.0, activity.clone(), c),
-                column![
-                    text(agent.spec.name.clone())
-                        .size(14)
-                        .font(weight(iced::font::Weight::Medium)),
-                    small(meta, c)
-                ]
-                .spacing(2)
-                .width(Fill),
+                dot(self.activity_color(agent, c), 8.0, c),
+                lines,
                 small(format!("started {}", ago(Utc::now(), agent.created_at)), c),
                 pill(agent.spec.runtime.clone(), c.raised, c.muted, c)
             ]
@@ -1208,18 +1245,26 @@ impl App {
         list.into()
     }
 
+    /// The least time left among this agent's unanswered questions, as a
+    /// fraction of its window; `None` when nothing is waiting.
+    fn soonest_answer_window(&self, agent: &str) -> Option<f32> {
+        let now = Utc::now();
+        self.questions
+            .iter()
+            .filter(|q| q.from == agent && !q.expired(now))
+            .map(|q| remaining_fraction(q.asked_at, q.expires_at, now))
+            .min_by(|a, b| a.total_cmp(b))
+    }
+
     /// How long is left to answer, as a meter and a few words. An expired
     /// question says so instead.
     fn answer_window(&self, question: &Question, c: Colors) -> Element<'_, Message> {
         let now = Utc::now();
-        let total = (question.expires_at - question.asked_at)
-            .num_seconds()
-            .max(1) as f32;
         let left_secs = (question.expires_at - now).num_seconds();
         if left_secs <= 0 {
             return small("No longer waiting for an answer", c).into();
         }
-        let left = (left_secs as f32 / total).min(1.0);
+        let left = remaining_fraction(question.asked_at, question.expires_at, now);
         row![
             meter(left, if left < 0.2 { c.red } else { c.amber }, c),
             small(format!("{} left to answer", super::span(left_secs)), c)
@@ -1481,9 +1526,8 @@ impl App {
             }
             count += 1;
             let now = Utc::now();
-            let total = (lease.expires_at - lease.acquired_at).num_seconds().max(1) as f32;
             let left_secs = (lease.expires_at - now).num_seconds();
-            let left = (left_secs.max(0) as f32 / total).min(1.0);
+            let left = remaining_fraction(lease.acquired_at, lease.expires_at, now);
             let mut body = column![
                 row![
                     heading(lease.resource.to_string(), 15).width(Fill),
@@ -1755,16 +1799,7 @@ impl App {
             let supported =
                 installed && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
             let mut actions = row![
-                status_dot(
-                    if installed { c.green } else { c.faint },
-                    9.0,
-                    if installed {
-                        "Installed"
-                    } else {
-                        "Not installed"
-                    },
-                    c
-                ),
+                dot(if installed { c.green } else { c.faint }, 9.0, c),
                 column![
                     heading(runtime.label.clone(), 16),
                     small(
@@ -2235,8 +2270,29 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::spoken_payload;
+    use super::{remaining_fraction, spoken_payload};
+    use chrono::{Duration, Utc};
     use serde_json::json;
+
+    #[test]
+    fn a_window_drains_from_one_to_zero_and_never_beyond() {
+        let start = Utc::now();
+        let end = start + Duration::seconds(100);
+        assert_eq!(remaining_fraction(start, end, start), 1.0);
+        assert!((remaining_fraction(start, end, start + Duration::seconds(50)) - 0.5).abs() < 1e-3);
+        assert_eq!(remaining_fraction(start, end, end), 0.0);
+        assert_eq!(
+            remaining_fraction(start, end, end + Duration::seconds(5)),
+            0.0
+        );
+        assert_eq!(
+            remaining_fraction(start, end, start - Duration::seconds(5)),
+            1.0
+        );
+        // A window with no length, or one that ends before it starts, is over.
+        assert_eq!(remaining_fraction(start, start, start), 0.0);
+        assert_eq!(remaining_fraction(end, start, start), 0.0);
+    }
 
     #[test]
     fn a_message_shows_its_text_and_only_textless_payloads_show_json() {

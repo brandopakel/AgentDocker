@@ -77,8 +77,15 @@ system, which is drawn from the mark:
   of a few peers: the session filters and the theme. The selected segment lifts
   off the track; the others sit quietly on it.
 - **Dots explain themselves.** Where a status dot has no words beside it (the
-  rail's project dots, session rows, connections), pointing at it shows a
-  tooltip with the same words the wide layout prints.
+  rail's project dots), pointing at it shows a tooltip with the words the row
+  would otherwise print; dots that already sit next to their words get no
+  tooltip. The hover target is padded to about sixteen points; the dot itself
+  stays small. Verified with the real macOS pointer (a CGEvent helper moving
+  the cursor over the running release window while the smoke captured the
+  frame), not only with widget callbacks.
+- **Tabs carry glyphs** (stacked bars, pulse, speech bubble, three dots) drawn
+  the same way as the rail icons. Icon geometry is cached between frames and
+  redrawn only when its colour changes, so idle frames repaint nothing for it.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
   amber under one fifth. A question card carries the time left to answer it,
   red under one fifth. Session rows say when they started. Panels that hold a

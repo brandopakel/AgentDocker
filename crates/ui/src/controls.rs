@@ -476,11 +476,16 @@ pub fn block_button<'a>(
 pub fn tab<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
+    glyph: Option<Element<'a, Message>>,
     message: Option<Message>,
     selected: bool,
 ) -> Element<'a, Message> {
     let label = label.into();
-    let content = iced::widget::column![
+    let mut title = iced::widget::row![].spacing(7).align_y(iced::Center);
+    if let Some(glyph) = glyph {
+        title = title.push(glyph);
+    }
+    title = title.push(
         iced::widget::text(label.clone())
             .size(14)
             .font(crate::app::style::weight(if selected {
@@ -488,6 +493,9 @@ pub fn tab<'a>(
             } else {
                 iced::font::Weight::Normal
             })),
+    );
+    let content = iced::widget::column![
+        title,
         iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(2)).style(
             move |theme: &iced::Theme| {
                 let c = crate::app::style::Colors::of(theme);

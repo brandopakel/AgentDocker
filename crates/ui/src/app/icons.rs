@@ -7,6 +7,17 @@
 use super::Message;
 use iced::widget::canvas::{self, Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::{Color, Element, Point, Rectangle, Renderer, Theme, mouse};
+use std::cell::Cell;
+
+/// The geometry of one drawn icon, kept between frames. Live geometry is
+/// re-tessellated and repainted every frame; cached geometry is compared by
+/// identity and left alone while nothing about it changed. The colour it
+/// was inked in is remembered so a change of selection redraws it once.
+#[derive(Default)]
+pub struct Cached {
+    geometry: canvas::Cache,
+    color: Cell<Option<Color>>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
@@ -20,6 +31,14 @@ pub enum Icon {
     Settings,
     /// A plus.
     Add,
+    /// Two stacked bars: sessions.
+    Sessions,
+    /// A pulse line: activity.
+    Activity,
+    /// A speech bubble: channels.
+    Channels,
+    /// Three dots: more.
+    More,
 }
 
 /// An icon inked in one colour.
@@ -39,17 +58,28 @@ impl Glyph {
 }
 
 impl canvas::Program<Message> for Glyph {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
+        if state.color.get() != Some(self.color) {
+            state.geometry.clear();
+            state.color.set(Some(self.color));
+        }
+        vec![state.geometry.draw(renderer, bounds.size(), |frame| {
+            self.paint(frame, bounds);
+        })]
+    }
+}
+
+impl Glyph {
+    fn paint(&self, frame: &mut Frame, bounds: Rectangle) {
         // Everything below is drawn on a 16 × 16 grid.
         frame.scale(bounds.width.min(bounds.height) / 16.0);
         let stroke = self.stroke(1.5);
@@ -105,8 +135,47 @@ impl canvas::Program<Message> for Glyph {
                 });
                 frame.stroke(&plus, stroke);
             }
+            Icon::Sessions => {
+                for y in [3.0, 9.0] {
+                    let bar =
+                        Path::rounded_rectangle(p(2.5, y), iced::Size::new(11.0, 4.0), 1.5.into());
+                    frame.stroke(&bar, stroke);
+                }
+            }
+            Icon::Activity => {
+                let pulse = Path::new(|b| {
+                    b.move_to(p(2.0, 8.5));
+                    b.line_to(p(5.0, 8.5));
+                    b.line_to(p(6.8, 4.0));
+                    b.line_to(p(9.2, 12.5));
+                    b.line_to(p(11.0, 8.5));
+                    b.line_to(p(14.0, 8.5));
+                });
+                frame.stroke(&pulse, stroke);
+            }
+            Icon::Channels => {
+                let bubble = Path::new(|b| {
+                    b.move_to(p(4.0, 3.0));
+                    b.line_to(p(12.0, 3.0));
+                    b.quadratic_curve_to(p(14.0, 3.0), p(14.0, 5.0));
+                    b.line_to(p(14.0, 9.0));
+                    b.quadratic_curve_to(p(14.0, 11.0), p(12.0, 11.0));
+                    b.line_to(p(7.0, 11.0));
+                    b.line_to(p(4.0, 13.5));
+                    b.line_to(p(4.0, 11.0));
+                    b.quadratic_curve_to(p(2.0, 11.0), p(2.0, 9.0));
+                    b.line_to(p(2.0, 5.0));
+                    b.quadratic_curve_to(p(2.0, 3.0), p(4.0, 3.0));
+                    b.close();
+                });
+                frame.stroke(&bubble, stroke);
+            }
+            Icon::More => {
+                for x in [3.5, 8.0, 12.5] {
+                    frame.fill(&Path::circle(p(x, 8.0), 1.6), self.color);
+                }
+            }
         }
-        vec![frame.into_geometry()]
     }
 }
 
