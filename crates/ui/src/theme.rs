@@ -15,7 +15,7 @@
 //! reader's, which is what terminal clients that do this well already
 //! do.
 
-use eframe::egui::Color32;
+use crate::color::Rgb;
 use serde::{Deserialize, Serialize};
 
 /// A terminal palette: the ground, the ink, and the sixteen the escape
@@ -23,27 +23,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub name: &'static str,
-    pub ground: Color32,
-    pub text: Color32,
+    pub ground: Rgb,
+    pub text: Rgb,
     /// The prompt, and anything else the surface says in its own voice.
-    pub accent: Color32,
-    pub ansi: [Color32; 16],
+    pub accent: Rgb,
+    pub ansi: [Rgb; 16],
 }
 
-const fn rgb(hex: u32) -> Color32 {
-    Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+const fn rgb(hex: u32) -> Rgb {
+    Rgb::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
-
-/// The three states anything in the window can be in: working, needs a
-/// look, not there. Chosen to stay legible on both the light ground and
-/// the dark one, so there is one set rather than two.
-///
-/// They live here, with the rest of what the window looks like, because
-/// the installation panel and the runtimes table both say these things
-/// and they must not say them in two different reds.
-pub const WIRED: Color32 = rgb(0x2E9E5B);
-pub const UNVERIFIED: Color32 = rgb(0xB57A0F);
-pub const ABSENT: Color32 = rgb(0xC04B3F);
 
 /// The palettes on offer, in the order the picker lists them.
 ///
@@ -239,9 +228,9 @@ impl Palette {
     }
 
     /// Ink for something that should be present but quiet.
-    pub fn dim(&self) -> Color32 {
+    pub fn dim(&self) -> Rgb {
         let (t, g) = (self.text, self.ground);
-        Color32::from_rgb(
+        Rgb::from_rgb(
             ((t.r() as u16 + g.r() as u16 * 2) / 3) as u8,
             ((t.g() as u16 + g.g() as u16 * 2) / 3) as u8,
             ((t.b() as u16 + g.b() as u16 * 2) / 3) as u8,
@@ -306,6 +295,7 @@ impl Settings {
             .clamped()
     }
 
+    #[cfg(test)]
     pub fn save(&self, home: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
             let _ = std::fs::write(Self::path(home), bytes);

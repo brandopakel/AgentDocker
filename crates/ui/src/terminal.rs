@@ -7,13 +7,16 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::color::Rgb;
+use crate::wake::Wake;
 use agentdocker_core::{Request, Response, protocol};
-use egui::text::LayoutJob;
-use egui::{Color32, FontId, TextFormat};
 
 use crate::client::Client;
 use crate::theme::Palette;
 
+mod display;
+pub mod keys;
+pub use display::Display;
 mod control;
 mod input;
 use input::{Input, Outbound};
@@ -71,7 +74,7 @@ impl Shared {
         self.input.close();
     }
 
-    fn ended(&self, reason: String, ctx: &egui::Context) {
+    fn ended(&self, reason: String, ctx: &Wake) {
         {
             let mut status = lock(&self.status);
             // Preserve the writer's original error when shutdown wakes a reader.
@@ -88,7 +91,7 @@ impl Shared {
 pub struct Terminal {
     pub agent: String,
     shared: Shared,
-    input_notice: Option<&'static str>,
+    pub input_notice: Option<&'static str>,
     size: (u16, u16),
     /// How far above the live screen the view is scrolled.
     scrollback: usize,
@@ -108,7 +111,7 @@ pub enum Status {
 
 impl Terminal {
     /// Attach to an agent and start reading its terminal.
-    pub fn attach(client: Arc<Client>, agent: String, ctx: egui::Context) -> Self {
+    pub fn attach(client: Arc<Client>, agent: String, ctx: Wake) -> Self {
         let (cols, rows) = DEFAULT_SIZE;
         let shared = Shared {
             parser: Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK))),
@@ -186,84 +189,17 @@ impl Terminal {
         // A rejected resize leaves size unchanged so the next UI pass retries
         // that desired size. Keystrokes are never retried automatically.
     }
-
-    /// Draw the screen as it stands.
-    pub fn ui(&mut self, ui: &mut egui::Ui, palette: &Palette, size: f32) {
-        if let Some(reason) = self.input_notice {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(Color32::from_rgb(200, 80, 60), reason);
-                if ui.button("Dismiss").clicked() {
-                    self.input_notice = None;
-                }
-            });
-        }
-        let parser = lock(&self.shared.parser);
-        let screen = parser.screen();
-        let (rows, cols) = screen.size();
-        let font = FontId::monospace(size);
-        for row in 0..rows {
-            let mut job = LayoutJob::default();
-            let mut text = String::new();
-            let mut style: Option<(Color32, bool)> = None;
-            for col in 0..cols {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                let colour = foreground(palette, cell.fgcolor());
-                let bold = cell.bold();
-                if style != Some((colour, bold)) && !text.is_empty() {
-                    push(&mut job, &text, style, &font);
-                    text.clear();
-                }
-                style = Some((colour, bold));
-                // An unwritten cell is a space, not nothing, or the row
-                // would shift left as the screen fills.
-                let contents = cell.contents();
-                if contents.is_empty() {
-                    text.push(' ');
-                } else {
-                    text.push_str(contents);
-                }
-            }
-            // A blank row is drawn as a space rather than skipped, so the
-            // screen keeps its shape as content comes and goes.
-            let text = text.trim_end();
-            push(
-                &mut job,
-                if text.is_empty() { " " } else { text },
-                style,
-                &font,
-            );
-            ui.label(job);
-        }
-    }
-}
-
-fn push(job: &mut LayoutJob, text: &str, style: Option<(Color32, bool)>, font: &FontId) {
-    if text.is_empty() {
-        return;
-    }
-    let (colour, _bold) = style.unwrap_or((Color32::GRAY, false));
-    job.append(
-        text,
-        0.0,
-        TextFormat {
-            font_id: font.clone(),
-            color: colour,
-            ..Default::default()
-        },
-    );
 }
 
 /// A terminal colour as something to draw with, in the chosen palette.
 ///
 /// `Default` is the palette's own text colour rather than a hard-coded
 /// grey: on a light palette a hard-coded one either vanishes or shouts.
-fn foreground(palette: &Palette, colour: vt100::Color) -> Color32 {
+fn foreground(palette: &Palette, colour: vt100::Color) -> Rgb {
     match colour {
         vt100::Color::Default => palette.text,
         vt100::Color::Idx(i) => indexed(palette, i),
-        vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
+        vt100::Color::Rgb(r, g, b) => Rgb::from_rgb(r, g, b),
     }
 }
 
@@ -271,7 +207,7 @@ fn foreground(palette: &Palette, colour: vt100::Color) -> Color32 {
 /// 6×6×6 cube; 232–255 are a greyscale ramp. Folding the last two ranges
 /// into the first sixteen — which is what a modulo does — gives an agent
 /// using the 256-colour palette a set of unrelated hues.
-fn indexed(palette: &Palette, i: u8) -> Color32 {
+fn indexed(palette: &Palette, i: u8) -> Rgb {
     match i {
         0..=15 => palette.ansi[i as usize],
         16..=231 => {
@@ -279,11 +215,11 @@ fn indexed(palette: &Palette, i: u8) -> Color32 {
             // is to 95, and the rest are 40 apart.
             let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
             let c = i - 16;
-            Color32::from_rgb(level(c / 36), level((c / 6) % 6), level(c % 6))
+            Rgb::from_rgb(level(c / 36), level((c / 6) % 6), level(c % 6))
         }
         232..=255 => {
             let grey = 8 + (i - 232) * 10;
-            Color32::from_rgb(grey, grey, grey)
+            Rgb::from_rgb(grey, grey, grey)
         }
     }
 }
@@ -297,13 +233,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Read the agent's terminal into the parser, and type what the window
 /// sends. Both ends live on their own threads so the window never waits
 /// on the socket.
-fn spawn_session(
-    client: Arc<Client>,
-    agent: String,
-    size: (u16, u16),
-    shared: Shared,
-    ctx: egui::Context,
-) {
+fn spawn_session(client: Arc<Client>, agent: String, size: (u16, u16), shared: Shared, ctx: Wake) {
     let close = shared.clone();
     let on_error = ctx.clone();
     if let Err(error) = spawn_connected(
@@ -327,7 +257,7 @@ fn spawn_session(
 fn spawn_connected(
     connect: impl FnOnce() -> anyhow::Result<agentdocker_host::ipc::BlockingStream> + Send + 'static,
     shared: Shared,
-    ctx: egui::Context,
+    ctx: Wake,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("agentdocker-terminal".into())
@@ -368,7 +298,7 @@ fn spawn_connected(
         })
 }
 
-fn run_writer(writer: impl std::io::Write, shared: &Shared, ctx: &egui::Context) {
+fn run_writer(writer: impl std::io::Write, shared: &Shared, ctx: &Wake) {
     if let Err(error) = write_input(writer, &shared.input) {
         shared.ended(format!("terminal input failed: {error}"), ctx);
     }
@@ -411,7 +341,7 @@ fn read_frame(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io:
 fn read_output(
     stream: agentdocker_host::ipc::BlockingStream,
     shared: &Shared,
-    ctx: &egui::Context,
+    ctx: &Wake,
 ) -> String {
     let mut reader = std::io::BufReader::new(stream);
     let mut line = String::new();
@@ -448,8 +378,8 @@ fn read_output(
 /// would start with `A` and answer 1, `Enter` would answer 5, and
 /// `CloseBracket` — which is the detach key everywhere else — would
 /// answer 3 instead of 0x1d.
-fn control(key: egui::Key) -> Option<u8> {
-    use egui::Key::*;
+fn control(key: keys::Key) -> Option<u8> {
+    use keys::Key::*;
     let letter = |c: u8| Some(c - b'A' + 1);
     Some(match key {
         A => return letter(b'A'),
@@ -492,12 +422,12 @@ fn control(key: egui::Key) -> Option<u8> {
 /// What a window's key and text events mean to a terminal. Pure, so the
 /// mapping every interactive agent depends on can be tested without a
 /// window.
-pub fn keystrokes(events: &[egui::Event]) -> Vec<u8> {
+pub fn keystrokes(events: &[keys::Event]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for event in events {
         match event {
-            egui::Event::Text(text) => bytes.extend_from_slice(text.as_bytes()),
-            egui::Event::Key {
+            keys::Event::Text(text) => bytes.extend_from_slice(text.as_bytes()),
+            keys::Event::Key {
                 key,
                 pressed: true,
                 modifiers,
@@ -510,19 +440,19 @@ pub fn keystrokes(events: &[egui::Event]) -> Vec<u8> {
                     continue;
                 }
                 match key {
-                    egui::Key::Enter => bytes.push(b'\r'),
-                    egui::Key::Backspace => bytes.push(0x7f),
-                    egui::Key::Tab => bytes.push(b'\t'),
-                    egui::Key::Escape => bytes.push(0x1b),
-                    egui::Key::Delete => bytes.extend_from_slice(b"\x1b[3~"),
-                    egui::Key::Home => bytes.extend_from_slice(b"\x1b[H"),
-                    egui::Key::End => bytes.extend_from_slice(b"\x1b[F"),
-                    egui::Key::PageUp => bytes.extend_from_slice(b"\x1b[5~"),
-                    egui::Key::PageDown => bytes.extend_from_slice(b"\x1b[6~"),
-                    egui::Key::ArrowUp => bytes.extend_from_slice(b"\x1b[A"),
-                    egui::Key::ArrowDown => bytes.extend_from_slice(b"\x1b[B"),
-                    egui::Key::ArrowRight => bytes.extend_from_slice(b"\x1b[C"),
-                    egui::Key::ArrowLeft => bytes.extend_from_slice(b"\x1b[D"),
+                    keys::Key::Enter => bytes.push(b'\r'),
+                    keys::Key::Backspace => bytes.push(0x7f),
+                    keys::Key::Tab => bytes.push(b'\t'),
+                    keys::Key::Escape => bytes.push(0x1b),
+                    keys::Key::Delete => bytes.extend_from_slice(b"\x1b[3~"),
+                    keys::Key::Home => bytes.extend_from_slice(b"\x1b[H"),
+                    keys::Key::End => bytes.extend_from_slice(b"\x1b[F"),
+                    keys::Key::PageUp => bytes.extend_from_slice(b"\x1b[5~"),
+                    keys::Key::PageDown => bytes.extend_from_slice(b"\x1b[6~"),
+                    keys::Key::ArrowUp => bytes.extend_from_slice(b"\x1b[A"),
+                    keys::Key::ArrowDown => bytes.extend_from_slice(b"\x1b[B"),
+                    keys::Key::ArrowRight => bytes.extend_from_slice(b"\x1b[C"),
+                    keys::Key::ArrowLeft => bytes.extend_from_slice(b"\x1b[D"),
                     _ => {}
                 }
             }
@@ -597,7 +527,7 @@ mod tests {
                 Ok(stream)
             },
             shared,
-            egui::Context::default(),
+            Wake::default(),
         )
         .unwrap();
         started.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -685,8 +615,7 @@ mod tests {
         let terminal = unserved_terminal();
         let shared = terminal.shared.clone();
         let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
-        let session =
-            spawn_connected(move || Ok(stream), shared, egui::Context::default()).unwrap();
+        let session = spawn_connected(move || Ok(stream), shared, Wake::default()).unwrap();
         peer.write_all(b"{\"type\":\"end\"}\n").unwrap();
         let (finished, done) = mpsc::channel();
         let waiter = std::thread::spawn(move || finished.send(session.join()).unwrap());
@@ -723,7 +652,7 @@ mod tests {
         assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
         let (finished, done) = mpsc::channel();
         let reader = std::thread::spawn(move || {
-            let ctx = egui::Context::default();
+            let ctx = Wake::default();
             let reason = read_output(stream, &shared, &ctx);
             shared.ended(reason, &ctx);
             finished.send(()).unwrap();
@@ -731,7 +660,7 @@ mod tests {
         // Inject an error while a real socket reader waits with an open peer.
         // SHUT_RD alone does not force an immediate EPIPE on Darwin.
         terminal.send(b"owned fixture".to_vec());
-        run_writer(FailedWriter, &terminal.shared, &egui::Context::default());
+        run_writer(FailedWriter, &terminal.shared, &Wake::default());
         let observed = done.recv_timeout(Duration::from_secs(3));
         terminal.shared.close();
         close_peer(&peer);
@@ -804,13 +733,11 @@ mod tests {
         );
     }
 
-    fn key(key: egui::Key, ctrl: bool) -> egui::Event {
-        egui::Event::Key {
+    fn key(key: keys::Key, ctrl: bool) -> keys::Event {
+        keys::Event::Key {
             key,
-            physical_key: None,
             pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers {
+            modifiers: keys::Modifiers {
                 ctrl,
                 ..Default::default()
             },
@@ -819,46 +746,44 @@ mod tests {
 
     #[test]
     fn keys_become_what_a_terminal_expects() {
-        assert_eq!(keystrokes(&[egui::Event::Text("hi".into())]), b"hi");
-        assert_eq!(keystrokes(&[key(egui::Key::Enter, false)]), b"\r");
-        assert_eq!(keystrokes(&[key(egui::Key::Backspace, false)]), &[0x7f]);
-        assert_eq!(keystrokes(&[key(egui::Key::Escape, false)]), &[0x1b]);
-        assert_eq!(keystrokes(&[key(egui::Key::ArrowUp, false)]), b"\x1b[A");
-        assert_eq!(keystrokes(&[key(egui::Key::ArrowLeft, false)]), b"\x1b[D");
-        assert_eq!(keystrokes(&[key(egui::Key::PageUp, false)]), b"\x1b[5~");
+        assert_eq!(keystrokes(&[keys::Event::Text("hi".into())]), b"hi");
+        assert_eq!(keystrokes(&[key(keys::Key::Enter, false)]), b"\r");
+        assert_eq!(keystrokes(&[key(keys::Key::Backspace, false)]), &[0x7f]);
+        assert_eq!(keystrokes(&[key(keys::Key::Escape, false)]), &[0x1b]);
+        assert_eq!(keystrokes(&[key(keys::Key::ArrowUp, false)]), b"\x1b[A");
+        assert_eq!(keystrokes(&[key(keys::Key::ArrowLeft, false)]), b"\x1b[D");
+        assert_eq!(keystrokes(&[key(keys::Key::PageUp, false)]), b"\x1b[5~");
         // The control codes an agent's own key bindings depend on.
-        assert_eq!(keystrokes(&[key(egui::Key::C, true)]), &[3], "Ctrl-C");
-        assert_eq!(keystrokes(&[key(egui::Key::D, true)]), &[4], "Ctrl-D");
-        assert_eq!(keystrokes(&[key(egui::Key::A, true)]), &[1]);
-        assert_eq!(keystrokes(&[key(egui::Key::Z, true)]), &[26]);
+        assert_eq!(keystrokes(&[key(keys::Key::C, true)]), &[3], "Ctrl-C");
+        assert_eq!(keystrokes(&[key(keys::Key::D, true)]), &[4], "Ctrl-D");
+        assert_eq!(keystrokes(&[key(keys::Key::A, true)]), &[1]);
+        assert_eq!(keystrokes(&[key(keys::Key::Z, true)]), &[26]);
         // Ctrl-] is what detaches everywhere else, so it must be 0x1d
         // rather than whatever the variant's *name* begins with.
         assert_eq!(
-            keystrokes(&[key(egui::Key::CloseBracket, true)]),
+            keystrokes(&[key(keys::Key::CloseBracket, true)]),
             &[0x1d],
             "Ctrl-]"
         );
-        assert_eq!(keystrokes(&[key(egui::Key::OpenBracket, true)]), &[0x1b]);
-        assert_eq!(keystrokes(&[key(egui::Key::Space, true)]), &[0x00]);
+        assert_eq!(keystrokes(&[key(keys::Key::OpenBracket, true)]), &[0x1b]);
+        assert_eq!(keystrokes(&[key(keys::Key::Space, true)]), &[0x00]);
         // A held Ctrl must not turn a named key into a letter code:
         // `ArrowUp` is not Ctrl-A and `Enter` is not Ctrl-E.
-        assert_eq!(keystrokes(&[key(egui::Key::ArrowUp, true)]), b"\x1b[A");
-        assert_eq!(keystrokes(&[key(egui::Key::Enter, true)]), b"\r");
-        assert_eq!(keystrokes(&[key(egui::Key::Tab, true)]), b"\t");
+        assert_eq!(keystrokes(&[key(keys::Key::ArrowUp, true)]), b"\x1b[A");
+        assert_eq!(keystrokes(&[key(keys::Key::Enter, true)]), b"\r");
+        assert_eq!(keystrokes(&[key(keys::Key::Tab, true)]), b"\t");
         // A release is not a keystroke, and unknown keys are ignored.
         assert!(
-            keystrokes(&[egui::Event::Key {
-                key: egui::Key::A,
-                physical_key: None,
+            keystrokes(&[keys::Event::Key {
+                key: keys::Key::A,
                 pressed: false,
-                repeat: false,
-                modifiers: egui::Modifiers::default(),
+                modifiers: keys::Modifiers::default(),
             }])
             .is_empty()
         );
         // Several events in one frame arrive in order.
         assert_eq!(
-            keystrokes(&[egui::Event::Text("ls".into()), key(egui::Key::Enter, false)]),
+            keystrokes(&[keys::Event::Text("ls".into()), key(keys::Key::Enter, false)]),
             b"ls\r"
         );
     }
@@ -888,7 +813,7 @@ mod tests {
         assert_eq!(foreground(light, plain.fgcolor()), light.text);
         assert_eq!(
             foreground(palette, vt100::Color::Rgb(1, 2, 3)),
-            Color32::from_rgb(1, 2, 3)
+            Rgb::from_rgb(1, 2, 3)
         );
     }
 
@@ -900,26 +825,14 @@ mod tests {
         assert_eq!(indexed(palette, 15), palette.ansi[15]);
         // The cube: 16 is its black corner, 231 its white one, and the
         // levels step 0, 95, 135, 175, 215, 255.
-        assert_eq!(indexed(palette, 16), Color32::from_rgb(0, 0, 0));
-        assert_eq!(indexed(palette, 231), Color32::from_rgb(255, 255, 255));
-        assert_eq!(
-            indexed(palette, 196),
-            Color32::from_rgb(255, 0, 0),
-            "cube red"
-        );
-        assert_eq!(
-            indexed(palette, 46),
-            Color32::from_rgb(0, 255, 0),
-            "cube green"
-        );
-        assert_eq!(
-            indexed(palette, 21),
-            Color32::from_rgb(0, 0, 255),
-            "cube blue"
-        );
+        assert_eq!(indexed(palette, 16), Rgb::from_rgb(0, 0, 0));
+        assert_eq!(indexed(palette, 231), Rgb::from_rgb(255, 255, 255));
+        assert_eq!(indexed(palette, 196), Rgb::from_rgb(255, 0, 0), "cube red");
+        assert_eq!(indexed(palette, 46), Rgb::from_rgb(0, 255, 0), "cube green");
+        assert_eq!(indexed(palette, 21), Rgb::from_rgb(0, 0, 255), "cube blue");
         // The greyscale ramp, which a modulo would have scattered.
-        assert_eq!(indexed(palette, 232), Color32::from_rgb(8, 8, 8));
-        assert_eq!(indexed(palette, 255), Color32::from_rgb(238, 238, 238));
+        assert_eq!(indexed(palette, 232), Rgb::from_rgb(8, 8, 8));
+        assert_eq!(indexed(palette, 255), Rgb::from_rgb(238, 238, 238));
         // And the palette is a palette, not sixteen colours repeated:
         // a modulo would have produced exactly sixteen distinct values.
         let distinct: std::collections::HashSet<_> =

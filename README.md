@@ -373,7 +373,7 @@ Five crates:
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
-- `crates/ui` — `agentdocker-ui`: the desktop app, a native window (Rust, egui) over the same socket — agents grouped by project, each project in its own stable colour with a dot on every row and a filter for showing one at a time, the runtimes on this machine with one-click adopt and setup, the journal, leases, and the event feed, plus the questions agents have put to you, a terminal for attaching to an interactive agent, and a console that runs any `agentdocker` command. `agentdocker ui` opens it.
+- `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Inbox handles questions and drafts; Connections reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 

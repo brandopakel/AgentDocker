@@ -17,9 +17,12 @@ agentdocker-host = { path = "crates/host", version = "0.1.0" }
 anyhow = "1"
 base64 = "0.22"
 criterion = "0.5.1"
-eframe = "0.36"
 vt100 = "0.16"
-egui = "0.36"
+iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "crisp", "tokio", "x11", "wayland", "advanced"] }
+png = "0.18"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+accesskit = "0.24.1"
+raw-window-handle = "0.6"
 proptest = "1.6"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }

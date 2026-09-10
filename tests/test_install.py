@@ -153,7 +153,7 @@ class InstallerTests(unittest.TestCase):
         self.assertGreaterEqual(width, 512, "large enough for a 1024 icon")
 
     def test_the_embedded_window_icon_matches_the_pipeline(self):
-        """The app sets its own icon at runtime — it has to, or eframe
+        """The app sets its own icon at runtime — it has to, or the window toolkit
         sets its logo instead — from a PNG compiled into the binary. That
         copy has to stay the one the iconset is built from, or the Dock
         and Finder end up showing different marks again."""

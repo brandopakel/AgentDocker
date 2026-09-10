@@ -1,96 +1,39 @@
-//! Explicit graphical acceptance mode, used only with fixture IPC paths.
+//! Explicit native capture acceptance, restricted to isolated fixture state.
+use crate::app::Message;
 use agentdocker_core::DiscoveredProcess;
-use eframe::icon_data::IconDataExt;
-use serde_json::json;
-use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, AtomicU64, Ordering},
+use iced::{Task, window};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::{Duration, Instant},
 };
-use std::time::{Duration, Instant};
-
-/// How long the window will wait to become ready before giving up and
-/// saying what it was still waiting for.
-///
-/// Generous on purpose. This is the *only* budget that matters: the
-/// harness around it waits longer, so a run that fails fails here,
-/// where the unmet condition is known, rather than there, where all
-/// that is known is that the window never exited. Two deadlines close
-/// together is how a graphical check becomes flaky with no evidence.
+mod scenario;
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
-
-// eframe drains capture commands before acquiring a surface. A failed
-// acquisition drops that capture, so a later successful paint cannot answer it.
-// Recover only after a reported acquisition failure, never on a timer.
-const MAX_CAPTURE_ATTEMPTS: u8 = 4;
-
-#[derive(Default)]
-struct Capture {
-    attempts: u8,
-    pending_at_failure: Option<u64>,
-}
-
-impl Capture {
-    fn request_after_surface(&mut self, failures: u64) -> bool {
-        if self
-            .pending_at_failure
-            .is_some_and(|previous| failures > previous)
-        {
-            self.pending_at_failure = None;
-        }
-        if self.pending_at_failure.is_some() || self.attempts >= MAX_CAPTURE_ATTEMPTS {
-            return false;
-        }
-        self.attempts += 1;
-        self.pending_at_failure = Some(failures);
-        true
-    }
-}
-
+#[derive(Clone)]
 pub struct Smoke {
     output: PathBuf,
     expected_pid: Option<u32>,
     started: Instant,
     deadline: Duration,
-    /// When the last progress line went out, so a stalled run leaves a
-    /// trail in the log rather than an empty file.
-    reported: Instant,
-    capture: Capture,
-    surface_failures: Arc<AtomicU64>,
-    focus_requested: bool,
-    frames: usize,
+    requested: bool,
+    ticks: usize,
+    ready: bool,
+    connected: bool,
+    fixture: bool,
+    runtimes: usize,
     outcome: Arc<AtomicU8>,
+    pub scenario: Option<scenario::Scenario>,
+    native_nodes: Option<usize>,
 }
-
-/// What is still missing, in the words of the conditions themselves.
-fn unmet(connected: bool, runtimes: usize, fixture: bool, frames: usize) -> String {
-    let mut waiting = Vec::new();
-    if !connected {
-        waiting.push("a daemon connection".to_owned());
-    }
-    if runtimes == 0 {
-        waiting.push("the runtime inventory".to_owned());
-    }
-    if !fixture {
-        waiting.push("the fixture process to be discovered".to_owned());
-    }
-    if frames < 3 {
-        waiting.push(format!("frames to render ({frames} so far)"));
-    }
-    if waiting.is_empty() {
-        // Everything the window waits for has happened, so what is left
-        // is the screenshot the renderer owes us. A timeout preserves this
-        // distinction from failed connection, inventory or discovery.
-        return "the renderer to hand back a screenshot".to_owned();
-    }
-    waiting.join(", ")
-}
-
 impl Smoke {
     pub fn new(
         output: PathBuf,
         expected_pid: Option<u32>,
         deadline: Option<Duration>,
+        scenario: Option<PathBuf>,
     ) -> anyhow::Result<(Self, Arc<AtomicU8>)> {
         anyhow::ensure!(
             std::env::var_os("AGENTDOCKER_HOME").is_some()
@@ -109,187 +52,179 @@ impl Smoke {
                 expected_pid,
                 started: Instant::now(),
                 deadline: deadline.unwrap_or(DEFAULT_DEADLINE),
-                reported: Instant::now(),
-                capture: Capture::default(),
-                surface_failures: Arc::new(AtomicU64::new(0)),
-                focus_requested: false,
-                frames: 0,
+                requested: false,
+                ticks: 0,
+                ready: false,
+                connected: false,
+                fixture: false,
+                runtimes: 0,
                 outcome: outcome.clone(),
+                native_nodes: None,
+                scenario: scenario.map(|p| scenario::Scenario::load(&p)).transpose()?,
             },
             outcome,
         ))
     }
-
-    pub fn surface_failures(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.surface_failures)
-    }
-
     pub fn tick(
         &mut self,
-        ctx: &egui::Context,
         connected: bool,
         runtimes: usize,
         discovered: &[DiscoveredProcess],
-    ) {
-        if self.outcome.load(Ordering::Relaxed) != 0 {
-            return;
-        }
-        self.frames += 1;
+    ) -> Task<Message> {
+        self.ticks += 1;
+        self.runtimes = runtimes;
         let fixture = self
             .expected_pid
-            .is_none_or(|pid| discovered.iter().any(|agent| agent.pid == pid));
-        let viewport = ctx.input(|input| input.viewport().clone());
-        let screenshot = ctx.input(|input| {
-            input.events.iter().find_map(|event| {
-                if let egui::Event::Screenshot { image, .. } = event {
-                    Some(image.clone())
-                } else {
-                    None
-                }
-            })
-        });
-        let completed = if let Some(image) = screenshot {
-            let icon = egui::IconData {
-                width: image.size[0] as u32,
-                height: image.size[1] as u32,
-                rgba: image
-                    .pixels
-                    .iter()
-                    .flat_map(|pixel| pixel.to_array())
-                    .collect(),
-            };
-            let saved = icon
-                .to_png_bytes()
-                .map_err(anyhow::Error::msg)
-                .and_then(|png| {
-                    use std::io::Write;
-                    agentdocker_host::dirs::private_file(
-                        &self.output.join("window.png"),
-                        true,
-                        false,
-                    )?
-                    .write_all(&png)?;
-                    Ok(())
-                });
-            Some(saved.and_then(|()| {
-                anyhow::ensure!(
-                    connected && runtimes > 0 && fixture,
-                    "connection or fixture was lost before capture"
-                );
-                Ok(json!({"result":"passed", "display_name":"agentdocker",
-                "connected":connected, "runtime_rows":runtimes, "fixture_discovered":fixture,
-                "frames":self.frames, "screenshot":"window.png"}))
-            }))
-        } else if self.started.elapsed() > self.deadline {
-            // Named, not merely reported as "not ready": a run that
-            // fails on a machine nobody can attach to is only as useful
-            // as what it wrote down.
-            Some(Err(anyhow::anyhow!(
-                "gave up after {}s waiting for: {}",
-                self.deadline.as_secs(),
-                unmet(connected, runtimes, fixture, self.frames)
-            )))
-        } else {
-            None
-        };
-        if completed.is_none() && self.reported.elapsed() >= Duration::from_secs(1) {
-            self.reported = Instant::now();
-            eprintln!(
-                "{:.0}s waiting for: {}",
-                self.started.elapsed().as_secs_f64(),
-                unmet(connected, runtimes, fixture, self.frames)
-            );
+            .is_none_or(|pid| discovered.iter().any(|p| p.pid == pid));
+        self.ready = connected && runtimes > 0 && fixture;
+        self.connected = connected;
+        self.fixture = fixture;
+        if self.started.elapsed() > self.deadline {
+            self.finish(Err(format!("Timed out: scenario={},  connected={connected}, runtime_rows={runtimes}, fixture_discovered={fixture}, capture_requested={}",self.scenario.as_ref().map_or_else(||"none".into(), |s|s.waiting()), self.requested)));
+            return iced::exit();
         }
-        if let Some(result) = completed {
-            let success = result.is_ok() && connected && runtimes > 0 && fixture;
-            let mut report = result
-                .unwrap_or_else(|error| json!({"result":"failed", "error":error.to_string()}));
-            // Preserve the unmet condition when CI cannot reach capture. Counts
-            // and fixture readiness carry no discovered commands or user paths.
-            report["connected"] = json!(connected);
-            report["runtime_rows"] = json!(runtimes);
-            report["fixture_discovered"] = json!(fixture);
-            report["screenshot_requested"] = json!(self.capture.attempts > 0);
-            report["capture_attempts"] = json!(self.capture.attempts);
-            report["surface_failures"] = json!(self.surface_failures.load(Ordering::Relaxed));
-            report["frames"] = json!(self.frames);
-            report["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
-            report["viewport_visible"] = json!(viewport.visible());
-            report["viewport_occluded"] = json!(viewport.occluded);
-            report["viewport_minimized"] = json!(viewport.minimized);
-            report["viewport_focused"] = json!(viewport.focused);
-            let write = (|| -> anyhow::Result<()> {
-                use std::io::Write;
-                agentdocker_host::dirs::private_file(
-                    &self.output.join("result.json"),
-                    true,
-                    false,
-                )?
-                .write_all(serde_json::to_string_pretty(&report)?.as_bytes())?;
-                Ok(())
-            })();
-            self.outcome.store(
-                if success && write.is_ok() { 1 } else { 2 },
-                Ordering::Relaxed,
-            );
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if connected
-            && runtimes > 0
-            && fixture
-            && self.frames >= 3
-            && viewport.visible() != Some(false)
-            && viewport.occluded != Some(true)
-            && viewport.minimized != Some(true)
-            && self
-                .capture
-                .request_after_surface(self.surface_failures.load(Ordering::Relaxed))
+        if self.ready
+            && self.started.elapsed() > Duration::from_millis(500)
+            && let Some(scenario) = &mut self.scenario
+            && !scenario.done()
         {
-            eprintln!(
-                "graphical acceptance screenshot requested at {:?}: visible={:?}, occluded={:?}, minimized={:?}, focused={:?}",
-                self.started.elapsed(),
-                viewport.visible(),
-                viewport.occluded,
-                viewport.minimized,
-                viewport.focused
+            let task = scenario.tick();
+            let progress = serde_json::json!({"completed":scenario.completed,"waiting":scenario.waiting(),"controls":scenario.snapshot.controls.values().map(|c| (&c.id, c.action.is_some(), c.change.is_some())).collect::<Vec<_>>()});
+            use std::io::Write;
+            if let Ok(mut file) = agentdocker_host::dirs::private_file(
+                &self.output.join("progress.json"),
+                true,
+                false,
+            ) {
+                let _ = file.set_len(0);
+                let _ = file.write_all(progress.to_string().as_bytes());
+            }
+            return task;
+        }
+        if self.ready
+            && self.ticks >= 3
+            && self.started.elapsed() > Duration::from_millis(500)
+            && !self.requested
+        {
+            self.requested = true;
+            return window::oldest()
+                .and_then(window::screenshot)
+                .map(Message::Captured);
+        }
+        Task::none()
+    }
+    pub fn captured(&mut self, capture: window::Screenshot) -> Task<Message> {
+        let result = (|| -> anyhow::Result<()> {
+            anyhow::ensure!(self.ready, "Connection readiness was lost before capture");
+            anyhow::ensure!(
+                capture.size.width >= 640 && capture.size.height >= 400,
+                "Native capture is unexpectedly small"
             );
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            let name = self
+                .scenario
+                .as_mut()
+                .and_then(|s| s.capture.take())
+                .unwrap_or_else(|| "window".into());
+            let file = agentdocker_host::dirs::private_file(
+                &self.output.join(format!("{name}.png")),
+                true,
+                false,
+            )?;
+            let mut encoder = png::Encoder::new(
+                std::io::BufWriter::new(file),
+                capture.size.width,
+                capture.size.height,
+            );
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header()?.write_image_data(&capture.rgba)?;
+            Ok(())
+        })();
+        if result.is_ok() && !self.requested {
+            return Task::none();
         }
-        if self.outcome.load(Ordering::Relaxed) == 0 && !self.focus_requested {
-            // Focus first, then wait for a visible viewport before requesting
-            // capture. Both commands in one frame can race surface readiness.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.focus_requested = true;
+        self.finish(result.map_err(|e| e.to_string()));
+        Task::done(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )))
+    }
+    pub fn native_accessibility(&mut self, result: Result<usize, String>) -> Task<Message> {
+        match result {
+            Ok(count) => {
+                self.native_nodes = Some(count);
+                Task::none()
+            }
+            Err(error) => {
+                self.finish(Err(error));
+                iced::exit()
+            }
         }
-        ctx.request_repaint_after(Duration::from_millis(50));
+    }
+    fn finish(&mut self, result: Result<(), String>) {
+        use std::io::Write;
+        let passed = result.is_ok();
+        let report = serde_json::json!({"result":if passed{"passed"}else{"failed"},"error":result.err(),"renderer":"iced tiny-skia","native_accessibility_nodes":self.native_nodes,"connected":self.connected,"runtime_rows":self.runtimes,"fixture_discovered":self.fixture,"screenshot_requested":self.requested,"capture_attempts":usize::from(self.requested),"scenario_steps_completed":self.scenario.as_ref().map(|s|s.completed),"scenario_steps_total":self.scenario.as_ref().map(|s|s.total),"ticks":self.ticks,"elapsed_seconds":self.started.elapsed().as_secs_f64()});
+        let write = (|| -> anyhow::Result<()> {
+            agentdocker_host::dirs::private_file(&self.output.join("result.json"), true, false)?
+                .write_all(&serde_json::to_vec_pretty(&report)?)?;
+            Ok(())
+        })();
+        self.outcome.store(
+            if passed && write.is_ok() { 1 } else { 2 },
+            Ordering::Relaxed,
+        );
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_failed_acquisition_allows_a_new_capture_but_waiting_alone_does_not() {
-        let mut capture = Capture::default();
-        assert!(capture.request_after_surface(0));
-        for _ in 0..1000 {
-            assert!(!capture.request_after_surface(0));
+fn native_accessibility(id: window::Id) -> Task<Message> {
+    window::run(id, |window| {
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::{msg_send, rc::Retained, runtime::AnyObject, sel};
+            use objc2_foundation::{NSArray, NSString};
+            fn titles(node: &AnyObject, depth: usize, names: &mut Vec<String>) {
+                if depth > 4 || names.len() > 512 {
+                    return;
+                }
+                // These objects belong to this app's NSAccessibility hierarchy;
+                // the calls run on the window thread while the NSView is retained.
+                if unsafe { msg_send![node, respondsToSelector: sel!(accessibilityTitle)] } {
+                    let title: Option<Retained<NSString>> =
+                        unsafe { msg_send![node, accessibilityTitle] };
+                    if let Some(title) = title {
+                        names.push(title.to_string());
+                    }
+                }
+                if unsafe { msg_send![node, respondsToSelector: sel!(accessibilityChildren)] } {
+                    let children: Option<Retained<NSArray<AnyObject>>> =
+                        unsafe { msg_send![node, accessibilityChildren] };
+                    if let Some(children) = children {
+                        for child in children.iter().take(512) {
+                            titles(&child, depth + 1, names);
+                        }
+                    }
+                }
+            }
+            let handle = window.window_handle().map_err(|e| e.to_string())?;
+            let raw_window_handle::RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+                return Err("Expected AppKit view".into());
+            };
+            let view = unsafe { &*handle.ns_view.as_ptr().cast::<AnyObject>() };
+            let mut names = Vec::new();
+            titles(view, 0, &mut names);
+            if names.iter().any(|n| n == "Projects") && names.iter().any(|n| n == "Settings") {
+                Ok(names.len())
+            } else {
+                Err(format!(
+                    "Native NSAccessibility did not expose navigation controls: {names:?}"
+                ))
+            }
         }
-        // The renderer reported a failure after the outstanding request.
-        assert!(capture.request_after_surface(1));
-        assert!(!capture.request_after_surface(1));
-        assert_eq!(capture.attempts, 2);
-    }
-
-    #[test]
-    fn repeated_surface_failure_does_not_create_unbounded_captures() {
-        let mut capture = Capture::default();
-        for failure in 0..u64::from(MAX_CAPTURE_ATTEMPTS) {
-            assert!(capture.request_after_surface(failure));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window;
+            Err("Native accessibility probe currently requires macOS".into())
         }
-        for failure in u64::from(MAX_CAPTURE_ATTEMPTS)..1000 {
-            assert!(!capture.request_after_surface(failure));
-        }
-        assert_eq!(capture.attempts, MAX_CAPTURE_ATTEMPTS);
-    }
+    })
+    .map(Message::NativeAccessibility)
 }

@@ -33,7 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Linux graphics and launcher validation
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libxkbcommon-x11-dev lsof desktop-file-utils
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libegl1-mesa-dev libvulkan1 mesa-vulkan-drivers fonts-noto-cjk dbus-x11 libxkbcommon-x11-0 libxkbcommon-x11-dev lsof desktop-file-utils
       - name: Build native executables and record their actual directory
         shell: bash
         run: |
@@ -53,10 +53,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           desktop-file-validate artifacts/desktop/agentdocker-desktop/share/applications/agentdocker.desktop
-          xvfb-run -a -s '-screen 0 1280x800x24' python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/desktop-smoke
+          xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/desktop-smoke
       - name: Mac native window and fixture discovery
         if: runner.os == 'macOS'
         run: python3 scripts/desktop_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/desktop-smoke
+      - name: Linux Iced actions, terminal rendering and project restoration
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- python3 scripts/iced_workflow_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/iced-workflows
+      - name: Mac Iced actions, native accessibility and project restoration
+        if: runner.os == 'macOS'
+        run: python3 scripts/iced_workflow_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/iced-workflows
       - name: Disposable installation, activation and rollback
         run: python3 scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/desktop-install-smoke
       - name: Real terminal input, resize, detach, replay and natural exit
@@ -89,6 +95,7 @@ jobs:
             artifacts/desktop/*.sha256
             artifacts/desktop/manifest.json
             artifacts/desktop-smoke
+            artifacts/iced-workflows
             artifacts/desktop-install-smoke
             artifacts/terminal-smoke
             artifacts/identity-smoke

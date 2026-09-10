@@ -2,7 +2,7 @@
 
 agentdocker is a native desktop application for discovering and orchestrating AI agents on a user's computer. Opening the app should show the agents already working, their projects, supported actions, shared context and coordination state. Docker and Podman inspired the lifecycle and organization model; they are optional execution adapters, not required infrastructure.
 
-The target platforms are macOS, Linux and Windows. The selected GUI is Rust with egui/eframe, communicating with the local daemon through operating-system IPC. The current transport is a Unix socket. A browser, localhost HTTP server, container engine or cloud account is not required for native use. Windows needs its own transport, process, terminal, service, path and packaging adapters; a portable GUI toolkit alone does not supply those.
+The target platforms are macOS, Linux and Windows. The desktop uses Rust with Iced and a software renderer; the [Iced design and migration](ICED-DESIGN.md) describe its project model, workflows, and validation. The app communicates with the local daemon through operating-system IPC. The current transport is a Unix socket. A browser, localhost HTTP server, container engine or cloud account is not required for native use. Windows needs its own transport, process, terminal, service, path and packaging adapters; a portable GUI toolkit alone does not supply those.
 
 The display name is **agentdocker**. macOS application bundles retain their underlying `.app` format; Finder preferences control extension display. Packaging suffixes are not product names. Packaging must not mutate the signed bundle to force an extension-display preference.
 

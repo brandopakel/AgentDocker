@@ -31,6 +31,8 @@ jobs:
           cache-on-failure: true
       - name: Native core and host lint
         run: cargo clippy --locked -p agentdocker-core -p agentdocker-host --all-targets -- -D warnings
+      - name: Iced desktop and native accessibility compile
+        run: cargo clippy --locked -p agentdocker-ui --bin agentdocker-ui -- -D warnings
       - name: Install strict test runner
         run: cargo install --locked cargo-nextest --version 0.9.143
       - name: Native core and host acceptance
