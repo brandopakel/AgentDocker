@@ -25,13 +25,14 @@ brew install agentdocker
 
 Verified by installing it and running both binaries.
 
-Every tagged release attempts to push the generated formula to
-`Formula/agentdocker.rb` on its own. If the token is ever revoked the
-release job warns and carries on — the formula and the cask are attached
-to the run either way and can be copied across by hand, because a
-missing distribution channel is not a reason to fail a build, and
-`publish` needs that job to finish before it can upload the release
-assets.
+Every protected tagged release generates and validates the formula/cask,
+publishes the download assets, then attempts to push the formula to
+`Formula/agentdocker.rb` and the cask to `Casks/agentdocker-app.rb`. The tap job
+depends on successful asset publication, preventing an upload failure from
+advancing the tap to unavailable downloads. If the tap token is revoked the
+job warns; the formula and cask remain attached to the run for manual recovery.
+This ordering is implemented; the next tagged release must verify publication
+end to end.
 
 Replacing the token, when it expires: make a *fine-grained* personal
 access token at

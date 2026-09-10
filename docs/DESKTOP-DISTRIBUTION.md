@@ -105,4 +105,31 @@ Public signing requirements and daemon replacement boundaries still apply.
 
 ## Remaining delivery requirements
 
-The current installer handles verified local packages and explicit activation/rollback. A download/update feed, automatic update scheduling, Homebrew cask, Linux distribution packages, and Windows support remain. They also do not retroactively update the existing public v0.1.0 release. Guided setup with preview/undo/health and safe daemon upgrade boundaries are tracked in [NATIVE-DELIVERY.md](NATIVE-DELIVERY.md). New distribution artifacts must pass their checks and review before publication.
+The current installer handles verified local packages and explicit activation/rollback.
+`packaging/desktop/feed.py` generates download metadata from the package manifests
+and the actual archive bytes:
+
+```sh
+python3 packaging/desktop/feed.py artifacts/desktop/manifest.json \
+  --preview --output artifacts/updates-preview.json
+```
+
+Multiple manifests must have the same source, version and daemon schema, with
+one entry per target. The generator checks archive hashes, sizes and download
+budgets. Public feeds require clean source and notarized Developer ID packages
+for macOS. A preview feed cannot establish public signing or download availability.
+Generation does not publish the feed, fetch updates or schedule checks. The feed
+records the intended policy: at most one daily check, manual download, explicit
+activation and deferred daemon replacement until sessions finish. The consumer
+and scheduler still need implementation and acceptance.
+
+Native desktop CI now includes Linux x86-64/ARM64 and macOS ARM64/Intel runners,
+each building and graphically exercising its packaged binaries. Adding the jobs
+does not establish a passing run or target-distribution acceptance.
+
+Public feed hosting, Homebrew cask publication, Linux distribution packages and
+Windows support remain. These changes do not update the existing public v0.1.0
+release. Guided setup and daemon upgrade boundaries are tracked in
+[NATIVE-DELIVERY.md](NATIVE-DELIVERY.md). New artifacts must pass their checks and
+review before publication. Homebrew publication now follows successful release
+asset upload, so a failed upload cannot advance the tap to missing downloads.

@@ -21,8 +21,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,6 +53,7 @@ jobs:
             package_args+=(--dmg)
           fi
           python3 packaging/desktop/package.py "${package_args[@]}"
+          python3 packaging/desktop/feed.py artifacts/desktop/manifest.json --preview --output "artifacts/desktop/updates-preview-${NATIVE_TARGET}.json"
       - name: Linux native window and fixture discovery
         if: runner.os == 'Linux'
         run: |
@@ -94,6 +99,7 @@ jobs:
             artifacts/desktop/*.tar.gz
             artifacts/desktop/*.sha256
             artifacts/desktop/manifest.json
+            artifacts/desktop/updates-preview-*.json
             artifacts/desktop-smoke
             artifacts/iced-workflows
             artifacts/desktop-install-smoke

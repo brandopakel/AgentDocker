@@ -98,6 +98,34 @@ jobs:
             agentdocker.rb
             agentdocker-app.rb
           if-no-files-found: error
+  publish:
+    needs: [build, formula]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Publish verified artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+  tap:
+    name: Publish Homebrew after release assets
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: formula
+          path: .
       # A formula nobody can reach installs nothing. This pushes it to
       # the tap when one exists and a token for it is configured, and
       # says so plainly when they are not, rather than failing a release
@@ -121,8 +149,8 @@ jobs:
           # channel that is down, not a release that failed — and an
           # empty token was the only way that was allowed to be true. A
           # revoked one made `git` exit non-zero, failed this job, and
-          # took `publish` with it, so a stale secret stopped the release
-          # assets from being uploaded at all. The formula and the cask
+          # took release publication with it. This job now runs only after
+          # the download assets have been published. The formula and the cask
           # are attached to this run either way.
           # The token reaches git through a helper that reads it from
           # the environment, so it is in neither the process arguments
@@ -158,22 +186,3 @@ jobs:
             echo "have Contents: read and write? The formula and cask are attached to this run."
             exit 0
           fi
-  publish:
-    needs: [build, formula]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          merge-multiple: true
-          path: dist
-      - name: Publish verified artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
-          fi
-          gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
