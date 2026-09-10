@@ -1189,15 +1189,31 @@ impl App {
         }
         let (_, direct) = by_room(&self.inbox);
         if !direct.is_empty() {
-            let recent = direct.len().saturating_sub(30);
             list = list
                 .push(eyebrow("Messages addressed to you", c))
                 .push(panel(
-                    self.transcript(direct.iter().skip(recent).copied(), c),
+                    self.transcript(self.recent_window(&direct, 30).into_iter(), c),
                     c,
                 ));
         }
         list.into()
+    }
+
+    /// The last `keep` messages, plus the one a notification pointed at when
+    /// it is older than that, so the anchor it scrolls to exists.
+    fn recent_window<'a>(
+        &self,
+        messages: &[&'a agentdocker_core::Envelope],
+        keep: usize,
+    ) -> Vec<&'a agentdocker_core::Envelope> {
+        let start = messages.len().saturating_sub(keep);
+        let mut window: Vec<_> = messages[start..].to_vec();
+        if let Some(wanted) = &self.shell.notification_message
+            && let Some(older) = messages[..start].iter().find(|m| m.id == *wanted)
+        {
+            window.insert(0, older);
+        }
+        window
     }
 
     /// Messages as a transcript: when, who, what — one line each, the way
@@ -1301,8 +1317,8 @@ impl App {
             }
             match messages.get(&id) {
                 Some(queued) if !queued.is_empty() => {
-                    let recent = queued.len().saturating_sub(20);
-                    body = body.push(self.transcript(queued.iter().skip(recent).copied(), c));
+                    body =
+                        body.push(self.transcript(self.recent_window(queued, 20).into_iter(), c));
                 }
                 _ => body = body.push(note("No messages to show in this channel yet.", c)),
             }
