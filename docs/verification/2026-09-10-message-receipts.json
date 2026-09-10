@@ -1,0 +1,116 @@
+{
+  "date": "2026-09-10",
+  "checkpoint": {
+    "format": 1,
+    "source_commit": "f81df24ddc20909e294e509c896a93350225a04d",
+    "source_tree": "2495f812f4d17912a690c32019bd3df58f4f5cae",
+    "source_input_sha256": "23886f3f84c342c5a839db8c20a74c189e8f86777dc8282c02ba5e2467aa8703",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 10,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "e4e6c793da4cfb0720ab5d85715267b0c9d3800c0df51ff384878765fe0cefcc",
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker-ui": "c6eeff747dfba14f319ff7dfcf724c8613c20827ee7c2e498b0da40d31f83b64"
+    }
+  },
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests": 704,
+    "rust_skipped": 6,
+    "python_checks": 48,
+    "format": true,
+    "strict_clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "private_log_sha256": "8f77633c17f99d81d90e4a8a5c00e04cef3e665f131319ec43a042bb3110492e"
+  },
+  "actual_mcp_transport": {
+    "result": "passed",
+    "scope": "Exercise real MCP stdio receipt boundaries using isolated daemon state.\n\nThis is transport acceptance, not an actual model or provider idle-wake trial.\n",
+    "steps": [
+      "wait/read results retained IDs across MCP process death and reconnect",
+      "selective repeated receipt preserved newer arrivals and refused a foreign-agent argument",
+      "broken MCP output retained messages for explicit receipt after reconnect",
+      "CLI acknowledgement retained a later arrival and refused simultaneous drain"
+    ],
+    "binary_sha256": {
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker": "e4e6c793da4cfb0720ab5d85715267b0c9d3800c0df51ff384878765fe0cefcc"
+    },
+    "driver_sha256": {
+      "mcp_receipt_smoke.py": "4915e078f1bf507a3c36e9b1329fa9ad8928daa9436bedf4470073fa06bf732f",
+      "message_queue_smoke.py": "027bc674d4eda06cf1aeb7a45c12ca7a4d63562c5529a8d18698d4d64e829125",
+      "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 0.650070167001104
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 110,
+    "checks": [
+      "explicit_dismissal_preserves_newer_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "duration_seconds": 47.45089333299984,
+    "binary_sha256": {
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker": "e4e6c793da4cfb0720ab5d85715267b0c9d3800c0df51ff384878765fe0cefcc",
+      "agentdocker-ui": "c6eeff747dfba14f319ff7dfcf724c8613c20827ee7c2e498b0da40d31f83b64"
+    }
+  },
+  "notification_navigation": {
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker-ui": "c6eeff747dfba14f319ff7dfcf724c8613c20827ee7c2e498b0da40d31f83b64"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "existing_window_steps": 21,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 10.10470445899773
+  },
+  "limits": [
+    "MCP transport fixtures do not establish actual-provider receipt or idle wake.",
+    "The default read is now non-destructive; explicit drain=true and legacy lifecycle hooks retain their documented semantics.",
+    "Desktop dismissal acknowledges only the selected human-inbox message after a click; pending questions and drafts remain.",
+    "No installed daemon, launcher or live user provider was replaced.",
+    "Native notification permission/signing and actual Notification Center clicks remain open."
+  ]
+}

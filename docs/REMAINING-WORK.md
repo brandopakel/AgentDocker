@@ -153,3 +153,5 @@ the UI has its own new binary and workflow evidence. Notification click routing
 and provider idle wake remain open requirements.
 
 The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clean source `a9b54b5` and matching immutable binaries: 701 Rust tests, 48 Python checks, five actual queue scenarios, seven restart/upgrade checks, 105 native workflow steps and 23 notification-navigation steps passed. Provider input acceptance/idle wake and physical Notification Center clicks remain distinct open gates.
+
+The [receipt follow-up](verification/2026-09-10-message-receipts.json) pins `f81df24`: MCP reads retain messages by default, agents explicitly acknowledge received IDs, and the desktop can dismiss one received message without disturbing later arrivals or drafts. Validation passed 704 Rust tests, 48 Python checks, real MCP interruption/receipt scenarios, 110 native workflow steps and 23 notification-navigation steps. Provider idle-wake integration remains open.
