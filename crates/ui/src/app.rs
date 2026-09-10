@@ -35,6 +35,8 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
 const CONSOLE_BYTES: usize = 256 * 1024;
 const MESSAGE_CAPACITY: usize = 64;
+const SENT_CHANNEL_LIMIT: usize = 128;
+const SENT_CHANNEL_BYTES: usize = 256 * 1024;
 const CONSOLE_HISTORY_COMMANDS: usize = 100;
 const CONSOLE_HISTORY_BYTES: usize = 64 * 1024;
 /// How long a console command may run. Long enough for anything that
@@ -116,7 +118,7 @@ enum Msg {
     Desktop(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
-    ChannelSent(String, Result<(), String>),
+    ChannelSent(String, Result<MessageId, String>),
 }
 
 pub struct App {
@@ -165,6 +167,9 @@ pub struct App {
     /// shows.
     channels: Vec<agentdocker_core::Channel>,
     inbox: Vec<agentdocker_core::Envelope>,
+    /// Confirmed sends from this window. Inbox polling must not erase them.
+    /// Receipt times are local; this bounded cache is not durable channel history.
+    sent_channels: std::collections::VecDeque<agentdocker_core::Envelope>,
     connected: Result<(), String>,
     /// The highest event sequence taken, so a reconnect's replay is not
     /// shown or acted on twice. Live-only events carry `0` and always pass.
@@ -261,6 +266,7 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -310,6 +316,7 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -539,15 +546,37 @@ impl App {
                     }
                 }
                 Msg::ChannelSent(id, result) => {
-                    let success = result.is_ok();
-                    self.shell
-                        .channel_drafts
-                        .entry(id)
-                        .or_default()
-                        .complete(result);
-                    if success {
-                        self.send(Cmd::Inbox);
-                        self.say("Message sent");
+                    let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
+                    match result {
+                        Ok(message) => {
+                            let sent = draft.sending.clone();
+                            draft.complete(Ok(()));
+                            if let Some(sent) = sent {
+                                let mut receipt = agentdocker_core::Envelope::new(
+                                    agentdocker_core::HUMAN,
+                                    agentdocker_core::Destination::Channel(id.into()),
+                                    "message",
+                                    serde_json::Value::String(sent),
+                                    None,
+                                    Utc::now(),
+                                );
+                                receipt.id = message;
+                                self.sent_channels.push_back(receipt);
+                                while self.sent_channels.len() > SENT_CHANNEL_LIMIT
+                                    || self
+                                        .sent_channels
+                                        .iter()
+                                        .map(|item| item.payload.as_str().map_or(0, str::len))
+                                        .sum::<usize>()
+                                        > SENT_CHANNEL_BYTES
+                                {
+                                    self.sent_channels.pop_front();
+                                }
+                            }
+                            self.send(Cmd::Inbox);
+                            self.say("Message sent");
+                        }
+                        Err(error) => draft.complete(Err(error)),
                     }
                 }
             }
@@ -780,23 +809,31 @@ fn launched_in() -> Option<std::path::PathBuf> {
 /// say it two different ways.
 /// The inbox split into rooms and everything else.
 ///
-/// A channel message carries the room it was sent to in its payload, so
-/// the conversation can be put back under the room it happened in.
-/// Anything without one was sent to this person directly and belongs on
-/// its own, not silently filed under whichever room sorts first.
+/// Route by the envelope's destination, including ordinary string payloads.
+/// A payload field cannot move a message to a different room. Prefer the
+/// inbox's authoritative envelope when it overlaps a local send receipt.
 type Grouped<'a> = (
     BTreeMap<String, Vec<&'a agentdocker_core::Envelope>>,
     Vec<&'a agentdocker_core::Envelope>,
 );
 
-fn by_room(inbox: &[agentdocker_core::Envelope]) -> Grouped<'_> {
+fn by_room<'a>(inbox: impl IntoIterator<Item = &'a agentdocker_core::Envelope>) -> Grouped<'a> {
     let mut said: BTreeMap<String, Vec<&agentdocker_core::Envelope>> = BTreeMap::new();
     let mut direct = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for message in inbox {
-        match message.payload["channel"].as_str() {
-            Some(room) => said.entry(room.to_owned()).or_default().push(message),
-            None => direct.push(message),
+        if !seen.insert(&message.id) {
+            continue;
         }
+        match &message.to {
+            agentdocker_core::Destination::Channel(room) => {
+                said.entry(room.to_string()).or_default().push(message)
+            }
+            _ => direct.push(message),
+        }
+    }
+    for messages in said.values_mut() {
+        messages.sort_by_key(|message| (message.sent_at, &message.id));
     }
     (said, direct)
 }
@@ -1116,14 +1153,18 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
         },
         Cmd::ChannelSend(channel, text) => {
-            client.call(&Request::Send {
+            let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),
                 to: format!("channel:{channel}"),
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
             })?;
-            Some(Msg::ChannelSent(channel, Ok(())))
+            let result = match response {
+                Response::Sent { message, .. } => Ok(message),
+                _ => Err("Unexpected message response".into()),
+            };
+            Some(Msg::ChannelSent(channel, result))
         }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
@@ -1312,20 +1353,20 @@ mod tests {
 
         let inbox: Vec<agentdocker_core::Envelope> = serde_json::from_value(serde_json::json!([
             {"id": "m1", "from": "a", "to": {"kind": "channel", "value": "room-one"},
-             "kind": "chat", "payload": {"channel": "room-one", "text": "first"},
+             "kind": "chat", "payload": "first",
              "sent_at": "2026-09-08T03:00:00Z"},
             {"id": "m2", "from": "b", "to": {"kind": "channel", "value": "room-two"},
-             "kind": "chat", "payload": {"channel": "room-two", "text": "elsewhere"},
+             "kind": "chat", "payload": {"channel": "wrong-room", "text": "elsewhere"},
              "sent_at": "2026-09-08T03:01:00Z"},
             {"id": "m3", "from": "a", "to": {"kind": "channel", "value": "room-one"},
              "kind": "chat", "payload": {"channel": "room-one", "text": "second"},
              "sent_at": "2026-09-08T03:02:00Z"},
             {"id": "m4", "from": "b", "to": {"kind": "agent", "value": "user"},
-             "kind": "chat", "payload": {"text": "just to you"},
+             "kind": "chat", "payload": {"channel": "room-one", "text": "just to you"},
              "sent_at": "2026-09-08T03:03:00Z"}
         ]))
         .unwrap();
-        let (said, direct) = by_room(&inbox);
+        let (said, direct) = by_room(inbox.iter().chain(std::iter::once(&inbox[0])));
         assert_eq!(said["room-one"].len(), 2, "kept together and in order");
         assert_eq!(said["room-one"][0].id.as_str(), "m1");
         assert_eq!(said["room-two"].len(), 1);
@@ -1333,6 +1374,54 @@ mod tests {
         // happens to sort first.
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].id.as_str(), "m4");
+    }
+
+    #[test]
+    fn confirmed_channel_messages_survive_refresh_and_failures_never_look_sent() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let draft = app.shell.channel_drafts.entry("room".into()).or_default();
+        draft.text = "keep my draft".into();
+        draft.begin();
+        messages
+            .send(Msg::ChannelSent("room".into(), Err("offline".into())))
+            .unwrap();
+        app.drain();
+        assert!(app.sent_channels.is_empty());
+        assert_eq!(app.shell.channel_drafts["room"].text, "keep my draft");
+        for index in 0..SENT_CHANNEL_LIMIT + 1 {
+            let draft = app.shell.channel_drafts.get_mut("room").unwrap();
+            draft.text = "x".repeat(8192);
+            draft.begin();
+            messages
+                .send(Msg::ChannelSent(
+                    "room".into(),
+                    Ok(MessageId::from(format!("sent-{index}"))),
+                ))
+                .unwrap();
+            app.drain();
+        }
+        let retained = app.sent_channels.len();
+        assert!(retained > 0 && retained <= SENT_CHANNEL_LIMIT);
+        assert!(
+            app.sent_channels
+                .iter()
+                .map(|item| item.payload.as_str().unwrap().len())
+                .sum::<usize>()
+                <= SENT_CHANNEL_BYTES
+        );
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        app.drain();
+        assert_eq!(
+            app.sent_channels.len(),
+            retained,
+            "an inbox refresh erased confirmed sends"
+        );
+        assert_eq!(
+            app.sent_channels.back().unwrap().id.as_str(),
+            format!("sent-{SENT_CHANNEL_LIMIT}")
+        );
     }
 
     #[test]

@@ -108,7 +108,11 @@ separate. Legacy duplicate registry reconciliation remains engineering work.
   an agent consumed it or resumed work.
 - Each channel has its own draft and pending send. A late acknowledgement clears
   only the text it sent. Channels show membership, reviews, resolution and queued
-  human messages; reading never drains the queue or invents a complete transcript.
+  human messages, plus confirmed sends from this window. Reading never drains
+  the queue. The sent-message cache retains at most 128 entries and 256 KiB of
+  text; it survives navigation and polling but not window closure. The view
+  labels its partial history. Messages follow their envelope destination and
+  duplicate IDs appear once; payload fields cannot move them to another room.
 - Launch uses an installed supported CLI, explicit arguments, the selected folder
   and a managed PTY. It does not restart on window launch. Stop requires a second
   explicit activation within five seconds; detaching leaves the agent running.

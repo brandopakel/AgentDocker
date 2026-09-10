@@ -916,11 +916,15 @@ mod tests {
         );
         app.shell.channel_drafts.get_mut("one").unwrap().begin();
         messages
-            .send(Msg::ChannelSent("one".into(), Ok(())))
+            .send(Msg::ChannelSent(
+                "one".into(),
+                Ok(MessageId::from("confirmed".to_owned())),
+            ))
             .unwrap();
         app.drain();
         assert!(app.shell.channel_drafts["one"].text.is_empty());
         assert_eq!(app.shell.channel_drafts["two"].text, "other room");
+        assert_eq!(app.sent_channels.back().unwrap().payload, "next thought");
     }
     #[test]
     fn commands_capture_project_context_and_a_late_reply_does_not_navigate() {

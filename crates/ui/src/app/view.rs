@@ -1158,8 +1158,12 @@ impl App {
 
     fn channels_view(&self, c: Colors) -> Element<'_, Message> {
         let selected = self.shell.catalog.selected().map(|e| e.project.id());
-        let (messages, _) = by_room(&self.inbox);
-        let mut list = column![note("Queued messages for you · partial history", c)].spacing(14);
+        let (messages, _) = by_room(self.inbox.iter().chain(&self.sent_channels));
+        let mut list = column![note(
+            "Messages for you and sends from this window · partial history",
+            c
+        )]
+        .spacing(14);
         let mut count = 0;
         for channel in self
             .channels
@@ -1213,7 +1217,7 @@ impl App {
                     let recent = queued.len().saturating_sub(20);
                     body = body.push(self.transcript(queued.iter().skip(recent).copied(), c));
                 }
-                _ => body = body.push(note("No messages queued for you in this channel.", c)),
+                _ => body = body.push(note("No messages to show in this channel yet.", c)),
             }
             body = body.push(action(
                 format!("reply-channel-{id}"),
