@@ -68,6 +68,7 @@ launcher or the daemon hosting existing sessions.
 | Priority | Work | Completion condition | Supporting documents |
 | --- | --- | --- | --- |
 | Top priority | Unified user/agent input queue and idle wake | Audit and implement peer messages through the same provider input workflow as user submissions. Wake idle agents without another prompt/hook; preserve busy-queue order, attribution, backpressure, retries and restart continuity, with truthful delivery receipts. Actual Claude/Codex idle and mixed-input trials must pass. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
+| High priority | Notification clicks open blank Script Editor | Trace the actual installed notification sender and fallback, retain stable destination IDs, and implement native click activation/navigation into the correct project, agent, message or question. Test existing windows, cold launch, drafts, expired targets and preview/signed builds. Signing alone does not implement routing. | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | Next | Legacy duplicate registry reconciliation | Provide a reviewed migration for proven duplicate identities, preserving inboxes, leases, channel membership, history and routing. Reject ambiguous provider sessions, process births and physical checkouts. Hiding history is not this migration. | [Activity and messaging](ACTIVITY-AND-MESSAGING.md), [delivery checkpoints](DELIVERY-PLAN.md), [identity acceptance](INTEGRATION-ACCEPTANCE.md) |
 | Partial implementation | Codex incoming-message delivery | Prompt/tool/Stop context delivery and acknowledgement after output are implemented. A fresh Codex 0.153.4 trial passed all three boundaries with correlated replies and one identity. This does not satisfy the required shared submitted-input queue or idle wake; those, additional provider versions and sustained conversations remain open. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [activity and messaging](ACTIVITY-AND-MESSAGING.md), [integration acceptance](INTEGRATION-ACCEPTANCE.md) |
 | Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
@@ -134,3 +135,11 @@ Codex delivery, crash recovery and distinct-source installation/rollback. Its Ma
 preview is 24.8 MiB installed and 10.6 MiB zipped. The report separately pins the
 immutable 30-minute sustained-use checkpoint and the fresh diagnostic benchmark;
 neither proves idle-agent wake or completes the remaining engineering table.
+
+The [button-interaction follow-up](verification/2026-09-10-button-interaction.json)
+records code checkpoint `5772736`: 687 Rust tests (six skipped), 48 Python checks,
+the full standard gate and 105 fresh packaged native workflow steps. Primary
+labels retain the tested contrast during hover and press in both themes. The
+packaged CLI/daemon hashes match the preceding delivery/crash-recovery trial;
+the UI has its own new binary and workflow evidence. Notification click routing
+and provider idle wake remain open requirements.

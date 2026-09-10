@@ -23,6 +23,19 @@ event do not complete this requirement, and an inbox acknowledgement does not
 prove provider acceptance. The audit document defines the required artifacts and
 negative-path acceptance cases.
 
+### Notification clicks open Script Editor (September 10)
+
+The user reports that notification clicks repeatedly open a blank Script Editor
+window. Add the [notification routing audit](NOTIFICATION-ROUTING-AUDIT.md) as a
+high-priority usability defect alongside submitted-input parity. Trace the
+installed sender and native-post failure, replace or constrain the AppleScript
+fallback, carry stable destination IDs, and implement native activation/navigation
+for existing windows and cold launch. Acceptance requires actual notification
+clicks to reach the correct project, agent, message or question while preserving
+drafts. Verify preview and signed builds separately; developer-program payment
+does not implement the missing click handler. Keep signing/notarization and
+provider idle wake as distinct gates, and suppress unintended fixture notices.
+
 ### Active-session defects and coordination trial (September 7, evening)
 
 The user's live desktop trial now includes Codex and two Claude Code sessions
