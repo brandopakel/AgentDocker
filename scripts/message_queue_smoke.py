@@ -101,22 +101,22 @@ def run(args):
                 ack(receiver, legacy)
                 report["steps"].append("schema 9 crash/upgrade retained an over-limit inbox and resumed after acknowledgement")
 
-            accepted = [send("user", receiver, {"ordinal": 0})["message"]]
+            accepted_ids = [send("user", receiver, {"ordinal": 0})["message"]]
             stream, reader = subscribe(receiver)
             first = json.loads(reader.readline())
-            assert first["message"]["id"] == accepted[0]
+            assert first["message"]["id"] == accepted_ids[0]
             for ordinal, sender in enumerate([peer, "user", peer, "user"], 1):
-                accepted.append(send(sender, receiver, {"ordinal": ordinal})["message"])
+                accepted_ids.append(send(sender, receiver, {"ordinal": ordinal})["message"])
             streamed = [json.loads(reader.readline())["message"] for _ in range(4)]
-            assert [item["id"] for item in streamed] == accepted[1:]
+            assert [item["id"] for item in streamed] == accepted_ids[1:]
             queued = inbox(receiver)
-            assert [item["id"] for item in queued] == accepted
+            assert [item["id"] for item in queued] == accepted_ids
             assert [item["from"] for item in queued] == ["user", peer, "user", peer, "user"]
             reader.close()
             stream.close()
-            accepted.append(send(peer, receiver, {"ordinal": 5})["message"])
+            accepted_ids.append(send(peer, receiver, {"ordinal": 5})["message"])
             stream, reader = subscribe(receiver)
-            assert [json.loads(reader.readline())["message"]["id"] for _ in accepted] == accepted
+            assert [json.loads(reader.readline())["message"]["id"] for _ in accepted_ids] == accepted_ids
             reader.close()
             stream.close()
             report["steps"].append("human/peer arrivals retained order during streaming and replayed after disconnect")
@@ -125,7 +125,7 @@ def run(args):
             daemon.wait(timeout=10)
             daemon = start(current)
             queued = inbox(receiver)
-            assert [item["id"] for item in queued] == accepted
+            assert [item["id"] for item in queued] == accepted_ids
             ack(receiver, queued[:2])
             ack(receiver, queued[:2])
             assert inbox(receiver) == queued[2:]

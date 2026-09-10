@@ -3536,6 +3536,23 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        // Repeated or fabricated IDs do not establish a new receipt. Retain
+        // inbox order and record only the accepted work this call removes.
+        let wanted: HashSet<&MessageId> = messages.iter().collect();
+        let mut acknowledged = HashSet::new();
+        let messages: Vec<MessageId> = self
+            .inboxes
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                wanted.contains(&message.id) && acknowledged.insert(message.id.clone())
+            })
+            .map(|message| message.id.clone())
+            .collect();
+        if messages.is_empty() {
+            return Response::Ok;
+        }
         let mut event = Event::new(
             EventKind::InboxAcknowledged {
                 agent: id.clone(),
@@ -3545,7 +3562,7 @@ impl State {
         );
         event.seq = self.next_seq;
         self.persist("inbox acknowledgement", |store| {
-            store.ack_inbox(&id, messages, &event)
+            store.ack_inbox(&id, &messages, &event)
         });
         if let Some(error) = self.storage_failure() {
             return error;
@@ -4364,7 +4381,7 @@ impl State {
                 "too many questions are already waiting for an answer",
             );
         }
-        let recipients: Vec<AgentId> = match &envelope.to {
+        let mut recipients: Vec<AgentId> = match &envelope.to {
             Destination::Agent(id) => vec![id.clone()],
             Destination::Broadcast => self
                 .registry
@@ -4386,6 +4403,10 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
+        // New channel membership is unique already; legacy records may not be.
+        // A recipient must consume one slot and one durable row per message.
+        recipients.sort();
+        recipients.dedup();
         let bytes = message_bytes(&envelope);
         if let Some(full) = recipients.iter().find(|id| {
             self.inboxes
@@ -8865,6 +8886,90 @@ deny = ["send:all"]
     }
 
     #[tokio::test]
+    async fn legacy_duplicate_channel_members_receive_one_durable_message() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("Agentfile.toml"), "").unwrap();
+        let daemon = open(&dir);
+        register_in(&daemon, "sender", &project).await;
+        let receiver = register_in(&daemon, "receiver", &project).await;
+        let Response::Channel { mut channel } = daemon
+            .handle(Request::ChannelOpen {
+                agent: "sender".into(),
+                task: "legacy membership".into(),
+                members: vec!["receiver".into()],
+            })
+            .await
+        else {
+            panic!("channel failed")
+        };
+        inbox(&daemon, "receiver", true).await;
+        channel.members.push(receiver.id.clone());
+        lock(&daemon.state)
+            .store
+            .put_document("channel", channel.id.as_str(), &channel)
+            .unwrap();
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            send(&daemon, "sender", &format!("channel:{}", channel.id)).await,
+            Response::Sent { .. }
+        ));
+        let queued = inbox(&daemon, "receiver", false).await;
+        assert_eq!(queued.len(), 1);
+        let state = lock(&daemon.state);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.inbox_bytes[&receiver.id], message_bytes(&queued[0]));
+    }
+
+    #[tokio::test]
+    async fn inbox_receipts_name_only_real_unacknowledged_ids_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        let bogus = MessageId::from("never-sent".to_owned());
+        let mut events = daemon.subscribe_events();
+        let next_seq = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: vec![bogus.clone()],
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+        let ids = vec![bogus, accepted[0].id.clone(), accepted[0].id.clone()];
+        for _ in 0..2 {
+            assert!(matches!(
+                daemon
+                    .handle(Request::AckInbox {
+                        agent: "receiver".into(),
+                        messages: ids.clone(),
+                    })
+                    .await,
+                Response::Ok
+            ));
+        }
+        let event = events.try_recv().unwrap();
+        assert!(
+            matches!(event.kind, EventKind::InboxAcknowledged { agent, messages }
+            if agent == receiver.id && messages == vec![accepted[0].id.clone()])
+        );
+        assert!(events.try_recv().is_err());
+        assert_eq!(lock(&daemon.state).next_seq, next_seq + 1);
+        assert!(inbox(&daemon, "receiver", false).await.is_empty());
+    }
+
+    #[tokio::test]
     async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
@@ -10660,6 +10765,77 @@ deny = ["send:all"]
             Response::Agent { agent } => agent.status,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn removing_a_watched_worktree_keeps_real_deletions_without_false_conflicts() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let worktree = dir.path().join("temporary-checkout");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["worktree", "add", "--detach", worktree.to_str().unwrap()]
+        ));
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        let watcher = tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(50),
+        ));
+        let home = register_in(&daemon, "home", &repo).await;
+        daemon.refresh_project_checkouts().await;
+        daemon.ensure_watched(&home).await.unwrap();
+        // Reconcile also covers discovered checkouts without registered agents.
+        assert!(
+            daemon
+                .watch_targets()
+                .iter()
+                .any(|target| target.dir == project::canonical(&worktree))
+        );
+        std::fs::remove_dir_all(&worktree).unwrap();
+        std::fs::remove_file(repo.join("src/a.rs")).unwrap();
+        eventually(async || {
+            let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
+            entries
+                .iter()
+                .any(|entry| entry.kind == ChangeKind::Removed)
+                .then_some(())
+        })
+        .await;
+        eventually(async || daemon.recent_events(200).iter().any(|event| {
+            matches!(&event.kind, EventKind::WatcherGap { reason } if reason.contains("removed or became unavailable"))
+        }).then_some(())).await;
+        // Drain callbacks already queued by the OS before checking absence.
+        let flush = lock(&daemon.watcher_flush).clone().unwrap();
+        let (ack, done) = oneshot::channel();
+        flush.send(ack).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), done)
+            .await
+            .unwrap()
+            .unwrap();
+        let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
+        assert!(
+            entries.iter().all(|entry| entry.worktree.is_none()),
+            "{entries:?}"
+        );
+        assert!(
+            !daemon
+                .recent_events(200)
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ChannelOpened { .. }))
+        );
+        watcher.abort();
+        let _ = watcher.await;
     }
 
     #[tokio::test]

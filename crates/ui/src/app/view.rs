@@ -1233,7 +1233,13 @@ impl App {
                 .id(format!("notification-question-{id}")),
             );
         }
-        let (_, direct) = by_room(&self.inbox);
+        let (_, mut direct) = by_room(&self.inbox);
+        direct.retain(|message| {
+            !self
+                .questions
+                .iter()
+                .any(|question| question.id == message.id)
+        });
         if !direct.is_empty() {
             list = list
                 .push(eyebrow("Messages addressed to you", c))
@@ -1298,7 +1304,35 @@ impl App {
         messages: impl Iterator<Item = &'a agentdocker_core::Envelope>,
         c: Colors,
     ) -> Element<'a, Message> {
+        let messages: Vec<_> = messages.collect();
+        let dismissible: Vec<_> = messages
+            .iter()
+            .filter(|message| {
+                self.inbox.iter().any(|item| item.id == message.id)
+                    && !self
+                        .questions
+                        .iter()
+                        .any(|question| question.id == message.id)
+            })
+            .map(|message| message.id.clone())
+            .collect();
         let mut lines = column![].spacing(0);
+        if dismissible.len() > 1 {
+            let enabled = self.connected.is_ok()
+                && dismissible.iter().all(|id| !self.dismissing.contains(id));
+            lines = lines.push(
+                row![
+                    Space::new().width(Fill),
+                    action(
+                        format!("dismiss-shown-{}", dismissible[0]),
+                        "Dismiss shown",
+                        enabled.then_some(Message::DismissInbox(dismissible)),
+                        false,
+                    )
+                ]
+                .padding([4, 10]),
+            );
+        }
         let mut first = true;
         for message in messages {
             if !first {
@@ -1327,7 +1361,7 @@ impl App {
                     format!("dismiss-message-{}", message.id),
                     if busy { "Dismissing…" } else { "Dismiss" },
                     (!busy && self.connected.is_ok())
-                        .then_some(Message::DismissInbox(message.id.clone())),
+                        .then_some(Message::DismissInbox(vec![message.id.clone()])),
                     false,
                 ));
             }

@@ -215,7 +215,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `changes {project, since_seq?, path?, agent?, limit?}` | `changes {changes: Change[]}` | the ledger, newest `limit` entries oldest first; `since_seq` is exclusive (`seq > since_seq`); `limit` defaults to 50 and is clamped to 1–10,000; empty, `.` and absolute checkout-root paths select all paths |
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `reload` | `unavailable` error | currently refuses replacement without changing the daemon or agents; safe live transfer remains unfinished |
-| `send {from, to, kind, payload, reply_to?}` | `sent` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all` |
+| `send {from, to, kind, payload, reply_to?}` | `sent` or `error(backpressure)` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | replays unacknowledged inbox messages, then streams live; neither step consumes the inbox |
 | `inbox {agent, drain?}` | `messages` | snapshot; only explicit `drain: true` acknowledges its message IDs |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
@@ -244,7 +244,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 
 Any agent reference (`agent`, `from`, `to`) accepts a full id, a unique id prefix, or a name. Names resolve to the live agent with that name, or failing that to the most recently created finished one (so `logs` works after exit).
 
-Errors: `{"type":"error","code":"conflict|deadlock|not_found|ambiguous|name_taken|forbidden|invalid|storage_unavailable|engine_unavailable|build_failed|unavailable|timeout|internal","message":"...","details":{...}?}`.
+Errors: `{"type":"error","code":"conflict|deadlock|not_found|ambiguous|name_taken|forbidden|invalid|backpressure|storage_unavailable|engine_unavailable|build_failed|unavailable|timeout|internal","message":"...","details":{...}?}`.
 
 Lease admission and renewal commit the holder's liveness, lease row and ordered replay event atomically. Conflict replies commit their liveness and initial conflict event together. Planning does not mutate the live lease table; memory and publication advance only after commit. Release deletion, journal and replay commit before memory protection is removed. Storage failure freezes coordination and retains its prior protection; a failed liveness write does not make an agent appear more recently active in memory.
 
@@ -274,13 +274,13 @@ Five destinations:
 - **Project** — every live agent in a project except the sender. `project:<selector>` takes an id (any unique prefix) or an absolute path inside the project; the CLI and MCP server turn a bare `project` into the caller's current directory, so `send --to project` needs no ids at all.
 - **Topic** — a `/`-separated path like `repo/backend/reviews`. Subscribers give MQTT-style patterns: `+` matches one level, `#` matches the rest.
 - **Broadcast** — every live agent except the sender.
-- **Channel** — members of a named channel except the sender, with inbox fallback when a member has no live subscription.
+- **Channel** — members of a named channel except the sender, with durable inbox retention even while subscribed.
 
 **Delivery.** For agent, project, channel and broadcast destinations, the daemon durably queues the message for every addressed recipient before publishing it to matching live streams. Opening a subscription replays unacknowledged messages without removing them; stream setup and publication share the state lock. Reconnecting may repeat an unacknowledged message ID, so consumers must deduplicate and explicitly acknowledge processed IDs. Topic messages remain live-only because their subscriptions have no durable recipient membership.
 
 Each addressed inbox admits at most 1,000 messages and 4 MiB of serialized envelopes. If any recipient lacks room, the entire send returns `backpressure`: no recipient, sender activity or message event changes, and no previously accepted message is discarded. Acknowledgement frees count and byte capacity. The byte total is rebuilt from retained envelopes on restart. Topic traffic has no durable inbox guarantee.
 
-Explicit `ack_inbox` and destructive inbox reads commit removal of exact message IDs and one `InboxAcknowledged` event in the same SQLite transaction before changing memory. Failed removal/event persistence returns `storage_unavailable` and retains queued messages. That event records server-side queue removal; it does not prove the provider consumed the message.
+Explicit `ack_inbox` and destructive inbox reads commit removal of exact message IDs and one `InboxAcknowledged` event in the same SQLite transaction before changing memory. Failed removal/event persistence returns `storage_unavailable` and retains queued messages. Unknown or already acknowledged IDs are a no-op and emit no receipt event; repeated IDs name each removed message once. That event records server-side queue removal; it does not prove the provider consumed the message.
 
 The live bus reports `lagged {skipped}` when a slow subscriber falls more than 1,024 messages behind. Addressed messages remain recoverable through a non-draining inbox read or a new subscription; topic traffic cannot be replayed. `watch` displays messages without consuming them. The CLI exposes selective acknowledgement as `inbox --as <agent> --ack <id>...`, mutually exclusive with `--drain`. `inbox --drain` is an explicit destructive operation and can still lose delivery if its response connection breaks. Consumers requiring recovery must use non-draining reads and `ack_inbox` only after processing. Event streams exit on lag with an error directing the caller to recover retained history.
 
@@ -762,4 +762,4 @@ What exists is described above; the contracts and hardening decisions behind it 
 
 Configuration references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Codex state locations and CODEX_HOME](https://learn.chatgpt.com/docs/config-file/config-advanced), [Claude Desktop local MCP configuration](https://py.sdk.modelcontextprotocol.io/get-started/real-host/). Setup respects an explicit CODEX_HOME for the calling host; inventory uses the daemon's configuration environment. Model and provider details are not inferred from an installed app or process name.
 
-The desktop exposes **Dismiss** on received messages. It acknowledges one exact human-inbox ID only after a click, disables duplicate submissions while waiting, retains the message on failure, and removes it after successful acknowledgement. Pending questions retain their answer action; dismissal does not submit or erase drafts. Inbox refreshes remain non-destructive.
+The desktop exposes **Dismiss** on received messages. It acknowledges exact human-inbox IDs only after a click, disables duplicate submissions while waiting, retains messages on failure, and removes them after successful acknowledgement. **Dismiss shown** batches only the received messages in the current transcript window; older unseen messages and new arrivals remain. Pending questions appear once and retain their answer action; dismissal does not submit or erase drafts. Inbox refreshes remain non-destructive.

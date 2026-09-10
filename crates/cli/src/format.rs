@@ -113,8 +113,9 @@ pub fn message_line(message: &Envelope) -> String {
         .map(|id| format!(" re:{id}"))
         .unwrap_or_default();
     format!(
-        "{}  {from} → {}  [{}{reply}]  {}",
+        "{}  {}  {from} → {}  [{}{reply}]  {}",
         clock(message.sent_at),
+        message.id,
         message.to,
         message.kind,
         payload_text(&message.payload)

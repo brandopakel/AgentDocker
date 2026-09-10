@@ -122,7 +122,7 @@ pub enum Message {
     CatalogSaved(u64, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
-    DismissInbox(MessageId),
+    DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -481,14 +481,19 @@ impl App {
                     self.send(Cmd::Answer(id, answer));
                 }
             }
-            Message::DismissInbox(id) => {
-                if self.connected.is_ok()
-                    && !self.dismissing.contains(&id)
-                    && self.inbox.iter().any(|message| message.id == id)
-                    && !self.questions.iter().any(|question| question.id == id)
-                {
-                    self.dismissing.insert(id.clone());
-                    self.send(Cmd::DismissMessage(id));
+            Message::DismissInbox(mut ids) => {
+                if self.connected.is_ok() && ids.len() <= 1000 {
+                    ids.retain(|id| {
+                        !self.dismissing.contains(id)
+                            && self.inbox.iter().any(|message| &message.id == id)
+                            && !self.questions.iter().any(|question| &question.id == id)
+                    });
+                    ids.sort();
+                    ids.dedup();
+                    if !ids.is_empty() {
+                        self.dismissing.extend(ids.iter().cloned());
+                        self.send(Cmd::DismissMessages(ids));
+                    }
                 }
             }
             Message::AdoptAll => {

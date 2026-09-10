@@ -4,6 +4,7 @@ AgentDocker runs native agents directly on the user's computer. Docker and Podma
 
 - [Current remaining engineering and manual release steps](REMAINING-WORK.md)
 - [Getting started, adapters and working sets](../README.md)
+- [Build and install the current desktop locally](LOCAL-BUILD.md)
 - [Using AgentDocker: the app, the console, every command, tutorials](GUIDE.md)
 - [The desktop app, screen by screen: what every control does and what it will not claim](DESKTOP-UX.md)
 - [Setting up distribution: the Homebrew tap, and what a Developer ID is actually for](DISTRIBUTION-SETUP.md)

@@ -85,7 +85,7 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
-    DismissMessage(MessageId),
+    DismissMessages(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -112,7 +112,7 @@ enum Msg {
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
     Answered(MessageId, Result<(), String>),
-    MessageDismissed(MessageId, Result<(), String>),
+    MessagesDismissed(Vec<MessageId>, Result<(), String>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
@@ -359,8 +359,8 @@ impl App {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                 }
-                Cmd::DismissMessage(id) => {
-                    self.dismissing.remove(&id);
+                Cmd::DismissMessages(ids) => {
+                    self.dismissing.retain(|id| !ids.contains(id));
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -424,15 +424,20 @@ impl App {
                     }
                 }
                 Msg::Inbox(inbox) => self.inbox = inbox,
-                Msg::MessageDismissed(id, result) => {
-                    self.dismissing.remove(&id);
+                Msg::MessagesDismissed(ids, result) => {
+                    self.dismissing.retain(|id| !ids.contains(id));
                     match result {
                         Ok(()) => {
-                            self.inbox.retain(|message| message.id != id);
-                            if self.shell.notification_message.as_ref() == Some(&id) {
+                            self.inbox.retain(|message| !ids.contains(&message.id));
+                            if self
+                                .shell
+                                .notification_message
+                                .as_ref()
+                                .is_some_and(|id| ids.contains(id))
+                            {
                                 self.shell.notification_message = None;
                             }
-                            self.say("Message dismissed");
+                            self.say("Messages dismissed");
                         }
                         Err(reason) => self.say(reason),
                     }
@@ -967,7 +972,7 @@ fn spawn_worker(
                     };
                     let launch = matches!(&daemon, Cmd::Launch(_));
                     let dismissal = match &daemon {
-                        Cmd::DismissMessage(id) => Some(id.clone()),
+                        Cmd::DismissMessages(id) => Some(id.clone()),
                         _ => None,
                     };
                     let channel = match &daemon {
@@ -985,7 +990,7 @@ fn spawn_worker(
                         Err(err) => {
                             if let Some(id) = dismissal
                                 && tx
-                                    .send(Msg::MessageDismissed(id, Err(format!("{err:#}"))))
+                                    .send(Msg::MessagesDismissed(id, Err(format!("{err:#}"))))
                                     .is_err()
                             {
                                 break;
@@ -1136,12 +1141,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             })?;
             Some(Msg::Answered(message, Ok(())))
         }
-        Cmd::DismissMessage(message) => {
+        Cmd::DismissMessages(message) => {
             client.call(&Request::AckInbox {
                 agent: agentdocker_core::HUMAN.to_owned(),
-                messages: vec![message.clone()],
+                messages: message.clone(),
             })?;
-            Some(Msg::MessageDismissed(message, Ok(())))
+            Some(Msg::MessagesDismissed(message, Ok(())))
         }
         Cmd::Adopt(pid) => Some(
             match client
@@ -1560,19 +1565,19 @@ mod tests {
         let question = MessageId::from("pending-question".to_owned());
         app.answers
             .insert(question.clone(), "unfinished answer".into());
-        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
-        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
         assert_eq!(
             requests
                 .try_iter()
-                .filter(|command| matches!(command, Cmd::DismissMessage(_)))
+                .filter(|command| matches!(command, Cmd::DismissMessages(_)))
                 .count(),
             1
         );
         assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
         messages
-            .send(Msg::MessageDismissed(
-                first.id.clone(),
+            .send(Msg::MessagesDismissed(
+                vec![first.id.clone()],
                 Err("inbox retained".into()),
             ))
             .unwrap();
@@ -1580,15 +1585,80 @@ mod tests {
         assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
         assert!(!app.dismissing.contains(&first.id));
         assert_eq!(app.status, "inbox retained");
-        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
         app.inbox.push(second.clone());
         messages
-            .send(Msg::MessageDismissed(first.id.clone(), Ok(())))
+            .send(Msg::MessagesDismissed(vec![first.id.clone()], Ok(())))
             .unwrap();
         app.drain();
         assert_eq!(app.inbox, [second]);
         assert_eq!(app.answers[&question], "unfinished answer");
         assert!(!app.dismissing.contains(&first.id));
+    }
+
+    #[test]
+    fn bulk_dismissal_is_one_receipt_and_excludes_questions_and_unshown_messages() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let received: Vec<_> = (0..5)
+            .map(|index| {
+                agentdocker_core::Envelope::new(
+                    "peer",
+                    agentdocker_core::Destination::Agent("user".into()),
+                    "chat",
+                    serde_json::json!(index),
+                    None,
+                    Utc::now(),
+                )
+            })
+            .collect();
+        app.inbox = received[..4].to_vec();
+        let question = received[3].id.clone();
+        app.questions.push(Question {
+            id: question.clone(),
+            from: "peer".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Keep this question".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(1),
+        });
+        app.answers
+            .insert(question.clone(), "unfinished answer".into());
+        let _ = app.update(shell::Message::DismissInbox(vec![
+            received[1].id.clone(),
+            received[2].id.clone(),
+            received[1].id.clone(),
+            question.clone(),
+            MessageId::from("unknown".to_owned()),
+        ]));
+        let receipts: Vec<_> = requests
+            .try_iter()
+            .filter_map(|command| match command {
+                Cmd::DismissMessages(ids) => Some(ids),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(receipts.len(), 1);
+        let ids = &receipts[0];
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&received[1].id) && ids.contains(&received[2].id));
+        assert_eq!(app.inbox.len(), 4, "wait for the durable receipt");
+        app.inbox.push(received[4].clone());
+        messages
+            .send(Msg::MessagesDismissed(ids.clone(), Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.inbox,
+            [
+                received[0].clone(),
+                received[3].clone(),
+                received[4].clone()
+            ]
+        );
+        assert_eq!(app.answers[&question], "unfinished answer");
+        assert!(app.dismissing.is_empty());
     }
 
     #[test]
@@ -1607,8 +1677,10 @@ mod tests {
         assert!(!app.sending.contains(&id));
         assert!(app.status.contains("queue is full"));
         app.dismissing.insert(id.clone());
-        app.send(Cmd::DismissMessage(id.clone()));
-        assert!(!app.dismissing.contains(&id));
+        let second = MessageId::from("second-message".to_owned());
+        app.dismissing.insert(second.clone());
+        app.send(Cmd::DismissMessages(vec![id.clone(), second]));
+        assert!(app.dismissing.is_empty());
         assert!(app.status.contains("queue is full"));
         app.setup_busy = true;
         app.send(Cmd::Setup(vec!["--health".into()]));

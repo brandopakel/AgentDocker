@@ -136,6 +136,11 @@ def run(args):
             report["steps"].append("broken MCP output retained messages for explicit receipt after reconnect")
 
             first, later = send("CLI receipt"), send("keep after CLI receipt")
+            displayed = subprocess.run([str(output / "agentdocker"), "inbox", "--as", receiver],
+                                       cwd=root, env=env, check=True, capture_output=True,
+                                       text=True, timeout=5).stdout
+            assert first in displayed and later in displayed, "plain inbox output omitted acknowledgement IDs"
+            assert queued() == [first, later], "displaying IDs consumed messages"
             subprocess.run([str(output / "agentdocker"), "inbox", "--as", receiver, "--ack", first],
                            cwd=root, env=env, check=True, capture_output=True, timeout=5)
             assert queued() == [later]
@@ -143,7 +148,7 @@ def run(args):
                                        "--ack", later, "--drain"], cwd=root, env=env,
                                       capture_output=True, timeout=5)
             assert rejected.returncode != 0 and queued() == [later]
-            report["steps"].append("CLI acknowledgement retained a later arrival and refused simultaneous drain")
+            report["steps"].append("plain CLI inbox exposed receipt IDs without consuming; selective acknowledgement retained a later arrival and refused simultaneous drain")
             rpc(endpoint, {"op": "shutdown"})
             assert daemon.wait(timeout=5) == 0
             assert all(digest(output / name) == value for name, value in hashes.items())

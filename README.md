@@ -351,7 +351,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 **Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. The journal hands a newcomer what happened while it was away. Generic adopted processes are not automatically observed.
 
-**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Addressed messages remain in each recipient's inbox until acknowledged, including messages shown by `watch`. MCP reads retain messages by default; the agent calls `acknowledge_messages` with IDs it received. CLI users can run `inbox --as <agent> --ack <id>...`; the desktop has a Dismiss action for received messages. A full inbox rejects the whole send without discarding earlier messages. Polling and streaming consumers can recover unacknowledged messages after reconnecting; topic traffic is live-only. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Addressed messages remain in each recipient's inbox until acknowledged, including messages shown by `watch`. MCP reads retain messages by default; the agent calls `acknowledge_messages` with IDs it received. CLI users can run `inbox --as <agent> --ack <id>...`; the desktop has Dismiss and Dismiss shown actions for received messages, preserving unseen messages and unanswered questions. A full inbox rejects the whole send without discarding earlier messages. Polling and streaming consumers can recover unacknowledged messages after reconnecting; topic traffic is live-only. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 
@@ -395,6 +395,10 @@ The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker'
 - **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
 
 ## Development
+
+Use `make install` to build and install the current desktop locally. The
+[local build guide](docs/LOCAL-BUILD.md) covers installation previews, old
+hand-copied launchers, rollback and switching after active sessions finish.
 
 ```sh
 bash scripts/verify.sh check     # the PR gate: fmt, clippy, nextest, doctests, installer tests, packaging, release build
