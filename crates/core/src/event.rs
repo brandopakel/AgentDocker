@@ -25,6 +25,16 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    /// A question's answer route is durable until answered or expired.
+    QuestionOpened {
+        question: MessageId,
+        expires_at: DateTime<Utc>,
+    },
+    /// No answer means the question expired. The original inbox message remains.
+    QuestionClosed {
+        question: MessageId,
+        answer: Option<MessageId>,
+    },
     AgentActivityReported {
         agent: AgentId,
         observation: crate::ActivityObservation,

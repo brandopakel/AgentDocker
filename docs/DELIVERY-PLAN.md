@@ -556,3 +556,16 @@ A trickling writer cannot renew its deadline; invalid input fails open with a
 diagnostic. Packaged Mac/Linux CI tests held-open and oversized input for both
 adapters without a provider or daemon. Corrected-source verification remains
 required. This is an input phase bound, not a total bound across all hook phases.
+
+
+### September 10: pending-question restart recovery
+
+Pending questions now persist their answer route with the original message.
+The inbox fanout, sender activity and question open/close events share one
+SQLite transaction; failed writes publish no partial inbox, live message or
+notification. A disconnected requester can read its answer after restart, and
+concurrent replies close a pending question once. Expired routes are removed
+durably without withdrawing old inbox messages. Schema 9 prevents an older
+daemon from silently ignoring these routes. Restart, duplicate-answer, expiry
+and injected storage-failure regressions cover this change. Live child/PTY/log
+ownership transfer remains unfinished; `daemon reload` stays unavailable.

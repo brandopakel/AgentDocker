@@ -458,6 +458,16 @@ pub fn event_line(event: &Event) -> String {
             format!("agent exited     {} {status}", agent.short())
         }
         EventKind::AgentRemoved { agent } => format!("agent removed    {}", agent.short()),
+        EventKind::QuestionOpened {
+            question,
+            expires_at,
+        } => {
+            format!("question opened  {question} until {expires_at}")
+        }
+        EventKind::QuestionClosed { question, answer } => match answer {
+            Some(answer) => format!("question answered {question} by message {answer}"),
+            None => format!("question expired {question}"),
+        },
         EventKind::MessageSent {
             message,
             from,

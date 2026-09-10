@@ -24,11 +24,10 @@ use agentdocker_host::notify::{self, Notification};
 /// Enough outstanding questions that a busy fleet is never refused, few
 /// enough that a client looping on `ask` cannot grow the daemon without
 /// bound. Expired questions are dropped before this is consulted, and a
-/// new question is refused rather than an old one evicted: every entry
-/// here has a caller blocked on it, and dropping one would leave that
-/// caller waiting out its whole timeout for an answer that can no longer
-/// be delivered.
-const MAX_QUESTIONS: usize = 512;
+/// new question is refused rather than an old one evicted: entries may
+/// have a caller blocked on them or reconnecting after a restart. Dropping
+/// one would prevent its answer from finding the caller.
+pub(super) const MAX_QUESTIONS: usize = 512;
 
 /// One notification per sender per minute. A person being told something
 /// is told it once; the message itself is never dropped, only the
@@ -77,23 +76,51 @@ impl State {
             .unwrap_or_else(|| from.to_owned())
     }
 
-    /// Remember a question so its answer can find the asker. Refuses
-    /// rather than evicts when full, because every entry has somebody
-    /// blocked on it.
-    fn remember_question(&mut self, question: Question) -> bool {
-        let now = question.asked_at;
-        self.questions.retain(|_, q| !q.expired(now));
-        if self.questions.len() >= MAX_QUESTIONS {
-            return false;
+    pub(super) fn expire_questions(&mut self, now: DateTime<Utc>) {
+        let mut expired: Vec<_> = self
+            .questions
+            .values()
+            .filter(|question| question.expired(now))
+            .map(|question| question.id.clone())
+            .collect();
+        if expired.is_empty() || self.storage_error.is_some() {
+            return;
         }
-        self.questions.insert(question.id.clone(), question);
-        true
+        expired.sort();
+        let events: Vec<_> = expired
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let mut event = Event::new(
+                    EventKind::QuestionClosed {
+                        question: question.clone(),
+                        answer: None,
+                    },
+                    now,
+                );
+                event.seq = self.next_seq + index as u64;
+                event
+            })
+            .collect();
+        self.persist("question expiration", |store| {
+            store.close_questions(&expired, &events)
+        });
+        if self.storage_error.is_some() {
+            return;
+        }
+        for question in expired {
+            self.questions.remove(&question);
+        }
+        self.next_seq += events.len() as u64;
+        for event in events {
+            let _ = self.events.send(event);
+        }
     }
 
     /// The questions still waiting, newest first.
     fn open_questions(&mut self, agent: Option<&AgentId>) -> Vec<Question> {
         let now = Utc::now();
-        self.questions.retain(|_, q| !q.expired(now));
+        self.expire_questions(now);
         let mut questions: Vec<Question> = self
             .questions
             .values()
@@ -287,26 +314,16 @@ impl Daemon {
         let message = envelope.id.clone();
         let sent = {
             let mut state = lock(&self.state);
-            if !state.remember_question(Question {
+            let pending = Question {
                 id: message.clone(),
-                from,
+                from: from.clone(),
                 to,
                 text: question,
                 asked_at,
                 expires_at: asked_at
                     + Duration::from_std(timeout).unwrap_or_else(|_| Duration::zero()),
-            }) {
-                return Response::error(
-                    ErrorCode::Unavailable,
-                    "too many questions are already waiting for an answer",
-                );
-            }
-            let sent = state.publish(envelope);
-            if !matches!(sent, Response::Sent { .. }) {
-                // Nothing went out, so nothing is waiting.
-                state.questions.remove(&message);
-            }
-            sent
+            };
+            state.publish_question(envelope, Some(pending))
         };
         if !matches!(sent, Response::Sent { .. }) {
             return sent;
@@ -315,7 +332,8 @@ impl Daemon {
         let waited = tokio::time::timeout(timeout, async {
             loop {
                 match answers.recv().await {
-                    Ok(envelope) if envelope.reply_to.as_ref() == Some(&message) => {
+                    Ok(envelope) if envelope.reply_to.as_ref() == Some(&message)
+                        && matches!(&envelope.to, Destination::Agent(id) if id.as_str() == from) => {
                         return Some(envelope);
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -325,7 +343,7 @@ impl Daemon {
         })
         .await;
 
-        lock(&self.state).questions.remove(&message);
+        lock(&self.state).expire_questions(Utc::now());
         match waited {
             Ok(Some(answer)) => Response::Answer {
                 message: answer.id,
@@ -349,21 +367,47 @@ impl Daemon {
         message: MessageId,
         text: String,
     ) -> Response {
-        let question = lock(&self.state).questions.get(&message).cloned();
+        let question = lock(&self.state)
+            .questions
+            .get(&message)
+            .cloned()
+            .filter(|question| !question.expired(Utc::now()));
         let Some(question) = question else {
             return Response::error(
                 ErrorCode::NotFound,
                 format!("no question {message} is waiting for an answer"),
             );
         };
-        self.send(
-            from.unwrap_or_else(|| HUMAN.to_owned()),
-            &question.from,
+        let (from, to) = match self
+            .endpoints(from.unwrap_or_else(|| HUMAN.to_owned()), &question.from)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(response) => return *response,
+        };
+        let mut state = lock(&self.state);
+        state.expire_questions(Utc::now());
+        if let Some(error) = state.storage_failure() {
+            return error;
+        }
+        if !state.questions.contains_key(&message) {
+            return Response::error(ErrorCode::NotFound, "the question was answered or expired");
+        }
+        let sender = AgentId::from(from.as_str());
+        if state.registry.get(&sender).is_some() {
+            let action = format!("send:{to}");
+            let ruling = state.permits(&sender, &action);
+            if !ruling.is_allowed() {
+                return state.refuse(&sender, &action, ruling);
+            }
+        }
+        state.send(
+            from,
+            to,
             "answer".to_owned(),
             json!({ "text": text }),
             Some(message),
         )
-        .await
     }
 
     /// `questions`: what is waiting, for whoever wants to answer it.
@@ -405,6 +449,240 @@ mod tests {
         }
     }
 
+    fn remember(state: &mut State, question: Question) -> bool {
+        let mut envelope = Envelope::new(
+            question.from.clone(),
+            question.to.clone(),
+            "question",
+            json!({"text": question.text}),
+            None,
+            question.asked_at,
+        );
+        envelope.id = question.id.clone();
+        matches!(
+            state.publish_question(envelope, Some(question)),
+            Response::Sent { .. }
+        )
+    }
+
+    async fn register(daemon: &Arc<Daemon>, name: &str) -> AgentRecord {
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration failed")
+        };
+        agent
+    }
+
+    #[tokio::test]
+    async fn disconnected_questions_survive_restart_and_accept_exactly_one_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from: "asker".into(),
+                        to: "recipient".into(),
+                        question: "continue after restart?".into(),
+                        timeout_secs: 300,
+                    })
+                    .await
+            }
+        });
+        let pending = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(question) = lock(&daemon.state).questions.values().next().cloned() {
+                    break question;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        waiting.abort();
+        let _ = waiting.await;
+        drop(daemon);
+
+        let daemon = state(&dir);
+        assert_eq!(
+            lock(&daemon.state).open_questions(None),
+            vec![pending.clone()]
+        );
+        let request = || Request::Answer {
+            from: Some("recipient".into()),
+            message: pending.id.clone(),
+            text: "continue".into(),
+        };
+        let (first, second) = tokio::join!(daemon.handle(request()), daemon.handle(request()));
+        assert_eq!(
+            [&first, &second]
+                .iter()
+                .filter(|response| matches!(response, Response::Sent { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            [&first, &second]
+                .iter()
+                .filter(|response| matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::NotFound,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        drop(daemon);
+
+        let daemon = state(&dir);
+        let state = lock(&daemon.state);
+        assert!(state.questions.is_empty());
+        assert!(
+            state
+                .store
+                .documents::<Question>("question", None)
+                .unwrap()
+                .is_empty()
+        );
+        let replies = state.inboxes.get(&asker.id).unwrap();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].reply_to, Some(pending.id));
+        assert_eq!(replies[0].payload["text"], "continue");
+    }
+
+    #[tokio::test]
+    async fn failed_question_publication_leaves_no_inbox_route_or_live_event() {
+        for rejected in ["message_sent", "question_opened"] {
+            let dir = TempDir::new().unwrap();
+            let daemon = state(&dir);
+            let recipient = register(&daemon, "recipient").await;
+            let mut events = daemon.subscribe_events();
+            let mut messages = lock(&daemon.state).bus.subscribe();
+            let mut state = lock(&daemon.state);
+            let before = state.store.max_event_seq().unwrap();
+            state.store.reject_event_for_test(rejected);
+            let mut pending = question(300);
+            pending.to = Destination::Agent(recipient.id);
+            assert!(!remember(&mut state, pending));
+            assert!(state.storage_failure().is_some());
+            assert!(state.questions.is_empty());
+            assert!(state.inboxes.values().all(VecDeque::is_empty));
+            assert!(state.store.load_inboxes().unwrap().is_empty());
+            assert!(
+                state
+                    .store
+                    .documents::<Question>("question", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(state.store.max_event_seq().unwrap(), before);
+            assert!(events.try_recv().is_err());
+            assert!(messages.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_answer_preserves_route_and_does_not_queue_an_uncommitted_reply() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let mut pending = question(300);
+        pending.from = asker.id.to_string();
+        assert!(remember(&mut lock(&daemon.state), pending.clone()));
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("question_closed");
+        let response = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: pending.id.clone(),
+                text: "reply".into(),
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        drop(daemon);
+        let daemon = state(&dir);
+        let state = lock(&daemon.state);
+        assert!(state.questions.contains_key(&pending.id));
+        assert!(state.inboxes.get(&asker.id).is_none_or(VecDeque::is_empty));
+    }
+
+    #[test]
+    fn expiration_is_durable_and_storage_failure_does_not_forget_the_route() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let pending = question(300);
+        assert!(remember(&mut lock(&daemon.state), pending.clone()));
+        {
+            let mut state = lock(&daemon.state);
+            state.store.reject_event_for_test("question_closed");
+            state.expire_questions(pending.expires_at);
+            assert!(state.storage_failure().is_some());
+            assert!(state.questions.contains_key(&pending.id));
+            assert_eq!(
+                state.store.documents::<Question>("question", None).unwrap(),
+                vec![pending.clone()]
+            );
+        }
+        drop(daemon);
+        let daemon = state(&dir);
+        lock(&daemon.state).expire_questions(pending.expires_at);
+        assert!(lock(&daemon.state).questions.is_empty());
+        drop(daemon);
+        assert!(lock(&state(&dir).state).questions.is_empty());
+    }
+
+    #[test]
+    fn restart_expires_old_questions_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let pending = question(-1);
+        assert!(remember(&mut lock(&daemon.state), pending.clone()));
+        drop(daemon);
+        let daemon = state(&dir);
+        assert!(lock(&daemon.state).questions.is_empty());
+        let count = daemon
+            .recent_events(10)
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind,
+            EventKind::QuestionClosed { question, answer: None } if question == &pending.id)
+            })
+            .count();
+        assert_eq!(count, 1);
+        drop(daemon);
+        let daemon = state(&dir);
+        assert_eq!(
+            daemon
+                .recent_events(10)
+                .iter()
+                .filter(|event| matches!(&event.kind,
+            EventKind::QuestionClosed { question, answer: None } if question == &pending.id))
+                .count(),
+            1
+        );
+    }
+
     /// A full table refuses rather than evicts. Every entry has a caller
     /// blocked on it, and dropping one would leave that caller waiting
     /// out its whole timeout for an answer nobody can deliver.
@@ -414,10 +692,10 @@ mod tests {
         let daemon = state(&dir);
         let mut state = lock(&daemon.state);
         for _ in 0..MAX_QUESTIONS {
-            assert!(state.remember_question(question(300)));
+            assert!(remember(&mut state, question(300)));
         }
         let refused = question(300);
-        assert!(!state.remember_question(refused.clone()));
+        assert!(!remember(&mut state, refused.clone()));
         assert_eq!(state.questions.len(), MAX_QUESTIONS);
         assert!(!state.questions.contains_key(&refused.id));
     }
@@ -429,10 +707,10 @@ mod tests {
         let daemon = state(&dir);
         let mut state = lock(&daemon.state);
         for _ in 0..MAX_QUESTIONS {
-            assert!(state.remember_question(question(-1)));
+            assert!(remember(&mut state, question(-1)));
         }
         let fresh = question(300);
-        assert!(state.remember_question(fresh.clone()));
+        assert!(remember(&mut state, fresh.clone()));
         assert_eq!(state.questions.len(), 1);
         assert!(state.questions.contains_key(&fresh.id));
     }

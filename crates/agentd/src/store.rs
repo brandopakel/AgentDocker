@@ -17,9 +17,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-// v8 makes restore points durable launch intent (including Created records).
-// Older daemons must not reinterpret these records as failed initial launches.
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+// v9 retains pending question routes across restart. Older daemons would ignore
+// them and leave durable questions unanswerable or resurrect answered questions.
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -559,7 +559,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=7)) => {
+            Some(Ok(1..=8)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -718,9 +718,65 @@ impl Store {
 
     // ----- inboxes --------------------------------------------------------
 
-    /// Queue a message for an agent, keeping only the newest `capacity`.
+    /// Message routing, sender activity and question lifecycle are one durable
+    /// transition. Nothing may reach memory, live subscribers or notifications
+    /// before this commits, including a broadcast's partially written inboxes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_message(
+        &self,
+        message: &Envelope,
+        recipients: &[AgentId],
+        capacity: usize,
+        sender: Option<&AgentRecord>,
+        question: Option<&agentdocker_core::Question>,
+        closed: Option<&agentdocker_core::MessageId>,
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for recipient in recipients {
+            self.insert_inbox(recipient, message, capacity)?;
+        }
+        if let Some(sender) = sender {
+            self.upsert_agent(sender)?;
+        }
+        if let Some(question) = question {
+            self.put_document("question", question.id.as_str(), question)?;
+        }
+        if let Some(closed) = closed {
+            self.delete_document("question", closed.as_str())?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn close_questions(
+        &self,
+        questions: &[agentdocker_core::MessageId],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for question in questions {
+            self.delete_document("question", question.as_str())?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
+        self.insert_inbox(agent, message, capacity)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn insert_inbox(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
         self.conn.execute(
             "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
             params![
@@ -735,7 +791,6 @@ impl Store {
              )",
             params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
         )?;
-        tx.commit()?;
         Ok(())
     }
 
@@ -1448,8 +1503,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=7 {
+    fn legacy_schemas_upgrade_to_pending_question_guard() {
+        for version in 1..=8 {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1466,7 +1521,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "8");
+            assert_eq!(version, "9");
         }
     }
 

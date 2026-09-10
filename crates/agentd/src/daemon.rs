@@ -794,7 +794,9 @@ impl Daemon {
         Response::Agent { agent }
     }
     pub fn expire_leases(&self) {
-        lock(&self.state).expire_leases();
+        let mut state = lock(&self.state);
+        state.expire_leases();
+        state.expire_questions(Utc::now());
     }
     pub fn prune_events(&self) {
         lock(&self.state).prune_events();
@@ -946,6 +948,42 @@ impl Daemon {
             "state restored"
         );
 
+        let mut questions: HashMap<_, _> = store
+            .documents::<agentdocker_core::Question>("question", None)?
+            .into_iter()
+            .map(|question| (question.id.clone(), question))
+            .collect();
+        let mut expired: Vec<_> = questions
+            .values()
+            .filter(|question| question.expired(now))
+            .map(|question| question.id.clone())
+            .collect();
+        expired.sort();
+        let expiration_events: Vec<_> = expired
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let mut event = Event::new(
+                    EventKind::QuestionClosed {
+                        question: question.clone(),
+                        answer: None,
+                    },
+                    now,
+                );
+                event.seq = next_seq + index as u64;
+                event
+            })
+            .collect();
+        store.close_questions(&expired, &expiration_events)?;
+        next_seq += expiration_events.len() as u64;
+        for id in expired {
+            questions.remove(&id);
+        }
+        anyhow::ensure!(
+            questions.len() <= humans::MAX_QUESTIONS,
+            "too many stored pending questions"
+        );
+
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
         Ok(Self {
@@ -977,7 +1015,7 @@ impl Daemon {
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
-                questions: HashMap::new(),
+                questions,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -4280,6 +4318,27 @@ impl State {
     /// id before the message goes out — it has to record who is waiting
     /// on the answer before an answer can arrive — so it builds its own.
     fn publish(&mut self, envelope: Envelope) -> Response {
+        self.publish_question(envelope, None)
+    }
+
+    fn publish_question(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+    ) -> Response {
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        self.expire_questions(Utc::now());
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
+            return Response::error(
+                ErrorCode::Unavailable,
+                "too many questions are already waiting for an answer",
+            );
+        }
         let recipients: Vec<AgentId> = match &envelope.to {
             Destination::Agent(id) => vec![id.clone()],
             Destination::Broadcast => self
@@ -4302,49 +4361,91 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
-        // A person is not polling a socket, so a message that reaches one
-        // is worth an interruption. Queued or live, the notification is
-        // the same: it is the arrival that matters, not the route.
-        self.notify_humans(&envelope, &recipients);
         let offline: Vec<AgentId> = {
             let live = &self.live_subscribers;
             recipients
-                .into_iter()
-                .filter(|id| !live.contains_key(id))
+                .iter()
+                .filter(|id| !live.contains_key(*id))
+                .cloned()
                 .collect()
         };
-        if !offline.is_empty() {
-            {
-                let inboxes = &mut self.inboxes;
-                for id in &offline {
-                    let queue = inboxes.entry(id.clone()).or_default();
-                    if queue.len() >= INBOX_CAPACITY {
-                        queue.pop_front();
-                    }
-                    queue.push_back(envelope.clone());
-                }
-            }
-            self.persist("inbox", |store| {
-                for id in &offline {
-                    store.enqueue(id, &envelope, INBOX_CAPACITY)?;
-                }
-                Ok(())
+        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+            .map(|pending| pending.id.clone());
+        let sender = self
+            .registry
+            .get(&AgentId::from(envelope.from.as_str()))
+            .cloned()
+            .map(|mut record| {
+                record.last_seen = Utc::now();
+                record
             });
-        }
-
-        if let Some(error) = self.storage_failure() {
-            return error;
-        }
-        self.touch(&AgentId::from(envelope.from.as_str()));
-        self.emit(EventKind::MessageSent {
+        let mut kinds = vec![EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
             to: envelope.to.clone(),
             kind: envelope.kind.clone(),
+        }];
+        if let Some(question) = &question {
+            kinds.push(EventKind::QuestionOpened {
+                question: question.id.clone(),
+                expires_at: question.expires_at,
+            });
+        }
+        if let Some(closed) = &closed {
+            kinds.push(EventKind::QuestionClosed {
+                question: closed.clone(),
+                answer: Some(envelope.id.clone()),
+            });
+        }
+        let events: Vec<_> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let mut event = Event::new(kind, envelope.sent_at);
+                event.seq = self.next_seq + index as u64;
+                event
+            })
+            .collect();
+        self.persist("message", |store| {
+            store.publish_message(
+                &envelope,
+                &offline,
+                INBOX_CAPACITY,
+                sender.as_ref(),
+                question.as_ref(),
+                closed.as_ref(),
+                &events,
+            )
         });
         if let Some(error) = self.storage_failure() {
             return error;
         }
+        for id in &offline {
+            let queue = self.inboxes.entry(id.clone()).or_default();
+            if queue.len() >= INBOX_CAPACITY {
+                queue.pop_front();
+            }
+            queue.push_back(envelope.clone());
+        }
+        if let Some(sender) = sender {
+            let current = self
+                .registry
+                .get_mut(&sender.id)
+                .expect("sender retained under lock");
+            *current = sender;
+        }
+        if let Some(question) = question {
+            self.questions.insert(question.id.clone(), question);
+        }
+        if let Some(closed) = closed {
+            self.questions.remove(&closed);
+        }
+        self.next_seq += events.len() as u64;
+        for event in events {
+            let _ = self.events.send(event);
+        }
+        self.notify_humans(&envelope, &recipients);
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
         Response::Sent {
             message: envelope.id,
