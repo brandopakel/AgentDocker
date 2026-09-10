@@ -1,5 +1,13 @@
 # Bounded real-provider acceptance
 
+## Required input-queue and idle-wake acceptance
+
+The September 10 [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) adds actual
+idle wake, busy/mixed human-and-peer queue ordering, retries, backpressure and
+restart continuity to provider acceptance. A peer message must use the provider's
+normal submitted-input workflow. The lifecycle trials below do not prove idle
+wake or shared input-queue behavior, so they cannot close this requirement.
+
 ## Packaged identity lifecycle follow-up
 
 The [September 7 lifecycle report](verification/2026-09-07-identity-lifecycle.json)

@@ -1,5 +1,10 @@
 # Activity, messages and review
 
+The September 10 [input-queue and idle-wake audit](MESSAGE-DELIVERY-AUDIT.md)
+adds the requirement that peer messages use the same submitted-input workflow as
+user messages and wake an idle provider. That behavior is not implemented by the
+lifecycle hooks described below; incoming-message delivery remains incomplete.
+
 Discovery proves that a runtime process is present. Configuration does not prove
 that a running session has connected, read a message or begun a model turn.
 

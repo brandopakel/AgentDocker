@@ -1,6 +1,6 @@
 # Native delivery and verification plan
 
-Updated September 7, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
+Updated September 10, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
 
 
 For the September 9 desktop cleanup and a consolidated distinction between open
@@ -9,6 +9,19 @@ engineering, acceptance and manual release work, start with
 evidence; an old “pending” entry is not by itself a current implementation gap.
 
 ## Product and engineering requirements
+
+### Submitted-input parity and idle wake (September 10)
+
+The user requires peer messages to follow the same provider input workflow and
+queue as messages they submit themselves, including waking an idle agent. Make
+the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) a top-priority part of
+delivery step 4 and L09/L13. Trace every queue/notification/acknowledgement boundary,
+then implement supported per-provider input/wake adapters, busy and mixed-input
+ordering, backpressure, retry/deduplication and restart recovery. Verify with
+actual Claude/Codex idle conversations. Hooks that only run on another lifecycle
+event do not complete this requirement, and an inbox acknowledgement does not
+prove provider acceptance. The audit document defines the required artifacts and
+negative-path acceptance cases.
 
 ### Active-session defects and coordination trial (September 7, evening)
 
