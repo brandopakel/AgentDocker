@@ -1,11 +1,12 @@
 # Guided setup and connection checks
 
-Codex plans include MCP and a separate activity `hooks.json`, respecting
+Codex plans include MCP and a separate lifecycle `hooks.json`, respecting
 `CODEX_HOME`. Both files use the same private receipt and preflight rules.
 Existing hooks are preserved; review and trust new definitions in Codex `/hooks`.
-Activity hooks do not consume messages. See [activity and messaging](ACTIVITY-AND-MESSAGING.md).
+Hooks deliver queued messages at prompt/tool/Stop boundaries with acknowledgement
+after output. See [activity and messaging](ACTIVITY-AND-MESSAGING.md).
 
-In the native agentdocker window, open **Runtimes**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Saved setup plans**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
+In the native agentdocker window, open **Connections**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Saved setup plans**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
 
 The equivalent CLI flow is:
 
@@ -64,11 +65,14 @@ Provider configuration follows the installed CLI capabilities and the official [
 CLI inventory also checks standard installation directories when a native app inherits a minimal PATH. Connection checks continue to use the inspecting process's actual PATH; finding a CLI in an inventory fallback does not validate a bare MCP command. Selecting a runtime explicitly inspects only that target, so an unrelated malformed desktop launcher does not block its setup preview. Codex desktop and ChatGPT have independent inventory rows without a supported setup adapter; the Codex CLI configuration is not treated as their connection health.
 
 Codex hooks must belong to a configuration layer the running provider actually
-loads. A disposable `codex exec --ignore-user-config` trial accepted MCP
-configuration but invoked no hook callbacks, including when hook settings were
-passed as command-line overrides. A fresh private provider home loaded the
-same hook definitions. Keep configuration health unverified until an actual
-callback is observed; this is separate from a passing MCP message round trip.
+loads. An earlier trial with `--ignore-user-config` invoked no callbacks. The
+September 10 trial of 0.153.4 passed with inline `hooks.<event>` invocation
+overrides and invocation-only trust for vetted fixture hooks. This does not
+grant trust to installed user hooks. Keep configuration health unverified until
+an actual callback is observed; this is separate from a passing MCP round trip.
+For isolated trials, explicitly configure the MCP child's `AGENTDOCKER_HOME`,
+`AGENTDOCKER_SOCKET` and `AGENTDOCKER_NO_AUTOSTART`: Codex filters the inherited
+MCP environment. A provider's shell environment alone does not pin its MCP endpoint.
 The activity adapter resolves physical checkout aliases, so macOS `/tmp` and
 `/private/tmp` do not reject a report from the same directory. A different
 checkout remains a mismatch. Codex interrupt hooks use its documented maximum

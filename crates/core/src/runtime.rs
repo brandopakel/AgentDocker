@@ -22,7 +22,8 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
     ("SessionEnd", None),
 ];
 
-/// Activity observations only; Codex coordination remains on MCP.
+/// Activity observations plus prompt/tool/Stop inbox delivery. MCP also
+/// provides explicit reads and the remaining coordination tools.
 pub const CODEX_ACTIVITY_HOOKS: &[(&str, Option<&str>)] = &[
     ("UserPromptSubmit", None),
     ("PreToolUse", None),

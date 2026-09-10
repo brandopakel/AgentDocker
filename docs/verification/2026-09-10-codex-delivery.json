@@ -1,0 +1,59 @@
+{
+  "result": "passed",
+  "scope": "actual Codex lifecycle context, no inbox tools",
+  "driver_sha256": "b3b9ed269544ba10ea79f3f0eb1452c37cfabb4c02488fe9020b9efb59989ebd",
+  "binary_sha256": {
+    "agentdocker": "341bec8f57a6d2865618991c7ed945beca262d0eb10724b4905dc814975d8b38",
+    "agentd": "029cad1533c42ed2318c26be16f2e8e01f106fb6fb3892f576ab510203ac16ad"
+  },
+  "checks": [
+    {
+      "boundary": "PostToolUse",
+      "correlated_reply": true,
+      "acknowledged": true
+    },
+    {
+      "boundary": "Stop",
+      "correlated_reply": true,
+      "acknowledged": true
+    },
+    {
+      "boundary": "UserPromptSubmit",
+      "correlated_reply": true,
+      "acknowledged": true
+    }
+  ],
+  "provider_version": "codex-cli 0.153.4",
+  "identity_count": 1,
+  "duration_seconds": 25.723733791000086,
+  "provider_configuration_unchanged": true,
+  "owned_children_remaining": 0,
+  "recorded_at": "2026-09-10",
+  "base_commit": "476bc04",
+  "source_dirty": true,
+  "source_files_sha256": {
+    "crates/cli/src/hooks/codex.rs": "425fb2998b41c4d2f7ffae4cd264429e5bf879115e529d7c26f1d23f885f4a34",
+    "crates/cli/src/hooks.rs": "8206e6f3e78936140c2c9d92dfbdf405f6a0540285d6b4d7be415650f9b8cddc",
+    "crates/cli/src/setup/guided.rs": "22c1524d3d01b84ea911d1a6a8eb89b3fe15d43a79a2ceb76eb3f998689e3e8f",
+    "crates/core/src/runtime.rs": "c6ab73210d3c3e70d81aefbcbdf95afa0f9df29dd3b405deed0f3ce2f293742b"
+  },
+  "workspace_validation": {
+    "rust_tests_passed": 678,
+    "rust_tests_skipped": 6,
+    "python_tests_passed": 43,
+    "fmt": true,
+    "strict_clippy": true,
+    "cargo_package": true,
+    "release_build": true
+  },
+  "retained_failures": [
+    "Sandbox socket bind refused before provider launch.",
+    "First actual-provider trial: incorrect harness reply-tool approval setting.",
+    "Second actual-provider trial: missing MCP endpoint environment forwarding; two finished owned default-daemon fixture registrations removed."
+  ],
+  "limitations": [
+    "Actual provider trial uses debug binaries identified above.",
+    "Source does not activate the installed launcher or modify running providers.",
+    "Additional provider versions, restart and sustained actual-provider trials remain."
+  ]
+}

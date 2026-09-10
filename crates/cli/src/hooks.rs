@@ -56,7 +56,7 @@ pub struct HookArgs {
 pub enum HookCommand {
     /// Handle one Claude Code hook event, read as JSON from stdin.
     ClaudeCode(ClaudeCodeArgs),
-    /// Report Codex lifecycle activity from a hook event on stdin.
+    /// Report Codex activity and deliver queued messages at lifecycle boundaries.
     Codex,
     /// Write the hook configuration into a host's settings file.
     Install(InstallArgs),
@@ -128,14 +128,6 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
         HookCommand::Codex => {
             if let Err(error) = codex::run(&client).await {
                 eprintln!("agentdocker hook codex: {error:#}");
-            }
-            // A no-op JSON result is accepted by Stop as well as tool hooks.
-            if let Err(error) = write_output_before(
-                1,
-                b"{}\n",
-                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
-            ) {
-                eprintln!("agentdocker hook codex: output delivery failed: {error}");
             }
             Ok(())
         }
@@ -1127,7 +1119,7 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     .with_context(|| format!("cannot write {}", path.display()))?;
     if runtime == "codex" {
         eprintln!(
-            "Codex activity hooks require review and trust in /hooks; MCP remains the coordination adapter. Existing sessions may need to be resumed to load configuration."
+            "Codex hooks deliver queued messages and require review/trust in /hooks. MCP supplies coordination tools. Existing sessions may need to be resumed to load configuration."
         );
     }
     eprintln!(

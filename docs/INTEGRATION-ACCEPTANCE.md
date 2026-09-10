@@ -19,6 +19,34 @@ database or event state. The alias fixture stays entirely within its owned
 temporary directory. These later fixes need their own final CI; the historical
 package result alone does not certify them or migrate existing duplicates.
 
+## September 10 Codex lifecycle delivery
+
+The new adapter passed a bounded actual Codex CLI 0.153.4 trial at
+`UserPromptSubmit`, `PostToolUse` and `Stop`. Each boundary received a fresh queued
+nonce, the model replied with its exact `reply_to` ID and payload, the sender was
+the expected provider identity, and the inbox ID was acknowledged. Hooks and MCP
+retained one identity. Only the `send_message` MCP tool was exposed; no inbox
+tool was available. A repeated Stop completed without another continuation.
+
+The tracked [driver](../scripts/codex_delivery_smoke.py) uses a private daemon,
+inline invocation hooks and invocation-only approval of that fixture's reply
+tool. It checks the provider configuration, hooks and authentication file hashes
+before/after without copying or publishing their contents. The passing run took
+25.7 seconds and left those files unchanged. Owned children were stopped.
+
+Retained failures matter: the first execution was sandbox-blocked at socket bind;
+the first provider trial received context but used an incorrect reply approval
+setting. The second corrected approval but exposed Codex's filtered MCP child
+environment: MCP registered against the default daemon and could not find the
+private peer. Both owned, finished default-daemon test records were explicitly
+removed. The corrected driver pins all three AgentDocker endpoint variables in
+the MCP child configuration, and the third provider trial passed. User sessions
+were neither stopped nor upgraded. Raw provider/hook evidence stays private.
+
+The [Codex hook contract](https://learn.chatgpt.com/docs/hooks) defines the context
+and continuation behavior. These results establish the tested version and source
+binaries, not every provider version, an idle wake mechanism, or an overnight soak.
+
 ## Earlier real-provider trials
 
 Fresh provider sessions were tested on the development Apple Silicon Mac with a private daemon home/socket, disposable repository, new identities and a fixture peer. Existing sessions were neither adopted nor stopped. The harness checked that the user's Codex TOML and Claude Code settings hashes were unchanged. Provider authentication remained with each vendor CLI; no authentication files were copied into the fixture or repository.
