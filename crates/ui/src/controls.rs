@@ -251,7 +251,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
                     border: Border {
                         color: theme.palette().primary,
                         width: 2.0,
-                        radius: 7.0.into(),
+                        radius: 9.0.into(),
                     },
                     ..Default::default()
                 },
@@ -293,58 +293,183 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
     }
 }
 
+/// How a button asks to be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// The one thing to do on this screen: filled with the accent.
+    Primary,
+    /// An ordinary action: a quiet raised surface.
+    Secondary,
+    /// Rows and navigation: no surface until hovered or selected.
+    Quiet,
+    /// A section switch: an underline rather than a surface.
+    Tab,
+    /// An action with a cost that has already been armed once.
+    Danger,
+}
+
+fn button_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    kind: Kind,
+    selected: bool,
+) -> iced::widget::button::Style {
+    use crate::app::style::{Colors, alpha, mix};
+    use iced::widget::button::Status;
+    let c = Colors::of(theme);
+    let (mut background, mut text) = match (kind, selected) {
+        (Kind::Primary, _) => (Some(c.accent), iced::Color::WHITE),
+        (Kind::Danger, _) => (Some(alpha(c.red, if c.dark { 0.18 } else { 0.12 })), c.red),
+        (Kind::Tab, true) => (None, c.accent_ink),
+        (_, true) => (Some(c.accent_soft), c.accent_ink),
+        (Kind::Secondary, false) => (Some(c.raised), c.text),
+        (Kind::Quiet | Kind::Tab, false) => (None, c.text),
+    };
+    let lift = |amount: f32| match (kind, selected) {
+        (Kind::Primary, _) => mix(c.accent, iced::Color::WHITE, amount),
+        (Kind::Danger, _) => alpha(c.red, 0.18 + amount),
+        (Kind::Tab, _) => alpha(c.raised, 0.7 + amount),
+        (_, true) => mix(c.accent_soft, c.accent, amount * 0.6),
+        (Kind::Secondary, false) => mix(c.raised, c.text, amount * 0.5),
+        (Kind::Quiet, false) => c.raised,
+    };
+    match status {
+        Status::Active => {}
+        Status::Hovered => background = Some(lift(0.08)),
+        Status::Pressed => background = Some(lift(0.16)),
+        Status::Disabled => {
+            text = alpha(text, 0.45);
+            background = background.map(|b| alpha(b, 0.5));
+        }
+    }
+    iced::widget::button::Style {
+        background: background.map(Into::into),
+        text_color: text,
+        border: Border {
+            radius: 9.0.into(),
+            ..Default::default()
+        },
+        shadow: Default::default(),
+        snap: true,
+    }
+}
+
+/// A labelled action; `selected` marks the current choice among peers.
 pub fn button<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     message: Option<Message>,
     selected: bool,
 ) -> Element<'a, Message> {
-    sized_button(id, label, message, selected, false)
+    let label = label.into();
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(
+        id,
+        label,
+        content,
+        message,
+        selected,
+        Kind::Secondary,
+        [9, 13],
+    )
 }
+/// The one action a screen leads with.
+pub fn primary<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let label = label.into();
+    // Regular weight: the heavier faces of the system sans lack the
+    // ellipsis glyph and borrow it from a monospace fallback.
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(id, label, content, message, false, Kind::Primary, [9, 15])
+}
+/// An armed destructive action.
+pub fn danger<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(id, label, content, message, false, Kind::Danger, [9, 13])
+}
+/// A full-width quiet row: sidebar entries and list rows.
 pub fn block_button<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     message: Option<Message>,
     selected: bool,
 ) -> Element<'a, Message> {
-    sized_button(id, label, message, selected, true)
+    let label = label.into();
+    let content = iced::widget::text(label.clone())
+        .size(14)
+        .width(Length::Fill);
+    custom(id, label, content, message, selected, Kind::Quiet, [9, 12])
 }
-fn sized_button<'a>(
+/// A section switch drawn as an underline.
+pub fn tab<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     message: Option<Message>,
     selected: bool,
-    block: bool,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let content = iced::widget::column![
+        iced::widget::text(label.clone()).size(14).font(iced::Font {
+            weight: if selected {
+                iced::font::Weight::Semibold
+            } else {
+                iced::font::Weight::Normal
+            },
+            ..iced::Font::DEFAULT
+        }),
+        iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(2)).style(
+            move |theme: &iced::Theme| {
+                let c = crate::app::style::Colors::of(theme);
+                iced::widget::container::Style {
+                    background: Some(
+                        if selected {
+                            c.accent
+                        } else {
+                            iced::Color::TRANSPARENT
+                        }
+                        .into(),
+                    ),
+                    border: Border {
+                        radius: 1.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }
+        )
+    ]
+    .spacing(8);
+    custom(id, label, content, message, selected, Kind::Tab, [8, 6])
+}
+/// Any content as a keyboard-focusable, accessible button. `label` is what
+/// assistive technology reads; the content is what the eye does.
+pub fn custom<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    content: impl Into<Element<'a, Message>>,
+    message: Option<Message>,
+    selected: bool,
+    kind: Kind,
+    padding: [u16; 2],
 ) -> Element<'a, Message> {
     let (id, label) = (id.into(), label.into());
-    let content = iced::widget::button(iced::widget::text(label.clone()).size(14))
-        .padding([10, 12])
-        .width(if block { Length::Fill } else { Length::Shrink })
+    let content = iced::widget::button(content)
+        .padding(padding)
+        .width(if kind == Kind::Quiet {
+            Length::Fill
+        } else {
+            Length::Shrink
+        })
         .on_press_maybe(message.clone())
-        .style(move |theme, status| {
-            let mut style = iced::widget::button::subtle(theme, status);
-            if block && !selected && status == iced::widget::button::Status::Active {
-                style.background = None;
-            }
-            if selected {
-                let dark = theme.palette().background.r < 0.5;
-                style.background = Some(
-                    if dark {
-                        iced::color!(0x263a59)
-                    } else {
-                        iced::color!(0xe8effb)
-                    }
-                    .into(),
-                );
-                style.text_color = if dark {
-                    iced::color!(0xb8d0ff)
-                } else {
-                    iced::color!(0x1d4fa4)
-                };
-            }
-            style.border.radius = 7.0.into();
-            style
-        });
+        .style(move |theme, status| button_style(theme, status, kind, selected));
     Control {
         content: content.into(),
         semantic: Semantic::button(id, label, message),
@@ -374,7 +499,35 @@ pub fn input_enabled<'a>(
     let on_input = change.clone();
     let content = iced::widget::text_input(label, value)
         .id(widget::Id::from(id.clone()))
-        .padding(12)
+        .padding([11, 13])
+        .size(14)
+        .style(|theme, status| {
+            use crate::app::style::{Colors, alpha};
+            use iced::widget::text_input::Status;
+            let c = Colors::of(theme);
+            let (border, background) = match status {
+                Status::Focused { .. } => (c.accent, c.card),
+                Status::Hovered => (alpha(c.accent, 0.6), c.card),
+                Status::Active => (c.line, c.card),
+                Status::Disabled => (c.line, c.raised),
+            };
+            iced::widget::text_input::Style {
+                background: background.into(),
+                border: Border {
+                    color: border,
+                    width: 1.0,
+                    radius: 9.0.into(),
+                },
+                icon: c.muted,
+                placeholder: c.faint,
+                value: if matches!(status, Status::Disabled) {
+                    c.muted
+                } else {
+                    c.text
+                },
+                selection: alpha(c.accent, 0.35),
+            }
+        })
         .on_input_maybe(enabled.then_some(move |v| on_input(v)));
     let mut semantic = Semantic::input(id, label.into(), value.into(), change);
     if !enabled {

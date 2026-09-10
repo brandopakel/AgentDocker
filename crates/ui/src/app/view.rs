@@ -1,30 +1,173 @@
 //! Projects, attention and contextual tools over live daemon state.
-use super::style::Colors;
+//!
+//! The window is a rail and a workspace. The rail carries the mark, the
+//! four destinations and the project list; the workspace leads with the
+//! project name, then the section tabs, then whatever the section shows.
+//! Status is drawn as a coloured dot *and* said in words, every time.
+use super::style::{Colors, alpha};
 use super::*;
-use crate::controls::{block_button, button as action, input, input_enabled};
+use crate::controls::{
+    Kind, block_button, button as action, custom, danger, input, input_enabled, primary, tab,
+};
 use iced::{
-    Element, Fill, Font,
+    Center, Element, Fill, Font,
     widget::{Space, column, container, row, scrollable, text},
 };
 
-fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
-    text(value.into()).size(size).font(Font {
-        weight: iced::font::Weight::Semibold,
+fn weight(weight: iced::font::Weight) -> Font {
+    Font {
+        weight,
         ..Font::DEFAULT
-    })
+    }
+}
+fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
+    text(value.into())
+        .size(size)
+        .font(weight(iced::font::Weight::Semibold))
+}
+fn title<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
+    text(value.into())
+        .size(size)
+        .font(weight(iced::font::Weight::Semibold))
 }
 fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(13).color(c.muted)
+}
+fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+    text(value.into()).size(12).color(c.muted)
+}
+/// A section label: short, quiet, set in capitals.
+fn eyebrow<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+    text(value.into().to_uppercase())
+        .size(11)
+        .color(c.faint)
+        .font(weight(iced::font::Weight::Semibold))
+}
+fn mono<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+    text(value.into())
+        .size(12)
+        .font(Font::MONOSPACE)
+        .color(c.muted)
 }
 fn card<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     container(content)
         .padding(18)
         .width(Fill)
-        .style(move |_| c.surface(c.subtle, true))
+        .style(move |_| c.card_style())
         .into()
+}
+/// A card that holds rows rather than prose: tighter padding.
+fn panel<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    container(content)
+        .padding(6)
+        .width(Fill)
+        .style(move |_| c.card_style())
+        .into()
+}
+fn attention<'a>(
+    content: impl Into<Element<'a, Message>>,
+    tint: iced::Color,
+    c: Colors,
+) -> Element<'a, Message> {
+    container(content)
+        .padding(18)
+        .width(Fill)
+        .style(move |_| c.attention_style(tint))
+        .into()
+}
+fn pill<'a>(
+    label: impl Into<String>,
+    background: iced::Color,
+    ink: iced::Color,
+    c: Colors,
+) -> Element<'a, Message> {
+    container(
+        text(label.into())
+            .size(12)
+            .font(weight(iced::font::Weight::Semibold)),
+    )
+    .padding([3, 9])
+    .style(move |_| c.pill(background, ink))
+    .into()
+}
+fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
+    container(Space::new().width(size).height(size))
+        .style(move |_| c.dot(fill))
+        .into()
+}
+fn rule<'a>(c: Colors) -> Element<'a, Message> {
+    container(Space::new().width(Fill).height(1))
+        .style(move |_| c.rule())
+        .into()
+}
+fn kv<'a>(label: &'a str, value: impl Into<String>, c: Colors) -> Element<'a, Message> {
+    row![
+        small(label, c).width(110),
+        text(value.into()).size(13).width(Fill)
+    ]
+    .spacing(10)
+    .into()
 }
 fn value(json: &serde_json::Value, key: &str) -> String {
     json[key].as_str().unwrap_or("unknown").to_owned()
+}
+
+/// The mark, decoded once. The PNG is the cube alone on transparency,
+/// downscaled for a 30-point slot at two-times density.
+fn mark() -> iced::widget::image::Handle {
+    static MARK: std::sync::OnceLock<iced::widget::image::Handle> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!("../mark.png")))
+            .read_info()
+            .expect("embedded mark");
+        let mut rgba = vec![0; reader.output_buffer_size().expect("mark buffer")];
+        let info = reader.next_frame(&mut rgba).expect("embedded PNG");
+        rgba.truncate(info.buffer_size());
+        iced::widget::image::Handle::from_rgba(info.width, info.height, rgba)
+    })
+    .clone()
+}
+/// The mark and the two-tone wordmark. Two plain texts rather than one
+/// rich text: the rich text widget resolves heavier faces differently and
+/// lands on a monospace fallback for the system sans.
+fn brand<'a>(c: Colors) -> Element<'a, Message> {
+    row![
+        iced::widget::image(mark()).width(30).height(30),
+        row![
+            heading("Agent", 19).color(c.text),
+            heading("Docker", 19).color(c.accent)
+        ]
+    ]
+    .spacing(10)
+    .align_y(Center)
+    .into()
+}
+/// Nothing here yet, said kindly, with the mark keeping it company.
+fn empty<'a>(
+    title_text: &'a str,
+    hint: &'a str,
+    extra: Option<Element<'a, Message>>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let mut body = column![
+        iced::widget::image(mark())
+            .width(44)
+            .height(44)
+            .opacity(if c.dark { 0.5_f32 } else { 0.7_f32 }),
+        heading(title_text, 18),
+        note(hint, c).align_x(Center),
+    ]
+    .spacing(10)
+    .align_x(Center);
+    if let Some(extra) = extra {
+        body = body.push(Space::new().height(4)).push(extra);
+    }
+    container(body)
+        .padding([32, 18])
+        .width(Fill)
+        .center_x(Fill)
+        .style(move |_| c.card_style())
+        .into()
 }
 
 impl App {
@@ -43,13 +186,46 @@ impl App {
             None => project.is_none(),
         }
     }
-    pub fn view(&self) -> Element<'_, Message> {
-        let c = Colors::new(self.shell.catalog.dark);
-        let in_project = !matches!(
+    fn narrow(&self) -> bool {
+        self.shell.width / self.scale_factor() < 900.0
+    }
+    fn in_project(&self) -> bool {
+        !matches!(
             self.screen,
             Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
-        );
-        let title = if in_project {
+        )
+    }
+    /// The words for what an agent is doing, live or finished.
+    fn activity_label(&self, agent: &AgentRecord) -> String {
+        let id = agent.id.to_string();
+        if self.needs_input(&id) {
+            "needs input".to_owned()
+        } else if agent.status.is_live() {
+            self.activity
+                .get(&id)
+                .map(Activity::label)
+                .unwrap_or("activity unknown")
+                .to_owned()
+        } else {
+            agent.status.to_string()
+        }
+    }
+    /// The colour that goes with [`Self::activity_label`].
+    fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
+        if self.needs_input(&agent.id.to_string()) {
+            c.amber
+        } else if agent.status.is_live() {
+            c.green
+        } else {
+            c.faint
+        }
+    }
+
+    pub fn view(&self) -> Element<'_, Message> {
+        let c = Colors::new(self.shell.catalog.dark);
+        let in_project = self.in_project();
+        let narrow = self.narrow();
+        let title_text = if in_project {
             self.shell
                 .catalog
                 .selected()
@@ -70,26 +246,77 @@ impl App {
             }
             .into()
         };
-        let mut header = column![heading(title, 28)].spacing(6).width(Fill);
-        if in_project && let Some(entry) = self.shell.catalog.selected() {
-            header = header.push(note(entry.project.root.display().to_string(), c));
+        let mut heading_row = row![title(title_text, 26)].spacing(10).align_y(Center);
+        if in_project
+            && let Some(entry) = self.shell.catalog.selected()
+            && entry.pinned
+        {
+            heading_row = heading_row.push(pill("Pinned", c.accent_soft, c.accent_ink, c));
         }
-        let mut content = column![header].spacing(20).width(Fill);
+        let mut header_left = column![heading_row].spacing(6).width(Fill);
+        if in_project && let Some(entry) = self.shell.catalog.selected() {
+            header_left = header_left.push(mono(entry.project.root.display().to_string(), c));
+        } else if !in_project {
+            header_left = header_left.push(note(
+                match self.screen {
+                    Screen::Questions => "Questions and messages addressed to you",
+                    Screen::Runtimes => "Installed agent tools and how they connect",
+                    _ => "Appearance, terminal, installation and diagnostics",
+                },
+                c,
+            ));
+        }
+        let mut header = row![header_left].spacing(16).align_y(Center);
+        if in_project && !narrow {
+            use super::sessions::Filter;
+            let live = self.session_records(Filter::Current).len();
+            let waiting = self.session_records(Filter::NeedsInput).len();
+            let mut stats = row![].spacing(6).align_y(Center);
+            if waiting > 0 {
+                stats = stats.push(pill(
+                    format!(
+                        "{waiting} need{} input",
+                        if waiting == 1 { "s" } else { "" }
+                    ),
+                    alpha(c.amber, 0.18),
+                    c.amber,
+                    c,
+                ));
+            }
+            stats = stats.push(pill(
+                format!("{live} live"),
+                if live > 0 {
+                    alpha(c.green, 0.16)
+                } else {
+                    c.raised
+                },
+                if live > 0 { c.green } else { c.muted },
+                c,
+            ));
+            header = header.push(stats);
+        }
+        let mut content = column![header].spacing(18).width(Fill);
         if let Err(error) = &self.connected {
-            content = content.push(card(
+            content = content.push(attention(
                 column![
-                    heading("Connection unavailable", 15).color(c.amber),
+                    row![
+                        dot(c.amber, 8.0, c),
+                        heading("Connection unavailable", 15).color(c.amber)
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
                     note(
                         format!("{error}\nShowing the last update. Reconnecting…"),
                         c
                     )
                 ]
                 .spacing(7),
+                c.amber,
                 c,
             ));
         }
         if let Some(error) = &self.shell.error {
-            content = content.push(card(
+            content = content.push(attention(
                 column![
                     text(error.clone()).size(14).color(c.amber),
                     action(
@@ -99,45 +326,56 @@ impl App {
                         false
                     )
                 ]
-                .spacing(8),
+                .spacing(10),
+                c.amber,
                 c,
             ));
         }
         if !self.status.is_empty() {
-            content = content.push(text(self.status.clone()).size(13).color(c.accent));
+            content = content.push(
+                row![
+                    dot(c.accent, 6.0, c),
+                    text(self.status.clone()).size(13).color(c.accent_ink)
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
         }
         if in_project {
-            let mut tabs = row![].spacing(4);
+            let mut tabs = row![].spacing(14);
             for (screen, label) in [
                 (Screen::Agents, "Sessions"),
                 (Screen::Journal, "Activity"),
                 (Screen::Channels, "Channels"),
             ] {
-                tabs = tabs.push(action(
+                tabs = tabs.push(tab(
                     format!("project-tab-{screen:?}"),
                     label,
                     Some(Message::Navigate(screen)),
-                    self.screen == screen,
+                    self.screen == screen
+                        || (screen == Screen::Agents && self.screen == Screen::Terminal),
                 ));
             }
-            tabs = tabs.push(action(
+            tabs = tabs.push(tab(
                 "project-more",
                 "More",
                 Some(Message::More),
                 self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console),
             ));
-            if self.shell.width / self.scale_factor() < 900.0 {
-                content = content.push(scrollable(tabs).id("project-tabs").direction(
-                    iced::widget::scrollable::Direction::Horizontal(
+            let tabs: Element<'_, Message> = if narrow {
+                scrollable(tabs)
+                    .id("project-tabs")
+                    .direction(iced::widget::scrollable::Direction::Horizontal(
                         iced::widget::scrollable::Scrollbar::default(),
-                    ),
-                ));
+                    ))
+                    .into()
             } else {
-                content = content.push(tabs);
-            }
+                tabs.into()
+            };
+            content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if in_project && self.shell.more {
-            let mut more = column![
+            let mut more = row![
                 action(
                     "project-tab-Leases",
                     "Coordination",
@@ -171,12 +409,19 @@ impl App {
                         false,
                     ));
             }
-            content = content.push(card(more, c));
+            content = content.push(card(
+                column![eyebrow("More in this project", c), more.wrap()].spacing(10),
+                c,
+            ));
         }
         if self.shell.adding {
             content = content.push(card(
                 column![
                     heading("Add an existing project", 18),
+                    note(
+                        "Choose a folder. Nothing is launched or written into it.",
+                        c
+                    ),
                     input(
                         "project-path",
                         "Project folder",
@@ -184,14 +429,13 @@ impl App {
                         Message::AddPath
                     ),
                     row![
-                        action("browse-folder", "Browse…", Some(Message::PickFolder), false),
-                        action(
+                        primary(
                             "pin-folder",
                             "Add project",
                             (!self.shell.add_path.trim().is_empty())
                                 .then_some(Message::ResolveFolder),
-                            true
                         ),
+                        action("browse-folder", "Browse…", Some(Message::PickFolder), false),
                         action("cancel-add", "Cancel", Some(Message::ShowAdd), false)
                     ]
                     .spacing(6)
@@ -213,9 +457,9 @@ impl App {
             Screen::Desktop => self.installation_view(c),
         };
         content = content.push(body);
-        let narrow = self.shell.width / self.scale_factor() < 900.0;
         row![
             self.sidebar(c),
+            container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
             container(
                 scrollable(content)
                     .spacing(12)
@@ -223,69 +467,132 @@ impl App {
                     .height(Fill)
                     .id("workspace-scroll")
             )
-            .padding(if narrow { 18 } else { 28 })
+            .padding(if narrow { [18, 18] } else { [24, 30] })
             .width(Fill)
+            .style(move |_| c.surface(c.ground, false))
         ]
         .height(Fill)
         .into()
     }
 
-    fn sidebar(&self, c: Colors) -> Element<'_, Message> {
-        let project_page = !matches!(
-            self.screen,
-            Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
-        );
-        let mut nav = column![heading("agentdocker", 22), Space::new().height(16)].spacing(6);
-        for (key, label, screen, selected) in [
-            (
-                "projects",
-                "Projects".to_owned(),
-                Screen::Agents,
-                project_page,
-            ),
-            (
-                "inbox",
-                format!(
-                    "Inbox{}",
-                    if self.questions.is_empty() {
-                        String::new()
-                    } else {
-                        format!("   {}", self.questions.len())
-                    }
-                ),
-                Screen::Questions,
-                self.screen == Screen::Questions,
-            ),
-            (
-                "connections",
-                "Connections".to_owned(),
-                Screen::Runtimes,
-                self.screen == Screen::Runtimes,
-            ),
-        ] {
-            nav = nav.push(block_button(
-                key,
-                label,
-                Some(Message::Navigate(screen)),
-                selected,
-            ));
+    fn nav_item<'a>(
+        &self,
+        id: &'a str,
+        label: &'a str,
+        badge: Option<String>,
+        message: Message,
+        selected: bool,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        let mut content = row![
+            container(Space::new().width(3).height(16)).style(move |_| {
+                c.dot(if selected {
+                    c.accent
+                } else {
+                    iced::Color::TRANSPARENT
+                })
+            }),
+            text(label)
+                .size(14)
+                .font(weight(if selected {
+                    iced::font::Weight::Semibold
+                } else {
+                    iced::font::Weight::Medium
+                }))
+                .width(Fill)
+        ]
+        .spacing(10)
+        .align_y(Center);
+        let spoken = match &badge {
+            Some(badge) => format!("{label} {badge}"),
+            None => label.to_owned(),
+        };
+        if let Some(badge) = badge {
+            content = content.push(pill(badge, alpha(c.amber, 0.2), c.amber, c));
         }
+        custom(
+            id,
+            spoken,
+            content,
+            Some(message),
+            selected,
+            Kind::Quiet,
+            [8, 10],
+        )
+    }
+
+    fn sidebar(&self, c: Colors) -> Element<'_, Message> {
+        let project_page = self.in_project();
+        let mut nav = column![brand(c), Space::new().height(22)].spacing(4);
+        nav = nav.push(self.nav_item(
+            "projects",
+            "Projects",
+            None,
+            Message::Navigate(Screen::Agents),
+            project_page,
+            c,
+        ));
+        nav = nav.push(self.nav_item(
+            "inbox",
+            "Inbox",
+            (!self.questions.is_empty()).then(|| self.questions.len().to_string()),
+            Message::Navigate(Screen::Questions),
+            self.screen == Screen::Questions,
+            c,
+        ));
+        nav = nav.push(self.nav_item(
+            "connections",
+            "Connections",
+            None,
+            Message::Navigate(Screen::Runtimes),
+            self.screen == Screen::Runtimes,
+            c,
+        ));
         nav = nav
             .push(Space::new().height(18))
-            .push(note("Your projects", c));
-        let mut projects = column![].spacing(5).width(Fill);
+            .push(container(eyebrow("Projects", c)).padding([0, 12]))
+            .push(Space::new().height(2));
+        let mut projects = column![].spacing(2).width(Fill);
         for entry in &self.shell.catalog.projects {
             let path = entry.project.root.clone();
-            let label = format!(
-                "{}{}",
-                if entry.pinned { "• " } else { "" },
-                entry.project.name()
-            );
-            projects = projects.push(block_button(
+            let selected = project_page && self.selected_root() == Some(path.as_path());
+            let name = entry.project.name();
+            let live = self
+                .agents
+                .iter()
+                .filter(|a| {
+                    a.status.is_live()
+                        && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                        && a.project.as_ref().is_some_and(|p| p.root == path)
+                })
+                .count();
+            let mut content = row![
+                dot(
+                    if live > 0 {
+                        c.green
+                    } else if entry.pinned {
+                        c.cyan
+                    } else {
+                        c.faint
+                    },
+                    6.0,
+                    c
+                ),
+                text(name.clone()).size(14).width(Fill)
+            ]
+            .spacing(10)
+            .align_y(Center);
+            if live > 0 {
+                content = content.push(small(live.to_string(), c));
+            }
+            projects = projects.push(custom(
                 format!("project-{}", path.display()),
-                label,
+                format!("{}{}", if entry.pinned { "• " } else { "" }, name),
+                content,
                 Some(Message::SelectProject(path.clone())),
-                project_page && self.selected_root() == Some(path.as_path()),
+                selected,
+                Kind::Quiet,
+                [8, 12],
             ));
         }
         if self
@@ -308,6 +615,7 @@ impl App {
                     .spacing(6)
                     .height(Fill),
             )
+            .push(Space::new().height(6))
             .push(block_button(
                 "add-project",
                 "+ Add project…",
@@ -320,43 +628,66 @@ impl App {
                 Some(Message::Navigate(Screen::Settings)),
                 matches!(self.screen, Screen::Settings | Screen::Desktop),
             ))
-            .push(note(
-                if self.connected.is_ok() {
-                    "Connected locally"
-                } else {
-                    "Reconnecting…"
-                },
-                c,
-            ));
+            .push(Space::new().height(8))
+            .push(
+                container(
+                    row![
+                        dot(
+                            if self.connected.is_ok() {
+                                c.green
+                            } else {
+                                c.amber
+                            },
+                            7.0,
+                            c
+                        ),
+                        small(
+                            if self.connected.is_ok() {
+                                "Connected locally"
+                            } else {
+                                "Reconnecting…"
+                            },
+                            c
+                        )
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                )
+                .padding([4, 12]),
+            );
         container(nav.height(Fill))
-            .padding([24, 14])
-            .width(if self.shell.width / self.scale_factor() < 900.0 {
-                190
-            } else {
-                214
-            })
+            .padding([22, 12])
+            .width(if self.narrow() { 204 } else { 236 })
             .height(Fill)
             .style(move |_| c.surface(c.sidebar, false))
             .into()
     }
 
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
-        let mut panel = column![]
-            .spacing(if self.settings.roomy { 22 } else { 14 })
+        let mut panel_col = column![]
+            .spacing(if self.settings.roomy { 20 } else { 14 })
             .width(Fill);
+        let mut toolbar = row![input(
+            "session-search",
+            "Find a session…",
+            &self.shell.search,
+            Message::Search,
+        )]
+        .spacing(10)
+        .align_y(Center);
         if self.shell.catalog.selected().is_some() {
-            panel = panel.push(action(
+            toolbar = toolbar.push(primary(
                 "launch-agent",
                 "Launch agent…",
                 (self.connected.is_ok() && self.shell.project_available != Some(false))
                     .then_some(Message::ShowLaunch),
-                true,
             ));
         }
+        panel_col = panel_col.push(toolbar);
         if self.shell.project_available == Some(false) {
-            panel = panel.push(card(
+            panel_col = panel_col.push(attention(
                 column![
-                    heading("Project folder unavailable", 18),
+                    heading("Project folder unavailable", 16),
                     note("Restore the folder or choose another project.", c),
                     action(
                         "retry-project-folder",
@@ -366,25 +697,20 @@ impl App {
                     )
                 ]
                 .spacing(10),
+                c.amber,
                 c,
             ));
         }
         if self.shell.launch {
-            panel = panel.push(self.launch_view(c));
+            panel_col = panel_col.push(self.launch_view(c));
         }
-        panel = panel.push(input(
-            "session-search",
-            "Find a session…",
-            &self.shell.search,
-            Message::Search,
-        ));
         use super::sessions::Filter;
         let current = self.session_records(Filter::Current);
-        let attention = self.session_records(Filter::NeedsInput);
+        let attention_rows = self.session_records(Filter::NeedsInput);
         let history = self.session_records(Filter::History);
         let available = self.available_processes();
         let filter = self.shell.session_filter;
-        panel = panel.push(
+        panel_col = panel_col.push(
             row![
                 action(
                     "sessions-current",
@@ -394,7 +720,7 @@ impl App {
                 ),
                 action(
                     "sessions-attention",
-                    format!("Needs input ({})", attention.len()),
+                    format!("Needs input ({})", attention_rows.len()),
                     Some(Message::SessionFilter(Filter::NeedsInput)),
                     filter == Filter::NeedsInput
                 ),
@@ -405,12 +731,12 @@ impl App {
                     filter == Filter::History
                 ),
             ]
-            .spacing(4)
+            .spacing(6)
             .wrap(),
         );
         let records = match filter {
             Filter::Current => current,
-            Filter::NeedsInput => attention,
+            Filter::NeedsInput => attention_rows,
             Filter::History => history,
         };
         let count = records.len()
@@ -419,49 +745,59 @@ impl App {
             } else {
                 0
             };
-        let mut rows = column![].spacing(if self.settings.roomy { 8 } else { 3 });
-        for agent in records {
+        let mut rows = column![].spacing(if self.settings.roomy { 6 } else { 2 });
+        for agent in &records {
             let id = agent.id.to_string();
-            let activity = if self.needs_input(&id) {
-                "needs input".to_owned()
-            } else if agent.status.is_live() {
-                self.activity
-                    .get(&id)
-                    .map(Activity::label)
-                    .unwrap_or("activity unknown")
-                    .to_owned()
-            } else {
-                agent.status.to_string()
-            };
+            let activity = self.activity_label(agent);
             let branch = agent.vcs.as_ref().and_then(|v| v.branch.as_deref());
-            let label = format!(
-                "{}\n{}{} · {}",
-                agent.spec.name,
-                agent.spec.runtime,
-                branch.map(|b| format!(" · {b}")).unwrap_or_default(),
+            let meta = format!(
+                "{}{}",
+                branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            rows = rows.push(block_button(
+            let spoken = format!("{}\n{} · {}", agent.spec.name, agent.spec.runtime, meta);
+            let content = row![
+                dot(self.activity_color(agent, c), 8.0, c),
+                column![
+                    text(agent.spec.name.clone())
+                        .size(14)
+                        .font(weight(iced::font::Weight::Medium)),
+                    small(meta, c)
+                ]
+                .spacing(2)
+                .width(Fill),
+                pill(agent.spec.runtime.clone(), c.raised, c.muted, c)
+            ]
+            .spacing(12)
+            .align_y(Center);
+            rows = rows.push(custom(
                 format!("session-{id}"),
-                label,
+                spoken,
+                content,
                 Some(Message::SelectSession(id.clone())),
                 self.shell.selected.as_deref() == Some(id.as_str()),
+                Kind::Quiet,
+                [if self.settings.roomy { 13 } else { 10 }, 12],
             ));
         }
-        panel = panel.push(rows);
+        if !records.is_empty() {
+            panel_col = panel_col.push(panel(rows, c));
+        }
         if filter == Filter::Current && !available.is_empty() {
             let mut discovered = column![
-                heading("Available to connect", 16),
-                note("Running outside AgentDocker", c)
+                eyebrow("Available to connect", c),
+                note("Running in this folder outside AgentDocker", c)
             ]
-            .spacing(8);
+            .spacing(6);
             for process in available {
                 discovered = discovered.push(
                     row![
+                        dot(c.cyan, 8.0, c),
                         column![
                             text(process.default_name()).size(14),
-                            note(process.runtime.clone(), c)
+                            small(process.runtime.clone(), c)
                         ]
+                        .spacing(2)
                         .width(Fill),
                         action(
                             format!("adopt-{}", process.pid),
@@ -472,14 +808,14 @@ impl App {
                             false
                         ),
                     ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
+                    .spacing(12)
+                    .align_y(Center),
                 );
             }
-            panel = panel.push(card(discovered, c));
+            panel_col = panel_col.push(card(discovered.spacing(10), c));
         }
         if count == 0 {
-            let (title, hint) = if !self.shell.search.is_empty() {
+            let (title_text, hint) = if !self.shell.search.is_empty() {
                 ("No matching sessions", "Try another name, tool, or branch.")
             } else {
                 match filter {
@@ -497,10 +833,7 @@ impl App {
                     ),
                 }
             };
-            panel = panel.push(card(
-                column![heading(title, 20), note(hint, c)].spacing(10),
-                c,
-            ));
+            panel_col = panel_col.push(empty(title_text, hint, None, c));
         }
         if let Some(agent) = self
             .shell
@@ -510,13 +843,13 @@ impl App {
         {
             let inspector = self.inspector(agent, c);
             if self.shell.width / self.scale_factor() >= 1120.0 {
-                return row![panel, container(inspector).width(320)]
+                return row![panel_col, container(inspector).width(320)]
                     .spacing(20)
                     .into();
             }
             return inspector;
         }
-        panel.into()
+        panel_col.into()
     }
 
     fn inspector(&self, agent: &AgentRecord, c: Colors) -> Element<'_, Message> {
@@ -526,41 +859,36 @@ impl App {
             .as_ref()
             .is_some_and(|(armed, at)| armed == &id && at.elapsed() < CONFIRM_WITHIN);
         let mut body = column![
-            heading(agent.spec.name.clone(), 20),
-            note(
-                format!(
-                    "{} · {}",
-                    agent.spec.runtime,
-                    if agent.status.is_live() {
-                        self.activity
-                            .get(&id)
-                            .map(Activity::label)
-                            .unwrap_or("activity unknown")
-                            .to_owned()
-                    } else {
-                        agent.status.to_string()
-                    }
-                ),
-                c
-            ),
+            row![
+                dot(self.activity_color(agent, c), 10.0, c),
+                column![
+                    heading(agent.spec.name.clone(), 18),
+                    note(
+                        format!("{} · {}", agent.spec.runtime, self.activity_label(agent)),
+                        c
+                    )
+                ]
+                .spacing(3)
+            ]
+            .spacing(10)
+            .align_y(Center),
+            rule(c),
         ]
         .spacing(12);
         if self.needs_input(&id) {
-            body = body.push(action(
+            body = body.push(primary(
                 "session-reply",
                 "Reply in Inbox",
                 Some(Message::Navigate(Screen::Questions)),
-                true,
             ));
         }
         if agent.managed && agent.spec.tty && agent.status.is_live() {
-            body = body.push(action(
+            body = body.push(primary(
                 "attach-session",
                 "Open terminal",
                 self.connected
                     .is_ok()
                     .then_some(Message::Attach(id.clone())),
-                true,
             ));
         } else if agent.status.is_live() {
             body = body.push(note(
@@ -579,42 +907,44 @@ impl App {
             self.shell.session_details,
         ));
         if self.shell.session_details {
-            body = body
-                .push(note(format!("Session {}", agent.id), c))
-                .push(note(
-                    agent
-                        .spec
-                        .workdir
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "Working folder unknown".into()),
-                    c,
-                ))
-                .push(note(
-                    format!("Last seen {}", ago(Utc::now(), agent.last_seen)),
-                    c,
-                ));
+            let mut details = column![kv("Session", agent.id.to_string(), c)].spacing(6);
+            details = details.push(kv(
+                "Folder",
+                agent
+                    .spec
+                    .workdir
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Working folder unknown".into()),
+                c,
+            ));
+            details = details.push(kv("Last seen", ago(Utc::now(), agent.last_seen), c));
             if let Some(pid) = agent.pid {
-                body = body.push(note(format!("Process {pid}"), c));
+                details = details.push(kv("Process", pid.to_string(), c));
             }
             if let Some(vcs) = &agent.vcs {
-                body = body.push(note(vcs.describe(), c));
+                details = details.push(kv("Checkout", vcs.describe(), c));
             }
             if let Some(session) = &agent.session {
-                body = body.push(note(format!("External terminal: {session:?}"), c));
+                details = details.push(kv("Terminal", format!("{session:?}"), c));
             }
+            body = body.push(details);
         }
         if agent.status.is_live() {
-            body = body.push(action(
-                "stop-session",
-                if stop_armed {
-                    "Confirm stop"
-                } else {
-                    "Stop session…"
-                },
-                self.connected.is_ok().then_some(Message::Stop(id)),
-                false,
-            ));
+            body = body.push(if stop_armed {
+                danger(
+                    "stop-session",
+                    "Confirm stop",
+                    self.connected.is_ok().then_some(Message::Stop(id)),
+                )
+            } else {
+                action(
+                    "stop-session",
+                    "Stop session…",
+                    self.connected.is_ok().then_some(Message::Stop(id)),
+                    false,
+                )
+            });
         }
         if stop_armed {
             body = body.push(note(
@@ -622,7 +952,7 @@ impl App {
                 c,
             ));
         }
-        body = body.push(action(
+        body = body.push(rule(c)).push(action(
             "close-session",
             "Back to sessions",
             Some(Message::CloseSession),
@@ -633,12 +963,13 @@ impl App {
 
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
         let mut tools = column![
-            heading("Launch in this project", 20),
+            heading("Launch in this project", 18),
             note("Choose a tool to start in this folder.", c)
         ]
         .spacing(10);
+        let mut choices = row![].spacing(6);
         for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
-            tools = tools.push(action(
+            choices = choices.push(action(
                 format!("launch-tool-{}", runtime.name),
                 runtime.label.clone(),
                 (!self.shell.launching).then_some(Message::LaunchRuntime(runtime.name.clone())),
@@ -646,6 +977,7 @@ impl App {
             ));
         }
         tools = tools
+            .push(choices.wrap())
             .push(input(
                 "launch-name",
                 "Session name (optional)",
@@ -663,9 +995,9 @@ impl App {
             .iter()
             .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
         {
-            tools = tools.push(note(
+            tools = tools.push(mono(
                 format!(
-                    "Command: {} {}",
+                    "{} {}",
                     runtime
                         .cli
                         .as_ref()
@@ -678,7 +1010,7 @@ impl App {
         }
         tools = tools.push(
             row![
-                action(
+                primary(
                     "confirm-launch",
                     if self.shell.launching {
                         "Launching…"
@@ -689,7 +1021,6 @@ impl App {
                         && self.shell.launch_runtime.is_some()
                         && self.connected.is_ok())
                     .then_some(Message::Launch),
-                    true
                 ),
                 action(
                     "cancel-launch",
@@ -704,14 +1035,12 @@ impl App {
     }
 
     fn questions(&self, c: Colors) -> Element<'_, Message> {
-        let mut list = column![].spacing(18).width(Fill);
+        let mut list = column![].spacing(16).width(Fill);
         if self.questions.is_empty() {
-            list = list.push(card(
-                column![
-                    heading("You're all caught up", 22),
-                    note("Questions from your agents will appear here.", c)
-                ]
-                .spacing(10),
+            list = list.push(empty(
+                "You're all caught up",
+                "Questions from your agents will appear here.",
+                None,
                 c,
             ));
         }
@@ -719,17 +1048,23 @@ impl App {
             let id = question.id.clone();
             let draft_id = id.clone();
             let busy = self.sending.contains(&id);
+            let expired = question.expired(Utc::now());
             let answer = self.answers.get(&id).cloned().unwrap_or_default();
             let mut body = column![
-                note(
-                    format!(
-                        "{} · asked {}",
-                        self.name_of(&question.from),
-                        ago(Utc::now(), question.asked_at)
-                    ),
-                    c
-                ),
-                heading(question.text.clone(), 20),
+                row![
+                    dot(if expired { c.faint } else { c.amber }, 8.0, c),
+                    eyebrow(
+                        format!(
+                            "{} · asked {}",
+                            self.name_of(&question.from),
+                            ago(Utc::now(), question.asked_at)
+                        ),
+                        c
+                    )
+                ]
+                .spacing(8)
+                .align_y(Center),
+                heading(question.text.clone(), 18),
                 input_enabled(
                     format!("answer-{id}"),
                     "Your answer",
@@ -737,29 +1072,31 @@ impl App {
                     move |text| Message::Draft(draft_id.clone(), text),
                     !busy
                 ),
-                action(
+                row![primary(
                     format!("send-answer-{id}"),
                     if busy { "Sending…" } else { "Send answer" },
-                    (!busy
-                        && self.connected.is_ok()
-                        && !answer.trim().is_empty()
-                        && !question.expired(Utc::now()))
-                    .then_some(Message::Answer(id.clone())),
-                    true
-                )
+                    (!busy && self.connected.is_ok() && !answer.trim().is_empty() && !expired)
+                        .then_some(Message::Answer(id.clone())),
+                )]
+                .spacing(10)
+                .align_y(Center)
             ]
             .spacing(12);
-            if question.expired(Utc::now()) {
+            if expired {
                 body = body.push(note("This question has expired.", c));
             }
             if let Some(error) = self.shell.answer_errors.get(&id) {
                 body = body.push(text(error.clone()).size(13).color(c.amber));
             }
-            list = list.push(card(body, c));
+            list = list.push(if expired {
+                card(body, c)
+            } else {
+                attention(body, c.amber, c)
+            });
         }
         let (_, direct) = by_room(&self.inbox);
         if !direct.is_empty() {
-            list = list.push(heading("Messages addressed to you", 18));
+            list = list.push(eyebrow("Messages addressed to you", c));
         }
         for message in direct.iter().rev().take(30).rev() {
             list = list.push(self.message_view(message, c));
@@ -779,15 +1116,15 @@ impl App {
             .unwrap_or_else(|| serde_json::to_string_pretty(&message.payload).unwrap_or_default());
         card(
             column![
-                note(
-                    format!(
-                        "{} · {} · {}",
-                        self.name_of(&message.from),
-                        message.kind,
-                        ago(Utc::now(), message.sent_at)
-                    ),
-                    c
-                ),
+                row![
+                    text(self.name_of(&message.from))
+                        .size(13)
+                        .font(weight(iced::font::Weight::Semibold)),
+                    pill(message.kind.to_string(), c.raised, c.muted, c),
+                    small(ago(Utc::now(), message.sent_at), c)
+                ]
+                .spacing(8)
+                .align_y(Center),
                 text(payload).size(14)
             ]
             .spacing(8),
@@ -807,27 +1144,34 @@ impl App {
         {
             count += 1;
             let id = channel.id.to_string();
+            let open = channel.is_open();
             let mut body = column![
-                heading(channel.title(), 18),
-                note(
+                row![
+                    heading(channel.title(), 17).width(Fill),
+                    pill(
+                        if open { "Open" } else { "Closed" },
+                        if open { alpha(c.green, 0.16) } else { c.raised },
+                        if open { c.green } else { c.muted },
+                        c
+                    )
+                ]
+                .spacing(10)
+                .align_y(Center),
+                small(
                     format!(
                         "{} members · {}",
                         channel.members.len(),
-                        if channel.is_open() { "open" } else { "closed" }
+                        channel
+                            .members
+                            .iter()
+                            .map(|id| self.name_of(id.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
-                    c
-                ),
-                note(
-                    channel
-                        .members
-                        .iter()
-                        .map(|id| self.name_of(id.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(", "),
                     c
                 )
             ]
-            .spacing(10);
+            .spacing(6);
             for review in &channel.reviews {
                 body = body.push(
                     text(format!(
@@ -863,39 +1207,48 @@ impl App {
                     .cloned()
                     .unwrap_or_default();
                 if let Some(error) = &draft.error {
-                    body = body.push(text(error.clone()).color(c.amber));
+                    body = body.push(text(error.clone()).size(13).color(c.amber));
                 }
-                body = body
-                    .push(input(
-                        "channel-message",
-                        "Message",
-                        &draft.text,
-                        Message::ChannelDraft,
-                    ))
-                    .push(action(
-                        "send-channel",
-                        if draft.sending.is_some() {
-                            "Sending…"
-                        } else {
-                            "Send message"
-                        },
-                        (draft.sending.is_none()
-                            && self.connected.is_ok()
-                            && !draft.text.trim().is_empty())
-                        .then_some(Message::SendChannel),
-                        true,
-                    ));
+                body = body.push(
+                    row![
+                        input(
+                            "channel-message",
+                            "Message",
+                            &draft.text,
+                            Message::ChannelDraft,
+                        ),
+                        primary(
+                            "send-channel",
+                            if draft.sending.is_some() {
+                                "Sending…"
+                            } else {
+                                "Send message"
+                            },
+                            (draft.sending.is_none()
+                                && self.connected.is_ok()
+                                && !draft.text.trim().is_empty())
+                            .then_some(Message::SendChannel),
+                        )
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                );
             }
-            list = list.push(card(body, c));
+            list = list.push(card(body.spacing(10), c));
         }
         if count == 0 {
-            list = list.push(note("No channels in this project yet.", c));
+            list = list.push(empty(
+                "No channels yet",
+                "Agents open channels here when they coordinate on a task.",
+                None,
+                c,
+            ));
         }
         list.into()
     }
 
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
-        let mut list = column![note(
+        let list = column![note(
             format!(
                 "Latest {JOURNAL_WINDOW} entries. Earlier entries remain in the project journal."
             ),
@@ -903,30 +1256,52 @@ impl App {
         )]
         .spacing(12);
         if self.journal.is_empty() {
-            list = list.push(heading("No activity recorded yet", 20));
+            return list
+                .push(empty(
+                    "No activity recorded yet",
+                    "Commits, joins, leases and notes from this project will appear here.",
+                    None,
+                    c,
+                ))
+                .into();
         }
-        for entry in self.journal.iter().rev() {
-            list = list.push(card(
-                column![
-                    note(format!("{} · #{}", ago(Utc::now(), entry.at), entry.seq), c),
-                    text(entry.line()).size(14)
-                ]
-                .spacing(7),
-                c,
-            ));
+        let mut rows = column![].spacing(0);
+        let total = self.journal.len();
+        for (index, entry) in self.journal.iter().rev().enumerate() {
+            rows = rows.push(
+                container(
+                    row![
+                        column![
+                            Space::new().height(5),
+                            dot(if index == 0 { c.accent } else { c.faint }, 7.0, c)
+                        ],
+                        column![
+                            text(entry.line()).size(14),
+                            small(format!("{} · #{}", ago(Utc::now(), entry.at), entry.seq), c)
+                        ]
+                        .spacing(3)
+                        .width(Fill)
+                    ]
+                    .spacing(12),
+                )
+                .padding([10, 12]),
+            );
+            if index + 1 < total {
+                rows = rows.push(container(rule(c)).padding([0, 12]));
+            }
         }
-        list.into()
+        list.push(panel(rows, c)).into()
     }
 
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
         let mut list = column![
-            heading("Resource coordination", 20),
+            heading("Resource coordination", 18),
             note(
                 "Leases describe cooperative access reported to AgentDocker.",
                 c
             )
         ]
-        .spacing(14);
+        .spacing(12);
         let mut count = 0;
         for lease in &self.leases {
             let holder = self.agents.iter().find(|a| a.id == lease.holder);
@@ -936,43 +1311,75 @@ impl App {
             count += 1;
             list = list.push(card(
                 column![
-                    heading(lease.resource.to_string(), 16),
-                    note(
+                    row![
+                        heading(lease.resource.to_string(), 15).width(Fill),
+                        pill(format!("{:?}", lease.mode), c.accent_soft, c.accent_ink, c)
+                    ]
+                    .spacing(10)
+                    .align_y(Center),
+                    small(
                         format!(
-                            "{} · {:?} · expires {}",
+                            "{} · expires {}",
                             self.name_of(lease.holder.as_str()),
-                            lease.mode,
-                            span((lease.expires_at - Utc::now()).num_seconds())
+                            super::span((lease.expires_at - Utc::now()).num_seconds())
                         ),
                         c
                     ),
                     note(lease.note.clone().unwrap_or_default(), c)
                 ]
-                .spacing(8),
+                .spacing(6),
                 c,
             ));
         }
         if count == 0 {
-            list = list.push(note("No leases held in this project.", c));
+            list = list.push(empty(
+                "No leases held",
+                "When an agent claims a file or resource in this project it appears here.",
+                None,
+                c,
+            ));
         }
         list.into()
     }
 
     fn terminal_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(terminal) = &self.terminal else {
-            return note("Select a managed session and open its terminal.", c).into();
+            return empty(
+                "No terminal open",
+                "Select a managed session and open its terminal.",
+                None,
+                c,
+            );
         };
+        let ended = matches!(terminal.status(), Status::Ended(_));
         let mut pane = column![
             row![
-                heading(self.name_of(&terminal.agent), 20),
+                dot(if ended { c.faint } else { c.green }, 8.0, c),
+                heading(self.name_of(&terminal.agent), 16).width(Fill),
+                pill(
+                    if ended {
+                        "Ended"
+                    } else if terminal.scrolled_back() {
+                        "Scrolled back"
+                    } else {
+                        "Live"
+                    },
+                    if ended {
+                        c.raised
+                    } else {
+                        alpha(c.green, 0.16)
+                    },
+                    if ended { c.muted } else { c.green },
+                    c
+                ),
                 action("detach-terminal", "Detach", Some(Message::Detach), false)
             ]
-            .spacing(12),
-            note("F6: leave terminal focus · Ctrl+]: detach", c)
+            .spacing(10)
+            .align_y(Center),
         ]
-        .spacing(12);
+        .spacing(10);
         if let Status::Ended(reason) = terminal.status() {
-            pane = pane.push(text(reason).size(14).color(c.amber));
+            pane = pane.push(text(reason).size(13).color(c.amber));
         }
         if let Some(reason) = terminal.input_notice {
             pane = pane.push(
@@ -985,7 +1392,8 @@ impl App {
                         false
                     )
                 ]
-                .spacing(8),
+                .spacing(8)
+                .align_y(Center),
             );
         }
         if terminal.scrolled_back() {
@@ -996,27 +1404,44 @@ impl App {
                 false,
             ));
         }
-        pane.push(crate::terminal::Display {
-            terminal,
-            palette: self.settings.palette(),
-            size: self.settings.terminal_size,
-            height: (self.shell.height / self.scale_factor() - 270.0).max(240.0),
-        })
+        let palette = self.settings.palette();
+        let ground: iced::Color = palette.ground.into();
+        pane = pane.push(
+            container(crate::terminal::Display {
+                terminal,
+                palette,
+                size: self.settings.terminal_size,
+                height: (self.shell.height / self.scale_factor() - 300.0).max(240.0),
+            })
+            .padding(6)
+            .style(move |_| c.surface(ground, false)),
+        );
+        column![
+            container(pane)
+                .padding(10)
+                .width(Fill)
+                .style(move |_| c.card_style()),
+            small("F6 leaves terminal focus · Ctrl+] detaches", c)
+        ]
+        .spacing(8)
         .into()
     }
 
     fn console_view(&self, c: Colors) -> Element<'_, Message> {
+        let palette = self.settings.palette();
+        let ground: iced::Color = palette.ground.into();
+        let ink: iced::Color = palette.text.into();
         column![
-            heading("AgentDocker commands", 20),
+            heading("AgentDocker commands", 18),
             note("Run an AgentDocker command in this project.", c),
-            input(
-                "console-command",
-                "agentdocker command",
-                &self.console_input,
-                Message::ConsoleInput
-            ),
             row![
-                action(
+                input(
+                    "console-command",
+                    "agentdocker command",
+                    &self.console_input,
+                    Message::ConsoleInput
+                ),
+                primary(
                     "run-command",
                     if self.console_running > 0 {
                         "Run another command"
@@ -1024,8 +1449,11 @@ impl App {
                         "Run command"
                     },
                     (!self.console_input.trim().is_empty()).then_some(Message::RunConsole),
-                    true
                 ),
+            ]
+            .spacing(8)
+            .align_y(Center),
+            row![
                 action(
                     "previous-command",
                     "Previous",
@@ -1034,15 +1462,18 @@ impl App {
                 ),
                 action("next-command", "Next", Some(Message::Recall(false)), false)
             ]
-            .spacing(8),
-            card(
+            .spacing(6),
+            container(
                 text(self.console_output.clone())
                     .font(Font::MONOSPACE)
-                    .size(self.settings.terminal_size),
-                c
+                    .size(self.settings.terminal_size)
+                    .color(ink)
             )
+            .padding(14)
+            .width(Fill)
+            .style(move |_| c.surface(ground, true))
         ]
-        .spacing(14)
+        .spacing(12)
         .into()
     }
 
@@ -1063,8 +1494,9 @@ impl App {
                 )
             ]
             .spacing(8)
+            .wrap()
         ]
-        .spacing(16);
+        .spacing(14);
         if !self.discovered.is_empty() {
             list = list.push(action(
                 "register-all-discovered",
@@ -1077,7 +1509,7 @@ impl App {
             list = list.push(note("Checking setup…", c));
         }
         if let Some(error) = &self.shell.setup_error {
-            list = list.push(text(error.clone()).color(c.amber));
+            list = list.push(text(error.clone()).size(13).color(c.amber));
         }
         if let Some(plan) = &self.setup_plan {
             list = list.push(self.setup_view(plan, c));
@@ -1093,22 +1525,32 @@ impl App {
         }
         if let Some(health) = &self.setup_health {
             let mut report = column![
-                heading("Connection checks", 18),
+                heading("Connection checks", 16),
                 note(value(health, "daemon"), c)
             ]
             .spacing(8);
             for runtime in health["runtimes"].as_array().into_iter().flatten() {
                 for check in runtime["checks"].as_array().into_iter().flatten() {
-                    report = report.push(note(
-                        format!(
-                            "{} · {} · {}\n{}",
-                            value(runtime, "name"),
-                            value(check, "channel"),
-                            value(check, "status"),
-                            value(check, "detail")
-                        ),
-                        c,
-                    ));
+                    let ok = value(check, "status") == "ok";
+                    report = report.push(
+                        row![
+                            column![
+                                Space::new().height(4),
+                                dot(if ok { c.green } else { c.amber }, 7.0, c)
+                            ],
+                            note(
+                                format!(
+                                    "{} · {} · {}\n{}",
+                                    value(runtime, "name"),
+                                    value(check, "channel"),
+                                    value(check, "status"),
+                                    value(check, "detail")
+                                ),
+                                c,
+                            )
+                        ]
+                        .spacing(10),
+                    );
                 }
             }
             list = list.push(card(report, c));
@@ -1120,39 +1562,51 @@ impl App {
             .collect();
         runtimes.sort_by_key(|r| !r.installed());
         if runtimes.is_empty() {
-            list = list.push(note(
-                "No supported tools found. Install an agent tool, then check connections.",
+            list = list.push(empty(
+                "No supported tools found",
+                "Install an agent tool, then check connections.",
+                None,
                 c,
             ));
         }
         for runtime in runtimes {
             let expanded = self.shell.connection_details.as_deref() == Some(runtime.name.as_str());
+            let installed = runtime.installed();
             let supported =
-                runtime.installed() && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
+                installed && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
             let mut actions = row![
+                dot(if installed { c.green } else { c.faint }, 9.0, c),
                 column![
-                    heading(runtime.label.clone(), 18),
-                    note(
-                        if runtime.installed() {
-                            "Installed"
+                    heading(runtime.label.clone(), 16),
+                    small(
+                        if installed {
+                            format!(
+                                "Installed{}",
+                                runtime
+                                    .version
+                                    .as_deref()
+                                    .map(|v| format!(" · {v}"))
+                                    .unwrap_or_default()
+                            )
                         } else {
-                            "Not installed"
+                            "Not installed".to_owned()
                         },
                         c
                     )
                 ]
+                .spacing(2)
                 .width(Fill)
             ]
-            .spacing(8);
+            .spacing(12)
+            .align_y(Center);
             if supported {
-                actions = actions.push(action(
+                actions = actions.push(primary(
                     format!("setup-{}", runtime.name),
                     "Review setup",
                     (!self.setup_busy).then_some(Message::Setup(vec![
                         runtime.name.clone(),
                         "--preview".into(),
                     ])),
-                    false,
                 ));
             }
             actions = actions.push(action(
@@ -1161,32 +1615,35 @@ impl App {
                 Some(Message::ConnectionDetails(runtime.name.clone())),
                 expanded,
             ));
-            let mut details = column![actions.wrap()].spacing(8);
+            let mut details = column![actions.wrap()].spacing(10);
             if expanded {
-                details = details
-                    .push(note(
-                        format!(
-                            "{} · {}",
-                            runtime.vendor,
-                            runtime.version.as_deref().unwrap_or("Version unknown")
-                        ),
-                        c,
-                    ))
-                    .push(note(
+                let mut facts = column![
+                    kv("Vendor", runtime.vendor.to_string(), c),
+                    kv(
+                        "Version",
+                        runtime.version.as_deref().unwrap_or("Version unknown"),
+                        c
+                    ),
+                    kv(
+                        "CLI",
                         runtime
                             .cli
                             .as_ref()
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "No CLI found".into()),
-                        c,
-                    ))
-                    .push(note(
+                        c
+                    ),
+                    kv(
+                        "Integration",
                         format!("MCP: {:?} · Hooks: {:?}", runtime.mcp, runtime.hooks),
-                        c,
-                    ));
+                        c
+                    ),
+                ]
+                .spacing(6);
                 for app in &runtime.apps {
-                    details = details.push(note(format!("Application: {}", app.label), c));
+                    facts = facts.push(kv("Application", app.label.clone(), c));
                 }
+                details = details.push(rule(c)).push(facts);
             }
             list = list.push(card(details, c));
         }
@@ -1211,8 +1668,13 @@ impl App {
         let id = plan_id.unwrap_or("unknown").to_owned();
         let phase = value(plan, "phase");
         let mut body = column![
-            heading("Review integration changes", 20),
-            note(format!("{phase} · {id}"), c)
+            row![
+                heading("Review integration changes", 18).width(Fill),
+                pill(phase.clone(), c.accent_soft, c.accent_ink, c)
+            ]
+            .spacing(10)
+            .align_y(Center),
+            mono(id.clone(), c)
         ]
         .spacing(10);
         if let Some(executable) = plan["executable"].as_str() {
@@ -1221,14 +1683,23 @@ impl App {
         let changes = plan["changes"].as_array();
         for change in changes.into_iter().flatten() {
             body = body.push(
-                text(format!(
-                    "{} · {}\n{}\n{}",
-                    value(change, "runtime"),
-                    value(change, "channel"),
-                    value(change, "path"),
-                    value(change, "action")
-                ))
-                .size(14),
+                container(
+                    column![
+                        text(format!(
+                            "{} · {}",
+                            value(change, "runtime"),
+                            value(change, "channel")
+                        ))
+                        .size(14)
+                        .font(weight(iced::font::Weight::Medium)),
+                        mono(value(change, "path"), c),
+                        small(value(change, "action"), c)
+                    ]
+                    .spacing(3),
+                )
+                .padding([10, 12])
+                .width(Fill)
+                .style(move |_| c.surface(c.raised, false)),
             );
         }
         if changes.is_none_or(|c| c.is_empty()) {
@@ -1251,11 +1722,10 @@ impl App {
             && plan_id.is_some();
         body = body.push(
             row![
-                action(
+                primary(
                     "apply-setup",
                     "Apply reviewed changes",
                     applicable.then_some(Message::Setup(vec!["--apply".into(), id.clone()])),
-                    true
                 ),
                 action(
                     "undo-setup",
@@ -1271,80 +1741,205 @@ impl App {
                     false
                 )
             ]
-            .spacing(6),
+            .spacing(6)
+            .wrap(),
         );
         card(body, c)
     }
 
     fn settings_view(&self, c: Colors) -> Element<'_, Message> {
-        let mut body = column![
-            heading("Appearance", 20),
-            row![
-                action(
-                    "light-theme",
-                    "Light",
-                    Some(Message::Dark(false)),
-                    !self.shell.catalog.dark
-                ),
-                action(
-                    "dark-theme",
-                    "Dark",
-                    Some(Message::Dark(true)),
-                    self.shell.catalog.dark
-                )
-            ]
-            .spacing(8),
-            row![
-                action(
-                    "smaller-ui",
-                    "Smaller text",
-                    Some(Message::TextSize(self.settings.text_size - 1.0)),
-                    false
-                ),
-                action(
-                    "larger-ui",
-                    "Larger text",
-                    Some(Message::TextSize(self.settings.text_size + 1.0)),
-                    false
-                )
-            ]
-            .spacing(8),
-            heading("Terminal", 20),
-            row![
-                action(
-                    "smaller-terminal",
-                    "Smaller terminal text",
-                    Some(Message::TerminalSize(self.settings.terminal_size - 1.0)),
-                    false
-                ),
-                action(
-                    "larger-terminal",
-                    "Larger terminal text",
-                    Some(Message::TerminalSize(self.settings.terminal_size + 1.0)),
-                    false
-                )
+        let mut palettes = row![].spacing(6);
+        for palette in crate::theme::PALETTES {
+            let ground: iced::Color = palette.ground.into();
+            let accent: iced::Color = palette.accent.into();
+            let content = row![
+                container(dot(accent, 6.0, c))
+                    .width(16)
+                    .height(16)
+                    .center_x(16)
+                    .center_y(16)
+                    .style(move |_| container::Style {
+                        background: Some(ground.into()),
+                        border: iced::Border {
+                            color: c.line,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                text(palette.name).size(14)
             ]
             .spacing(8)
-        ]
-        .spacing(16);
-        for palette in crate::theme::PALETTES {
-            body = body.push(action(
+            .align_y(Center);
+            palettes = palettes.push(custom(
                 format!("palette-{}", palette.name),
                 palette.name,
+                content,
                 Some(Message::Palette(palette.name.into())),
                 self.settings.palette == palette.name,
+                Kind::Secondary,
+                [7, 11],
             ));
         }
-        body=body.push(action("roomy-rows",if self.settings.roomy{"Use compact rows"}else{"Use roomier rows"},Some(Message::Roomy(!self.settings.roomy)),self.settings.roomy))
-            .push(heading("Keyboard and accessibility",20)).push(note("Tab / Shift+Tab move through controls. Enter / Space activate focused buttons. Command/Ctrl+1–4 switch sections. F6 leaves terminal input. Escape closes session details or a draft launch form. Text controls support native input methods.",c))
-            .push(heading("Installation",20)).push(action("installation","Manage installation and retained versions",Some(Message::Navigate(Screen::Desktop)),false))
-            .push(heading("Diagnostics",20)).push(note(format!("agentdocker {}\nLocal daemon: {}\nWorkspace preferences: {}",env!("CARGO_PKG_VERSION"),self.socket,self.home.join("workspace.json").display()),c));
-        body.into()
+        let appearance = card(
+            column![
+                heading("Appearance", 18),
+                row![
+                    small("Theme", c).width(110),
+                    action(
+                        "light-theme",
+                        "Light",
+                        Some(Message::Dark(false)),
+                        !self.shell.catalog.dark
+                    ),
+                    action(
+                        "dark-theme",
+                        "Dark",
+                        Some(Message::Dark(true)),
+                        self.shell.catalog.dark
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
+                    small("Text size", c).width(110),
+                    action(
+                        "smaller-ui",
+                        "Smaller text",
+                        Some(Message::TextSize(self.settings.text_size - 1.0)),
+                        false
+                    ),
+                    text(format!("{:.0} pt", self.settings.text_size)).size(13),
+                    action(
+                        "larger-ui",
+                        "Larger text",
+                        Some(Message::TextSize(self.settings.text_size + 1.0)),
+                        false
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
+                    small("Rows", c).width(110),
+                    action(
+                        "roomy-rows",
+                        if self.settings.roomy {
+                            "Use compact rows"
+                        } else {
+                            "Use roomier rows"
+                        },
+                        Some(Message::Roomy(!self.settings.roomy)),
+                        self.settings.roomy
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center)
+            ]
+            .spacing(12),
+            c,
+        );
+        let terminal = card(
+            column![
+                heading("Terminal", 18),
+                row![
+                    small("Text size", c).width(110),
+                    action(
+                        "smaller-terminal",
+                        "Smaller terminal text",
+                        Some(Message::TerminalSize(self.settings.terminal_size - 1.0)),
+                        false
+                    ),
+                    text(format!("{:.0} pt", self.settings.terminal_size)).size(13),
+                    action(
+                        "larger-terminal",
+                        "Larger terminal text",
+                        Some(Message::TerminalSize(self.settings.terminal_size + 1.0)),
+                        false
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                column![small("Palette", c), palettes.wrap()].spacing(8)
+            ]
+            .spacing(12),
+            c,
+        );
+        let keyboard = card(
+            column![
+                heading("Keyboard and accessibility", 18),
+                note(
+                    "Tab / Shift+Tab move through controls. Enter / Space activate focused buttons. Command/Ctrl+1–4 switch sections. F6 leaves terminal input. Escape closes session details or a draft launch form. Text controls support native input methods.",
+                    c
+                )
+            ]
+            .spacing(10),
+            c,
+        );
+        let installation = card(
+            column![
+                heading("Installation", 18),
+                note("Preview and apply installs, rollbacks and cleanup.", c),
+                action(
+                    "installation",
+                    "Manage installation and retained versions",
+                    Some(Message::Navigate(Screen::Desktop)),
+                    false
+                )
+            ]
+            .spacing(10),
+            c,
+        );
+        let diagnostics = card(
+            column![
+                heading("Diagnostics", 18),
+                kv(
+                    "Version",
+                    format!("agentdocker {}", env!("CARGO_PKG_VERSION")),
+                    c
+                ),
+                kv("Local daemon", self.socket.clone(), c),
+                kv(
+                    "Preferences",
+                    self.home.join("workspace.json").display().to_string(),
+                    c
+                )
+            ]
+            .spacing(8),
+            c,
+        );
+        column![appearance, terminal, keyboard, installation, diagnostics]
+            .spacing(14)
+            .into()
     }
 
     fn installation_view(&self, c: Colors) -> Element<'_, Message> {
         let p = &self.desktop;
-        let mut body=column![heading("Desktop installation",20),note("Preview an install, rollback, or cleanup before applying it. Activation takes effect on the next app launch; running agents continue.",c),input("desktop-source","Application bundle or extracted package",&p.source,Message::DesktopSource),action("desktop-use-current","Use this application",(!p.busy).then_some(Message::DesktopUseCurrent),false),input("desktop-prefix","Installation prefix (empty uses your home)",&p.prefix,Message::DesktopPrefix)].spacing(14);
+        let mut body = column![
+            heading("Desktop installation", 18),
+            note(
+                "Preview an install, rollback, or cleanup before applying it. Activation takes effect on the next app launch; running agents continue.",
+                c
+            ),
+            input(
+                "desktop-source",
+                "Application bundle or extracted package",
+                &p.source,
+                Message::DesktopSource
+            ),
+            action(
+                "desktop-use-current",
+                "Use this application",
+                (!p.busy).then_some(Message::DesktopUseCurrent),
+                false
+            ),
+            input(
+                "desktop-prefix",
+                "Installation prefix (empty uses your home)",
+                &p.prefix,
+                Message::DesktopPrefix
+            )
+        ]
+        .spacing(12);
         if cfg!(target_os = "macos") {
             body = body.push(action(
                 "desktop-local",
@@ -1357,6 +1952,7 @@ impl App {
                 p.local_preview,
             ));
         }
+        let mut operations = row![].spacing(6);
         for (operation, label) in [
             ("status", "Show installed versions"),
             ("install", "Preview installation"),
@@ -1364,7 +1960,7 @@ impl App {
             ("prune", "Preview cleanup"),
             ("uninstall", "Preview removal"),
         ] {
-            body = body.push(action(
+            operations = operations.push(action(
                 format!("desktop-{operation}"),
                 label,
                 p.preview(operation)
@@ -1372,12 +1968,14 @@ impl App {
                 false,
             ));
         }
+        body = body.push(operations.wrap());
         if p.busy {
             body = body.push(note("Verifying installation…", c));
         }
         if let Some(error) = &p.error {
-            body = body.push(text(error.clone()).color(c.amber));
+            body = body.push(text(error.clone()).size(13).color(c.amber));
         }
+        let mut screen = column![card(body, c)].spacing(14);
         if let Some(report) = &p.report {
             let mut details = column![heading(
                 if report["preview"] == true {
@@ -1385,22 +1983,17 @@ impl App {
                 } else {
                     "Installation report"
                 },
-                18
+                16
             )]
-            .spacing(10);
+            .spacing(8);
             if let Some(maintenance) = report.get("maintenance") {
                 for path in maintenance["remove"].as_array().into_iter().flatten() {
-                    details = details.push(
-                        text(format!("Remove: {}", path.as_str().unwrap_or("unknown"))).size(14),
-                    );
+                    details = details.push(kv("Remove", path.as_str().unwrap_or("unknown"), c));
                 }
                 for entry in maintenance["retained"].as_array().into_iter().flatten() {
-                    details = details.push(note(
-                        format!(
-                            "Keep: {} · {}",
-                            value(entry, "path"),
-                            value(entry, "reason")
-                        ),
+                    details = details.push(kv(
+                        "Keep",
+                        format!("{} · {}", value(entry, "path"), value(entry, "reason")),
                         c,
                     ));
                 }
@@ -1410,9 +2003,10 @@ impl App {
                 } else {
                     for (key, label) in [("current", "Active"), ("previous", "Previous")] {
                         if !installation[key].is_null() {
-                            details = details.push(note(
+                            details = details.push(kv(
+                                label,
                                 format!(
-                                    "{label}: {} · source {}",
+                                    "{} · source {}",
                                     value(&installation[key], "version"),
                                     value(&installation[key], "source_commit")
                                 ),
@@ -1422,9 +2016,10 @@ impl App {
                     }
                 }
             } else {
-                details = details.push(note(
+                details = details.push(kv(
+                    "Release",
                     format!(
-                        "Release {} · source {}",
+                        "{} · source {}",
                         value(&report["candidate"], "version"),
                         value(&report["candidate"], "source_commit")
                     ),
@@ -1432,20 +2027,19 @@ impl App {
                 ));
                 for key in ["source", "application", "bin", "versions"] {
                     if let Some(path) = report[key].as_str() {
-                        details = details.push(text(format!("{key}: {path}")).size(14));
+                        details = details.push(kv(key, path, c));
                     }
                 }
             }
             if report["preview"] == true {
-                details = details.push(action(
+                details = details.push(primary(
                     "desktop-apply",
                     "Apply this reviewed plan",
                     p.apply().map(|_| Message::DesktopApply),
-                    true,
                 ));
             }
-            body = body.push(card(details, c));
+            screen = screen.push(card(details, c));
         }
-        body.into()
+        screen.into()
     }
 }

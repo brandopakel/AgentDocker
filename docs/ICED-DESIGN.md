@@ -44,10 +44,39 @@ appearance preferences are read when no new appearance has been saved.
 | Connections | Installed tools, explicit capabilities, reviewed setup, health and undo |
 | Settings | Appearance, installation, retained versions and diagnostics |
 
-Light and dark appearances share the same hierarchy. Blue marks selection and
-primary actions; status always has words. The existing icon and system fonts
-avoid an additional decorative asset bundle. Session actions sit beside a wide
-list and replace a narrow one, with an explicit return button. Long content scrolls; focused controls are revealed.
+Light and dark appearances share the same hierarchy and the same visual
+system, which is drawn from the mark:
+
+- **Brand.** The rail leads with the cube mark (`crates/ui/src/mark.png`, the
+  transparent mark downscaled to 96 px for a 30-point slot at 2× density) and
+  the two-tone wordmark: *Agent* in the text colour, *Docker* in the accent.
+  The mark also anchors empty states at reduced opacity.
+- **Colour roles** live in `app/style.rs`: ground, rail, card, raised, text,
+  muted, faint, line, accent, accent-soft/ink, cyan, green, amber, red. Dark
+  is a deep navy; light is cool off-white with white cards and a whisper of
+  shadow. A unit test keeps text, muted text and selected ink above WCAG
+  contrast thresholds on every surface in both appearances.
+- **Status is a dot and a word.** Green is live, amber needs input, faint is
+  finished, cyan marks a pinned project or a process available to connect.
+  Header pills count live sessions and open questions for the project.
+- **Controls have kinds** (`controls::Kind`): one filled *primary* action per
+  screen, quiet raised *secondary* actions and filter chips, *quiet* rows and
+  rail entries that only gain a surface when hovered or selected, underline
+  *tabs* for the project sections, and a red-tinted *danger* surface for an
+  armed stop. Every kind is the same keyboard-focusable, AccessKit-labelled
+  control; a custom-content button still carries a spoken label.
+- **Type.** System font only. Headings are Semibold; the default sans has no
+  Bold face and falls back to a monospace, so Bold is never requested.
+  Section eyebrows are 11-point capitals; paths and identifiers are monospace.
+- **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
+  by an accent bar, then a workspace that leads with the project name, its
+  path and the section tabs over a hairline. Lists are rows inside a panel;
+  prose sits in cards; the terminal and command output sit in a bezel of the
+  chosen terminal palette's ground.
+
+Blue marks selection and primary actions; status always has words. Session
+actions sit beside a wide list and replace a narrow one, with an explicit
+return button. Long content scrolls; focused controls are revealed.
 Socket paths and installation internals live in diagnostics and detailed reports.
 Current sessions are the default; finished runs live in History and unanswered
 questions have a project-scoped Needs input filter. Current rows prioritize
@@ -110,9 +139,10 @@ not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
 [state/message/update/view model](https://book.iced.rs/architecture.html),
 `Task` effects and `Subscription` observations. `app/shell.rs` owns transitions,
 `app/view.rs` renders daemon state, and the existing bounded workers own blocking
-I/O. The build enables `tiny-skia`, `crisp`, Tokio, X11/Wayland and advanced widgets.
-It excludes the default GPU renderer and image codecs. PNG decoding serves the
-existing window icon. CLI-only installs do not pull the GUI dependencies.
+I/O. The build enables `tiny-skia`, `crisp`, Tokio, X11/Wayland, advanced widgets and
+raster images without codecs. It excludes the default GPU renderer and image
+codecs. The `png` crate decodes the window icon and the embedded mark. CLI-only
+installs do not pull the GUI dependencies.
 
 Use one cache for a build campaign:
 
@@ -127,6 +157,11 @@ python3 scripts/iced_workflow_smoke.py \
 ```
 
 The workflow driver opens actual native windows in private disposable state.
+A capture step waits one extra beat after the step before it: a screenshot
+renders the last drawn frame, and text whose widget state changed since that
+frame is skipped, so a capture taken in the same beat as a change can show a
+stale layout with missing text. Captures from debug builds are slower to
+settle than release builds and are for review, not for the acceptance report.
 It drives the rendered controls' callbacks through question delivery, draft
 navigation, terminal attachment, channel messaging, setup preview/apply/undo,
 folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance

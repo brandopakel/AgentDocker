@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 mod queue;
 mod sessions;
 mod shell;
-mod style;
+pub(crate) mod style;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 pub use shell::Message;
