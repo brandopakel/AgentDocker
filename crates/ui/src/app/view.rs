@@ -267,33 +267,11 @@ impl App {
             ));
         }
         let mut header = row![header_left].spacing(16).align_y(Center);
-        if in_project && !narrow {
-            use super::sessions::Filter;
-            let live = self.session_records(Filter::Current).len();
-            let waiting = self.session_records(Filter::NeedsInput).len();
-            let mut stats = row![].spacing(6).align_y(Center);
-            if waiting > 0 {
-                stats = stats.push(pill(
-                    format!(
-                        "{waiting} need{} input",
-                        if waiting == 1 { "s" } else { "" }
-                    ),
-                    alpha(c.amber, 0.18),
-                    c.amber,
-                    c,
-                ));
-            }
-            stats = stats.push(pill(
-                format!("{live} live"),
-                if live > 0 {
-                    alpha(c.green, 0.16)
-                } else {
-                    c.raised
-                },
-                if live > 0 { c.green } else { c.muted },
-                c,
-            ));
-            header = header.push(stats);
+        if self.screen == Screen::Agents
+            && !narrow
+            && let Some(launch) = self.launch_button()
+        {
+            header = header.push(launch);
         }
         let mut content = column![header].spacing(18).width(Fill);
         if let Err(error) = &self.connected {
@@ -457,7 +435,7 @@ impl App {
             Screen::Desktop => self.installation_view(c),
         };
         content = content.push(body);
-        row![
+        let workspace = row![
             self.sidebar(c),
             container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
             container(
@@ -471,7 +449,41 @@ impl App {
             .width(Fill)
             .style(move |_| c.surface(c.ground, false))
         ]
-        .height(Fill)
+        .height(Fill);
+        column![workspace, self.footer(c)].into()
+    }
+
+    /// One quiet line across the bottom: the daemon connection and the
+    /// version. Said here once, so the rail and the pages need not repeat it.
+    fn footer(&self, c: Colors) -> Element<'_, Message> {
+        let connected = self.connected.is_ok();
+        container(
+            row![
+                dot(if connected { c.green } else { c.amber }, 7.0, c),
+                small(
+                    if connected {
+                        "Connected to the local daemon"
+                    } else {
+                        "Reconnecting to the local daemon…"
+                    },
+                    c
+                )
+                .width(Fill),
+                small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c)
+            ]
+            .spacing(8)
+            .align_y(Center),
+        )
+        .padding([6, 14])
+        .width(Fill)
+        .style(move |_| container::Style {
+            border: iced::Border {
+                color: c.line,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..c.surface(c.sidebar, false)
+        })
         .into()
     }
 
@@ -628,33 +640,7 @@ impl App {
                 Some(Message::Navigate(Screen::Settings)),
                 matches!(self.screen, Screen::Settings | Screen::Desktop),
             ))
-            .push(Space::new().height(8))
-            .push(
-                container(
-                    row![
-                        dot(
-                            if self.connected.is_ok() {
-                                c.green
-                            } else {
-                                c.amber
-                            },
-                            7.0,
-                            c
-                        ),
-                        small(
-                            if self.connected.is_ok() {
-                                "Connected locally"
-                            } else {
-                                "Reconnecting…"
-                            },
-                            c
-                        )
-                    ]
-                    .spacing(8)
-                    .align_y(Center),
-                )
-                .padding([4, 12]),
-            );
+            .push(Space::new().height(4));
         container(nav.height(Fill))
             .padding([22, 12])
             .width(if self.narrow() { 204 } else { 236 })
@@ -663,27 +649,68 @@ impl App {
             .into()
     }
 
+    /// The project's one primary action, when there is a project to act in.
+    fn launch_button(&self) -> Option<Element<'_, Message>> {
+        self.shell.catalog.selected()?;
+        Some(primary(
+            "launch-agent",
+            "Launch agent…",
+            (self.connected.is_ok() && self.shell.project_available != Some(false))
+                .then_some(Message::ShowLaunch),
+        ))
+    }
+
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
         let mut panel_col = column![]
             .spacing(if self.settings.roomy { 20 } else { 14 })
             .width(Fill);
-        let mut toolbar = row![input(
+        use super::sessions::Filter;
+        let current = self.session_records(Filter::Current);
+        let attention_rows = self.session_records(Filter::NeedsInput);
+        let history = self.session_records(Filter::History);
+        let available = self.available_processes();
+        let filter = self.shell.session_filter;
+        let filters = row![
+            action(
+                "sessions-current",
+                format!("Current ({})", current.len() + available.len()),
+                Some(Message::SessionFilter(Filter::Current)),
+                filter == Filter::Current
+            ),
+            action(
+                "sessions-attention",
+                format!("Needs input ({})", attention_rows.len()),
+                Some(Message::SessionFilter(Filter::NeedsInput)),
+                filter == Filter::NeedsInput
+            ),
+            action(
+                "sessions-history",
+                format!("History ({})", history.len()),
+                Some(Message::SessionFilter(Filter::History)),
+                filter == Filter::History
+            ),
+        ]
+        .spacing(6)
+        .wrap();
+        let search = input(
             "session-search",
             "Find a session…",
             &self.shell.search,
             Message::Search,
-        )]
-        .spacing(10)
-        .align_y(Center);
-        if self.shell.catalog.selected().is_some() {
-            toolbar = toolbar.push(primary(
-                "launch-agent",
-                "Launch agent…",
-                (self.connected.is_ok() && self.shell.project_available != Some(false))
-                    .then_some(Message::ShowLaunch),
-            ));
+        );
+        if self.narrow() {
+            let mut top = row![search].spacing(10).align_y(Center);
+            if let Some(launch) = self.launch_button() {
+                top = top.push(launch);
+            }
+            panel_col = panel_col.push(column![top, filters].spacing(10));
+        } else {
+            panel_col = panel_col.push(
+                row![container(filters).width(Fill), container(search).width(260)]
+                    .spacing(10)
+                    .align_y(Center),
+            );
         }
-        panel_col = panel_col.push(toolbar);
         if self.shell.project_available == Some(false) {
             panel_col = panel_col.push(attention(
                 column![
@@ -704,36 +731,6 @@ impl App {
         if self.shell.launch {
             panel_col = panel_col.push(self.launch_view(c));
         }
-        use super::sessions::Filter;
-        let current = self.session_records(Filter::Current);
-        let attention_rows = self.session_records(Filter::NeedsInput);
-        let history = self.session_records(Filter::History);
-        let available = self.available_processes();
-        let filter = self.shell.session_filter;
-        panel_col = panel_col.push(
-            row![
-                action(
-                    "sessions-current",
-                    format!("Current ({})", current.len() + available.len()),
-                    Some(Message::SessionFilter(Filter::Current)),
-                    filter == Filter::Current
-                ),
-                action(
-                    "sessions-attention",
-                    format!("Needs input ({})", attention_rows.len()),
-                    Some(Message::SessionFilter(Filter::NeedsInput)),
-                    filter == Filter::NeedsInput
-                ),
-                action(
-                    "sessions-history",
-                    format!("History ({})", history.len()),
-                    Some(Message::SessionFilter(Filter::History)),
-                    filter == Filter::History
-                ),
-            ]
-            .spacing(6)
-            .wrap(),
-        );
         let records = match filter {
             Filter::Current => current,
             Filter::NeedsInput => attention_rows,
@@ -1096,40 +1093,63 @@ impl App {
         }
         let (_, direct) = by_room(&self.inbox);
         if !direct.is_empty() {
-            list = list.push(eyebrow("Messages addressed to you", c));
-        }
-        for message in direct.iter().rev().take(30).rev() {
-            list = list.push(self.message_view(message, c));
+            let recent = direct.len().saturating_sub(30);
+            list = list
+                .push(eyebrow("Messages addressed to you", c))
+                .push(panel(
+                    self.transcript(direct.iter().skip(recent).copied(), c),
+                    c,
+                ));
         }
         list.into()
     }
 
-    fn message_view(
-        &self,
-        message: &agentdocker_core::Envelope,
+    /// Messages as a transcript: when, who, what — one line each, the way
+    /// a chat client reads, rather than a card per message.
+    fn transcript<'a>(
+        &'a self,
+        messages: impl Iterator<Item = &'a agentdocker_core::Envelope>,
         c: Colors,
-    ) -> Element<'_, Message> {
-        let payload = message
-            .payload
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| serde_json::to_string_pretty(&message.payload).unwrap_or_default());
-        card(
-            column![
-                row![
-                    text(self.name_of(&message.from))
-                        .size(13)
-                        .font(weight(iced::font::Weight::Semibold)),
-                    pill(message.kind.to_string(), c.raised, c.muted, c),
-                    small(ago(Utc::now(), message.sent_at), c)
-                ]
-                .spacing(8)
-                .align_y(Center),
-                text(payload).size(14)
+    ) -> Element<'a, Message> {
+        let mut lines = column![].spacing(0);
+        let mut first = true;
+        for message in messages {
+            if !first {
+                lines = lines.push(container(rule(c)).padding([0, 10]));
+            }
+            first = false;
+            let payload = message
+                .payload
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    serde_json::to_string_pretty(&message.payload).unwrap_or_default()
+                });
+            let mut who = row![
+                text(self.name_of(&message.from))
+                    .size(13)
+                    .font(weight(iced::font::Weight::Semibold))
             ]
-            .spacing(8),
-            c,
-        )
+            .spacing(8)
+            .align_y(Center);
+            if message.kind.to_string().as_str() != "chat" {
+                who = who.push(pill(message.kind.to_string(), c.raised, c.muted, c));
+            }
+            lines = lines.push(
+                container(
+                    row![
+                        small(ago(Utc::now(), message.sent_at), c).width(64),
+                        column![who, text(payload).size(13)].spacing(3).width(Fill)
+                    ]
+                    .spacing(10),
+                )
+                .padding([8, 10]),
+            );
+        }
+        container(lines)
+            .width(Fill)
+            .style(move |_| c.surface(c.raised, false))
+            .into()
     }
 
     fn channels_view(&self, c: Colors) -> Element<'_, Message> {
@@ -1184,12 +1204,12 @@ impl App {
             if let Some(resolution) = &channel.resolution {
                 body = body.push(note(resolution.clone(), c));
             }
-            if let Some(queued) = messages.get(&id) {
-                for message in queued.iter().rev().take(20).rev() {
-                    body = body.push(self.message_view(message, c));
+            match messages.get(&id) {
+                Some(queued) if !queued.is_empty() => {
+                    let recent = queued.len().saturating_sub(20);
+                    body = body.push(self.transcript(queued.iter().skip(recent).copied(), c));
                 }
-            } else {
-                body = body.push(note("No messages queued for you in this channel.", c));
+                _ => body = body.push(note("No messages queued for you in this channel.", c)),
             }
             body = body.push(action(
                 format!("reply-channel-{id}"),
@@ -1892,11 +1912,6 @@ impl App {
         let diagnostics = card(
             column![
                 heading("Diagnostics", 18),
-                kv(
-                    "Version",
-                    format!("agentdocker {}", env!("CARGO_PKG_VERSION")),
-                    c
-                ),
                 kv("Local daemon", self.socket.clone(), c),
                 kv(
                     "Preferences",

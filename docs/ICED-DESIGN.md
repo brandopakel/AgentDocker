@@ -70,9 +70,17 @@ system, which is drawn from the mark:
   Section eyebrows are 11-point capitals; paths and identifiers are monospace.
 - **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
   by an accent bar, then a workspace that leads with the project name, its
-  path and the section tabs over a hairline. Lists are rows inside a panel;
-  prose sits in cards; the terminal and command output sit in a bezel of the
-  chosen terminal palette's ground.
+  path and the project's one primary action, then the section tabs over a
+  hairline. Lists are rows inside a panel; prose sits in cards; the terminal
+  and command output sit in a bezel of the chosen terminal palette's ground.
+  Filters sit left and search right on one row. A footer bar says the daemon
+  connection and the version once, so no page repeats them.
+- **Say each fact once.** Counts live in the sidebar (live agents per project,
+  open questions on Inbox) and in the filter chips; the header does not repeat
+  them. Messages in Channels and Inbox are transcript lines (when · who · what)
+  rather than a card per message, following the chat clients in the iced
+  showcase (Halloy); the pane-header, footer-bar and inline-meter patterns come
+  from Kraken Desktop and Sniffnet there.
 
 Blue marks selection and primary actions; status always has words. Session
 actions sit beside a wide list and replace a narrow one, with an explicit
