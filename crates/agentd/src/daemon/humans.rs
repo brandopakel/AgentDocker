@@ -44,6 +44,7 @@ pub struct Notice {
     pub from: String,
     pub kind: String,
     pub text: String,
+    pub target: agentdocker_core::NotificationTarget,
 }
 
 impl State {
@@ -64,6 +65,23 @@ impl State {
             from: self.display_name(&envelope.from),
             kind: envelope.kind.clone(),
             text: message_text(&envelope.payload),
+            target: agentdocker_core::NotificationTarget {
+                message: envelope.id.clone(),
+                agent: AgentId::from(envelope.from.as_str()),
+                project: match &envelope.to {
+                    Destination::Channel(id) => self.channels.get(id).map(|c| c.project.clone()),
+                    Destination::Project(id) => Some(id.clone()),
+                    _ => self
+                        .registry
+                        .get(&AgentId::from(envelope.from.as_str()))
+                        .and_then(|a| a.project.as_ref())
+                        .map(ProjectRef::id),
+                },
+                channel: match &envelope.to {
+                    Destination::Channel(id) => Some(id.clone()),
+                    _ => None,
+                },
+            },
         });
     }
 
@@ -159,7 +177,7 @@ fn title(from: &str, kind: &str) -> String {
 
 /// Post notifications off the state lock, at most one per sender per
 /// minute. Runs until the daemon drops its sender.
-pub async fn notifier(mut notices: mpsc::Receiver<Notice>) {
+pub async fn notifier(mut notices: mpsc::Receiver<Notice>, home: PathBuf, socket: PathBuf) {
     let mut last: HashMap<String, Instant> = HashMap::new();
     while let Some(notice) = notices.recv().await {
         let now = Instant::now();
@@ -177,12 +195,17 @@ pub async fn notifier(mut notices: mpsc::Receiver<Notice>) {
         let notification = Notification {
             title: title(&notice.from, &notice.kind),
             body: notify::summarise(&notice.text, NOTICE_CHARS),
+            action: Some(notify::Action {
+                home: home.clone(),
+                socket: socket.clone(),
+                target: notice.target,
+            }),
         };
         // Posting spawns a process and waits for it; keep that off the
         // runtime's worker threads.
         let posted = tokio::task::spawn_blocking(move || notify::post(&notification)).await;
-        if matches!(posted, Ok(false)) {
-            debug!("no desktop notifier on this machine; the message is queued as usual");
+        if let Ok(Err(reason)) = posted {
+            warn!(%reason, "desktop notification unavailable; message remains in inbox");
         }
     }
 }

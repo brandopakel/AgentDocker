@@ -139,3 +139,22 @@ already running external terminal session remains unproven.
 Only help/schema inspection and documentation reads were used for these leads.
 No provider daemon was started or attached, no message was submitted, and no user
 provider configuration was changed by this inspection.
+
+### Claude Code channels (September 10 follow-up)
+
+Installed Claude Code 2.1.267 and the official channels reference provide another
+candidate: declare `capabilities.experimental["claude/channel"] = {}` during MCP
+initialization, then emit `notifications/claude/channel` with `{content, meta}`.
+Metadata values are strings; keys use letters, digits and underscores. Claude
+sets the source from the configured MCP server. Events queue in order; busy
+sessions receive queued events together on a later turn. The session must enable
+this server as a channel at startup. A bare local development server currently
+uses the documented per-entry development opt-in and confirmation; enterprise
+policy still applies. Existing sessions are not upgraded in place.
+
+The provider gives **no transport acknowledgement of processing** and can silently
+ignore events when the channel is not enabled. A successful write must therefore
+retain uncertain delivery state until an explicit correlated receipt/reply. This
+interface has been verified against documentation with the parallel Claude
+session; an actual idle-start and mixed-input trial has not yet passed.
+[Official channel contract](https://code.claude.com/docs/en/channels-reference).

@@ -10,6 +10,7 @@ pub mod event;
 pub mod journal;
 pub mod lease;
 pub mod message;
+pub mod notification;
 pub mod paths;
 pub mod project;
 pub mod protocol;
@@ -25,6 +26,7 @@ pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, Reso
 pub use message::{
     Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question, topic_matches,
 };
+pub use notification::NotificationTarget;
 pub use project::{ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};

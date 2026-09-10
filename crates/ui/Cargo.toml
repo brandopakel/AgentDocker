@@ -43,6 +43,7 @@ objc2-user-notifications = { version = "0.3", features = [
   "UNNotification",
   "UNNotificationContent",
   "UNNotificationRequest",
+  "UNNotificationResponse",
   "UNNotificationSettings",
   "UNNotificationTrigger",
   "UNUserNotificationCenter",

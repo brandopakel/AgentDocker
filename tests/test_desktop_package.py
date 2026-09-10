@@ -47,6 +47,9 @@ class DesktopPackaging(unittest.TestCase):
             names = bundle.getnames()
             self.assertIn("agentdocker-desktop/share/applications/agentdocker.desktop", names)
             self.assertIn("agentdocker-desktop/share/metainfo/dev.agentdocker.desktop.metainfo.xml", names)
+            self.assertEqual(
+                bundle.extractfile("agentdocker-desktop/share/licenses/agentdocker/LICENSE-Inter.txt").read(),
+                (ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt").read_bytes())
             for name in PACKAGE.BINARIES:
                 self.assertEqual(bundle.extractfile("agentdocker-desktop/bin/" + name).read(), (self.binaries / name).read_bytes())
             metadata = json.load(bundle.extractfile("agentdocker-desktop/build.json"))

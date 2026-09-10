@@ -36,7 +36,7 @@ const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 /// A bundle is exactly what has an identifier. A loose executable's
 /// `mainBundle` is its own directory and has none.
 #[cfg(target_os = "macos")]
-fn in_a_bundle() -> bool {
+pub(crate) fn in_a_bundle() -> bool {
     objc2_foundation::NSBundle::mainBundle()
         .bundleIdentifier()
         .is_some()
@@ -76,13 +76,20 @@ pub fn request_permission() {
 #[cfg(not(target_os = "macos"))]
 pub fn request_permission() {}
 
-#[cfg(target_os = "macos")]
 pub fn post(title: &str, body: &str) -> Result<(), String> {
+    post_notification(&agentdocker_host::notify::Notification {
+        title: title.into(),
+        body: body.into(),
+        action: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Result<(), String> {
     use block2::RcBlock;
     use objc2_foundation::{NSError, NSString};
     use objc2_user_notifications::{
-        UNAuthorizationOptions, UNMutableNotificationContent, UNNotificationRequest,
-        UNUserNotificationCenter,
+        UNAuthorizationOptions, UNNotificationRequest, UNUserNotificationCenter,
     };
     use std::sync::{Arc, Mutex};
 
@@ -114,17 +121,13 @@ pub fn post(title: &str, body: &str) -> Result<(), String> {
         UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
         &handler,
     );
-    if let Some(reason) = wait_for(&asked, ACCEPT_WITHIN)
-        && !reason.is_empty()
-    {
-        return Err(format!("notifications are not permitted: {reason}"));
+    match wait_for(&asked, ACCEPT_WITHIN) {
+        Some(reason) if reason.is_empty() => {}
+        Some(reason) => return Err(format!("notifications are not permitted: {reason}")),
+        None => return Err("notification authorization did not answer".into()),
     }
 
-    let content = UNMutableNotificationContent::new();
-    content.setTitle(&NSString::from_str(title));
-    content.setBody(&NSString::from_str(body));
-    // A fresh identifier each time, so notifications accumulate the way
-    // a person expects rather than replacing one another.
+    let content = notification_content(notice)?;
     let id = NSString::from_str(&format!(
         "dev.agentdocker.{}",
         std::time::SystemTime::now()
@@ -143,12 +146,32 @@ pub fn post(title: &str, body: &str) -> Result<(), String> {
     centre.addNotificationRequest_withCompletionHandler(&request, Some(&handler));
     match wait_for(&accepted, ACCEPT_WITHIN) {
         Some(reason) if reason.is_empty() => Ok(()),
-        // Said rather than swallowed. The first version of this
-        // discarded the NSError and reported success for a request the
-        // framework had thrown away, which is worse than failing.
         Some(reason) => Err(reason),
         None => Err("the notification centre did not answer".to_owned()),
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn notification_content(
+    notice: &agentdocker_host::notify::Notification,
+) -> Result<objc2::rc::Retained<objc2_user_notifications::UNMutableNotificationContent>, String> {
+    use objc2_foundation::NSString;
+    let content = objc2_user_notifications::UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(&notice.title));
+    content.setBody(&NSString::from_str(&notice.body));
+    if let Some(action) = &notice.action {
+        let encoded = serde_json::to_string(action).map_err(|e| e.to_string())?;
+        agentdocker_host::notify::Action::parse(&encoded)?;
+        let key = NSString::from_str("agentdocker.action");
+        let value = NSString::from_str(&encoded);
+        let info = objc2_foundation::NSDictionary::from_slices(&[&*key], &[&*value]);
+        // SAFETY: Erase only the dictionary's static generic parameters.
+        // The retained Objective-C object and its immutable strings are unchanged.
+        let info =
+            unsafe { objc2::rc::Retained::cast_unchecked::<objc2_foundation::NSDictionary>(info) };
+        unsafe { content.setUserInfo(&info) };
+    }
+    Ok(content)
 }
 
 /// The shared slot a completion handler drops its verdict into: `None`
@@ -207,7 +230,7 @@ fn pump_run_loop(for_: std::time::Duration) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn post(_title: &str, _body: &str) -> Result<(), String> {
+pub fn post_notification(_notice: &agentdocker_host::notify::Notification) -> Result<(), String> {
     Err("posting from the app is a macOS arrangement; \
          other platforms let the daemon post directly"
         .to_owned())
@@ -225,7 +248,12 @@ mod tests {
     #[test]
     fn asking_outside_a_bundle_is_refused_rather_than_fatal() {
         super::request_permission();
-        let refused = super::post("AgentDocker", "test").unwrap_err();
+        let refused = super::post_notification(&agentdocker_host::notify::Notification {
+            title: "AgentDocker".into(),
+            body: "test".into(),
+            action: None,
+        })
+        .unwrap_err();
         assert!(!refused.is_empty(), "a refusal says why");
         #[cfg(target_os = "macos")]
         assert!(!super::in_a_bundle(), "the test binary is not a bundle");

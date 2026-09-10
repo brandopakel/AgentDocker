@@ -62,6 +62,11 @@ launcher or the daemon hosting existing sessions.
   their hashes before/after workloads. A custom target directory previously left
   the runner pointing at potentially stale `target/release` binaries. This does
   not establish the cause of the older retained socket timeout.
+- Implemented notification destination metadata, native response handling and
+  forwarding to the window for the correct daemon origin. Removed the macOS
+  AppleScript fallback and preserved drafts during navigation. Release/native
+  click trials remain open in the notification audit; the installed launcher is
+  unchanged. Bundled Inter font licenses now accompany Mac and Linux packages.
 
 ## Engineering still open
 

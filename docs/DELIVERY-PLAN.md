@@ -36,6 +36,14 @@ drafts. Verify preview and signed builds separately; developer-program payment
 does not implement the missing click handler. Keep signing/notarization and
 provider idle wake as distinct gates, and suppress unintended fixture notices.
 
+Implementation now carries destination/origin metadata, removes the macOS
+AppleScript fallback, handles native responses, and forwards activation into an
+existing window or starts the destination origin. Navigation preserves drafts
+and includes an older target in the visible transcript window. The
+[audit](NOTIFICATION-ROUTING-AUDIT.md#implementation-in-the-current-change) records
+implementation and trial limits; the installed-app defect remains open until
+actual native clicks and candidate acceptance pass.
+
 ### Active-session defects and coordination trial (September 7, evening)
 
 The user's live desktop trial now includes Codex and two Claude Code sessions

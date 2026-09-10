@@ -46,6 +46,38 @@ correct notification navigation is an engineering requirement. No payment,
 certificate change, installation switch or test notification was performed for
 this read-only diagnosis.
 
+## Implementation in the current change
+
+- The daemon retains message, sender, project and channel IDs plus its exact home
+  and socket. Native posting uses `--notify-json`; title/body remain display data.
+  macOS no longer falls back to AppleScript. A posting failure leaves the message
+  in Inbox and emits a bounded diagnostic without copying child output or content.
+- Native notification `userInfo` carries the validated destination, and a retained
+  `UNUserNotificationCenterDelegate` receives default clicks. Older notices with
+  no metadata open Inbox; dismissal does not navigate. Authorization timeout now
+  fails explicitly instead of falling through to posting.
+- A private, bounded activation socket forwards another launch to the existing
+  window for that daemon origin. A native click for another origin launches the
+  same executable with child-only home/socket settings. The receiver validates
+  origin and message IDs, refreshes daemon snapshots, and reveals the actual
+  question or message. Missing destinations show an Inbox fallback; manual
+  navigation cancels a pending route. No click submits or rewrites a draft.
+- Ordinary Iced workflow fixtures set `AGENTDOCKER_NO_NOTIFICATIONS=1`. The new
+  `scripts/notification_smoke.py` exercises real processes, private IPC, old
+  messages, two projects and preserved drafts. It explicitly does not claim to
+  simulate a Notification Center click.
+
+The first two debug-build navigation trials reached the older direct message,
+then exceeded their 30-second channel-transition gate. The second retained a
+process sample showing the main thread spending its samples in software drawing.
+The same 30-second gates passed against the release build: 21 existing-window
+steps and two cold-launch steps in 9.92 seconds, with eight routing/draft checks,
+unchanged executable hashes and no surviving fixture children. Captures show the
+older direct and channel target in view. The combined standard gate passed 695
+Rust tests (six skipped), 48 Python checks and 105 release workflow steps.
+Native posting/clicks, signed builds and old/new bundle registration still require
+results. The user's installed launcher and daemon remain unchanged.
+
 ## Work and acceptance
 
 1. Identify the actual daemon, app bundle, notification sender and source version

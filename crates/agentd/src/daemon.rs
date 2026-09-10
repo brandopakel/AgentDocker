@@ -1029,9 +1029,14 @@ impl Daemon {
     /// person. Separate from `open` so tests, which have no desktop and
     /// want no side effects, simply never call it.
     pub fn notify_desktop(self: &Arc<Self>) {
+        if std::env::var_os("AGENTDOCKER_NO_NOTIFICATIONS")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+        {
+            return;
+        }
         let (tx, rx) = mpsc::channel(64);
         lock(&self.state).notifier = Some(tx);
-        tokio::spawn(humans::notifier(rx));
+        tokio::spawn(humans::notifier(rx, self.home.clone(), self.socket.clone()));
     }
 
     pub fn log_path(&self, id: &AgentId) -> PathBuf {
@@ -5798,6 +5803,18 @@ mod tests {
         assert_eq!(notice.from, "worker", "by name, not by id");
         assert_eq!(notice.kind, "chat");
         assert_eq!(notice.text, "look at this");
+        assert_eq!(notice.target.agent, worker.id);
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: human.id.to_string(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert_eq!(notice.target.message, messages[0].id);
+        assert!(notice.target.channel.is_none());
 
         daemon
             .handle(Request::Send {

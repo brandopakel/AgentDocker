@@ -12,6 +12,7 @@ mod client;
 mod color;
 mod controls;
 mod desktop;
+mod notification_route;
 mod notify;
 mod smoke;
 mod terminal;
@@ -49,6 +50,7 @@ fn main() -> iced::Result {
     let mut expected_pid = None;
     let mut smoke_deadline = None;
     let mut smoke_scenario = None;
+    let mut notification_open = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version" | "-V") => {
@@ -81,6 +83,36 @@ fn main() -> iced::Result {
                         }),
                 );
             }
+            Some("--open-notification") => {
+                let encoded = args
+                    .next()
+                    .and_then(|s| s.into_string().ok())
+                    .unwrap_or_else(|| {
+                        usage_error("--open-notification requires destination JSON")
+                    });
+                notification_open = Some(
+                    agentdocker_host::notify::Action::parse(&encoded)
+                        .unwrap_or_else(|reason| usage_error(&reason)),
+                );
+            }
+            Some("--notify-json") => {
+                let encoded = args
+                    .next()
+                    .and_then(|s| s.into_string().ok())
+                    .unwrap_or_else(|| usage_error("--notify-json requires notification JSON"));
+                if args.next().is_some() {
+                    usage_error("unexpected notification argument");
+                }
+                let notice = agentdocker_host::notify::Notification::parse(&encoded)
+                    .unwrap_or_else(|reason| usage_error(&reason));
+                return match notify::post_notification(&notice) {
+                    Ok(()) => Ok(()),
+                    Err(reason) => {
+                        eprintln!("{reason}");
+                        std::process::exit(1);
+                    }
+                };
+            }
             // One notification, then exit. The daemon runs this from
             // inside the app bundle so the notification carries our
             // icon; nothing else on macOS can.
@@ -111,7 +143,7 @@ fn main() -> iced::Result {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "agentdocker-ui [--version] [--notify TITLE BODY] \
+                    "agentdocker-ui [--version] [--notify TITLE BODY] [--notify-json JSON] [--open-notification JSON] \
                      [--smoke-test OUTPUT --expect-pid PID --smoke-deadline SECONDS --smoke-scenario JSON]"
                 );
                 return Ok(());
@@ -140,6 +172,27 @@ fn main() -> iced::Result {
         }
         None => (None, None),
     };
+    let home = agentdocker_host::dirs::home();
+    let daemon_socket = agentdocker_core::paths::socket_path(&home);
+    if notification_open
+        .as_ref()
+        .is_some_and(|action| action.home != home || action.socket != daemon_socket)
+    {
+        usage_error(
+            "notification belongs to another daemon; use its AGENTDOCKER_HOME and AGENTDOCKER_SOCKET",
+        );
+    }
+    let initial = notification_open.map_or(
+        notification_route::Activation::Focus,
+        notification_route::Activation::Open,
+    );
+    let _instance = match notification_route::instance::start(&home, &daemon_socket, initial)
+        .unwrap_or_else(|error| usage_error(&format!("cannot activate desktop: {error}")))
+    {
+        notification_route::instance::Launch::Primary(instance) => instance,
+        notification_route::instance::Launch::Forwarded => return Ok(()),
+    };
+    let _notification_delegate = notification_route::install();
     let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!("icon.png")))
         .read_info()
         .expect("embedded icon");

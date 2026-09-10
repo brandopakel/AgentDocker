@@ -102,7 +102,7 @@ def smoke(binary_dir, output):
                "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"),
                "PATH": f"{tools}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
                "AGENTDOCKER_HOME": str(state), "AGENTDOCKER_SOCKET": str(endpoint),
-               "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": "warn"}
+               "AGENTDOCKER_NO_AUTOSTART": "1", "AGENTDOCKER_NO_NOTIFICATIONS": "1", "RUST_LOG": "warn"}
         try:
             with (output / "daemon.log").open("w") as log:
                 daemon = subprocess.Popen([str(binary_dir / "agentd")], cwd=project, env=env,
