@@ -53,9 +53,17 @@ system, which is drawn from the mark:
   The mark also anchors empty states at reduced opacity.
 - **Colour roles** live in `app/style.rs`: ground, rail, card, raised, text,
   muted, faint, line, accent, accent-soft/ink, cyan, green, amber, red. Dark
-  is a deep navy; light is cool off-white with white cards and a whisper of
-  shadow. A unit test keeps text, muted text and selected ink above WCAG
-  contrast thresholds on every surface in both appearances.
+  is a deep navy; light is cool off-white with white cards. A unit test keeps
+  text, muted text and selected ink above WCAG contrast thresholds on every
+  surface in both appearances.
+- **No blurred shadows on large surfaces.** tiny-skia renders a quad's shadow
+  by building a per-pixel colour buffer for the whole shadow area on every
+  frame, including the part scrolled out of view. With a hundred session rows
+  in light mode that was gigabytes of allocation and a third of a core; the
+  same window in dark mode, whose cards had no shadow, sat at 150 MiB and
+  under two percent (measured 2026-09-10 on the packaged build). Cards and
+  panels get depth from tint and hairline only. Tiny shadows on tooltips and
+  the selected segment are a few hundred pixels and remain.
 - **Status is a dot and a word.** Green is live, amber needs input, faint is
   finished, cyan marks a pinned project or a process available to connect.
   Header pills count live sessions and open questions for the project.

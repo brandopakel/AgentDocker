@@ -3,7 +3,7 @@
 //! The palette comes from the mark: a deep navy ground, electric blue for
 //! selection and primary actions, cyan as the secondary brand tone. Light
 //! and dark keep the same roles so the hierarchy reads identically.
-use iced::{Border, Color, Font, Shadow, Theme, Vector, color, widget::container};
+use iced::{Border, Color, Font, Theme, color, widget::container};
 
 /// The interface face. Inter is bundled (Regular, Medium, SemiBold; SIL OFL),
 /// so weights and glyph coverage are the same on every host. The system
@@ -120,20 +120,13 @@ impl Colors {
         }
     }
 
-    /// A card: raised surface, hairline, and in light mode a whisper of depth.
+    /// A card: raised surface and hairline. No blurred shadow: tiny-skia
+    /// evaluates a shadow per pixel over the whole quad on every frame and
+    /// allocates for it, which with a hundred session rows in light mode
+    /// cost gigabytes and a third of a core (measured 2026-09-10). Depth
+    /// on large surfaces comes from the tint and the hairline instead.
     pub fn card_style(self) -> container::Style {
-        container::Style {
-            shadow: if self.dark {
-                Shadow::default()
-            } else {
-                Shadow {
-                    color: Color::from_rgba8(16, 24, 40, 0.06),
-                    offset: Vector::new(0.0, 1.0),
-                    blur_radius: 3.0,
-                }
-            },
-            ..self.surface(self.card, true)
-        }
+        self.surface(self.card, true)
     }
 
     /// A card whose left-to-right hairline is tinted to ask for attention.
