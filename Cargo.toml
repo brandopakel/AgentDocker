@@ -18,7 +18,7 @@ anyhow = "1"
 base64 = "0.22"
 criterion = "0.5.1"
 vt100 = "0.16"
-iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "crisp", "tokio", "x11", "wayland", "advanced", "image-without-codecs"] }
+iced = { version = "0.14.0", default-features = false, features = ["tiny-skia", "crisp", "tokio", "x11", "wayland", "advanced", "image-without-codecs", "canvas"] }
 png = "0.18"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 accesskit = "0.24.1"

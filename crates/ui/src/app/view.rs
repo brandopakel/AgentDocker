@@ -4,6 +4,7 @@
 //! four destinations and the project list; the workspace leads with the
 //! project name, then the section tabs, then whatever the section shows.
 //! Status is drawn as a coloured dot *and* said in words, every time.
+use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
@@ -576,11 +577,12 @@ impl App {
         &self,
         id: &'a str,
         label: &'a str,
+        glyph: Icon,
         badge: Option<String>,
         message: Message,
         selected: bool,
-        c: Colors,
     ) -> Element<'a, Message> {
+        let c = Colors::new(self.shell.catalog.dark);
         let mut content = row![
             container(Space::new().width(3).height(16)).style(move |_| {
                 c.dot(if selected {
@@ -589,6 +591,7 @@ impl App {
                     iced::Color::TRANSPARENT
                 })
             }),
+            icon(glyph, if selected { c.accent } else { c.muted }, 16.0),
             text(label)
                 .size(14)
                 .font(weight(if selected {
@@ -624,26 +627,26 @@ impl App {
         nav = nav.push(self.nav_item(
             "projects",
             "Projects",
+            Icon::Projects,
             None,
             Message::Navigate(Screen::Agents),
             project_page,
-            c,
         ));
         nav = nav.push(self.nav_item(
             "inbox",
             "Inbox",
+            Icon::Inbox,
             (!self.questions.is_empty()).then(|| self.questions.len().to_string()),
             Message::Navigate(Screen::Questions),
             self.screen == Screen::Questions,
-            c,
         ));
         nav = nav.push(self.nav_item(
             "connections",
             "Connections",
+            Icon::Connections,
             None,
             Message::Navigate(Screen::Runtimes),
             self.screen == Screen::Runtimes,
-            c,
         ));
         nav = nav
             .push(Space::new().height(18))
@@ -720,16 +723,20 @@ impl App {
                     .height(Fill),
             )
             .push(Space::new().height(6))
-            .push(block_button(
+            .push(self.nav_item(
                 "add-project",
-                "+ Add project…",
-                Some(Message::ShowAdd),
+                "Add project…",
+                Icon::Add,
+                None,
+                Message::ShowAdd,
                 self.shell.adding,
             ))
-            .push(block_button(
+            .push(self.nav_item(
                 "settings",
                 "Settings",
-                Some(Message::Navigate(Screen::Settings)),
+                Icon::Settings,
+                None,
+                Message::Navigate(Screen::Settings),
                 matches!(self.screen, Screen::Settings | Screen::Desktop),
             ))
             .push(Space::new().height(4));
@@ -856,6 +863,7 @@ impl App {
                 ]
                 .spacing(2)
                 .width(Fill),
+                small(format!("started {}", ago(Utc::now(), agent.created_at)), c),
                 pill(agent.spec.runtime.clone(), c.raised, c.muted, c)
             ]
             .spacing(12)
@@ -1155,6 +1163,7 @@ impl App {
                 .spacing(8)
                 .align_y(Center),
                 heading(question.text.clone(), 18),
+                self.answer_window(question, c),
                 input_enabled(
                     format!("answer-{id}"),
                     "Your answer",
@@ -1197,6 +1206,27 @@ impl App {
                 ));
         }
         list.into()
+    }
+
+    /// How long is left to answer, as a meter and a few words. An expired
+    /// question says so instead.
+    fn answer_window(&self, question: &Question, c: Colors) -> Element<'_, Message> {
+        let now = Utc::now();
+        let total = (question.expires_at - question.asked_at)
+            .num_seconds()
+            .max(1) as f32;
+        let left_secs = (question.expires_at - now).num_seconds();
+        if left_secs <= 0 {
+            return small("No longer waiting for an answer", c).into();
+        }
+        let left = (left_secs as f32 / total).min(1.0);
+        row![
+            meter(left, if left < 0.2 { c.red } else { c.amber }, c),
+            small(format!("{} left to answer", super::span(left_secs)), c)
+        ]
+        .spacing(10)
+        .align_y(Center)
+        .into()
     }
 
     /// The last `keep` messages, plus the one a notification pointed at when

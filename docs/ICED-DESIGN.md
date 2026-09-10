@@ -80,8 +80,15 @@ system, which is drawn from the mark:
   rail's project dots, session rows, connections), pointing at it shows a
   tooltip with the same words the wide layout prints.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
-  amber under one fifth. Panels that hold a series (Activity) start with a pane
-  header: what the pane holds on the left, one quiet fact on the right.
+  amber under one fifth. A question card carries the time left to answer it,
+  red under one fifth. Session rows say when they started. Panels that hold a
+  series (Activity) start with a pane header: what the pane holds on the left,
+  one quiet fact on the right.
+- **Rail glyphs are drawn, not shipped.** `app/icons.rs` strokes five icons
+  (folder, envelope, joined nodes, sliders, plus) on a sixteen-point grid
+  through the canvas widget, inked in the row's own colour, so they stay crisp
+  at any density and in both appearances with no icon font or bitmap. The
+  build enables `canvas` for this (tiny-skia geometry; no GPU renderer).
 - **Scroll anchors.** Question cards, transcript lines and channel cards carry
   container ids `notification-question-<id>`, `notification-message-<id>` and
   `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
@@ -169,8 +176,8 @@ not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
 [state/message/update/view model](https://book.iced.rs/architecture.html),
 `Task` effects and `Subscription` observations. `app/shell.rs` owns transitions,
 `app/view.rs` renders daemon state, and the existing bounded workers own blocking
-I/O. The build enables `tiny-skia`, `crisp`, Tokio, X11/Wayland, advanced widgets and
-raster images without codecs. It excludes the default GPU renderer and image
+I/O. The build enables `tiny-skia`, `crisp`, Tokio, X11/Wayland, advanced widgets,
+canvas geometry for the drawn rail glyphs, and raster images without codecs. It excludes the default GPU renderer and image
 codecs. The `png` crate decodes the window icon and the embedded mark. CLI-only
 installs do not pull the GUI dependencies.
 
