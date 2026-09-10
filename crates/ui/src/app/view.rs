@@ -111,6 +111,16 @@ fn kv<'a>(label: &'a str, value: impl Into<String>, c: Colors) -> Element<'a, Me
 fn value(json: &serde_json::Value, key: &str) -> String {
     json[key].as_str().unwrap_or("unknown").to_owned()
 }
+/// What a message says. Agents and the CLI send `{"text": ...}`, channel
+/// notices add a title and room around it; only a payload with no text at
+/// all is shown as its JSON.
+fn spoken_payload(payload: &serde_json::Value) -> String {
+    payload
+        .as_str()
+        .or_else(|| payload["text"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| serde_json::to_string_pretty(payload).unwrap_or_default())
+}
 
 /// The mark, decoded once. The PNG is the cube alone on transparency,
 /// downscaled for a 30-point slot at two-times density.
@@ -1118,13 +1128,7 @@ impl App {
                 lines = lines.push(container(rule(c)).padding([0, 10]));
             }
             first = false;
-            let payload = message
-                .payload
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    serde_json::to_string_pretty(&message.payload).unwrap_or_default()
-                });
+            let payload = spoken_payload(&message.payload);
             let mut who = row![
                 text(self.name_of(&message.from))
                     .size(13)
@@ -2056,5 +2060,21 @@ impl App {
             screen = screen.push(card(details, c));
         }
         screen.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spoken_payload;
+    use serde_json::json;
+
+    #[test]
+    fn a_message_shows_its_text_and_only_textless_payloads_show_json() {
+        assert_eq!(spoken_payload(&json!("plain")), "plain");
+        assert_eq!(
+            spoken_payload(&json!({"text": "hello", "channel": "c1"})),
+            "hello"
+        );
+        assert!(spoken_payload(&json!({"verdict": "approve"})).contains("\"verdict\""));
     }
 }
