@@ -3,7 +3,18 @@
 //! The palette comes from the mark: a deep navy ground, electric blue for
 //! selection and primary actions, cyan as the secondary brand tone. Light
 //! and dark keep the same roles so the hierarchy reads identically.
-use iced::{Border, Color, Shadow, Theme, Vector, color, widget::container};
+use iced::{Border, Color, Font, Shadow, Theme, Vector, color, widget::container};
+
+/// The interface face. Inter is bundled (Regular, Medium, SemiBold; SIL OFL),
+/// so weights and glyph coverage are the same on every host. The system
+/// sans on macOS has no Bold face for the default family and borrows
+/// heavier glyphs from a monospace fallback, which is how this started.
+pub const UI: Font = Font::with_name("Inter");
+
+/// `UI` at a weight.
+pub const fn weight(weight: iced::font::Weight) -> Font {
+    Font { weight, ..UI }
+}
 
 #[derive(Clone, Copy)]
 pub struct Colors {

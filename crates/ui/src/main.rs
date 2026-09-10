@@ -156,6 +156,10 @@ fn main() -> iced::Result {
         app::App::view,
     )
     .title("agentdocker")
+    .font(include_bytes!("fonts/Inter-Regular.ttf").as_slice())
+    .font(include_bytes!("fonts/Inter-Medium.ttf").as_slice())
+    .font(include_bytes!("fonts/Inter-SemiBold.ttf").as_slice())
+    .default_font(app::style::UI)
     .theme(app::App::theme)
     .scale_factor(app::App::scale_factor)
     .subscription(app::App::subscription)

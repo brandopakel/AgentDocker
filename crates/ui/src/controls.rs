@@ -2,43 +2,18 @@
 use crate::{accessibility::Semantic, app::Message};
 use iced::advanced::Renderer as _;
 
-/// Scroll ancestors just enough to reveal the newly focused control.
+/// Scroll ancestors just enough to reveal the newly focused control, or,
+/// given a `target`, the container carrying that id. Revealing a target
+/// moves nothing but scroll offsets: focus stays where it was.
 #[derive(Default)]
 struct Reveal {
+    target: Option<widget::Id>,
     pending: Option<(widget::Id, Rectangle, iced::Vector)>,
     parents: Vec<(widget::Id, Rectangle, iced::Vector)>,
     adjustments: Vec<(widget::Id, iced::Vector)>,
 }
-impl Operation for Reveal {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-        let pushed = self.pending.take();
-        if let Some(parent) = pushed.clone() {
-            self.parents.push(parent);
-        }
-        operate(self);
-        if pushed.is_some() {
-            self.parents.pop();
-        }
-    }
-    fn scrollable(
-        &mut self,
-        id: Option<&widget::Id>,
-        bounds: Rectangle,
-        _: Rectangle,
-        translation: iced::Vector,
-        _: &mut dyn widget::operation::Scrollable,
-    ) {
-        self.pending = id.cloned().map(|id| (id, bounds, translation));
-    }
-    fn focusable(
-        &mut self,
-        _: Option<&widget::Id>,
-        bounds: Rectangle,
-        state: &mut dyn widget::operation::Focusable,
-    ) {
-        if !state.is_focused() {
-            return;
-        }
+impl Reveal {
+    fn reveal(&mut self, bounds: Rectangle) {
         for (id, viewport, offset) in &self.parents {
             let x = (bounds.x - offset.x).max(viewport.x);
             let y = (bounds.y - offset.y).max(viewport.y);
@@ -61,6 +36,43 @@ impl Operation for Reveal {
             if want != *offset {
                 self.adjustments.push((id.clone(), want));
             }
+        }
+    }
+}
+impl Operation for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        let pushed = self.pending.take();
+        if let Some(parent) = pushed.clone() {
+            self.parents.push(parent);
+        }
+        operate(self);
+        if pushed.is_some() {
+            self.parents.pop();
+        }
+    }
+    fn scrollable(
+        &mut self,
+        id: Option<&widget::Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        translation: iced::Vector,
+        _: &mut dyn widget::operation::Scrollable,
+    ) {
+        self.pending = id.cloned().map(|id| (id, bounds, translation));
+    }
+    fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
+        if self.target.is_some() && id == self.target.as_ref() {
+            self.reveal(bounds);
+        }
+    }
+    fn focusable(
+        &mut self,
+        _: Option<&widget::Id>,
+        bounds: Rectangle,
+        state: &mut dyn widget::operation::Focusable,
+    ) {
+        if self.target.is_none() && state.is_focused() {
+            self.reveal(bounds);
         }
     }
     fn finish(&self) -> widget::operation::Outcome<()> {
@@ -94,6 +106,18 @@ impl Operation for Adjust {
 }
 pub fn reveal_focus() -> iced::Task<Message> {
     iced::advanced::widget::operate(Reveal::default()).discard()
+}
+/// Scroll so the container with this id is in view, without touching focus.
+/// Ids the view hands out for this: `notification-question-<id>`,
+/// `notification-message-<id>`, `notification-channel-<id>`.
+// Wired by notification routing in `app/shell.rs`; unused until that lands.
+#[allow(dead_code)]
+pub fn reveal(id: impl Into<String>) -> iced::Task<Message> {
+    iced::advanced::widget::operate(Reveal {
+        target: Some(widget::Id::from(id.into())),
+        ..Reveal::default()
+    })
+    .discard()
 }
 use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, renderer,
@@ -306,6 +330,9 @@ pub enum Kind {
     Tab,
     /// An action with a cost that has already been armed once.
     Danger,
+    /// One choice in a segmented control: the selected one is lifted off
+    /// the track, the others sit quietly on it.
+    Segment,
 }
 
 fn button_style(
@@ -321,6 +348,8 @@ fn button_style(
         (Kind::Primary, _) => (Some(c.accent), iced::Color::WHITE),
         (Kind::Danger, _) => (Some(alpha(c.red, if c.dark { 0.18 } else { 0.12 })), c.red),
         (Kind::Tab, true) => (None, c.accent_ink),
+        (Kind::Segment, true) => (Some(if c.dark { c.ground } else { c.card }), c.text),
+        (Kind::Segment, false) => (None, c.muted),
         (_, true) => (Some(c.accent_soft), c.accent_ink),
         (Kind::Secondary, false) => (Some(c.raised), c.text),
         (Kind::Quiet | Kind::Tab, false) => (None, c.text),
@@ -329,6 +358,8 @@ fn button_style(
         (Kind::Primary, _) => mix(c.accent, iced::Color::BLACK, amount),
         (Kind::Danger, _) => alpha(c.red, 0.18 + amount),
         (Kind::Tab, _) => alpha(c.raised, 0.7 + amount),
+        (Kind::Segment, true) => mix(if c.dark { c.ground } else { c.card }, c.text, amount * 0.3),
+        (Kind::Segment, false) => alpha(c.text, amount * 0.6),
         (_, true) => mix(c.accent_soft, c.accent, amount * 0.6),
         (Kind::Secondary, false) => mix(c.raised, c.text, amount * 0.5),
         (Kind::Quiet, false) => c.raised,
@@ -346,10 +377,18 @@ fn button_style(
         background: background.map(Into::into),
         text_color: text,
         border: Border {
-            radius: 9.0.into(),
+            radius: if kind == Kind::Segment { 7.0 } else { 9.0 }.into(),
             ..Default::default()
         },
-        shadow: Default::default(),
+        shadow: if kind == Kind::Segment && selected && status != Status::Disabled {
+            iced::Shadow {
+                color: iced::Color::from_rgba8(16, 24, 40, if c.dark { 0.4 } else { 0.1 }),
+                offset: iced::Vector::new(0.0, 1.0),
+                blur_radius: 2.0,
+            }
+        } else {
+            Default::default()
+        },
         snap: true,
     }
 }
@@ -395,6 +434,31 @@ pub fn danger<'a>(
     let content = iced::widget::text(label.clone()).size(14);
     custom(id, label, content, message, false, Kind::Danger, [9, 13])
 }
+/// One choice of a segmented control. Lay several in a `segmented` track.
+pub fn segment<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+    selected: bool,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let content = iced::widget::text(label.clone())
+        .size(13)
+        .font(crate::app::style::weight(if selected {
+            iced::font::Weight::Semibold
+        } else {
+            iced::font::Weight::Medium
+        }));
+    custom(
+        id,
+        label,
+        content,
+        message,
+        selected,
+        Kind::Segment,
+        [6, 12],
+    )
+}
 /// A full-width quiet row: sidebar entries and list rows.
 pub fn block_button<'a>(
     id: impl Into<String>,
@@ -417,14 +481,13 @@ pub fn tab<'a>(
 ) -> Element<'a, Message> {
     let label = label.into();
     let content = iced::widget::column![
-        iced::widget::text(label.clone()).size(14).font(iced::Font {
-            weight: if selected {
+        iced::widget::text(label.clone())
+            .size(14)
+            .font(crate::app::style::weight(if selected {
                 iced::font::Weight::Semibold
             } else {
                 iced::font::Weight::Normal
-            },
-            ..iced::Font::DEFAULT
-        }),
+            })),
         iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(2)).style(
             move |theme: &iced::Theme| {
                 let c = crate::app::style::Colors::of(theme);

@@ -4,22 +4,17 @@
 //! four destinations and the project list; the workspace leads with the
 //! project name, then the section tabs, then whatever the section shows.
 //! Status is drawn as a coloured dot *and* said in words, every time.
-use super::style::{Colors, alpha};
+use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
-    Kind, block_button, button as action, custom, danger, input, input_enabled, primary, tab,
+    Kind, block_button, button as action, custom, danger, input, input_enabled, primary, segment,
+    tab,
 };
 use iced::{
     Center, Element, Fill, Font,
     widget::{Space, column, container, row, scrollable, text},
 };
 
-fn weight(weight: iced::font::Weight) -> Font {
-    Font {
-        weight,
-        ..Font::DEFAULT
-    }
-}
 fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
     text(value.into())
         .size(size)
@@ -94,6 +89,86 @@ fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
     container(Space::new().width(size).height(size))
         .style(move |_| c.dot(fill))
         .into()
+}
+/// A dot that says what it means when pointed at. The words are still
+/// written next to it wherever there is room; this is for the places
+/// where there is not.
+fn status_dot<'a>(
+    fill: iced::Color,
+    size: f32,
+    label: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        dot(fill, size, c),
+        container(text(label.into()).size(12).color(c.text))
+            .padding([5, 9])
+            .style(move |_| container::Style {
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba8(16, 24, 40, 0.18),
+                    offset: iced::Vector::new(0.0, 2.0),
+                    blur_radius: 6.0,
+                },
+                ..c.surface(c.card, true)
+            }),
+        iced::widget::tooltip::Position::Right,
+    )
+    .gap(8)
+    .into()
+}
+/// A track holding `segment` choices.
+fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    let mut track = row![].spacing(2);
+    for choice in choices {
+        track = track.push(choice);
+    }
+    container(track)
+        .padding(3)
+        .style(move |_| container::Style {
+            background: Some(c.raised.into()),
+            border: iced::Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+/// How much of something is left, as a thin bar.
+fn meter<'a>(fraction: f32, fill: iced::Color, c: Colors) -> Element<'a, Message> {
+    let left = (fraction.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let mut bar = row![].spacing(0);
+    if left > 0 {
+        bar = bar.push(
+            container(Space::new().width(Fill).height(4))
+                .width(iced::Length::FillPortion(left))
+                .style(move |_| c.dot(fill)),
+        );
+    }
+    if left < 1000 {
+        bar = bar.push(Space::new().width(iced::Length::FillPortion(1000 - left)));
+    }
+    container(bar)
+        .width(Fill)
+        .style(move |_| c.dot(c.line))
+        .into()
+}
+/// The strip along the top of a pane: what it holds, and one quiet fact.
+fn pane_header<'a>(
+    title_text: &'a str,
+    meta: impl Into<String>,
+    c: Colors,
+) -> Element<'a, Message> {
+    column![
+        container(
+            row![eyebrow(title_text, c).width(Fill), small(meta, c)]
+                .spacing(10)
+                .align_y(Center),
+        )
+        .padding([8, 12]),
+        rule(c)
+    ]
+    .into()
 }
 fn rule<'a>(c: Colors) -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
@@ -589,7 +664,7 @@ impl App {
                 })
                 .count();
             let mut content = row![
-                dot(
+                status_dot(
                     if live > 0 {
                         c.green
                     } else if entry.pinned {
@@ -598,6 +673,13 @@ impl App {
                         c.faint
                     },
                     6.0,
+                    if live > 0 {
+                        format!("{live} live agent{}", if live == 1 { "" } else { "s" })
+                    } else if entry.pinned {
+                        "Pinned · no live agents".to_owned()
+                    } else {
+                        "Discovered · no live agents".to_owned()
+                    },
                     c
                 ),
                 text(name.clone()).size(14).width(Fill)
@@ -680,28 +762,29 @@ impl App {
         let history = self.session_records(Filter::History);
         let available = self.available_processes();
         let filter = self.shell.session_filter;
-        let filters = row![
-            action(
-                "sessions-current",
-                format!("Current ({})", current.len() + available.len()),
-                Some(Message::SessionFilter(Filter::Current)),
-                filter == Filter::Current
-            ),
-            action(
-                "sessions-attention",
-                format!("Needs input ({})", attention_rows.len()),
-                Some(Message::SessionFilter(Filter::NeedsInput)),
-                filter == Filter::NeedsInput
-            ),
-            action(
-                "sessions-history",
-                format!("History ({})", history.len()),
-                Some(Message::SessionFilter(Filter::History)),
-                filter == Filter::History
-            ),
-        ]
-        .spacing(6)
-        .wrap();
+        let filters = segmented(
+            vec![
+                segment(
+                    "sessions-current",
+                    format!("Current ({})", current.len() + available.len()),
+                    Some(Message::SessionFilter(Filter::Current)),
+                    filter == Filter::Current,
+                ),
+                segment(
+                    "sessions-attention",
+                    format!("Needs input ({})", attention_rows.len()),
+                    Some(Message::SessionFilter(Filter::NeedsInput)),
+                    filter == Filter::NeedsInput,
+                ),
+                segment(
+                    "sessions-history",
+                    format!("History ({})", history.len()),
+                    Some(Message::SessionFilter(Filter::History)),
+                    filter == Filter::History,
+                ),
+            ],
+            c,
+        );
         let search = input(
             "session-search",
             "Find a session…",
@@ -764,7 +847,7 @@ impl App {
             );
             let spoken = format!("{}\n{} · {}", agent.spec.name, agent.spec.runtime, meta);
             let content = row![
-                dot(self.activity_color(agent, c), 8.0, c),
+                status_dot(self.activity_color(agent, c), 8.0, activity.clone(), c),
                 column![
                     text(agent.spec.name.clone())
                         .size(14)
@@ -1095,11 +1178,14 @@ impl App {
             if let Some(error) = self.shell.answer_errors.get(&id) {
                 body = body.push(text(error.clone()).size(13).color(c.amber));
             }
-            list = list.push(if expired {
-                card(body, c)
-            } else {
-                attention(body, c.amber, c)
-            });
+            list = list.push(
+                container(if expired {
+                    card(body, c)
+                } else {
+                    attention(body, c.amber, c)
+                })
+                .id(format!("notification-question-{id}")),
+            );
         }
         let (_, direct) = by_room(&self.inbox);
         if !direct.is_empty() {
@@ -1147,7 +1233,8 @@ impl App {
                     ]
                     .spacing(10),
                 )
-                .padding([8, 10]),
+                .padding([8, 10])
+                .id(format!("notification-message-{}", message.id)),
             );
         }
         container(lines)
@@ -1262,7 +1349,9 @@ impl App {
                     .align_y(Center),
                 );
             }
-            list = list.push(card(body.spacing(10), c));
+            list = list.push(
+                container(card(body.spacing(10), c)).id(format!("notification-channel-{id}")),
+            );
         }
         if count == 0 {
             list = list.push(empty(
@@ -1276,13 +1365,7 @@ impl App {
     }
 
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
-        let list = column![note(
-            format!(
-                "Latest {JOURNAL_WINDOW} entries. Earlier entries remain in the project journal."
-            ),
-            c
-        )]
-        .spacing(12);
+        let list = column![].spacing(12);
         if self.journal.is_empty() {
             return list
                 .push(empty(
@@ -1318,7 +1401,21 @@ impl App {
                 rows = rows.push(container(rule(c)).padding([0, 12]));
             }
         }
-        list.push(panel(rows, c)).into()
+        list.push(panel(
+            column![
+                pane_header(
+                    "Activity",
+                    format!(
+                        "{} of the latest {JOURNAL_WINDOW} · earlier entries stay in the journal",
+                        self.journal.len()
+                    ),
+                    c
+                ),
+                rows
+            ],
+            c,
+        ))
+        .into()
     }
 
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
@@ -1337,27 +1434,36 @@ impl App {
                 continue;
             }
             count += 1;
-            list = list.push(card(
-                column![
-                    row![
-                        heading(lease.resource.to_string(), 15).width(Fill),
-                        pill(format!("{:?}", lease.mode), c.accent_soft, c.accent_ink, c)
-                    ]
-                    .spacing(10)
-                    .align_y(Center),
-                    small(
-                        format!(
-                            "{} · expires {}",
-                            self.name_of(lease.holder.as_str()),
-                            super::span((lease.expires_at - Utc::now()).num_seconds())
-                        ),
-                        c
-                    ),
-                    note(lease.note.clone().unwrap_or_default(), c)
+            let now = Utc::now();
+            let total = (lease.expires_at - lease.acquired_at).num_seconds().max(1) as f32;
+            let left_secs = (lease.expires_at - now).num_seconds();
+            let left = (left_secs.max(0) as f32 / total).min(1.0);
+            let mut body = column![
+                row![
+                    heading(lease.resource.to_string(), 15).width(Fill),
+                    pill(format!("{:?}", lease.mode), c.accent_soft, c.accent_ink, c)
                 ]
-                .spacing(6),
-                c,
-            ));
+                .spacing(10)
+                .align_y(Center),
+                row![
+                    small(self.name_of(lease.holder.as_str()), c).width(Fill),
+                    small(
+                        if left_secs > 0 {
+                            format!("expires in {}", super::span(left_secs))
+                        } else {
+                            "expired".to_owned()
+                        },
+                        c
+                    )
+                ]
+                .spacing(10),
+                meter(left, if left < 0.2 { c.amber } else { c.accent }, c),
+            ]
+            .spacing(8);
+            if let Some(why) = &lease.note {
+                body = body.push(note(why.clone(), c));
+            }
+            list = list.push(card(body, c));
         }
         if count == 0 {
             list = list.push(empty(
@@ -1603,7 +1709,16 @@ impl App {
             let supported =
                 installed && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
             let mut actions = row![
-                dot(if installed { c.green } else { c.faint }, 9.0, c),
+                status_dot(
+                    if installed { c.green } else { c.faint },
+                    9.0,
+                    if installed {
+                        "Installed"
+                    } else {
+                        "Not installed"
+                    },
+                    c
+                ),
                 column![
                     heading(runtime.label.clone(), 16),
                     small(
@@ -1643,7 +1758,7 @@ impl App {
                 Some(Message::ConnectionDetails(runtime.name.clone())),
                 expanded,
             ));
-            let mut details = column![actions.wrap()].spacing(10);
+            let mut details = column![actions].spacing(10);
             if expanded {
                 let mut facts = column![
                     kv("Vendor", runtime.vendor.to_string(), c),
@@ -1814,17 +1929,22 @@ impl App {
                 heading("Appearance", 18),
                 row![
                     small("Theme", c).width(110),
-                    action(
-                        "light-theme",
-                        "Light",
-                        Some(Message::Dark(false)),
-                        !self.shell.catalog.dark
-                    ),
-                    action(
-                        "dark-theme",
-                        "Dark",
-                        Some(Message::Dark(true)),
-                        self.shell.catalog.dark
+                    segmented(
+                        vec![
+                            segment(
+                                "light-theme",
+                                "Light",
+                                Some(Message::Dark(false)),
+                                !self.shell.catalog.dark,
+                            ),
+                            segment(
+                                "dark-theme",
+                                "Dark",
+                                Some(Message::Dark(true)),
+                                self.shell.catalog.dark,
+                            ),
+                        ],
+                        c
                     )
                 ]
                 .spacing(6)

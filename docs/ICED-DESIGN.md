@@ -65,9 +65,27 @@ system, which is drawn from the mark:
   *tabs* for the project sections, and a red-tinted *danger* surface for an
   armed stop. Every kind is the same keyboard-focusable, AccessKit-labelled
   control; a custom-content button still carries a spoken label.
-- **Type.** System font only. Headings are Semibold; the default sans has no
-  Bold face and falls back to a monospace, so Bold is never requested.
-  Section eyebrows are 11-point capitals; paths and identifiers are monospace.
+- **Type.** Inter is bundled (`crates/ui/src/fonts/`, Regular, Medium and
+  SemiBold, SIL Open Font License; the license text ships beside the files and
+  belongs in the app bundle's licenses). It is the default face, so weights and
+  glyph coverage no longer depend on the host: the macOS system sans had no
+  Bold face for the default family and borrowed heavier glyphs from a
+  monospace fallback. Headings are SemiBold; Bold is never requested. Section
+  eyebrows are 11-point capitals; paths and identifiers use the system
+  monospace.
+- **Segmented controls** (`controls::segment` in a `segmented` track) pick one
+  of a few peers: the session filters and the theme. The selected segment lifts
+  off the track; the others sit quietly on it.
+- **Dots explain themselves.** Where a status dot has no words beside it (the
+  rail's project dots, session rows, connections), pointing at it shows a
+  tooltip with the same words the wide layout prints.
+- **Meters.** A lease row carries a thin bar of the time left on it; it turns
+  amber under one fifth. Panels that hold a series (Activity) start with a pane
+  header: what the pane holds on the left, one quiet fact on the right.
+- **Scroll anchors.** Question cards, transcript lines and channel cards carry
+  container ids `notification-question-<id>`, `notification-message-<id>` and
+  `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
+  without moving keyboard focus, for notification routing.
 - **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
   by an accent bar, then a workspace that leads with the project name, its
   path and the project's one primary action, then the section tabs over a
