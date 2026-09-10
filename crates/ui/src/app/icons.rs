@@ -11,12 +11,27 @@ use std::cell::Cell;
 
 /// The geometry of one drawn icon, kept between frames. Live geometry is
 /// re-tessellated and repainted every frame; cached geometry is compared by
-/// identity and left alone while nothing about it changed. The colour it
-/// was inked in is remembered so a change of selection redraws it once.
+/// identity and left alone while nothing about it changed. The icon and the
+/// colour it was inked in are remembered so a change of either redraws it
+/// once: widget state survives a rebuild by position, so the same slot can
+/// be asked to show a different glyph.
 #[derive(Default)]
 pub struct Cached {
     geometry: canvas::Cache,
-    color: Cell<Option<Color>>,
+    drawn: Cell<Option<(Icon, Color)>>,
+}
+
+impl Cached {
+    /// Notes what is about to be drawn; clears the geometry and answers
+    /// `true` when it differs from what the cache holds.
+    fn refresh(&self, icon: Icon, color: Color) -> bool {
+        if self.drawn.get() == Some((icon, color)) {
+            return false;
+        }
+        self.geometry.clear();
+        self.drawn.set(Some((icon, color)));
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,10 +83,7 @@ impl canvas::Program<Message> for Glyph {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if state.color.get() != Some(self.color) {
-            state.geometry.clear();
-            state.color.set(Some(self.color));
-        }
+        state.refresh(self.icon, self.color);
         vec![state.geometry.draw(renderer, bounds.size(), |frame| {
             self.paint(frame, bounds);
         })]
@@ -185,4 +197,30 @@ pub fn icon<'a>(icon: Icon, color: Color, size: f32) -> Element<'a, Message> {
         .width(size)
         .height(size)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cached, Icon};
+    use iced::Color;
+
+    #[test]
+    fn the_cache_is_cleared_when_the_icon_or_its_colour_changes() {
+        let cache = Cached::default();
+        assert!(cache.refresh(Icon::Projects, Color::WHITE), "first draw");
+        assert!(
+            !cache.refresh(Icon::Projects, Color::WHITE),
+            "same glyph, same ink"
+        );
+        assert!(
+            cache.refresh(Icon::Inbox, Color::WHITE),
+            "same ink, different glyph"
+        );
+        assert!(!cache.refresh(Icon::Inbox, Color::WHITE));
+        assert!(
+            cache.refresh(Icon::Inbox, Color::BLACK),
+            "same glyph, different ink"
+        );
+        assert_eq!(cache.drawn.get(), Some((Icon::Inbox, Color::BLACK)));
+    }
 }
