@@ -1,6 +1,6 @@
 # Remaining engineering and release work
 
-Reconciled September 9, 2026 against this checkout's implementation and project
+Reconciled September 10, 2026 against this checkout's implementation and project
 documents. This is the current backlog summary; dated audits and verification
 reports retain their original source-specific results. It is not a fresh audit
 of remote PRs or other machines. A targeted read-only GitHub check verified the
@@ -24,15 +24,44 @@ platform support have separate completion conditions.
   Narrow windows open the selected session directly with Back to sessions.
 - Put Coordination, Commands and project management under **More**. Show installed
   tools first in Connections, with paths, versions and capabilities in Details.
-- Suppress known Codex Node launchers when their native child is present. This
+- Suppress known Codex interpreter launchers when their native child is present. This
   addresses a discovery path found in code, not a demonstrated second live
   registration on this Mac. Suppress transient discovery/registration overlap
   only with matching known PID and birth time; retain PID reuse and unknown cases.
 - Extend unit and native workflow coverage for history separation, attention,
   process identity evidence and narrow-window navigation.
+- Keep successful channel sends visible across navigation and inbox refreshes;
+  group incoming messages by their actual channel destination. The bounded
+  receipt cache is partial history from this window, not a durable transcript.
+- Retain Claude's visual cleanup and plain message text, raise secondary-text
+  and primary-button contrast, and reset session controls when forgetting a project.
 
 Source changes take effect in rebuilt binaries. They do not replace the installed
 launcher or the daemon hosting existing sessions.
+
+## Engineering delivered in this pass
+
+- Codex prompt, tool-completion and Stop hooks deliver bounded inbox context and
+  acknowledge only after successful output. Fresh actual-provider trials cover
+  all three boundaries and correlated peer replies. Live coordination was also
+  exercised with the user's independently launched Claude session.
+- Schema 9 persists pending questions and their original expiry. Message fanout,
+  question creation/closure and ordered events now commit together. Restart
+  trials use real daemon crashes and refuse an incompatible downgrade without
+  changing the newer state.
+- Startup now refuses ambiguous duplicate live names before recovery writes.
+  It no longer arbitrarily retires a record and releases its protection. This
+  prevents a destructive recovery path; it does not merge legacy identities.
+- Added sustained-use and restart drivers with exact executable/driver hashes,
+  private fixtures and owned-process cleanup. Sustained campaigns snapshot the
+  daemon so concurrent builds cannot invalidate the executable mid-trial.
+- Added verified feed generation and made Homebrew publication depend on uploaded
+  release assets. Native graphical/package CI now covers ARM64 and x86-64 on both
+  macOS and Linux; all four jobs passed the schema-9 implementation checkpoint.
+- Fixed benchmark selection to use Cargo's emitted executable paths and verify
+  their hashes before/after workloads. A custom target directory previously left
+  the runner pointing at potentially stale `target/release` binaries. This does
+  not establish the cause of the older retained socket timeout.
 
 ## Engineering still open
 
@@ -43,7 +72,7 @@ launcher or the daemon hosting existing sessions.
 | Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
 | Next | Sustained-use bounds and unresolved performance failures | Complete 1/10/100-agent resource trials, long-running growth/retention checks, large-checkout latency, crash/reboot and distinct-source upgrade/rollback trials. Diagnose the retained socket benchmark timeout; short passing repeats do not explain it. Fix defects these trials uncover. | [Testing standard](TESTING-AND-BENCHMARKS.md), [local trial](LOCAL-TRIAL.md), [delivery checkpoints](DELIVERY-PLAN.md) |
 | Release | Download/update distribution | Feed generation now verifies source/schema, archive bytes and public Mac signing metadata; hosting, consumer and daily scheduling remain. Tap publication now waits for release assets; verify the next real formula/cask publication and deliver supported Linux packages. Registry Cargo publication is not an established supported route. | [Desktop distribution](DESKTOP-DISTRIBUTION.md), [distribution setup](DISTRIBUTION-SETUP.md), [product direction](PRODUCT-DIRECTION.md) |
-| Platform | Linux delivery acceptance | Native ARM64 Linux and Intel Mac graphical/package CI jobs are added; their results and target-distribution desktop/service/package trials remain acceptance gates. | [Product direction](PRODUCT-DIRECTION.md), [local trial](LOCAL-TRIAL.md) |
+| Platform | Linux delivery acceptance | ARM64/x86-64 Linux and Mac graphical/package CI passed the schema-9 checkpoint. Final-source CI, target-distribution desktop/service/package trials and independent hardware acceptance remain gates. | [Product direction](PRODUCT-DIRECTION.md), [local trial](LOCAL-TRIAL.md) |
 | Platform | Full native Windows product | Integrate the daemon and clients with named pipes; finish supervised lifecycle, ConPTY, identity-safe stopping/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Core/host/desktop adapter coverage is only a foundation. | [Windows port](WINDOWS-PORT.md), [architecture](ARCHITECTURE.md) |
 | Follow-up | Terminal selection and richer interaction | Implement arbitrary terminal cell-range selection/copy; test physical keyboard focus, text editing and input methods with users, and repair observed usability/accessibility defects. Current copy takes the visible screen. | [Iced contracts](ICED-DESIGN.md), [desktop guide](DESKTOP-UX.md) |
 | Follow-up | Concurrent provider configuration mutation | Coordinate changes to the same provider entry during delegated apply/undo. Existing exact-entry checks and receipts preserve ownership, but the provider CLI is not a compare-and-swap transaction. | [Guided setup](GUIDED-SETUP.md), [delivery checkpoints](DELIVERY-PLAN.md) |

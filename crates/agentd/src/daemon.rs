@@ -829,9 +829,25 @@ impl Daemon {
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
         let now = Utc::now();
+        let records = store.load_agents()?;
+        // A shared name does not prove a shared identity. Refuse before any
+        // recovery writes: retiring either record can strand its inbox and
+        // release protection still held by a running process. Reconciliation
+        // needs a durable alias migration, not a choice based on load order.
+        let mut live_names = HashMap::new();
+        for record in records.iter().filter(|record| record.status.is_live()) {
+            if let Some(previous) = live_names.insert(&record.spec.name, &record.id) {
+                anyhow::bail!(
+                    "duplicate live agent name {} in stored records {previous} and {}; \
+                     refusing recovery to preserve both identities and their protection",
+                    record.spec.name,
+                    record.id,
+                );
+            }
+        }
         let mut registry = Registry::new();
         let mut next_seq = store.max_event_seq()? + 1;
-        for mut record in store.load_agents()? {
+        for mut record in records {
             if record.managed
                 && record.container.is_none()
                 && record.status == AgentStatus::Created
@@ -858,31 +874,7 @@ impl Daemon {
                 store.agent_transition(&record, &event)?;
                 next_seq += 1;
             }
-            match registry.insert(record.clone()) {
-                Ok(()) => {}
-                Err(RegistryError::NameTaken(name)) => {
-                    if record.container.is_some()
-                        || registry
-                            .live()
-                            .any(|a| a.spec.name == name && a.container.is_some())
-                    {
-                        anyhow::bail!(
-                            "duplicate live container agent name {name}; refusing to release protection"
-                        );
-                    }
-                    // Two live records with one name can only come from a
-                    // damaged store: keep the first, retire the rest so the
-                    // store and the registry agree.
-                    warn!(%name, agent = %record.id.short(), "duplicate live agent in store; recording it as exited");
-                    record.status = AgentStatus::Exited { code: None };
-                    record.finished_at = Some(now);
-                    store.upsert_agent(&record)?;
-                    if let Err(err) = registry.insert(record) {
-                        warn!(%err, "skipping stored agent");
-                    }
-                }
-                Err(err) => warn!(%err, "skipping stored agent"),
-            }
+            registry.insert(record)?;
         }
         let channels: HashMap<ChannelId, Channel> = store
             .documents::<Channel>("channel", None)
@@ -8874,7 +8866,7 @@ deny = ["send:all"]
     }
 
     #[tokio::test]
-    async fn restore_retires_half_spawned_duplicates_and_orphaned_leases() {
+    async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
         let dir = TempDir::new().unwrap();
         let now = Utc::now();
         let first_id;
@@ -8884,7 +8876,7 @@ deny = ["send:all"]
             first.status = AgentStatus::Running;
             first_id = first.id.clone();
             let mut second = AgentRecord::new(spec("twin"), false, now + Duration::seconds(1));
-            second.status = AgentStatus::Running;
+            second.status = AgentStatus::Exited { code: Some(0) };
             let half_spawned = AgentRecord::new(spec("half"), true, now);
             for record in [&first, &second, &half_spawned] {
                 store.upsert_agent(record).unwrap();
@@ -8961,6 +8953,51 @@ deny = ["send:all"]
             .filter(|a| a.status.is_live())
             .count();
         assert_eq!(live_in_store, 1);
+    }
+
+    #[test]
+    fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
+        let dir = TempDir::new().unwrap();
+        let database = dir.path().join("state.db");
+        let store = Store::open(&database).unwrap();
+        let now = Utc::now();
+        // This record would normally be marked failed during startup. Its
+        // earlier position must not permit a partial recovery before refusal.
+        let half_spawned = AgentRecord::new(spec("half-spawned"), true, now);
+        let mut first = AgentRecord::new(spec("ambiguous"), false, now + Duration::seconds(1));
+        first.status = AgentStatus::Running;
+        let mut second = AgentRecord::new(spec("ambiguous"), false, now + Duration::seconds(2));
+        second.status = AgentStatus::Running;
+        for record in [&half_spawned, &first, &second] {
+            store.upsert_agent(record).unwrap();
+        }
+        let protection = Lease {
+            id: LeaseId::from("still-owned"),
+            resource: ResourceKey::new("task:protected"),
+            holder: second.id.clone(),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            change_seq: None,
+            expires_at: now + Duration::hours(1),
+            note: None,
+            amount: 0,
+        };
+        store.upsert_lease(&protection).unwrap();
+        let before = store.load_agents().unwrap();
+        let result = Daemon::with_store(dir.path().into(), dir.path().join("sock"), store);
+        let error = result
+            .err()
+            .expect("ambiguous live names must refuse")
+            .to_string();
+        assert!(
+            error.contains("duplicate live agent name ambiguous"),
+            "{error}"
+        );
+        assert!(error.contains(first.id.as_str()) && error.contains(second.id.as_str()));
+        let reopened = Store::open(&database).unwrap();
+        assert_eq!(reopened.load_agents().unwrap(), before);
+        assert_eq!(reopened.load_leases().unwrap(), [protection]);
+        assert!(reopened.recent_events(10).unwrap().is_empty());
     }
 
     #[test]
