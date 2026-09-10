@@ -37,10 +37,22 @@ Installations before this command copied files by hand (`install.sh`, or the
 bundle script). The installer keeps unrelated files safe by refusing to
 overwrite an app or command it did not install. If `make install-preview`
 reports a collision on `~/Applications/AgentDocker.app` or `~/.local/bin/*`,
-move those aside once, then install:
+do this once.
+
+First end active agent sessions and stop the daemon: the running daemon and
+any `agentdocker mcp` servers your agent tools started execute from the old
+bundle, and moving it out from under them cuts them off.
 
 ```sh
-mkdir -p ~/AgentDocker-old && mv ~/Applications/AgentDocker.app ~/.local/bin/agentdocker ~/.local/bin/agentd ~/.local/bin/agentdocker-ui ~/AgentDocker-old/
+agentdocker daemon stop
+```
+
+Then move the hand-copied files into a fresh backup directory (the name
+carries a timestamp so an earlier backup is never overwritten) and install:
+
+```sh
+backup=~/AgentDocker-old-$(date +%Y%m%d-%H%M%S) && [ ! -e "$backup" ] && mkdir "$backup" && \
+  mv ~/Applications/AgentDocker.app ~/.local/bin/agentdocker ~/.local/bin/agentd ~/.local/bin/agentdocker-ui "$backup"/
 make install
 ```
 
@@ -60,9 +72,10 @@ make install
 | `make clean-artifacts` | Remove `artifacts/local` (keeps the Cargo cache) |
 
 Set `PREFIX=/tmp/agentdocker-trial` on any install target to keep launchers,
-versions and activation metadata inside a disposable directory. Set
-`CARGO_TARGET_DIR` to share a build cache; the Makefile defaults to `target/`
-in this checkout.
+versions and activation metadata inside a disposable directory. The Makefile
+never chooses a Cargo target directory itself: Cargo's own configuration and
+`CARGO_TARGET_DIR` decide, so no extra build cache appears, and packaging
+reads the artifact directory the build reports.
 
 Requirements: Rust (see `rust-version` in `crates/ui/Cargo.toml`), Python 3.11+,
 and on macOS the Xcode command-line tools. End users of a packaged app need

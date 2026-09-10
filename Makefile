@@ -14,8 +14,10 @@ SHELL := /bin/bash
 # Apple's make 3.81 lacks .ONESHELL, so multi-step recipes are single commands.
 .DEFAULT_GOAL := help
 
-# Keep one build campaign per checkout, as docs/TESTING-AND-BENCHMARKS.md asks.
-export CARGO_TARGET_DIR ?= $(CURDIR)/target
+# Cargo decides where artifacts go (CARGO_TARGET_DIR, .cargo/config.toml or
+# target/); nothing here overrides that, so no extra build cache appears.
+# docs/TESTING-AND-BENCHMARKS.md asks for one campaign per checkout.
+PREFLIGHT := python3 scripts/build_storage.py
 # Where packaged artifacts and smoke reports go. Packaging refuses to reuse a
 # directory, so each run gets its own timestamped folder underneath.
 ARTIFACTS ?= artifacts/local
@@ -25,7 +27,7 @@ VERSION := $(shell python3 -c 'import tomllib;print(tomllib.load(open("Cargo.tom
 SOURCE := $(shell git rev-parse HEAD)
 # Installation prefix; empty means this user's home (~/Applications, ~/.local/bin).
 PREFIX ?=
-PREFIX_FLAG := $(if $(PREFIX),--prefix $(PREFIX),)
+PREFIX_FLAG := $(if $(PREFIX),--prefix "$(PREFIX)",)
 ifeq ($(shell uname -s),Darwin)
 PAYLOAD := AgentDocker.app
 LOCAL_PREVIEW := --local-preview
@@ -42,14 +44,15 @@ help: ## Show this help
 	@echo "Typical: make install   (build → package → install for this user; then quit and reopen AgentDocker)"
 
 build: ## Debug build of every crate
-	python3 scripts/build_storage.py
+	$(PREFLIGHT)
 	cargo build --workspace
 
 test: ## Unit and integration tests (nextest when installed)
-	python3 scripts/build_storage.py
+	$(PREFLIGHT)
 	if command -v cargo-nextest >/dev/null; then cargo nextest run --workspace; else cargo test --workspace; fi
 
 clippy: ## Strict lint
+	$(PREFLIGHT)
 	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt: ## Format everything
@@ -59,7 +62,7 @@ check: ## The standard verification gate used before a PR
 	bash scripts/verify.sh check
 
 app: ## Release build + native package for this machine (no signing)
-	python3 scripts/build_storage.py
+	$(PREFLIGHT)
 	mkdir -p "$(ARTIFACTS)"
 	native="$$(python3 scripts/build_native.py)" && \
 	  bindir="$$(printf '%s' "$$native" | python3 -c 'import json,sys;print(json.load(sys.stdin)["binary_directory"])')" && \
@@ -90,12 +93,15 @@ restart-daemon: ## Stop the running daemon so the next client starts the install
 	agentdocker daemon stop && echo "Daemon stopped; the next agentdocker command or app launch starts the installed build."
 
 run: ## Run the desktop app from this checkout against your real daemon (debug build)
+	$(PREFLIGHT)
 	cargo run -p agentdocker-ui
 
-smoke: ## Native workflow acceptance against the release binaries
-	python3 scripts/build_storage.py
-	cargo build --locked --release -p agentdocker -p agentdocker-ui --bins
-	python3 scripts/iced_workflow_smoke.py --binary-dir "$(CARGO_TARGET_DIR)/release" --output "$(ARTIFACTS)/smoke-$(STAMP)"
+smoke: ## Native workflow acceptance against the release binaries build_native.py reports
+	$(PREFLIGHT)
+	mkdir -p "$(ARTIFACTS)"
+	native="$$(python3 scripts/build_native.py)" && \
+	  bindir="$$(printf '%s' "$$native" | python3 -c 'import json,sys;print(json.load(sys.stdin)["binary_directory"])')" && \
+	  python3 scripts/iced_workflow_smoke.py --binary-dir "$$bindir" --output "$(ARTIFACTS)/smoke-$(STAMP)"
 
 clean-artifacts: ## Remove local package and smoke output (keeps the Cargo cache)
 	rm -rf "$(ARTIFACTS)"
