@@ -56,6 +56,25 @@ class UpdateFeed(unittest.TestCase):
         manifest.write_text(json.dumps(value))
         self.assertEqual(FEED.generate([manifest])["channel"], "stable")
 
+    def test_build_metadata_matches_package_versions_without_becoming_prerelease(self):
+        manifest, _ = self.package()
+        value = json.loads(manifest.read_text())
+        for version in ["0.2.0+build.1", "0.2.0+build-1"]:
+            value["version"] = version
+            manifest.write_text(json.dumps(value))
+            result = FEED.generate([manifest])
+            self.assertEqual(result["channel"], "stable")
+            self.assertEqual(result["releases"][0]["version"], version)
+        value["version"] = "0.2.0-rc.1"
+        manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "prerelease"):
+            FEED.generate([manifest])
+        self.assertEqual(FEED.generate([manifest], preview=True)["channel"], "preview")
+        value["version"] = "0.2.0-rc.1+build.1"
+        manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "invalid release version"):
+            FEED.generate([manifest], preview=True)
+
     def test_mixed_source_schema_and_duplicate_targets_are_refused(self):
         first, _ = self.package()
         second, _ = self.package("aarch64-unknown-linux-gnu", source_commit="d"*40)

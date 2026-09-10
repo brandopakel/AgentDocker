@@ -393,6 +393,7 @@ impl App {
                     .first()
                     .map(|e| e.project.root.clone());
                 self.shell.selected = None;
+                self.reset_session_view();
                 self.shell.changed();
                 self.refresh_project_context();
             }

@@ -44,9 +44,9 @@ impl Colors {
                 raised: color!(0x1e2734),
                 text: color!(0xe8edf5),
                 muted: color!(0x98a4b8),
-                faint: color!(0x6b778a),
+                faint: color!(0x8996aa),
                 line: color!(0x263042),
-                accent: color!(0x3f82ff),
+                accent: color!(0x286be0),
                 accent_soft: color!(0x1a2f52),
                 accent_ink: color!(0xbdd3ff),
                 cyan: color!(0x2bd4f0),
@@ -63,7 +63,7 @@ impl Colors {
                 raised: color!(0xe6edf8),
                 text: color!(0x111827),
                 muted: color!(0x5a6678),
-                faint: color!(0x7d8a9c),
+                faint: color!(0x5e6a7b),
                 line: color!(0xdce3ec),
                 accent: color!(0x1f6feb),
                 accent_soft: color!(0xe4edff),
@@ -216,16 +216,20 @@ mod tests {
                     "text on surface, dark={dark}"
                 );
                 assert!(
-                    contrast(c.muted, ground) > 3.0,
+                    contrast(c.muted, ground) >= 4.5,
                     "muted on surface, dark={dark}"
+                );
+                assert!(
+                    contrast(c.faint, ground) >= 4.5,
+                    "faint on surface, dark={dark}"
                 );
             }
             assert!(
-                contrast(c.accent_ink, c.accent_soft) > 4.0,
+                contrast(c.accent_ink, c.accent_soft) >= 4.5,
                 "selected ink, dark={dark}"
             );
             assert!(
-                contrast(Color::WHITE, c.accent) > 3.0,
+                contrast(Color::WHITE, c.accent) >= 4.5,
                 "primary label, dark={dark}"
             );
         }

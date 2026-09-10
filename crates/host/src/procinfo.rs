@@ -147,13 +147,29 @@ fn parse_ps(text: &str) -> Vec<Process> {
 /// The agent runtime a command line belongs to, by the executable's name
 /// or — for interpreters — the package it runs. `None` for anything that is
 /// not a known agent.
-pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
+fn executable(argv: &[String]) -> Option<std::borrow::Cow<'_, str>> {
     let exe = basename(argv.first()?);
     #[cfg(windows)]
-    let normalized = exe.to_ascii_lowercase();
-    #[cfg(windows)]
-    let exe = normalized.strip_suffix(".exe").unwrap_or(&normalized);
-    match exe {
+    {
+        let normalized = exe.to_ascii_lowercase();
+        Some(
+            normalized
+                .strip_suffix(".exe")
+                .unwrap_or(&normalized)
+                .to_owned()
+                .into(),
+        )
+    }
+    #[cfg(not(windows))]
+    Some(exe.into())
+}
+
+fn interpreter(exe: &str) -> bool {
+    matches!(exe, "node" | "bun" | "deno" | "python" | "python3")
+}
+
+pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
+    match executable(argv)?.as_ref() {
         // Claude Code runs helper processes under the same binary; only the
         // interactive session is an agent.
         "claude"
@@ -172,7 +188,7 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
         "copilot" => Some("copilot"),
         "amp" => Some("amp"),
         "opencode" => Some("opencode"),
-        "node" | "bun" | "deno" | "python" | "python3" => {
+        exe if interpreter(exe) => {
             let script = argv.get(1)?;
             #[cfg(windows)]
             let script = script.replace('\\', "/");
@@ -190,15 +206,14 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     }
 }
 
-/// Node's Codex package launches a native child and then waits for it. Only
+/// Codex's interpreter launcher starts a native child and then waits for it. Only
 /// that child is a session. Do not apply a generic parent/child rule: agents
 /// can launch other agents, and those must remain independently discoverable.
 pub fn codex_launchers(table: &[Process]) -> std::collections::BTreeSet<u32> {
     let parents: std::collections::BTreeSet<_> = table
         .iter()
         .filter(|p| {
-            p.argv.first().is_some_and(|exe| basename(exe) == "codex")
-                && runtime_of(&p.argv) == Some("codex")
+            executable(&p.argv).as_deref() == Some("codex") && runtime_of(&p.argv) == Some("codex")
         })
         .map(|p| p.ppid)
         .collect();
@@ -206,7 +221,7 @@ pub fn codex_launchers(table: &[Process]) -> std::collections::BTreeSet<u32> {
         .iter()
         .filter(|p| {
             parents.contains(&p.pid)
-                && p.argv.first().is_some_and(|exe| basename(exe) == "node")
+                && executable(&p.argv).as_deref().is_some_and(interpreter)
                 && runtime_of(&p.argv) == Some("codex")
         })
         .map(|p| p.pid)
@@ -350,6 +365,32 @@ mod imp {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_identity_tests {
+    use super::*;
+
+    #[test]
+    fn codex_launchers_share_windows_executable_normalization() {
+        for host in ["NODE", "Bun", "DENO", "Python", "PYTHON3"] {
+            let wrapper = Process {
+                pid: 10,
+                ppid: 1,
+                argv: vec![
+                    format!(r"C:\tools\{host}.EXE"),
+                    r"C:\pkg\@openai\codex\bin\codex.js".into(),
+                ],
+            };
+            let native = Process {
+                pid: 11,
+                ppid: 10,
+                argv: vec![r"C:\vendor\CODEX.Exe".into()],
+            };
+            assert_eq!(runtime_of(&wrapper.argv), Some("codex"));
+            assert_eq!(codex_launchers(&[wrapper, native]), [10].into());
+        }
+    }
+}
+
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
@@ -435,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_node_launcher_is_not_a_second_session() {
+    fn codex_interpreter_launcher_is_not_a_second_session() {
         let process = |pid, ppid, command: &str| Process {
             pid,
             ppid,
@@ -451,7 +492,13 @@ mod tests {
         // node host are all separate observations.
         assert!(codex_launchers(&[wrapper]).is_empty());
         assert!(codex_launchers(&[native.clone(), process(12, 11, "codex")]).is_empty());
-        assert!(codex_launchers(&[process(10, 1, "node /app/server.js"), native]).is_empty());
+        assert!(
+            codex_launchers(&[process(10, 1, "node /app/server.js"), native.clone()]).is_empty()
+        );
+        for host in ["node", "bun", "deno", "python", "python3"] {
+            let wrapper = process(10, 1, &format!("{host} /x/@openai/codex/bin/codex.js"));
+            assert_eq!(codex_launchers(&[wrapper, native.clone()]), [10].into());
+        }
     }
 
     #[test]

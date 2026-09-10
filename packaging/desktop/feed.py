@@ -32,9 +32,9 @@ def generate(manifests, preview=False):
         target, version = value.get("target"), value.get("version", "")
         if target not in TARGETS or target in targets:
             raise ValueError("unsupported or duplicate target")
-        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version):
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9._-]+)?", version):
             raise ValueError("invalid release version")
-        if not preview and "-" in version:
+        if not preview and "-" in version.split("+", 1)[0]:
             raise ValueError("prerelease versions require a preview feed")
         for key, width in [("source_commit", 40), ("source_tree", 40), ("source_input_sha256", 64)]:
             if not re.fullmatch(r"[0-9a-f]{" + str(width) + "}", value.get(key, "")):
