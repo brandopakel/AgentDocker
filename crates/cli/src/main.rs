@@ -473,7 +473,7 @@ enum Command {
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
     },
-    /// Stream messages without consuming them; acknowledge with inbox --drain.
+    /// Stream messages without consuming them; acknowledge received IDs with inbox --ack.
     Watch {
         /// Receive messages addressed to this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -555,13 +555,16 @@ enum Command {
         #[arg(long, conflicts_with = "agent")]
         me: bool,
     },
-    /// Show messages queued for an agent while it was not watching.
+    /// Show unacknowledged messages, or acknowledge specific received IDs.
     Inbox {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
         /// Remove queued messages before replying; a broken connection can lose this delivery.
         #[arg(long)]
         drain: bool,
+        /// Acknowledge only these received message IDs, preserving later arrivals.
+        #[arg(long, num_args = 1.., conflicts_with = "drain")]
+        ack: Vec<String>,
     },
     /// Claim a lease on a resource (`path:...`, `branch:...`, `task:...`).
     Claim(ClaimArgs),
@@ -1851,8 +1854,15 @@ async fn main() -> Result<()> {
                 })
                 .await?;
         }
-        Command::Inbox { agent, drain } => {
-            if let Response::Messages { messages } =
+        Command::Inbox { agent, drain, ack } => {
+            if !ack.is_empty() {
+                client
+                    .call(&Request::AckInbox {
+                        agent,
+                        messages: ack.into_iter().map(MessageId::from).collect(),
+                    })
+                    .await?;
+            } else if let Response::Messages { messages } =
                 client.call(&Request::Inbox { agent, drain }).await?
             {
                 for message in &messages {

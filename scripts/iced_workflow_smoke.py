@@ -122,6 +122,9 @@ def smoke(binary_dir, output):
                          "command": [sys.executable, "-u", str(fixture)], "workdir": str(project),
                          "tty": True, "restore": False}})["agent"]
             human = rpc(endpoint, {"op": "me", "workdir": str(project)})["agent"]
+            dismissible = [rpc(endpoint, {"op": "send", "from": agent["id"], "to": human["id"],
+                            "kind": "chat", "payload": {"text": text}})["message"]
+                           for text in ["Dismiss this received message", "Keep this later message"]]
             room = rpc(endpoint, {"op": "channel_open", "agent": agent["id"], "task": "Fixture coordination", "members": [human["id"]]})["channel"]
             with ThreadPoolExecutor(max_workers=1) as pool:
                 answer = pool.submit(rpc, endpoint, {"op": "ask", "from": agent["id"], "to": human["id"],
@@ -134,6 +137,11 @@ def smoke(binary_dir, output):
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-current"),
                          step("click", id="inbox"), step("fill", id=f"answer-{question['id']}", text="Use API v2"),
+                         step("wait_control", id=f"dismiss-message-{question['id']}", present=False),
+                         step("click", id=f"dismiss-message-{dismissible[0]}"),
+                         step("wait_control", id=f"dismiss-message-{dismissible[0]}", present=False),
+                         step("wait_control", id=f"dismiss-message-{dismissible[1]}", present=True),
+                         step("wait_text", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
                          step("wait_text", text="answered"), step("click", id="projects"),
@@ -188,6 +196,10 @@ def smoke(binary_dir, output):
                 try:
                     report["first_window"] = launch("workflows", steps)
                     assert answer.result(timeout=5).get("text") == "Use API v2", "answer did not reach asking agent"
+                    remaining = rpc(endpoint, {"op": "inbox", "agent": human["id"], "drain": False})["messages"]
+                    assert dismissible[0] not in [message["id"] for message in remaining]
+                    assert dismissible[1] in [message["id"] for message in remaining]
+                    checks.append("explicit_dismissal_preserves_newer_messages_and_answer_draft")
                 except BaseException:
                     stop(window)
                     stop(daemon)

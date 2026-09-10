@@ -1316,6 +1316,21 @@ impl App {
             if message.kind.to_string().as_str() != "chat" {
                 who = who.push(pill(message.kind.to_string(), c.raised, c.muted, c));
             }
+            if self.inbox.iter().any(|item| item.id == message.id)
+                && !self
+                    .questions
+                    .iter()
+                    .any(|question| question.id == message.id)
+            {
+                let busy = self.dismissing.contains(&message.id);
+                who = who.push(Space::new().width(Fill)).push(action(
+                    format!("dismiss-message-{}", message.id),
+                    if busy { "Dismissing…" } else { "Dismiss" },
+                    (!busy && self.connected.is_ok())
+                        .then_some(Message::DismissInbox(message.id.clone())),
+                    false,
+                ));
+            }
             lines = lines.push(
                 container(
                     row![

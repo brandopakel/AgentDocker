@@ -90,7 +90,7 @@ Design points:
 
 - **Identity.** If `AGENTDOCKER_AGENT_ID` is set the host was started by `agentdocker run` and already *is* an agent; the server adopts that identity and does not deregister on exit. Otherwise it registers a new agent and deregisters when stdin closes.
 - **Conflicts are results, not errors.** `claim` returns `{"claimed": false, "held_by": [...]}` with `isError: false`, because a conflict is information the model must reason about, whereas `isError: true` reads to most hosts as "the tool broke".
-- **`wait_for_messages` polls the inbox** at 250 ms. It currently uses destructive reads; a failed tool-result transport can still lose the delivery after server acknowledgement. This adapter needs a provider receipt boundary as described in the [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Live subscriptions themselves now retain addressed messages until explicit acknowledgement.
+- **`read_inbox` and `wait_for_messages` retain messages by default.** Waiting polls at 250 ms and returns immediately when unacknowledged messages already exist. The model calls `acknowledge_messages {messages: MessageId[]}` after receiving the result; this tool is scoped to its own identity and forwards `ack_inbox`. A failed result transport leaves messages available for retry. Explicit `read_inbox {drain: true}` retains its legacy destructive behavior. This receipt records model-side access, not task completion or idle wake.
 - The `instructions` field returned from `initialize` tells the model when to claim, release, and read its inbox, so hosts that surface instructions need no extra prompting.
 
 ### `agentdocker hook` (`crates/cli/src/hooks.rs`)
@@ -282,7 +282,7 @@ Each addressed inbox admits at most 1,000 messages and 4 MiB of serialized envel
 
 Explicit `ack_inbox` and destructive inbox reads commit removal of exact message IDs and one `InboxAcknowledged` event in the same SQLite transaction before changing memory. Failed removal/event persistence returns `storage_unavailable` and retains queued messages. That event records server-side queue removal; it does not prove the provider consumed the message.
 
-The live bus reports `lagged {skipped}` when a slow subscriber falls more than 1,024 messages behind. Addressed messages remain recoverable through a non-draining inbox read or a new subscription; topic traffic cannot be replayed. `watch` displays messages without consuming them. `inbox --drain` is an explicit destructive operation and can still lose delivery if its response connection breaks. Consumers requiring recovery must use non-draining reads and `ack_inbox` only after processing. Event streams exit on lag with an error directing the caller to recover retained history.
+The live bus reports `lagged {skipped}` when a slow subscriber falls more than 1,024 messages behind. Addressed messages remain recoverable through a non-draining inbox read or a new subscription; topic traffic cannot be replayed. `watch` displays messages without consuming them. The CLI exposes selective acknowledgement as `inbox --as <agent> --ack <id>...`, mutually exclusive with `--drain`. `inbox --drain` is an explicit destructive operation and can still lose delivery if its response connection breaks. Consumers requiring recovery must use non-draining reads and `ack_inbox` only after processing. Event streams exit on lag with an error directing the caller to recover retained history.
 
 ## Channels
 
@@ -761,3 +761,5 @@ Shipped events include `policy_updated` (effective rules or load diagnostic chan
 What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in [IMPLEMENTATION-NOTES.md](IMPLEMENTATION-NOTES.md).
 
 Configuration references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Codex state locations and CODEX_HOME](https://learn.chatgpt.com/docs/config-file/config-advanced), [Claude Desktop local MCP configuration](https://py.sdk.modelcontextprotocol.io/get-started/real-host/). Setup respects an explicit CODEX_HOME for the calling host; inventory uses the daemon's configuration environment. Model and provider details are not inferred from an installed app or process name.
+
+The desktop exposes **Dismiss** on received messages. It acknowledges one exact human-inbox ID only after a click, disables duplicate submissions while waiting, retains the message on failure, and removes it after successful acknowledgement. Pending questions retain their answer action; dismissal does not submit or erase drafts. Inbox refreshes remain non-destructive.

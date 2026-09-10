@@ -85,6 +85,7 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
+    DismissMessage(MessageId),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -111,6 +112,7 @@ enum Msg {
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
     Answered(MessageId, Result<(), String>),
+    MessageDismissed(MessageId, Result<(), String>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
@@ -203,6 +205,7 @@ pub struct App {
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
+    dismissing: std::collections::BTreeSet<MessageId>,
 }
 
 impl App {
@@ -294,6 +297,7 @@ impl App {
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
+            dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
         }
     }
@@ -345,6 +349,7 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            dismissing: std::collections::BTreeSet::new(),
         }
     }
 
@@ -353,6 +358,9 @@ impl App {
             match command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
+                }
+                Cmd::DismissMessage(id) => {
+                    self.dismissing.remove(&id);
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -416,6 +424,19 @@ impl App {
                     }
                 }
                 Msg::Inbox(inbox) => self.inbox = inbox,
+                Msg::MessageDismissed(id, result) => {
+                    self.dismissing.remove(&id);
+                    match result {
+                        Ok(()) => {
+                            self.inbox.retain(|message| message.id != id);
+                            if self.shell.notification_message.as_ref() == Some(&id) {
+                                self.shell.notification_message = None;
+                            }
+                            self.say("Message dismissed");
+                        }
+                        Err(reason) => self.say(reason),
+                    }
+                }
                 Msg::Discovered(found) => self.discovered = found,
                 Msg::Journal(project, head_seq, entries) => {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
@@ -945,6 +966,10 @@ fn spawn_worker(
                         _ => None,
                     };
                     let launch = matches!(&daemon, Cmd::Launch(_));
+                    let dismissal = match &daemon {
+                        Cmd::DismissMessage(id) => Some(id.clone()),
+                        _ => None,
+                    };
                     let channel = match &daemon {
                         Cmd::ChannelSend(id, _) => Some(id.clone()),
                         _ => None,
@@ -958,6 +983,13 @@ fn spawn_worker(
                         Ok(Some(msg)) => msg,
                         Ok(None) => continue,
                         Err(err) => {
+                            if let Some(id) = dismissal
+                                && tx
+                                    .send(Msg::MessageDismissed(id, Err(format!("{err:#}"))))
+                                    .is_err()
+                            {
+                                break;
+                            }
                             if launch && tx.send(Msg::Launched(Err(format!("{err:#}")))).is_err() {
                                 break;
                             }
@@ -1103,6 +1135,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 text,
             })?;
             Some(Msg::Answered(message, Ok(())))
+        }
+        Cmd::DismissMessage(message) => {
+            client.call(&Request::AckInbox {
+                agent: agentdocker_core::HUMAN.to_owned(),
+                messages: vec![message.clone()],
+            })?;
+            Some(Msg::MessageDismissed(message, Ok(())))
         }
         Cmd::Adopt(pid) => Some(
             match client
@@ -1497,6 +1536,62 @@ mod tests {
     }
 
     #[test]
+    fn message_dismissal_waits_for_success_and_preserves_drafts_and_new_arrivals() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("first"),
+            None,
+            Utc::now(),
+        );
+        let second = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("second"),
+            None,
+            Utc::now(),
+        );
+        app.inbox.push(first.clone());
+        let question = MessageId::from("pending-question".to_owned());
+        app.answers
+            .insert(question.clone(), "unfinished answer".into());
+        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
+        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|command| matches!(command, Cmd::DismissMessage(_)))
+                .count(),
+            1
+        );
+        assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
+        messages
+            .send(Msg::MessageDismissed(
+                first.id.clone(),
+                Err("inbox retained".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
+        assert!(!app.dismissing.contains(&first.id));
+        assert_eq!(app.status, "inbox retained");
+        let _ = app.update(shell::Message::DismissInbox(first.id.clone()));
+        app.inbox.push(second.clone());
+        messages
+            .send(Msg::MessageDismissed(first.id.clone(), Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox, [second]);
+        assert_eq!(app.answers[&question], "unfinished answer");
+        assert!(!app.dismissing.contains(&first.id));
+    }
+
+    #[test]
     fn a_full_command_queue_preserves_drafts_and_releases_busy_controls() {
         let (commands, requests) = queue::channel();
         for _ in 0..queue::CAPACITY {
@@ -1510,6 +1605,10 @@ mod tests {
         app.send(Cmd::Answer(id.clone(), "draft".into()));
         assert_eq!(app.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("queue is full"));
+        app.dismissing.insert(id.clone());
+        app.send(Cmd::DismissMessage(id.clone()));
+        assert!(!app.dismissing.contains(&id));
         assert!(app.status.contains("queue is full"));
         app.setup_busy = true;
         app.send(Cmd::Setup(vec!["--health".into()]));
