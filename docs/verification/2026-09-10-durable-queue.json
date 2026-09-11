@@ -1,0 +1,187 @@
+{
+  "date": "2026-09-10",
+  "checkpoint": {
+    "format": 1,
+    "source_commit": "a9b54b5ab31041585d95059bfe692ab8b1682c0c",
+    "source_tree": "463368be795f7472719ecc4987b02218d4ad0529",
+    "source_input_sha256": "7280112417368fdda282fa1ca7d5c063ee87b0538416d288149490749cdcf428",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 10,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "b197603ebc360c7808d5fcc57394a819874be3fa5835f7e48017b9920e9be01a",
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker-ui": "9b271d80715f301d3f94798ea399364b0dd853d4bcdcb67eb9e42e0307c660a6"
+    }
+  },
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests": 701,
+    "rust_skipped": 6,
+    "python_checks": 48,
+    "format": true,
+    "strict_clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "private_log_sha256": "c297fdbf4ba3b5e4e1f76f5238d2596861d24eb5760a0abc01ea512fa95dc951",
+    "prior_sandbox_run": {
+      "result": "failed",
+      "rust_passed": 656,
+      "rust_failed": 45,
+      "reason": "local sockets, process inspection, PTYs and filesystem watchers were restricted; rerun with those permissions passed"
+    }
+  },
+  "actual_queue_trial": {
+    "result": "passed",
+    "steps": [
+      "schema 9 crash/upgrade retained an over-limit inbox and resumed after acknowledgement",
+      "human/peer arrivals retained order during streaming and replayed after disconnect",
+      "crash replay preserved IDs; repeated selective acknowledgement preserved later arrivals",
+      "full recipient rejected the whole broadcast without eviction; explicit retry reached both recipients",
+      "byte pressure survived crash; acknowledging one item admitted exactly one replacement"
+    ],
+    "scope": "durable daemon queue, not provider input acceptance",
+    "driver_sha256": "027bc674d4eda06cf1aeb7a45c12ca7a4d63562c5529a8d18698d4d64e829125",
+    "helper_sha256": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f",
+    "current": {
+      "sha256": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 10,
+        "version": "0.1.0"
+      }
+    },
+    "previous": {
+      "sha256": "8af287d7bc6b698d78cd39479c7e8aa9aad4bba7670a323c41bb7e2cfb3565cb",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 9,
+        "version": "0.1.0"
+      }
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 0.34397262499987846
+  },
+  "actual_restart_trial": {
+    "result": "passed",
+    "steps": [
+      "two live identities, one exact lease and queued message established",
+      "distinct-binary crash and upgrade preserved identities, lease expiry and inbox",
+      "crash 1: pending question restored, correlated reply delivered and acknowledged",
+      "crash 2: pending question restored, correlated reply delivered and acknowledged",
+      "crash 3: pending question restored, correlated reply delivered and acknowledged",
+      "graceful shutdown preserved externally owned processes",
+      "older daemon refused newer schema without changing database or WAL bytes"
+    ],
+    "driver_sha256": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f",
+    "current": {
+      "sha256": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 10,
+        "version": "0.1.0"
+      }
+    },
+    "scope": "externally owned processes, durable coordination and actual daemon crashes",
+    "previous": {
+      "sha256": "8af287d7bc6b698d78cd39479c7e8aa9aad4bba7670a323c41bb7e2cfb3565cb",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 9,
+        "version": "0.1.0"
+      }
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 0.3239003339986084
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 105,
+    "checks": [
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "binary_sha256": {
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker": "b197603ebc360c7808d5fcc57394a819874be3fa5835f7e48017b9920e9be01a",
+      "agentdocker-ui": "9b271d80715f301d3f94798ea399364b0dd853d4bcdcb67eb9e42e0307c660a6"
+    },
+    "duration_seconds": 45.924917083000764,
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n"
+  },
+  "notification_navigation": {
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "613707269c1ebdf7a6f8486ff519aa6e9447c7473cb9424da974dadd2821f7b9",
+      "agentdocker-ui": "9b271d80715f301d3f94798ea399364b0dd853d4bcdcb67eb9e42e0307c660a6"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "existing_window_steps": 21,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 10.424243250003201
+  },
+  "review_fixes": {
+    "reviewed_commit": "1be976c391086406a01620e3ecc52cc0ae352ecd",
+    "review_id": 5171347122,
+    "comments": [
+      3982690461,
+      3982690472
+    ],
+    "changes": [
+      "return bounded notification serialization errors instead of panicking on non-UTF8 origins",
+      "retain Cargo artifact JSON and readable compiler diagnostics in benchmark builds"
+    ]
+  },
+  "limits": [
+    "Daemon inbox retention is not provider input acceptance or idle wake.",
+    "Explicit destructive inbox reads and existing MCP/hooks still need provider receipt handling.",
+    "Actual Notification Center clicks remain unverified; prior local preview native posting was refused by macOS.",
+    "No installed launcher, live daemon or user provider session was replaced.",
+    "The new schema refuses older daemons; rollback requires the matching older state backup."
+  ]
+}

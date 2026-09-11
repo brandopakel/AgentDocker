@@ -1,0 +1,349 @@
+{
+  "date": "2026-09-11",
+  "result": "implemented_and_partial_acceptance",
+  "scope": "Claude channel transport and actual provider delivery; UI shadow correction and notification navigation. This is not overall release acceptance.",
+  "source": {
+    "source_commit": "c9677ab662465633a49a8b52785cc9926c5d3fc1",
+    "source_tree": "027dfdae1faa206c4e0c1cb807305e059dc3b165",
+    "source_input_sha256": "8d3c4626e4d4d44e1f2ba4f0859a635663104c6cc39c31e1df3fa0c08fb41902",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "state_schema": 10,
+    "installation_lock": 1
+  },
+  "binary_sha256": {
+    "agentdocker": "9e8d120f3bf4c51867c1384972ba8be6b6126359b1559898aa1558a26c83230c",
+    "agentd": "a06338b0f78bc1181de61d9a18bdf2e2f7031cbc41769c7e0ac672a3890e8cd0",
+    "agentdocker-ui": "aa5000e443283922b25c54fd0a4ff63c33ef5886dedf9ba39f70c0ae1a447e18"
+  },
+  "standard_gate": {
+    "command": "CARGO_TARGET_DIR=<verified-cache> bash scripts/verify.sh check",
+    "result": "passed",
+    "rust_passed": 715,
+    "rust_skipped": 6,
+    "python_passed": 48,
+    "format_clippy_doctest_package_release": "passed",
+    "log_sha256": "3a29d563fedd184234bbe173df3ee8cedd8ed5a6b26cb6f032417336280d633a"
+  },
+  "transport": {
+    "result": "passed",
+    "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+    "steps": [
+      "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+      "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+      "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+      "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+      "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+      "missing parent-session opt-in refused channel startup instead of racing hook delivery"
+    ],
+    "binary_sha256": {
+      "agentd": "a06338b0f78bc1181de61d9a18bdf2e2f7031cbc41769c7e0ac672a3890e8cd0",
+      "agentdocker": "9e8d120f3bf4c51867c1384972ba8be6b6126359b1559898aa1558a26c83230c"
+    },
+    "driver_sha256": {
+      "claude_channel_smoke.py": "a5826f3fc1f9bd4682db7bec27c495d8054073a2133968129c149ac5d698c744",
+      "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+      "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 7.3613742919988
+  },
+  "actual_provider": {
+    "runtime": "2.1.268 (Claude Code)",
+    "model": "claude-sonnet-5 (provider default)",
+    "driver_sha256": "1c74cad19f9b981d2efb8627c3ad514554905defbcecceefe7c3067613105caa",
+    "source_commit": "c9677ab662465633a49a8b52785cc9926c5d3fc1",
+    "delivery_result": "passed",
+    "initial_ready_at": "2026-09-11T18:06:43.486Z",
+    "scenarios": [
+      {
+        "case": "idle",
+        "result": "passed",
+        "message_id": "0c1360c8e7984e59",
+        "proof": "After READY completed, a peer send started a new turn without additional stdin, incidental hook or polling prompt. Actual MCP receipt and correlated nonce reply followed."
+      },
+      {
+        "case": "busy_and_mixed_input",
+        "result": "passed",
+        "message_ids": [
+          "ad8716e1e4364713",
+          "e5e4cc4f78824737"
+        ],
+        "proof": "ask_human ran from 18:07:45 to its expected 45-second timeout. Peer then canonical-human sends were accepted at 18:08:01 and remained queued. A terminal prompt was submitted before 18:08:13.928 while the tool waited. Both message IDs were acknowledged and replied to in daemon order after the tool result; the terminal prompt was also answered. This is one bounded ordering case, not a general starvation proof."
+      },
+      {
+        "case": "idle_with_unsubmitted_terminal_draft",
+        "result": "passed",
+        "message_id": "af574bd5d5444157",
+        "proof": "A second idle peer message received explicit acknowledgement and a nonce reply while the PTY still displayed the exact unsubmitted draft. No Enter or terminal injection delivered the peer text."
+      }
+    ],
+    "receipts": [
+      {
+        "id": "0c1360c8e7984e59",
+        "at": "2026-09-11T18:07:09.643Z"
+      },
+      {
+        "id": "ad8716e1e4364713",
+        "at": "2026-09-11T18:08:33.649Z"
+      },
+      {
+        "id": "e5e4cc4f78824737",
+        "at": "2026-09-11T18:08:35.592Z"
+      },
+      {
+        "id": "af574bd5d5444157",
+        "at": "2026-09-11T18:09:09.265Z"
+      }
+    ],
+    "replies": [
+      {
+        "message_id": "3f0e2e8c1529412c",
+        "reply_to": "0c1360c8e7984e59",
+        "nonce": "AD-IDLE-NATIVE-1807",
+        "sent_at": "2026-09-11T18:07:10.422467Z"
+      },
+      {
+        "message_id": "377b6dba5f174a3c",
+        "reply_to": "ad8716e1e4364713",
+        "nonce": "AD-BUSY-PEER-1810",
+        "sent_at": "2026-09-11T18:08:34.337351Z"
+      },
+      {
+        "message_id": "b3982cf34b1c41c7",
+        "reply_to": "af574bd5d5444157",
+        "nonce": "AD-IDLE-DRAFT-1809",
+        "sent_at": "2026-09-11T18:09:10.035994Z"
+      },
+      {
+        "message_id": "af214f4600bb4e49",
+        "reply_to": "e5e4cc4f78824737",
+        "nonce": "AD-BUSY-USER-1810",
+        "sent_at": "2026-09-11T18:08:36.330885Z"
+      }
+    ],
+    "queued_after_trial": 0,
+    "provider_exit_code": 0,
+    "remaining_owned_processes": 0,
+    "profile_guard": {
+      "original_result": "failed",
+      "reason": "Global .claude.json hash changed during the concurrent-session trial. Original result retained; user files were not restored.",
+      "investigation": "Both original before/after hashes matched retained Claude backup bytes. Recursive JSON comparison found only the following usage-counter paths changed. No authentication, MCP entries, provider settings or other monitored configuration changed. Attribution between concurrent Claude processes is not established.",
+      "changed_field_paths": [
+        "/tipsHistory/dynamic-workflows",
+        "/tipLifetimeShownCounts/dynamic-workflows",
+        "/promptQueueUseCount"
+      ],
+      "owned_profile_and_state": true,
+      "authentication": "Existing access token supplied only in the child environment; no login or refresh requested.",
+      "raw_result_sha256": "07712caa5dc503def6b617c475cbae48cc7af65cff8113ec935562c7c346e863"
+    },
+    "prior_attempt": {
+      "result": "channels_unavailable",
+      "runtime": "Claude Code 2.1.268",
+      "configuration_difference": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in an otherwise isolated profile prevented channel feature discovery. Removing that flag in the next fresh trial enabled development-channel consent and channel registration.",
+      "proof": "Provider debug reported channel notifications skipped. The queued fixture remained unacknowledged and had no reply. No model prompt was submitted.",
+      "user_configuration_unchanged": true,
+      "remaining_owned_processes": 0
+    }
+  },
+  "native_ui": {
+    "result": "passed",
+    "steps": 114,
+    "driver_sha256": "fdf91ec7d0bc018bfeaf44cbdb08258385e31ef9730b7c1a831c343dcc57dc1b",
+    "raw_result_sha256": "1d71babd514dc2e21835f000b27c26ed3aeafff27e21566f5ed1757c216cd041",
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "idle_resources": {
+      "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+      "samples": [
+        {
+          "window": {
+            "rss_bytes": 171261952,
+            "ps_cpu_percent": 1.9
+          },
+          "daemon": {
+            "rss_bytes": 17465344,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171261952,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17465344,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171261952,
+            "ps_cpu_percent": 1.8
+          },
+          "daemon": {
+            "rss_bytes": 17465344,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171261952,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.4
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171180032,
+            "ps_cpu_percent": 0.8
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171180032,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171180032,
+            "ps_cpu_percent": 1.5
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171245568,
+            "ps_cpu_percent": 21.8
+          },
+          "daemon": {
+            "rss_bytes": 17498112,
+            "ps_cpu_percent": 1.8
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171245568,
+            "ps_cpu_percent": 1.4
+          },
+          "daemon": {
+            "rss_bytes": 17498112,
+            "ps_cpu_percent": 0.2
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171196416,
+            "ps_cpu_percent": 22.3
+          },
+          "daemon": {
+            "rss_bytes": 17498112,
+            "ps_cpu_percent": 0.2
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 171196416,
+            "ps_cpu_percent": 1.0
+          },
+          "daemon": {
+            "rss_bytes": 17498112,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 181960704,
+            "ps_cpu_percent": 20.2
+          },
+          "daemon": {
+            "rss_bytes": 17498112,
+            "ps_cpu_percent": 0.4
+          }
+        }
+      ],
+      "summary": {
+        "window": {
+          "median_rss_bytes": 171245568.0,
+          "maximum_rss_bytes": 181960704,
+          "median_ps_cpu_percent": 1.45
+        },
+        "daemon": {
+          "median_rss_bytes": 17481728.0,
+          "maximum_rss_bytes": 17498112,
+          "median_ps_cpu_percent": 0.0
+        }
+      }
+    },
+    "elapsed_seconds": 53.788423207999585
+  },
+  "notification_navigation": {
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "a06338b0f78bc1181de61d9a18bdf2e2f7031cbc41769c7e0ac672a3890e8cd0",
+      "agentdocker-ui": "aa5000e443283922b25c54fd0a4ff63c33ef5886dedf9ba39f70c0ae1a447e18"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "accepted_activations": [
+      "314af4e40cf8470b",
+      "3f13128bb2e24d5c",
+      "305dcf13a83243e8"
+    ],
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "existing_window_steps": 21,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 8.36099537499831
+  },
+  "retained_failures": [
+    {
+      "case": "initial transport fixture missing canonical human",
+      "disposition": "Fixture now establishes canonical human identity and compares the returned ID rather than literal user."
+    },
+    {
+      "case": "broken stdout left MCP process alive with stdin open",
+      "disposition": "Actual transport reproduced Tokio blocking stdin worker preventing runtime shutdown. Fixed by bounded dedicated stdio workers; release transport passes broken and unread stdout cases."
+    },
+    {
+      "case": "earlier 796270a native idle process exit",
+      "disposition": "Retained in the bulk-receipt report; cause remains unresolved. Fresh native repeat does not explain the original failure."
+    }
+  ],
+  "remaining": [
+    "Managed Claude launch/setup and compact durable provider delivery status",
+    "Actual provider reconnect/ambiguous acknowledgement, sustained conversations, versions and organization policies",
+    "Codex supported submitted-input adapter and idle wake",
+    "Attribute or isolate Claude global usage-counter side effects",
+    "Physical Notification Center clicks, signing/notarization and installed launcher acceptance",
+    "Full platform and sustained-use acceptance"
+  ],
+  "evidence_policy": "Only sanitized fixture IDs, results, source and hashes are committed. Raw provider transcripts, configuration snapshots, authentication and GUI frames remain private."
+}

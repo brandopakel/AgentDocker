@@ -487,7 +487,7 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
             after: format!("{}\n", serde_json::to_string_pretty(&value)?),
         });
     }
-    plan.notes.push("Codex: activity hooks require a version supporting lifecycle hooks, enabled hooks and review/trust in /hooks. These hooks report activity only; MCP supplies coordination tools. Setup does not grant hook trust or prove live delivery.".into());
+    plan.notes.push("Codex: hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
     Ok(())
 }
 

@@ -1,0 +1,54 @@
+{
+  "date": "2026-09-10",
+  "scope": "Owned Claude provider capability probes; no production AgentDocker outbox implementation yet",
+  "noninteractive_probes": [
+    {
+      "result": "failed",
+      "scope": "Actual Claude input-channel idle-wake capability probe, isolated MCP fixture; not AgentDocker queue acceptance",
+      "driver_sha256": "47cf9814a08aa5aca7e6117da7d5e9c24c3bb3772eedaa4f38c6d7b78cf60b8a",
+      "provider_version": "2.1.267 (Claude Code)",
+      "initial_turn_finished": true,
+      "nonce": "AD-IDLE-053ec36d23cc",
+      "error": "channel transport had no correlated receipt within 40 seconds",
+      "provider_exit_code": 0,
+      "channel_transport_written": true
+    },
+    {
+      "result": "failed",
+      "scope": "Actual Claude input-channel idle-wake capability probe, isolated MCP fixture; not AgentDocker queue acceptance",
+      "driver_sha256": "6d0b28a943a5342b2eb3c2dca5f8bdba08ee95aa12c62474db96944c353bc8eb",
+      "provider_version": "2.1.267 (Claude Code)",
+      "initial_turn_finished": true,
+      "nonce": "AD-IDLE-4136af7ce817",
+      "error": "channel transport had no correlated receipt within 40 seconds",
+      "provider_exit_code": 0,
+      "channel_transport_written": true
+    }
+  ],
+  "interactive_probe": {
+    "result": "passed",
+    "scope": "Actual interactive Claude2.1.267 channel capability probe; private MCP fixture, not yet AgentDocker outbox implementation",
+    "provider_version": "2.1.267",
+    "session_id": "069917b7-06fa-4de6-a18b-cead9e1ec53d",
+    "mcp_protocol": {
+      "requested": "2025-11-25",
+      "negotiated": "2025-06-18"
+    },
+    "server_sha256": "6d0b28a943a5342b2eb3c2dca5f8bdba08ee95aa12c62474db96944c353bc8eb",
+    "channel_registration_observed": true,
+    "local_development_confirmation_completed": true,
+    "initial_ready_turn_completed": true,
+    "no_further_stdin_until_receipt": true,
+    "nonce": "AD-IDLE-INTERACTIVE-1915",
+    "matching_receipts": 1,
+    "idle_event_to_receipt_seconds": 2.6753880420001224,
+    "response_observed": "RECEIVED",
+    "limitations": [
+      "No busy/mixed-order or reconnect test in this probe",
+      "Model receipt is observed; channel transport itself has no acceptance ack",
+      "Existing user sessions were not reconfigured or restarted"
+    ],
+    "provider_exit_code": 0
+  },
+  "interpretation": "Interactive local-development confirmation registered the channel; after an observed READY completion, a peer event started a new turn and produced one nonce receipt without further stdin. Two print-mode runs did not register channel delivery and produced no receipt. This does not establish busy/mixed ordering, retries or managed distribution support."
+}

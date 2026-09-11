@@ -9,6 +9,8 @@ use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef, VcsState};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
+    #[error("agent id `{0}` is reserved by a durable identity alias")]
+    IdentityReserved(AgentId),
     #[error("an agent named `{0}` is already live; stop it or pick another name")]
     NameTaken(String),
     #[error("no agent matches `{0}`")]
@@ -24,6 +26,7 @@ pub enum RegistryError {
 #[derive(Debug, Default)]
 pub struct Registry {
     agents: HashMap<AgentId, AgentRecord>,
+    aliases: BTreeMap<AgentId, AgentId>,
 }
 
 impl Registry {
@@ -35,6 +38,9 @@ impl Registry {
     /// keep their name so `logs` still works, but neither reserve it nor
     /// need it free.
     pub fn insert(&mut self, record: AgentRecord) -> Result<(), RegistryError> {
+        if self.aliases.contains_key(&record.id) {
+            return Err(RegistryError::IdentityReserved(record.id));
+        }
         if record.status.is_live() && self.live().any(|a| a.spec.name == record.spec.name) {
             return Err(RegistryError::NameTaken(record.spec.name));
         }
@@ -43,11 +49,68 @@ impl Registry {
     }
 
     pub fn get(&self, id: &AgentId) -> Option<&AgentRecord> {
-        self.agents.get(id)
+        self.agents.get(self.canonical_id(id))
     }
 
     pub fn get_mut(&mut self, id: &AgentId) -> Option<&mut AgentRecord> {
-        self.agents.get_mut(id)
+        let canonical = self.canonical_id(id).clone();
+        self.agents.get_mut(&canonical)
+    }
+
+    /// Restore the complete flat alias set only after all checks succeed. Alias
+    /// chains, missing targets and reused IDs fail startup rather than guessing.
+    pub fn restore_aliases(
+        &mut self,
+        aliases: &[crate::identity::AgentAlias],
+    ) -> Result<(), crate::identity::AliasError> {
+        let mut checked = BTreeMap::new();
+        for alias in aliases {
+            let reason = if alias.retired == alias.canonical {
+                Some("self reference")
+            } else if self.agents.contains_key(&alias.retired) {
+                Some("retired ID still owns a record")
+            } else if !self.agents.contains_key(&alias.canonical) {
+                Some("canonical record is missing")
+            } else if checked
+                .insert(alias.retired.clone(), alias.canonical.clone())
+                .is_some()
+            {
+                Some("duplicate retired ID")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(crate::identity::AliasError {
+                    retired: alias.retired.clone(),
+                    reason,
+                });
+            }
+        }
+        // A flat map is bounded to one lookup on every request. Because every
+        // target is a real record and no key is one, chains cannot be admitted.
+        self.aliases = checked;
+        Ok(())
+    }
+
+    pub fn canonical_id<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
+        self.aliases.get(id).unwrap_or(id)
+    }
+
+    pub fn aliases(&self) -> &BTreeMap<AgentId, AgentId> {
+        &self.aliases
+    }
+
+    /// Historical queries can include former IDs without rewriting attribution.
+    pub fn identity_ids(&self, id: &AgentId) -> Vec<AgentId> {
+        let canonical = self.canonical_id(id);
+        let mut ids = vec![canonical.clone()];
+        ids.extend(
+            self.aliases
+                .iter()
+                .filter(|(_, target)| *target == canonical)
+                .map(|(old, _)| old.clone()),
+        );
+        ids
     }
 
     /// Turn what a user typed into an id. Tries, in order: exact id, the name
@@ -58,6 +121,9 @@ impl Registry {
             return Err(RegistryError::NotFound(reference.to_owned()));
         }
         let exact = AgentId::from(reference);
+        if let Some(canonical) = self.aliases.get(&exact) {
+            return Ok(canonical.clone());
+        }
         if self.agents.contains_key(&exact) {
             return Ok(exact);
         }
@@ -175,7 +241,7 @@ impl Registry {
         status: AgentStatus,
         now: DateTime<Utc>,
     ) -> Option<AgentRecord> {
-        let record = self.agents.get_mut(id)?;
+        let record = self.get_mut(id)?;
         if status == AgentStatus::Running && record.started_at.is_none() {
             record.started_at = Some(now);
         }
@@ -192,7 +258,7 @@ impl Registry {
     /// alone does not count, so callers persist and announce only real
     /// changes).
     pub fn set_vcs(&mut self, id: &AgentId, vcs: VcsState) -> Option<(AgentRecord, bool)> {
-        let record = self.agents.get_mut(id)?;
+        let record = self.get_mut(id)?;
         let changed = !record.vcs.as_ref().is_some_and(|old| old.same_as(&vcs));
         record.vcs = Some(vcs);
         Some((record.clone(), changed))
@@ -200,7 +266,7 @@ impl Registry {
 
     /// Record that the agent is alive. Returns `false` if it is unknown.
     pub fn touch(&mut self, id: &AgentId, now: DateTime<Utc>) -> bool {
-        match self.agents.get_mut(id) {
+        match self.get_mut(id) {
             Some(record) => {
                 record.last_seen = now;
                 true
@@ -210,7 +276,9 @@ impl Registry {
     }
 
     pub fn remove(&mut self, id: &AgentId) -> Option<AgentRecord> {
-        self.agents.remove(id)
+        let canonical = self.canonical_id(id).clone();
+        self.aliases.retain(|_, target| *target != canonical);
+        self.agents.remove(&canonical)
     }
 
     pub fn len(&self) -> usize {
@@ -233,6 +301,61 @@ mod tests {
             ..AgentSpec::default()
         };
         AgentRecord::new(spec, true, Utc::now())
+    }
+
+    #[test]
+    fn durable_aliases_route_exact_ids_and_reject_partial_or_cyclic_restore() {
+        use crate::identity::AgentAlias;
+        let mut registry = Registry::new();
+        let mut canonical = record("current");
+        canonical.id = "canonical".into();
+        registry.insert(canonical.clone()).unwrap();
+        let old = AgentId::from("retired-id");
+        let alias = AgentAlias {
+            retired: old.clone(),
+            canonical: canonical.id.clone(),
+            reconciled_at: canonical.created_at,
+        };
+        registry
+            .restore_aliases(std::slice::from_ref(&alias))
+            .unwrap();
+        assert_eq!(registry.resolve(old.as_str()).unwrap(), canonical.id);
+        assert_eq!(registry.get(&old).unwrap().id, canonical.id);
+        assert_eq!(
+            registry.identity_ids(&old),
+            [canonical.id.clone(), old.clone()]
+        );
+        assert!(
+            registry.resolve("retired-").is_err(),
+            "aliases are exact, never guessed prefixes"
+        );
+        assert_eq!(registry.list(true).len(), 1);
+        let mut invalid = alias.clone();
+        invalid.retired = "second-old".into();
+        invalid.canonical = old.clone();
+        assert!(registry.restore_aliases(&[alias.clone(), invalid]).is_err());
+        assert_eq!(
+            registry.resolve(old.as_str()).unwrap(),
+            canonical.id,
+            "failed restore leaves the previous routing intact"
+        );
+        assert!(registry.restore_aliases(&[alias.clone(), alias]).is_err());
+        let mut reused = record("reused");
+        reused.id = old.clone();
+        assert!(matches!(
+            registry.insert(reused),
+            Err(RegistryError::IdentityReserved(_))
+        ));
+        registry
+            .set_status(
+                &old,
+                AgentStatus::Exited { code: Some(0) },
+                canonical.created_at,
+            )
+            .unwrap();
+        assert!(!registry.get(&old).unwrap().status.is_live());
+        assert_eq!(registry.remove(&old).unwrap().id, canonical.id);
+        assert!(registry.resolve(old.as_str()).is_err());
     }
 
     #[test]

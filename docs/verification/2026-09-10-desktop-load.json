@@ -1,0 +1,552 @@
+{
+ "scope": "UI load benchmark and memory bisect for the Iced desktop on 2026-09-10, packaged baseline binaries and a release UI rebuild for the fix; see per-campaign contention limits. Populations of 1, 10 and 100 registered idle agents on private fixture daemons. Not release acceptance.",
+ "provenance": {
+  "package_before": {
+   "path_in_session": "artifacts/local/desktop-20260910-132217/AgentDocker.app",
+   "source_commit": "a0d0d54",
+   "agentdocker_ui_sha256": "a02a78f89b09ccf70960d075b32076fa31fee05f29f77c601b40a6f8c30e21e5",
+   "agentd_sha256": "8a34e4d1dceb32823770dc731ea9ea5b56da3d9a61727d1f8e2336edd6fa44b8"
+  },
+  "ui_after_fix": {
+   "agentdocker_ui_sha256": "f2353dd546e1cb9b67a7aea1d51e0a7440d2d2e43e68c5feb1998d32fc182c93",
+   "source": "HEAD 48722a0 plus the style.rs shadow removal later committed as 8bff738. This includes the 796270a bulk-dismissal UI changes. The working tree also held uncommitted CLI channel changes (mcp.rs, hooks.rs, mcp/channel.rs) outside UI dependencies.",
+   "daemon": "same packaged agentd as before"
+  },
+  "limitations": [
+   "The initial population benchmark overlapped another agent's full Cargo campaign. Both CPU and RSS observations describe that workload and scheduling environment, not an isolated release-performance baseline.",
+   "single runs per variant; RSS timelines are 5 samples over 35 s",
+   "The packaged baseline and shadow-free UI also differ by intervening UI commits; the within-baseline light/dark bisect and fixed-UI memory timelines support the shadow diagnosis, but this is not a one-variable clean-source performance comparison.",
+   "The reported 20s/40s child CPU counters were collected from separate runs. Their difference can be negative and is not a valid utilization measurement; retain raw counters and the original estimate for audit only."
+  ]
+ },
+ "population_benchmark_before_fix": {
+  "binaries": {
+   "agentd": "8a34e4d1dceb32823770dc731ea9ea5b56da3d9a61727d1f8e2336edd6fa44b8",
+   "agentdocker-ui": "a02a78f89b09ccf70960d075b32076fa31fee05f29f77c601b40a6f8c30e21e5"
+  },
+  "method": "UI load benchmark against the packaged release binaries (no Cargo).\n\nFor each population N: a private daemon with N registered agents spread over\nthree projects, a fifth of them holding leases and a tenth asking the human a\nquestion; then the packaged window in smoke mode drives a fixed scenario\n(sessions list, inbox, coordination, narrow window) while ps samples RSS/CPU\nevery 0.5 s. Reports launch-to-first-capture, peak/median RSS, mean CPU, and\nscenario elapsed, plus captures for visual review. Then an idle-cost sample\n(rusage, 20 s vs 40 s) for the same population.\n",
+  "populations": [
+   {
+    "population": 1,
+    "seed_seconds": 0.0,
+    "scenario_elapsed_seconds": 6.6,
+    "launch_to_sessions_capture_seconds": 1.53,
+    "smoke": {
+     "result": "passed",
+     "scenario_steps_completed": 17,
+     "scenario_steps_total": 17,
+     "error": null
+    },
+    "window_rss_mib": {
+     "median": 178.8,
+     "peak": 197.3
+    },
+    "window_ps_cpu_percent_mean": 43.8,
+    "daemon_rss_mib": 16.0,
+    "idle_cpu_seconds": {
+     "20s": 1.1,
+     "40s": 1.96
+    },
+    "captures": [
+     "coordination.png",
+     "inbox.png",
+     "narrow.png",
+     "needs-input.png",
+     "sessions.png",
+     "window.png"
+    ],
+    "cross_run_cpu_difference_percent_not_utilization": 4.26,
+    "idle_cpu_measurement_valid": false
+   },
+   {
+    "population": 10,
+    "seed_seconds": 0.01,
+    "scenario_elapsed_seconds": 6.71,
+    "launch_to_sessions_capture_seconds": 1.53,
+    "smoke": {
+     "result": "passed",
+     "scenario_steps_completed": 17,
+     "scenario_steps_total": 17,
+     "error": null
+    },
+    "window_rss_mib": {
+     "median": 172.7,
+     "peak": 183.5
+    },
+    "window_ps_cpu_percent_mean": 60.3,
+    "daemon_rss_mib": 14.3,
+    "idle_cpu_seconds": {
+     "20s": 3.99,
+     "40s": 3.7
+    },
+    "captures": [
+     "coordination.png",
+     "inbox.png",
+     "narrow.png",
+     "needs-input.png",
+     "sessions.png",
+     "window.png"
+    ],
+    "cross_run_cpu_difference_percent_not_utilization": -1.45,
+    "idle_cpu_measurement_valid": false
+   },
+   {
+    "population": 100,
+    "seed_seconds": 0.06,
+    "scenario_elapsed_seconds": 6.6,
+    "launch_to_sessions_capture_seconds": 2.03,
+    "smoke": {
+     "result": "passed",
+     "scenario_steps_completed": 17,
+     "scenario_steps_total": 17,
+     "error": null
+    },
+    "window_rss_mib": {
+     "median": 888.0,
+     "peak": 946.6
+    },
+    "window_ps_cpu_percent_mean": 76.5,
+    "daemon_rss_mib": 17.9,
+    "idle_cpu_seconds": {
+     "20s": 5.44,
+     "40s": 16.04
+    },
+    "captures": [
+     "coordination.png",
+     "inbox.png",
+     "narrow.png",
+     "needs-input.png",
+     "sessions.png",
+     "window.png"
+    ],
+    "cross_run_cpu_difference_percent_not_utilization": 52.99,
+    "idle_cpu_measurement_valid": false
+   }
+  ]
+ },
+ "memory_bisect_before_fix": [
+  {
+   "trial": "baseline-100-light-3proj",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": false,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     459.1,
+     7.8
+    ],
+    [
+     8,
+     620.3,
+     0.0
+    ],
+    [
+     15,
+     1077.1,
+     6.9
+    ],
+    [
+     25,
+     1238.9,
+     2.6
+    ],
+    [
+     35,
+     1373.5,
+     6.1
+    ]
+   ]
+  },
+  {
+   "trial": "100-light-3proj-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     477.6,
+     15.3
+    ],
+    [
+     8,
+     665.7,
+     0.0
+    ],
+    [
+     15,
+     1068.7,
+     3.3
+    ],
+    [
+     25,
+     1336.3,
+     1.9
+    ],
+    [
+     35,
+     1443.8,
+     6.8
+    ]
+   ]
+  },
+  {
+   "trial": "100-dark-3proj-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": true,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     150.6,
+     1.6
+    ],
+    [
+     8,
+     150.5,
+     0.0
+    ],
+    [
+     15,
+     150.6,
+     0.5
+    ],
+    [
+     25,
+     150.6,
+     0.4
+    ],
+    [
+     35,
+     150.8,
+     0.9
+    ]
+   ]
+  },
+  {
+   "trial": "100-light-1proj-selected",
+   "agents": 100,
+   "projects": 1,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     1017.3,
+     42.1
+    ],
+    [
+     8,
+     1643.4,
+     0.9
+    ],
+    [
+     15,
+     2583.0,
+     7.6
+    ],
+    [
+     25,
+     3346.1,
+     34.8
+    ],
+    [
+     35,
+     3325.4,
+     34.2
+    ]
+   ]
+  },
+  {
+   "trial": "100-noleases-noquestions-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": false,
+   "questions": false,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     443.1,
+     7.9
+    ],
+    [
+     8,
+     626.6,
+     0.0
+    ],
+    [
+     15,
+     1072.8,
+     13.3
+    ],
+    [
+     25,
+     1262.6,
+     2.3
+    ],
+    [
+     35,
+     1335.0,
+     5.8
+    ]
+   ]
+  },
+  {
+   "trial": "10-light-3proj-selected",
+   "agents": 10,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     155.7,
+     2.8
+    ],
+    [
+     8,
+     155.6,
+     0.0
+    ],
+    [
+     15,
+     155.6,
+     0.4
+    ],
+    [
+     25,
+     155.6,
+     0.4
+    ],
+    [
+     35,
+     155.6,
+     1.0
+    ]
+   ]
+  },
+  {
+   "trial": "100-smoke-mode-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": true,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     1183.5,
+     99.7
+    ],
+    [
+     8,
+     1798.3,
+     99.0
+    ],
+    [
+     15,
+     1826.7,
+     99.0
+    ],
+    [
+     25,
+     1826.7,
+     100.1
+    ],
+    [
+     35,
+     0.0,
+     0.0
+    ]
+   ]
+  }
+ ],
+ "memory_bisect_after_fix": [
+  {
+   "trial": "100-light-3proj-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     168.3,
+     5.9
+    ],
+    [
+     8,
+     168.2,
+     0.0
+    ],
+    [
+     15,
+     168.2,
+     2.4
+    ],
+    [
+     25,
+     154.5,
+     2.3
+    ],
+    [
+     35,
+     154.7,
+     3.5
+    ]
+   ]
+  },
+  {
+   "trial": "100-dark-3proj-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": true,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     154.3,
+     1.2
+    ],
+    [
+     8,
+     154.2,
+     0.0
+    ],
+    [
+     15,
+     154.3,
+     0.9
+    ],
+    [
+     25,
+     154.4,
+     0.9
+    ],
+    [
+     35,
+     154.4,
+     0.5
+    ]
+   ]
+  },
+  {
+   "trial": "100-light-1proj-selected",
+   "agents": 100,
+   "projects": 1,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": false,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     166.0,
+     1.2
+    ],
+    [
+     8,
+     166.1,
+     0.0
+    ],
+    [
+     15,
+     166.2,
+     0.9
+    ],
+    [
+     25,
+     152.6,
+     0.9
+    ],
+    [
+     35,
+     152.6,
+     6.0
+    ]
+   ]
+  },
+  {
+   "trial": "100-smoke-mode-selected",
+   "agents": 100,
+   "projects": 3,
+   "dark": false,
+   "leases": true,
+   "questions": true,
+   "smoke": true,
+   "selected_project": true,
+   "rss_mib_and_pcpu_at_seconds": [
+    [
+     3,
+     147.7,
+     31.7
+    ],
+    [
+     8,
+     147.6,
+     31.1
+    ],
+    [
+     15,
+     147.9,
+     32.2
+    ],
+    [
+     25,
+     147.9,
+     37.3
+    ],
+    [
+     35,
+     0.0,
+     0.0
+    ]
+   ]
+  }
+ ],
+ "finding": "iced_tiny_skia 0.14.1 (engine.rs 66-135) builds a per-pixel colour buffer for a quad's whole shadow area every frame, including the part scrolled out of view. Light-theme cards carried a blurred shadow; with enough session rows for the panel to exceed the viewport the buffer reached tens of millions of pixels per frame. Removing the card shadow (style.rs card_style) restores flat memory (~155 MiB at 100 agents) and idle CPU in line with dark mode. Ten agents never showed it because the panel fit on screen.",
+ "event_rate_probe": {
+  "method": "agentdocker events for 20 s against a private daemon with N idle registered agents",
+  "n100_events_per_second": 0.05,
+  "n1_events_per_second": 0.2,
+  "daemon_cputime_delta_seconds": 0.05,
+  "conclusion": "the daemon is not the driver of window idle cost"
+ },
+ "install_smoke": {
+  "script": "scripts/desktop_install_smoke.py",
+  "source": "artifacts/local/desktop-20260910-132217",
+  "passed": true,
+  "note": "two synthetic generations of the same binaries, disposable prefix"
+ }
+}

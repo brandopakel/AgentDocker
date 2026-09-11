@@ -58,8 +58,14 @@ mod waiting;
 mod working;
 mod worktrees;
 
-/// Messages queued per agent while it has no live subscription.
+/// Unacknowledged addressed messages per agent. Live streams do not consume them.
 const INBOX_CAPACITY: usize = 1000;
+const INBOX_BYTES: usize = 4 * 1024 * 1024;
+
+fn message_bytes(message: &Envelope) -> usize {
+    // Refuse admission if a future envelope representation cannot be encoded.
+    serde_json::to_vec(message).map_or(usize::MAX, |bytes| bytes.len())
+}
 /// Leases longer than this are clamped; a TTL is a liveness bound, not a
 /// reservation.
 const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -185,6 +191,7 @@ struct State {
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
+    inbox_bytes: HashMap<AgentId, usize>,
     live_subscribers: HashMap<AgentId, usize>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     container_busy: HashSet<AgentId>,
@@ -302,6 +309,7 @@ fn watchable(record: &AgentRecord) -> bool {
 
 fn registry_error(err: RegistryError) -> Response {
     let code = match err {
+        RegistryError::IdentityReserved(_) => ErrorCode::Conflict,
         RegistryError::NameTaken(_) => ErrorCode::NameTaken,
         RegistryError::NotFound(_) => ErrorCode::NotFound,
         RegistryError::Ambiguous(_) | RegistryError::ProjectAmbiguous(_) => ErrorCode::Ambiguous,
@@ -363,42 +371,7 @@ fn signal_pid(pid: u32) -> Option<Pid> {
 /// other half of a session I am already part of", while two *different*
 /// ids mean two sessions that happen to share a process.
 fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
-    let session_of = |r: &AgentRecord| {
-        r.spec
-            .labels
-            .get("session_id")
-            .filter(|id| !id.is_empty())
-            .cloned()
-    };
-    b.pid.is_some()
-        && b.process_started_at.is_some()
-        && a.pid == b.pid
-        && a.process_started_at == b.process_started_at
-        && a.spec.runtime == b.spec.runtime
-        && a.project.as_ref().map(ProjectRef::id) == b.project.as_ref().map(ProjectRef::id)
-        // The physical checkout, not only the project. A project spans
-        // its main checkout and every linked worktree, so two agents in
-        // two worktrees of one repository agree on the project and are
-        // still in two different trees — matching on the project alone
-        // would collapse them into one identity. Compared as recorded:
-        // registration resolves a workdir once, so by here both are
-        // already canonical, and touching the filesystem under the state
-        // mutex is not something this may do.
-        //
-        // Both have to be known. An absent checkout is not evidence of
-        // anything, and `None == None` would make two agents that could
-        // not say where they are into one agent — the same mistake as
-        // agreeing on two unreadable birth times. Registration refuses a
-        // workdir it cannot resolve, so a `Some` here is always a
-        // directory that existed when it was recorded.
-        && match (&a.spec.workdir, &b.spec.workdir) {
-            (Some(one), Some(other)) => one == other,
-            _ => false,
-        }
-        && match (session_of(a), session_of(b)) {
-            (Some(one), Some(other)) => one == other,
-            _ => true,
-        }
+    agentdocker_core::identity::same_registration(a, b)
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -794,7 +767,9 @@ impl Daemon {
         Response::Agent { agent }
     }
     pub fn expire_leases(&self) {
-        lock(&self.state).expire_leases();
+        let mut state = lock(&self.state);
+        state.expire_leases();
+        state.expire_questions(Utc::now());
     }
     pub fn prune_events(&self) {
         lock(&self.state).prune_events();
@@ -827,9 +802,31 @@ impl Daemon {
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
         let now = Utc::now();
+        let records = store.load_agents()?;
+        // A shared name does not prove a shared identity. Refuse before any
+        // recovery writes: retiring either record can strand its inbox and
+        // release protection still held by a running process. Reconciliation
+        // needs a durable alias migration, not a choice based on load order.
+        let mut live_names = HashMap::new();
+        for record in records.iter().filter(|record| record.status.is_live()) {
+            if let Some(previous) = live_names.insert(&record.spec.name, &record.id) {
+                anyhow::bail!(
+                    "duplicate live agent name {} in stored records {previous} and {}; \
+                     refusing recovery to preserve both identities and their protection",
+                    record.spec.name,
+                    record.id,
+                );
+            }
+        }
         let mut registry = Registry::new();
+        // Validate every durable route before recovery can write any events,
+        // statuses, leases or questions. A malformed alias is never ignored.
+        for record in &records {
+            registry.insert(record.clone())?;
+        }
+        registry.restore_aliases(&store.identity_aliases()?)?;
         let mut next_seq = store.max_event_seq()? + 1;
-        for mut record in store.load_agents()? {
+        for mut record in records {
             if record.managed
                 && record.container.is_none()
                 && record.status == AgentStatus::Created
@@ -856,31 +853,8 @@ impl Daemon {
                 store.agent_transition(&record, &event)?;
                 next_seq += 1;
             }
-            match registry.insert(record.clone()) {
-                Ok(()) => {}
-                Err(RegistryError::NameTaken(name)) => {
-                    if record.container.is_some()
-                        || registry
-                            .live()
-                            .any(|a| a.spec.name == name && a.container.is_some())
-                    {
-                        anyhow::bail!(
-                            "duplicate live container agent name {name}; refusing to release protection"
-                        );
-                    }
-                    // Two live records with one name can only come from a
-                    // damaged store: keep the first, retire the rest so the
-                    // store and the registry agree.
-                    warn!(%name, agent = %record.id.short(), "duplicate live agent in store; recording it as exited");
-                    record.status = AgentStatus::Exited { code: None };
-                    record.finished_at = Some(now);
-                    store.upsert_agent(&record)?;
-                    if let Err(err) = registry.insert(record) {
-                        warn!(%err, "skipping stored agent");
-                    }
-                }
-                Err(err) => warn!(%err, "skipping stored agent"),
-            }
+            let stored = registry.get_mut(&record.id).expect("record was validated");
+            *stored = record;
         }
         let channels: HashMap<ChannelId, Channel> = store
             .documents::<Channel>("channel", None)
@@ -934,6 +908,17 @@ impl Daemon {
             leases.restore(lease);
         }
         let inboxes = store.load_inboxes()?;
+        let inbox_bytes = inboxes
+            .iter()
+            .map(|(agent, messages)| {
+                (
+                    agent.clone(),
+                    messages.iter().fold(0usize, |size, message| {
+                        size.saturating_add(message_bytes(message))
+                    }),
+                )
+            })
+            .collect();
         let projects: HashMap<PathBuf, Option<String>> = store
             .load_projects()?
             .into_iter()
@@ -944,6 +929,42 @@ impl Daemon {
             leases = leases.len(),
             inboxes = inboxes.len(),
             "state restored"
+        );
+
+        let mut questions: HashMap<_, _> = store
+            .documents::<agentdocker_core::Question>("question", None)?
+            .into_iter()
+            .map(|question| (question.id.clone(), question))
+            .collect();
+        let mut expired: Vec<_> = questions
+            .values()
+            .filter(|question| question.expired(now))
+            .map(|question| question.id.clone())
+            .collect();
+        expired.sort();
+        let expiration_events: Vec<_> = expired
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let mut event = Event::new(
+                    EventKind::QuestionClosed {
+                        question: question.clone(),
+                        answer: None,
+                    },
+                    now,
+                );
+                event.seq = next_seq + index as u64;
+                event
+            })
+            .collect();
+        store.close_questions(&expired, &expiration_events)?;
+        next_seq += expiration_events.len() as u64;
+        for id in expired {
+            questions.remove(&id);
+        }
+        anyhow::ensure!(
+            questions.len() <= humans::MAX_QUESTIONS,
+            "too many stored pending questions"
         );
 
         let (bus, _) = broadcast::channel(1024);
@@ -959,6 +980,7 @@ impl Daemon {
                 registry,
                 leases,
                 inboxes,
+                inbox_bytes,
                 live_subscribers: HashMap::new(),
                 supervised: HashMap::new(),
                 container_busy: HashSet::new(),
@@ -977,7 +999,7 @@ impl Daemon {
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
-                questions: HashMap::new(),
+                questions,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -999,9 +1021,14 @@ impl Daemon {
     /// person. Separate from `open` so tests, which have no desktop and
     /// want no side effects, simply never call it.
     pub fn notify_desktop(self: &Arc<Self>) {
+        if std::env::var_os("AGENTDOCKER_NO_NOTIFICATIONS")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+        {
+            return;
+        }
         let (tx, rx) = mpsc::channel(64);
         lock(&self.state).notifier = Some(tx);
-        tokio::spawn(humans::notifier(rx));
+        tokio::spawn(humans::notifier(rx, self.home.clone(), self.socket.clone()));
     }
 
     pub fn log_path(&self, id: &AgentId) -> PathBuf {
@@ -1915,13 +1942,14 @@ impl Daemon {
         let mine = std::process::id();
         tokio::task::spawn_blocking(move || {
             let table = procinfo::processes().map_err(|e| e.to_string())?;
+            let launchers = procinfo::codex_launchers(&table);
             // Ancestry needs the whole table, and only agents are asked
             // about, so it is built once rather than per candidate.
             let by_pid: BTreeMap<u32, procinfo::Process> =
                 table.iter().map(|p| (p.pid, p.clone())).collect();
             let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
-                .filter(|p| p.pid != mine)
+                .filter(|p| p.pid != mine && !launchers.contains(&p.pid))
                 .filter_map(|p| {
                     let runtime = procinfo::runtime_of(&p.argv)?;
                     let cwd = procinfo::cwd(p.pid);
@@ -2758,11 +2786,17 @@ impl Daemon {
                 Err(response) => return *response,
             },
         };
-        Response::Agents {
-            agents: lock(&self.state)
-                .registry
-                .matching(all, project.as_ref(), &labels),
-        }
+        let state = lock(&self.state);
+        let agents = state.registry.matching(all, project.as_ref(), &labels);
+        let ids: HashSet<_> = agents.iter().map(|agent| &agent.id).collect();
+        let aliases = state
+            .registry
+            .aliases()
+            .iter()
+            .filter(|(_, canonical)| ids.contains(canonical))
+            .map(|(old, canonical)| (old.clone(), canonical.clone()))
+            .collect();
+        Response::Agents { agents, aliases }
     }
 
     async fn send(
@@ -2835,7 +2869,7 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
-                let backlog = state.read_inbox(id, true)?;
+                let backlog = state.read_inbox(id, false)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
                 backlog
             }
@@ -3319,12 +3353,19 @@ impl State {
         if self.is_live(&id) {
             return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
         }
+        let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
+        event.seq = self.next_seq;
+        self.persist("agent removal", |store| store.delete_agent(&id, &event));
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         self.registry.remove(&id);
         self.inboxes.remove(&id);
+        self.inbox_bytes.remove(&id);
         self.journal_cursors
             .retain(|(reader, _), _| reader != id.as_str());
-        self.persist("agent", |store| store.delete_agent(&id));
-        self.emit(EventKind::AgentRemoved { agent: id });
+        self.next_seq += 1;
+        let _ = self.events.send(event);
         Response::Ok
     }
 
@@ -3480,6 +3521,23 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        // Repeated or fabricated IDs do not establish a new receipt. Retain
+        // inbox order and record only the accepted work this call removes.
+        let wanted: HashSet<&MessageId> = messages.iter().collect();
+        let mut acknowledged = HashSet::new();
+        let messages: Vec<MessageId> = self
+            .inboxes
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                wanted.contains(&message.id) && acknowledged.insert(message.id.clone())
+            })
+            .map(|message| message.id.clone())
+            .collect();
+        if messages.is_empty() {
+            return Response::Ok;
+        }
         let mut event = Event::new(
             EventKind::InboxAcknowledged {
                 agent: id.clone(),
@@ -3489,13 +3547,21 @@ impl State {
         );
         event.seq = self.next_seq;
         self.persist("inbox acknowledgement", |store| {
-            store.ack_inbox(&id, messages, &event)
+            store.ack_inbox(&id, &messages, &event)
         });
         if let Some(error) = self.storage_failure() {
             return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
-            queue.retain(|message| !messages.contains(&message.id));
+            let bytes = self.inbox_bytes.entry(id.clone()).or_default();
+            queue.retain(|message| {
+                if messages.contains(&message.id) {
+                    *bytes = bytes.saturating_sub(message_bytes(message));
+                    false
+                } else {
+                    true
+                }
+            });
         }
         self.next_seq += 1;
         let _ = self.events.send(event);
@@ -3516,8 +3582,8 @@ impl State {
         Response::Messages { messages }
     }
 
-    /// Snapshot before removal; commit its exact IDs and replay event together
-    /// before exposing a destructive read or changing live delivery routing.
+    /// Snapshot before removal; an explicit destructive read commits its exact
+    /// IDs and replay event together. Opening a stream never acknowledges work.
     fn read_inbox(&mut self, id: &AgentId, drain: bool) -> Result<Vec<Envelope>, Box<Response>> {
         if let Some(error) = self.storage_failure() {
             return Err(Box::new(error));
@@ -4279,7 +4345,28 @@ impl State {
     /// id before the message goes out — it has to record who is waiting
     /// on the answer before an answer can arrive — so it builds its own.
     fn publish(&mut self, envelope: Envelope) -> Response {
-        let recipients: Vec<AgentId> = match &envelope.to {
+        self.publish_question(envelope, None)
+    }
+
+    fn publish_question(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+    ) -> Response {
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        self.expire_questions(Utc::now());
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
+            return Response::error(
+                ErrorCode::Unavailable,
+                "too many questions are already waiting for an answer",
+            );
+        }
+        let mut recipients: Vec<AgentId> = match &envelope.to {
             Destination::Agent(id) => vec![id.clone()],
             Destination::Broadcast => self
                 .registry
@@ -4301,49 +4388,107 @@ impl State {
                 .collect(),
             Destination::Topic(_) => Vec::new(),
         };
-        // A person is not polling a socket, so a message that reaches one
-        // is worth an interruption. Queued or live, the notification is
-        // the same: it is the arrival that matters, not the route.
-        self.notify_humans(&envelope, &recipients);
-        let offline: Vec<AgentId> = {
-            let live = &self.live_subscribers;
-            recipients
-                .into_iter()
-                .filter(|id| !live.contains_key(id))
-                .collect()
-        };
-        if !offline.is_empty() {
-            {
-                let inboxes = &mut self.inboxes;
-                for id in &offline {
-                    let queue = inboxes.entry(id.clone()).or_default();
-                    if queue.len() >= INBOX_CAPACITY {
-                        queue.pop_front();
-                    }
-                    queue.push_back(envelope.clone());
-                }
-            }
-            self.persist("inbox", |store| {
-                for id in &offline {
-                    store.enqueue(id, &envelope, INBOX_CAPACITY)?;
-                }
-                Ok(())
+        // New channel membership is unique already; legacy records may not be.
+        // A recipient must consume one slot and one durable row per message.
+        recipients.sort();
+        recipients.dedup();
+        let bytes = message_bytes(&envelope);
+        if let Some(full) = recipients.iter().find(|id| {
+            self.inboxes
+                .get(*id)
+                .is_some_and(|queue| queue.len() >= INBOX_CAPACITY)
+                || self
+                    .inbox_bytes
+                    .get(*id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(bytes)
+                    > INBOX_BYTES
+        }) {
+            return Response::error(
+                ErrorCode::Backpressure,
+                format!(
+                    "Inbox for {} is full (limit {INBOX_CAPACITY} messages / {} MiB). Acknowledge existing messages before retrying; nothing was sent.",
+                    full.short(),
+                    INBOX_BYTES / (1024 * 1024)
+                ),
+            );
+        }
+        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+            .map(|pending| pending.id.clone());
+        let sender = self
+            .registry
+            .get(&AgentId::from(envelope.from.as_str()))
+            .cloned()
+            .map(|mut record| {
+                record.last_seen = Utc::now();
+                record
             });
-        }
-
-        if let Some(error) = self.storage_failure() {
-            return error;
-        }
-        self.touch(&AgentId::from(envelope.from.as_str()));
-        self.emit(EventKind::MessageSent {
+        let mut kinds = vec![EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
             to: envelope.to.clone(),
             kind: envelope.kind.clone(),
+        }];
+        if let Some(question) = &question {
+            kinds.push(EventKind::QuestionOpened {
+                question: question.id.clone(),
+                expires_at: question.expires_at,
+            });
+        }
+        if let Some(closed) = &closed {
+            kinds.push(EventKind::QuestionClosed {
+                question: closed.clone(),
+                answer: Some(envelope.id.clone()),
+            });
+        }
+        let events: Vec<_> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let mut event = Event::new(kind, envelope.sent_at);
+                event.seq = self.next_seq + index as u64;
+                event
+            })
+            .collect();
+        self.persist("message", |store| {
+            store.publish_message(
+                &envelope,
+                &recipients,
+                INBOX_CAPACITY,
+                sender.as_ref(),
+                question.as_ref(),
+                closed.as_ref(),
+                &events,
+            )
         });
         if let Some(error) = self.storage_failure() {
             return error;
         }
+        for id in &recipients {
+            let queue = self.inboxes.entry(id.clone()).or_default();
+            queue.push_back(envelope.clone());
+            *self.inbox_bytes.entry(id.clone()).or_default() += bytes;
+        }
+        if let Some(sender) = sender {
+            let current = self
+                .registry
+                .get_mut(&sender.id)
+                .expect("sender retained under lock");
+            *current = sender;
+        }
+        if let Some(question) = question {
+            self.questions.insert(question.id.clone(), question);
+        }
+        if let Some(closed) = closed {
+            self.questions.remove(&closed);
+        }
+        self.next_seq += events.len() as u64;
+        for event in events {
+            let _ = self.events.send(event);
+        }
+        self.notify_humans(&envelope, &recipients);
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
         Response::Sent {
             message: envelope.id,
@@ -4561,8 +4706,8 @@ impl State {
     }
 }
 
-/// A live message subscription. Dropping it releases the agent's live slot
-/// so later messages queue in its inbox again.
+/// A live view of messages. Both replay and newly streamed addressed messages
+/// remain in the durable inbox until explicitly acknowledged.
 pub struct Subscription {
     daemon: Arc<Daemon>,
     agent: Option<AgentId>,
@@ -4574,7 +4719,7 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Messages that were queued while the agent was offline.
+    /// Unacknowledged messages present when this stream opened.
     pub fn take_backlog(&mut self) -> Vec<Envelope> {
         std::mem::take(&mut self.backlog)
     }
@@ -5704,6 +5849,18 @@ mod tests {
         assert_eq!(notice.from, "worker", "by name, not by id");
         assert_eq!(notice.kind, "chat");
         assert_eq!(notice.text, "look at this");
+        assert_eq!(notice.target.agent, worker.id);
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: human.id.to_string(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert_eq!(notice.target.message, messages[0].id);
+        assert!(notice.target.channel.is_none());
 
         daemon
             .handle(Request::Send {
@@ -8380,74 +8537,124 @@ deny = ["send:all"]
     }
 
     #[tokio::test]
-    async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
-        for subscribe in [false, true] {
-            for event_failure in [false, true] {
-                let dir = TempDir::new().unwrap();
-                let daemon = open(&dir);
-                let receiver = register(&daemon, "receiver", None).await;
-                assert!(matches!(
-                    daemon
-                        .handle(Request::Send {
-                            from: "user".into(),
-                            to: "receiver".into(),
-                            kind: "chat".into(),
-                            payload: json!({"text":"retain after failed drain"}),
-                            reply_to: None,
-                        })
-                        .await,
-                    Response::Sent { .. }
-                ));
-                let queued = inbox(&daemon, "receiver", false).await;
-                let mut events = daemon.subscribe_events();
-                let next_seq = {
-                    let state = lock(&daemon.state);
-                    if event_failure {
-                        state.store.reject_event_for_test("inbox_acknowledged");
-                    } else {
-                        state.store.reject_writes_for_test();
-                    }
-                    state.next_seq
-                };
-                let response = if subscribe {
-                    match daemon.subscribe(Some("receiver"), Vec::new()) {
-                        Err(error) => *error,
-                        Ok(_) => panic!("failed storage allowed an inbox subscription"),
-                    }
-                } else {
-                    daemon
-                        .handle(Request::Inbox {
-                            agent: "receiver".into(),
-                            drain: true,
-                        })
-                        .await
-                };
-                assert!(
-                    matches!(
-                        response,
-                        Response::Error {
-                            code: ErrorCode::StorageUnavailable,
-                            ..
-                        }
-                    ),
-                    "{response:?}"
-                );
-                let state = lock(&daemon.state);
-                assert_eq!(
-                    state.inboxes[&receiver.id]
-                        .iter()
-                        .map(|message| &message.id)
-                        .collect::<Vec<_>>(),
-                    queued.iter().map(|message| &message.id).collect::<Vec<_>>()
-                );
-                assert_eq!(
-                    state.store.load_inboxes().unwrap()[&receiver.id].len(),
-                    queued.len()
-                );
-                assert_eq!(state.next_seq, next_seq);
-                assert!(!state.live_subscribers.contains_key(&receiver.id));
-                assert!(events.try_recv().is_err());
+    async fn failed_removal_retains_memory_and_never_reports_success() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain if removal fails"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_event_for_test("agent_removed");
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Remove {
+                agent: receiver.id.to_string(),
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
             }
+        ));
+        let state = lock(&daemon.state);
+        assert!(state.registry.get(&receiver.id).is_some());
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert!(
+            state
+                .store
+                .load_agents()
+                .unwrap()
+                .iter()
+                .any(|a| a.id == receiver.id)
+        );
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing() {
+        for event_failure in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let receiver = register(&daemon, "receiver", None).await;
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: "user".into(),
+                        to: "receiver".into(),
+                        kind: "chat".into(),
+                        payload: json!({"text":"retain after failed drain"}),
+                        reply_to: None,
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
+            let queued = inbox(&daemon, "receiver", false).await;
+            let mut events = daemon.subscribe_events();
+            let next_seq = {
+                let state = lock(&daemon.state);
+                if event_failure {
+                    state.store.reject_event_for_test("inbox_acknowledged");
+                } else {
+                    state.store.reject_writes_for_test();
+                }
+                state.next_seq
+            };
+            let response = daemon
+                .handle(Request::Inbox {
+                    agent: "receiver".into(),
+                    drain: true,
+                })
+                .await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::StorageUnavailable,
+                        ..
+                    }
+                ),
+                "{response:?}"
+            );
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.inboxes[&receiver.id]
+                    .iter()
+                    .map(|message| &message.id)
+                    .collect::<Vec<_>>(),
+                queued.iter().map(|message| &message.id).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                state.store.load_inboxes().unwrap()[&receiver.id].len(),
+                queued.len()
+            );
+            assert_eq!(state.next_seq, next_seq);
+            assert!(!state.live_subscribers.contains_key(&receiver.id));
+            assert!(events.try_recv().is_err());
         }
     }
 
@@ -8496,54 +8703,314 @@ deny = ["send:all"]
 
     #[tokio::test]
     async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery() {
-        for subscribe in [false, true] {
-            let dir = TempDir::new().unwrap();
-            let daemon = open(&dir);
-            let receiver = register(&daemon, "receiver", None).await;
-            for text in ["first", "second"] {
-                assert!(matches!(
-                    daemon
-                        .handle(Request::Send {
-                            from: "user".into(),
-                            to: "receiver".into(),
-                            kind: "chat".into(),
-                            payload: json!({"text":text}),
-                            reply_to: None,
-                        })
-                        .await,
-                    Response::Sent { .. }
-                ));
-            }
-            let mut events = daemon.subscribe_events();
-            let delivered = if subscribe {
-                let (subscription, _) = daemon.subscribe(Some("receiver"), Vec::new()).unwrap();
-                subscription.backlog.clone()
-            } else {
-                inbox(&daemon, "receiver", true).await
-            };
-            assert_eq!(delivered.len(), 2);
-            let event = events.try_recv().unwrap();
-            assert!(
-                matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
-                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
-            );
-            let state = lock(&daemon.state);
-            assert!(
-                state
-                    .inboxes
-                    .get(&receiver.id)
-                    .is_none_or(|queue| queue.is_empty())
-            );
-            assert!(
-                !state
-                    .store
-                    .load_inboxes()
-                    .unwrap()
-                    .contains_key(&receiver.id)
-            );
-            assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
-            assert!(events.try_recv().is_err());
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        for text in ["first", "second"] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: "user".into(),
+                        to: "receiver".into(),
+                        kind: "chat".into(),
+                        payload: json!({"text":text}),
+                        reply_to: None,
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
         }
+        let mut events = daemon.subscribe_events();
+        let delivered = inbox(&daemon, "receiver", true).await;
+        assert_eq!(delivered.len(), 2);
+        let event = events.try_recv().unwrap();
+        assert!(
+            matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
+                if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
+        );
+        let state = lock(&daemon.state);
+        assert!(
+            state
+                .inboxes
+                .get(&receiver.id)
+                .is_none_or(|queue| queue.is_empty())
+        );
+        assert!(
+            !state
+                .store
+                .load_inboxes()
+                .unwrap()
+                .contains_key(&receiver.id)
+        );
+        assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_reconnect_and_restart_replay_unacknowledged_human_and_peer_input() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        register(&daemon, "peer", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let (mut stream, mut live) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        let mut accepted = stream.take_backlog();
+        assert_eq!(accepted.len(), 1);
+        for from in ["peer", "user", "peer"] {
+            assert!(matches!(
+                send(&daemon, from, "receiver").await,
+                Response::Sent { .. }
+            ));
+            accepted.push(live.try_recv().unwrap());
+        }
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted);
+        drop(stream);
+        drop(live);
+        let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(reconnected.take_backlog(), accepted);
+        drop(reconnected);
+        drop(daemon);
+        let daemon = open(&dir);
+        let (mut reconnected, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(reconnected.take_backlog(), accepted);
+        assert_eq!(
+            lock(&daemon.state).inbox_bytes[&receiver.id],
+            accepted.iter().map(message_bytes).sum::<usize>()
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: accepted
+                        .iter()
+                        .take(2)
+                        .map(|message| message.id.clone())
+                        .collect(),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted[2..]);
+        assert_eq!(
+            lock(&daemon.state).inbox_bytes[&receiver.id],
+            accepted[2..].iter().map(message_bytes).sum::<usize>()
+        );
+        drop(reconnected);
+        drop(daemon);
+        assert_eq!(inbox(&open(&dir), "receiver", false).await, accepted[2..]);
+    }
+
+    #[tokio::test]
+    async fn subscription_does_not_write_an_acknowledgement() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).store.reject_writes_for_test();
+        let (mut stream, _) = daemon.subscribe(Some("receiver"), vec![]).unwrap();
+        assert_eq!(stream.take_backlog(), accepted);
+        assert!(events.try_recv().is_err());
+        assert!(lock(&daemon.state).storage_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn full_inbox_rejects_entire_broadcast_without_evicting_accepted_work() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let full = register(&daemon, "full", None).await;
+        let other = register(&daemon, "other", None).await;
+        let (stream, mut live) = daemon.subscribe(Some("other"), vec![]).unwrap();
+        for _ in 0..INBOX_CAPACITY {
+            assert!(matches!(
+                send(&daemon, "user", "full").await,
+                Response::Sent { .. }
+            ));
+        }
+        // Discard this raw bus receiver's unrelated traffic before checking
+        // that the rejected broadcast never reaches even a healthy recipient.
+        while live.try_recv().is_ok() {}
+        let accepted = inbox(&daemon, "full", false).await;
+        let mut events = daemon.subscribe_events();
+        let next_seq = lock(&daemon.state).next_seq;
+        let response = send(&daemon, "user", "all").await;
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Backpressure,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+        assert!(live.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.next_seq, next_seq);
+            assert!(state.storage_error.is_none());
+            let stored = state.store.load_inboxes().unwrap();
+            assert_eq!(
+                stored[&full.id].iter().cloned().collect::<Vec<_>>(),
+                accepted
+            );
+            assert!(!stored.contains_key(&other.id));
+        }
+        assert_eq!(inbox(&daemon, "full", true).await, accepted);
+        assert!(matches!(
+            send(&daemon, "user", "all").await,
+            Response::Sent { .. }
+        ));
+        assert_eq!(inbox(&daemon, "full", false).await.len(), 1);
+        assert_eq!(inbox(&daemon, "other", false).await.len(), 1);
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capacity() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        register(&daemon, "receiver", None).await;
+        let payload = json!({"text": "x".repeat(512 * 1024)});
+        let request = Request::Send {
+            from: "user".into(),
+            to: "receiver".into(),
+            kind: "chat".into(),
+            payload,
+            reply_to: None,
+        };
+        for _ in 0..7 {
+            assert!(matches!(
+                daemon.handle(request.clone()).await,
+                Response::Sent { .. }
+            ));
+        }
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
+        assert_eq!(inbox(&daemon, "receiver", false).await, accepted);
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: vec![accepted[0].id.clone()]
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            daemon.handle(request).await,
+            Response::Sent { .. }
+        ));
+        let remaining = inbox(&daemon, "receiver", false).await;
+        assert_eq!(remaining.len(), 7);
+        assert_eq!(remaining[..6], accepted[1..]);
+    }
+
+    #[tokio::test]
+    async fn legacy_duplicate_channel_members_receive_one_durable_message() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("Agentfile.toml"), "").unwrap();
+        let daemon = open(&dir);
+        register_in(&daemon, "sender", &project).await;
+        let receiver = register_in(&daemon, "receiver", &project).await;
+        let Response::Channel { mut channel } = daemon
+            .handle(Request::ChannelOpen {
+                agent: "sender".into(),
+                task: "legacy membership".into(),
+                members: vec!["receiver".into()],
+            })
+            .await
+        else {
+            panic!("channel failed")
+        };
+        inbox(&daemon, "receiver", true).await;
+        channel.members.push(receiver.id.clone());
+        lock(&daemon.state)
+            .store
+            .put_document("channel", channel.id.as_str(), &channel)
+            .unwrap();
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(matches!(
+            send(&daemon, "sender", &format!("channel:{}", channel.id)).await,
+            Response::Sent { .. }
+        ));
+        let queued = inbox(&daemon, "receiver", false).await;
+        assert_eq!(queued.len(), 1);
+        let state = lock(&daemon.state);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert_eq!(state.inbox_bytes[&receiver.id], message_bytes(&queued[0]));
+    }
+
+    #[tokio::test]
+    async fn inbox_receipts_name_only_real_unacknowledged_ids_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            send(&daemon, "user", "receiver").await,
+            Response::Sent { .. }
+        ));
+        let accepted = inbox(&daemon, "receiver", false).await;
+        let bogus = MessageId::from("never-sent".to_owned());
+        let mut events = daemon.subscribe_events();
+        let next_seq = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: "receiver".into(),
+                    messages: vec![bogus.clone()],
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, next_seq);
+        assert!(events.try_recv().is_err());
+        let ids = vec![bogus, accepted[0].id.clone(), accepted[0].id.clone()];
+        for _ in 0..2 {
+            assert!(matches!(
+                daemon
+                    .handle(Request::AckInbox {
+                        agent: "receiver".into(),
+                        messages: ids.clone(),
+                    })
+                    .await,
+                Response::Ok
+            ));
+        }
+        let event = events.try_recv().unwrap();
+        assert!(
+            matches!(event.kind, EventKind::InboxAcknowledged { agent, messages }
+            if agent == receiver.id && messages == vec![accepted[0].id.clone()])
+        );
+        assert!(events.try_recv().is_err());
+        assert_eq!(lock(&daemon.state).next_seq, next_seq + 1);
+        assert!(inbox(&daemon, "receiver", false).await.is_empty());
     }
 
     #[tokio::test]
@@ -8772,7 +9239,7 @@ deny = ["send:all"]
     }
 
     #[tokio::test]
-    async fn restore_retires_half_spawned_duplicates_and_orphaned_leases() {
+    async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
         let dir = TempDir::new().unwrap();
         let now = Utc::now();
         let first_id;
@@ -8782,7 +9249,7 @@ deny = ["send:all"]
             first.status = AgentStatus::Running;
             first_id = first.id.clone();
             let mut second = AgentRecord::new(spec("twin"), false, now + Duration::seconds(1));
-            second.status = AgentStatus::Running;
+            second.status = AgentStatus::Exited { code: Some(0) };
             let half_spawned = AgentRecord::new(spec("half"), true, now);
             for record in [&first, &second, &half_spawned] {
                 store.upsert_agent(record).unwrap();
@@ -8859,6 +9326,51 @@ deny = ["send:all"]
             .filter(|a| a.status.is_live())
             .count();
         assert_eq!(live_in_store, 1);
+    }
+
+    #[test]
+    fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
+        let dir = TempDir::new().unwrap();
+        let database = dir.path().join("state.db");
+        let store = Store::open(&database).unwrap();
+        let now = Utc::now();
+        // This record would normally be marked failed during startup. Its
+        // earlier position must not permit a partial recovery before refusal.
+        let half_spawned = AgentRecord::new(spec("half-spawned"), true, now);
+        let mut first = AgentRecord::new(spec("ambiguous"), false, now + Duration::seconds(1));
+        first.status = AgentStatus::Running;
+        let mut second = AgentRecord::new(spec("ambiguous"), false, now + Duration::seconds(2));
+        second.status = AgentStatus::Running;
+        for record in [&half_spawned, &first, &second] {
+            store.upsert_agent(record).unwrap();
+        }
+        let protection = Lease {
+            id: LeaseId::from("still-owned"),
+            resource: ResourceKey::new("task:protected"),
+            holder: second.id.clone(),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now,
+            change_seq: None,
+            expires_at: now + Duration::hours(1),
+            note: None,
+            amount: 0,
+        };
+        store.upsert_lease(&protection).unwrap();
+        let before = store.load_agents().unwrap();
+        let result = Daemon::with_store(dir.path().into(), dir.path().join("sock"), store);
+        let error = result
+            .err()
+            .expect("ambiguous live names must refuse")
+            .to_string();
+        assert!(
+            error.contains("duplicate live agent name ambiguous"),
+            "{error}"
+        );
+        assert!(error.contains(first.id.as_str()) && error.contains(second.id.as_str()));
+        let reopened = Store::open(&database).unwrap();
+        assert_eq!(reopened.load_agents().unwrap(), before);
+        assert_eq!(reopened.load_leases().unwrap(), [protection]);
+        assert!(reopened.recent_events(10).unwrap().is_empty());
     }
 
     #[test]
@@ -9031,7 +9543,7 @@ deny = ["send:all"]
 
     fn names(response: Response) -> Vec<String> {
         match response {
-            Response::Agents { agents } => agents.into_iter().map(|a| a.spec.name).collect(),
+            Response::Agents { agents, .. } => agents.into_iter().map(|a| a.spec.name).collect(),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -10297,6 +10809,77 @@ deny = ["send:all"]
             Response::Agent { agent } => agent.status,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn removing_a_watched_worktree_keeps_real_deletions_without_false_conflicts() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let worktree = dir.path().join("temporary-checkout");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        assert!(git(
+            dir.path(),
+            &repo,
+            &["worktree", "add", "--detach", worktree.to_str().unwrap()]
+        ));
+        let daemon = open(&dir);
+        daemon.expect_watcher();
+        let watcher = tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(50),
+        ));
+        let home = register_in(&daemon, "home", &repo).await;
+        daemon.refresh_project_checkouts().await;
+        daemon.ensure_watched(&home).await.unwrap();
+        // Reconcile also covers discovered checkouts without registered agents.
+        assert!(
+            daemon
+                .watch_targets()
+                .iter()
+                .any(|target| target.dir == project::canonical(&worktree))
+        );
+        std::fs::remove_dir_all(&worktree).unwrap();
+        std::fs::remove_file(repo.join("src/a.rs")).unwrap();
+        eventually(async || {
+            let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
+            entries
+                .iter()
+                .any(|entry| entry.kind == ChangeKind::Removed)
+                .then_some(())
+        })
+        .await;
+        eventually(async || daemon.recent_events(200).iter().any(|event| {
+            matches!(&event.kind, EventKind::WatcherGap { reason } if reason.contains("removed or became unavailable"))
+        }).then_some(())).await;
+        // Drain callbacks already queued by the OS before checking absence.
+        let flush = lock(&daemon.watcher_flush).clone().unwrap();
+        let (ack, done) = oneshot::channel();
+        flush.send(ack).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), done)
+            .await
+            .unwrap()
+            .unwrap();
+        let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
+        assert!(
+            entries.iter().all(|entry| entry.worktree.is_none()),
+            "{entries:?}"
+        );
+        assert!(
+            !daemon
+                .recent_events(200)
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ChannelOpened { .. }))
+        );
+        watcher.abort();
+        let _ = watcher.await;
     }
 
     #[tokio::test]

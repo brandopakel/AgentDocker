@@ -1,8 +1,96 @@
 # Native delivery and verification plan
 
-Updated September 7, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
+Updated September 11, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
+
+
+For the September 9 desktop cleanup and a consolidated distinction between open
+engineering, acceptance and manual release work, start with
+[Remaining work](REMAINING-WORK.md). The dated checkpoints below retain historical
+evidence; an old “pending” entry is not by itself a current implementation gap.
 
 ## Product and engineering requirements
+
+### Submitted-input parity and idle wake (September 10)
+
+The user requires peer messages to follow the same provider input workflow and
+queue as messages they submit themselves, including waking an idle agent. Make
+the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) a top-priority part of
+delivery step 4 and L09/L13. Trace every queue/notification/acknowledgement boundary,
+then implement supported per-provider input/wake adapters, busy and mixed-input
+ordering, backpressure, retry/deduplication and restart recovery. Verify with
+actual Claude/Codex idle conversations. Hooks that only run on another lifecycle
+event do not complete this requirement, and an inbox acknowledgement does not
+prove provider acceptance. The audit document defines the required artifacts and
+negative-path acceptance cases.
+
+The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.
+
+The [September 11 Claude adapter checkpoint](verification/2026-09-11-claude-channel-input.json)
+adds actual idle wake and ordered peer/user delivery while a tool waits, including
+a queued terminal prompt and preserved unsubmitted draft. Four actual model
+receipts/replies and six release-transport scenarios passed at `c9677ab`. A
+whole-file profile guard failed; exact backup comparison isolated changes to
+three Claude usage counters, with no provider settings/authentication changes.
+Visible provider receipt state, Codex input/wake, actual-provider
+reconnect and sustained acceptance remain. The full standard gate passed 715
+Rust tests and 48 Python checks; native workflows passed 114 steps and routing
+passed 23 steps.
+
+The [managed Claude launch checkpoint](verification/2026-09-11-managed-claude-input.json)
+at `78fc835` adds an explicit desktop option and CLI `run --claude-channel`.
+Actual Claude 2.1.268 received its first input while idle without any typed model
+prompt, and a canonical-user follow-up preserved a terminal draft. Both messages
+were explicitly acknowledged and replied to under the original managed identity.
+Standard validation passed 735 Rust tests and 54 Python checks; the UI recheck
+passed 106 tests and the separate visual trial passed 26 steps. These close the
+bounded managed-launch item; provider recovery/status and sustained acceptance
+remain open. CI for the preceding `d630d9f` checkpoint passed all four native
+desktop targets, Windows foundations, container engines, coverage and benchmarks;
+CodeRabbit reviewed `d630d9f` and reported three findings: schema downgrade checks without an activation record, priority receipt batches and explicit inbox-acknowledgement success. Fixes are now in the working tree; final validation and follow-up review remain.
+
+The update consumer is implemented in CLI and Settings with local preview/apply
+evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installable
+archives and complete feed. Signed protected-tag publication, hosted update
+verification and scheduled checks remain release work.
+
+The [reviewed update checkpoint](verification/2026-09-11-desktop-release.json)
+at `a910d81` passed 727 Rust tests, 54 Python checks, 114 packaged native steps and
+11 packaged updater scenarios. Workflow lint passed. The update smoke now also
+runs in all four desktop CI jobs; its synthetic version exercise does not replace
+distinct-source or hosted-update acceptance.
+
+### Legacy duplicate repair (September 11)
+
+[Offline identity repair](IDENTITY-REPAIR.md) now has a read-only preview and an
+exact-plan apply transaction under exclusive database ownership. It preserves
+accepted messages and original history, records before-images, and exposes
+former-ID routes to the desktop. Proven external local Claude/Codex pairs are
+supported; live and managed transfers remain refused. [Recorded validation](verification/2026-09-11-identity-repair.json) passed 753 Rust
+tests, 54 Python checks and six actual CLI/restart steps. The clean packaged
+checkpoint passed 114 native workflow steps, 23 routing steps and 11 updater
+cases. The later database-key refusal guard passed the full gate and another
+source-pinned CLI trial. CI and actual final-head review remain.
+
+### Notification clicks open Script Editor (September 10)
+
+The user reports that notification clicks repeatedly open a blank Script Editor
+window. Add the [notification routing audit](NOTIFICATION-ROUTING-AUDIT.md) as a
+high-priority usability defect alongside submitted-input parity. Trace the
+installed sender and native-post failure, replace or constrain the AppleScript
+fallback, carry stable destination IDs, and implement native activation/navigation
+for existing windows and cold launch. Acceptance requires actual notification
+clicks to reach the correct project, agent, message or question while preserving
+drafts. Verify preview and signed builds separately; developer-program payment
+does not implement the missing click handler. Keep signing/notarization and
+provider idle wake as distinct gates, and suppress unintended fixture notices.
+
+Implementation now carries destination/origin metadata, removes the macOS
+AppleScript fallback, handles native responses, and forwards activation into an
+existing window or starts the destination origin. Navigation preserves drafts
+and includes an older target in the visible transcript window. The
+[audit](NOTIFICATION-ROUTING-AUDIT.md#implementation-in-the-current-change) records
+implementation and trial limits; the installed-app defect remains open until
+actual native clicks and candidate acceptance pass.
 
 ### Active-session defects and coordination trial (September 7, evening)
 
@@ -550,3 +638,35 @@ A trickling writer cannot renew its deadline; invalid input fails open with a
 diagnostic. Packaged Mac/Linux CI tests held-open and oversized input for both
 adapters without a provider or daemon. Corrected-source verification remains
 required. This is an input phase bound, not a total bound across all hook phases.
+
+
+### September 10: pending-question restart recovery
+
+Pending questions now persist their answer route with the original message.
+The inbox fanout, sender activity and question open/close events share one
+SQLite transaction; failed writes publish no partial inbox, live message or
+notification. A disconnected requester can read its answer after restart, and
+concurrent replies close a pending question once. Expired routes are removed
+durably without withdrawing old inbox messages. Schema 9 prevents an older
+daemon from silently ignoring these routes. Restart, duplicate-answer, expiry
+and injected storage-failure regressions cover this change. Live child/PTY/log
+ownership transfer remains unfinished; `daemon reload` stays unavailable.
+
+### September 10: visible-message receipts and checkout removal
+
+[Checkpoint `796270a`](verification/2026-09-10-bulk-receipts.json) adds explicit batch dismissal of shown messages, retains unseen messages and drafts, removes duplicate pending-question presentation, exposes CLI receipt IDs, and ignores repeated/unknown receipt events. Removed temporary checkouts no longer masquerade as competing edits in the reproduced classifier and actual macOS watcher trials. The full gate passed 710 Rust tests and 48 Python checks; queue/MCP, 114 native control steps and 23 routing steps passed. The first GUI idle-sample exit remains unexplained, and high UI resource use remains under investigation. Supported provider idle-wake adapters are the next implementation task.
+
+### September 11: final review and Codex input acceptance
+
+At `bfa7c7a`, deletion of a reconciled identity commits its canonical record, old-ID
+routes, inbox, cursor and removal event together before changing daemon memory.
+Fault injection covers each write stage. The Windows identity fixture now uses a
+native absolute path. The [review follow-up](verification/2026-09-11-identity-repair.json)
+passed 756 Rust tests, 54 Python checks and the full package/release gate. The
+preceding Windows CI failure is retained; final-head CI and review remain required.
+
+The [actual Codex app-server probe](verification/2026-09-11-codex-appserver-input.json)
+accepted idle peer/human input and mixed steering in one active turn. Replaying
+the same client message ID started another turn. The owned input adapter therefore
+needs durable attempt tracking and an explicit uncertain-acceptance state before
+retries; this prototype does not close queue integration or provider recovery.

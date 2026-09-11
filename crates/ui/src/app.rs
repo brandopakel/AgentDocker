@@ -7,9 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+mod icons;
 mod queue;
+mod sessions;
 mod shell;
-mod style;
+pub(crate) mod style;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 pub use shell::Message;
@@ -34,6 +36,8 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
 const CONSOLE_BYTES: usize = 256 * 1024;
 const MESSAGE_CAPACITY: usize = 64;
+const SENT_CHANNEL_LIMIT: usize = 128;
+const SENT_CHANNEL_BYTES: usize = 256 * 1024;
 const CONSOLE_HISTORY_COMMANDS: usize = 100;
 const CONSOLE_HISTORY_BYTES: usize = 64 * 1024;
 /// How long a console command may run. Long enough for anything that
@@ -81,6 +85,7 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
+    DismissMessages(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -95,7 +100,7 @@ enum Cmd {
 
 /// What comes back to the window.
 enum Msg {
-    Agents(Vec<AgentRecord>),
+    Agents(Vec<AgentRecord>, BTreeMap<String, String>),
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
@@ -107,6 +112,7 @@ enum Msg {
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
     Answered(MessageId, Result<(), String>),
+    MessagesDismissed(Vec<MessageId>, Result<(), String>),
     Event(Box<Event>),
     Connected,
     Disconnected(String),
@@ -115,7 +121,7 @@ enum Msg {
     Desktop(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
-    ChannelSent(String, Result<(), String>),
+    ChannelSent(String, Result<MessageId, String>),
 }
 
 pub struct App {
@@ -150,6 +156,7 @@ pub struct App {
     rx: Receiver<Msg>,
     screen: Screen,
     agents: Vec<AgentRecord>,
+    aliases: BTreeMap<String, String>,
     leases: Vec<Lease>,
     runtimes: Vec<RuntimeInfo>,
     discovered: Vec<DiscoveredProcess>,
@@ -164,6 +171,9 @@ pub struct App {
     /// shows.
     channels: Vec<agentdocker_core::Channel>,
     inbox: Vec<agentdocker_core::Envelope>,
+    /// Confirmed sends from this window. Inbox polling must not erase them.
+    /// Receipt times are local; this bounded cache is not durable channel history.
+    sent_channels: std::collections::VecDeque<agentdocker_core::Envelope>,
     connected: Result<(), String>,
     /// The highest event sequence taken, so a reconnect's replay is not
     /// shown or acted on twice. Live-only events carry `0` and always pass.
@@ -196,6 +206,7 @@ pub struct App {
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
+    dismissing: std::collections::BTreeSet<MessageId>,
 }
 
 impl App {
@@ -253,6 +264,7 @@ impl App {
             rx: msg_rx,
             screen: Screen::Agents,
             agents: Vec::new(),
+            aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
             discovered: Vec::new(),
@@ -260,6 +272,7 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -286,6 +299,7 @@ impl App {
             questions: Vec::new(),
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
+            dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
         }
     }
@@ -302,6 +316,7 @@ impl App {
             rx,
             screen: Screen::Agents,
             agents: Vec::new(),
+            aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
             discovered: Vec::new(),
@@ -309,6 +324,7 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
             setup_health: None,
@@ -336,6 +352,7 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            dismissing: std::collections::BTreeSet::new(),
         }
     }
 
@@ -344,6 +361,9 @@ impl App {
             match command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
+                }
+                Cmd::DismissMessages(ids) => {
+                    self.dismissing.retain(|id| !ids.contains(id));
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -383,7 +403,11 @@ impl App {
         for _ in 0..MESSAGE_CAPACITY {
             let Ok(msg) = self.rx.try_recv() else { break };
             match msg {
-                Msg::Agents(agents) => {
+                Msg::Agents(agents, aliases) => {
+                    self.aliases = aliases;
+                    if let Some(selected) = &self.shell.selected {
+                        self.shell.selected = Some(self.canonical_agent(selected).to_owned());
+                    }
                     self.agents = agents;
                     let projects = self.channel_projects();
                     self.channels
@@ -407,6 +431,24 @@ impl App {
                     }
                 }
                 Msg::Inbox(inbox) => self.inbox = inbox,
+                Msg::MessagesDismissed(ids, result) => {
+                    self.dismissing.retain(|id| !ids.contains(id));
+                    match result {
+                        Ok(()) => {
+                            self.inbox.retain(|message| !ids.contains(&message.id));
+                            if self
+                                .shell
+                                .notification_message
+                                .as_ref()
+                                .is_some_and(|id| ids.contains(id))
+                            {
+                                self.shell.notification_message = None;
+                            }
+                            self.say("Messages dismissed");
+                        }
+                        Err(reason) => self.say(reason),
+                    }
+                }
                 Msg::Discovered(found) => self.discovered = found,
                 Msg::Journal(project, head_seq, entries) => {
                     if self.journal_project.as_deref() == Some(project.as_str()) {
@@ -430,10 +472,12 @@ impl App {
                     }
                 }
                 Msg::Activity(activity) => {
-                    self.activity = activity
+                    let fresh: BTreeMap<String, Activity> = activity
                         .into_iter()
                         .map(|a| (a.agent.to_string(), a.activity))
                         .collect();
+                    self.note_completions(&fresh);
+                    self.activity = fresh;
                 }
                 Msg::Questions(questions) => {
                     // Forget drafts for questions nobody is waiting on any
@@ -538,15 +582,37 @@ impl App {
                     }
                 }
                 Msg::ChannelSent(id, result) => {
-                    let success = result.is_ok();
-                    self.shell
-                        .channel_drafts
-                        .entry(id)
-                        .or_default()
-                        .complete(result);
-                    if success {
-                        self.send(Cmd::Inbox);
-                        self.say("Message sent");
+                    let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
+                    match result {
+                        Ok(message) => {
+                            let sent = draft.sending.clone();
+                            draft.complete(Ok(()));
+                            if let Some(sent) = sent {
+                                let mut receipt = agentdocker_core::Envelope::new(
+                                    agentdocker_core::HUMAN,
+                                    agentdocker_core::Destination::Channel(id.into()),
+                                    "message",
+                                    serde_json::Value::String(sent),
+                                    None,
+                                    Utc::now(),
+                                );
+                                receipt.id = message;
+                                self.sent_channels.push_back(receipt);
+                                while self.sent_channels.len() > SENT_CHANNEL_LIMIT
+                                    || self
+                                        .sent_channels
+                                        .iter()
+                                        .map(|item| item.payload.as_str().map_or(0, str::len))
+                                        .sum::<usize>()
+                                        > SENT_CHANNEL_BYTES
+                                {
+                                    self.sent_channels.pop_front();
+                                }
+                            }
+                            self.send(Cmd::Inbox);
+                            self.say("Message sent");
+                        }
+                        Err(error) => draft.complete(Err(error)),
                     }
                 }
             }
@@ -590,6 +656,7 @@ impl App {
             | EventKind::AgentStopping { .. }
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
+            | EventKind::AgentReconciled { .. }
             | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
@@ -608,6 +675,7 @@ impl App {
             EventKind::MessageSent { kind, .. } if kind == "question" || kind == "answer" => {
                 self.send(Cmd::Questions);
             }
+            EventKind::QuestionClosed { .. } => self.send(Cmd::Questions),
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>
@@ -620,7 +688,46 @@ impl App {
         }
     }
 
+    /// A turn just finished: an agent that was working or blocked is now
+    /// idle or gone. That is the observed state; whether anyone saw it is
+    /// a separate question, answered here once and then only by the user.
+    /// A completion on the screen the user is looking at, in a focused
+    /// window, is viewed as it happens; every other one waits for them.
+    fn note_completions(&mut self, fresh: &BTreeMap<String, Activity>) {
+        for (id, now) in fresh {
+            let was_busy = matches!(
+                self.activity.get(id),
+                Some(Activity::Working { .. } | Activity::Blocked { .. })
+            );
+            if !was_busy || !matches!(now, Activity::Idle { .. } | Activity::Finished) {
+                continue;
+            }
+            let on_screen = self.screen == Screen::Agents
+                && !self.shell.unfocused
+                && self.agents.iter().any(|a| {
+                    a.id.as_str() == id
+                        && a.project.as_ref().map(|p| p.root.as_path()) == self.selected_root()
+                });
+            if !on_screen {
+                self.shell.unviewed_done.insert(id.clone());
+            }
+        }
+        // A session that started working again, or left, is no longer a
+        // finished-and-unviewed one.
+        self.shell.unviewed_done.retain(|id| {
+            matches!(
+                fresh.get(id),
+                Some(Activity::Idle { .. } | Activity::Finished)
+            )
+        });
+    }
+
+    fn canonical_agent<'a>(&'a self, id: &'a str) -> &'a str {
+        self.aliases.get(id).map(String::as_str).unwrap_or(id)
+    }
+
     fn name_of(&self, id: &str) -> String {
+        let id = self.canonical_agent(id);
         self.agents
             .iter()
             .find(|a| a.id.as_str() == id)
@@ -778,23 +885,31 @@ fn launched_in() -> Option<std::path::PathBuf> {
 /// say it two different ways.
 /// The inbox split into rooms and everything else.
 ///
-/// A channel message carries the room it was sent to in its payload, so
-/// the conversation can be put back under the room it happened in.
-/// Anything without one was sent to this person directly and belongs on
-/// its own, not silently filed under whichever room sorts first.
+/// Route by the envelope's destination, including ordinary string payloads.
+/// A payload field cannot move a message to a different room. Prefer the
+/// inbox's authoritative envelope when it overlaps a local send receipt.
 type Grouped<'a> = (
     BTreeMap<String, Vec<&'a agentdocker_core::Envelope>>,
     Vec<&'a agentdocker_core::Envelope>,
 );
 
-fn by_room(inbox: &[agentdocker_core::Envelope]) -> Grouped<'_> {
+fn by_room<'a>(inbox: impl IntoIterator<Item = &'a agentdocker_core::Envelope>) -> Grouped<'a> {
     let mut said: BTreeMap<String, Vec<&agentdocker_core::Envelope>> = BTreeMap::new();
     let mut direct = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for message in inbox {
-        match message.payload["channel"].as_str() {
-            Some(room) => said.entry(room.to_owned()).or_default().push(message),
-            None => direct.push(message),
+        if !seen.insert(&message.id) {
+            continue;
         }
+        match &message.to {
+            agentdocker_core::Destination::Channel(room) => {
+                said.entry(room.to_string()).or_default().push(message)
+            }
+            _ => direct.push(message),
+        }
+    }
+    for messages in said.values_mut() {
+        messages.sort_by_key(|message| (message.sent_at, &message.id));
     }
     (said, direct)
 }
@@ -905,6 +1020,10 @@ fn spawn_worker(
                         _ => None,
                     };
                     let launch = matches!(&daemon, Cmd::Launch(_));
+                    let dismissal = match &daemon {
+                        Cmd::DismissMessages(id) => Some(id.clone()),
+                        _ => None,
+                    };
                     let channel = match &daemon {
                         Cmd::ChannelSend(id, _) => Some(id.clone()),
                         _ => None,
@@ -918,6 +1037,13 @@ fn spawn_worker(
                         Ok(Some(msg)) => msg,
                         Ok(None) => continue,
                         Err(err) => {
+                            if let Some(id) = dismissal
+                                && tx
+                                    .send(Msg::MessagesDismissed(id, Err(format!("{err:#}"))))
+                                    .is_err()
+                            {
+                                break;
+                            }
                             if launch && tx.send(Msg::Launched(Err(format!("{err:#}")))).is_err() {
                                 break;
                             }
@@ -982,7 +1108,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             project: None,
             labels: BTreeMap::new(),
         })? {
-            Response::Agents { agents } => Some(Msg::Agents(agents)),
+            Response::Agents { agents, aliases } => Some(Msg::Agents(
+                agents,
+                aliases
+                    .into_iter()
+                    .map(|(old, current)| (old.to_string(), current.to_string()))
+                    .collect(),
+            )),
             _ => None,
         },
         Cmd::Leases => match client.call(&Request::Leases {
@@ -1064,6 +1196,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             })?;
             Some(Msg::Answered(message, Ok(())))
         }
+        Cmd::DismissMessages(message) => {
+            let response = client.call(&Request::AckInbox {
+                agent: agentdocker_core::HUMAN.to_owned(),
+                messages: message.clone(),
+            })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "The daemon did not confirm dismissal; messages were retained."
+            );
+            Some(Msg::MessagesDismissed(message, Ok(())))
+        }
         Cmd::Adopt(pid) => Some(
             match client
                 .call(&Request::Adopt {
@@ -1114,14 +1257,18 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
         },
         Cmd::ChannelSend(channel, text) => {
-            client.call(&Request::Send {
+            let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),
                 to: format!("channel:{channel}"),
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
             })?;
-            Some(Msg::ChannelSent(channel, Ok(())))
+            let result = match response {
+                Response::Sent { message, .. } => Ok(message),
+                _ => Err("Unexpected message response".into()),
+            };
+            Some(Msg::ChannelSent(channel, result))
         }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
@@ -1310,20 +1457,20 @@ mod tests {
 
         let inbox: Vec<agentdocker_core::Envelope> = serde_json::from_value(serde_json::json!([
             {"id": "m1", "from": "a", "to": {"kind": "channel", "value": "room-one"},
-             "kind": "chat", "payload": {"channel": "room-one", "text": "first"},
+             "kind": "chat", "payload": "first",
              "sent_at": "2026-09-08T03:00:00Z"},
             {"id": "m2", "from": "b", "to": {"kind": "channel", "value": "room-two"},
-             "kind": "chat", "payload": {"channel": "room-two", "text": "elsewhere"},
+             "kind": "chat", "payload": {"channel": "wrong-room", "text": "elsewhere"},
              "sent_at": "2026-09-08T03:01:00Z"},
             {"id": "m3", "from": "a", "to": {"kind": "channel", "value": "room-one"},
              "kind": "chat", "payload": {"channel": "room-one", "text": "second"},
              "sent_at": "2026-09-08T03:02:00Z"},
             {"id": "m4", "from": "b", "to": {"kind": "agent", "value": "user"},
-             "kind": "chat", "payload": {"text": "just to you"},
+             "kind": "chat", "payload": {"channel": "room-one", "text": "just to you"},
              "sent_at": "2026-09-08T03:03:00Z"}
         ]))
         .unwrap();
-        let (said, direct) = by_room(&inbox);
+        let (said, direct) = by_room(inbox.iter().chain(std::iter::once(&inbox[0])));
         assert_eq!(said["room-one"].len(), 2, "kept together and in order");
         assert_eq!(said["room-one"][0].id.as_str(), "m1");
         assert_eq!(said["room-two"].len(), 1);
@@ -1331,6 +1478,54 @@ mod tests {
         // happens to sort first.
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].id.as_str(), "m4");
+    }
+
+    #[test]
+    fn confirmed_channel_messages_survive_refresh_and_failures_never_look_sent() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let draft = app.shell.channel_drafts.entry("room".into()).or_default();
+        draft.text = "keep my draft".into();
+        draft.begin();
+        messages
+            .send(Msg::ChannelSent("room".into(), Err("offline".into())))
+            .unwrap();
+        app.drain();
+        assert!(app.sent_channels.is_empty());
+        assert_eq!(app.shell.channel_drafts["room"].text, "keep my draft");
+        for index in 0..SENT_CHANNEL_LIMIT + 1 {
+            let draft = app.shell.channel_drafts.get_mut("room").unwrap();
+            draft.text = "x".repeat(8192);
+            draft.begin();
+            messages
+                .send(Msg::ChannelSent(
+                    "room".into(),
+                    Ok(MessageId::from(format!("sent-{index}"))),
+                ))
+                .unwrap();
+            app.drain();
+        }
+        let retained = app.sent_channels.len();
+        assert!(retained > 0 && retained <= SENT_CHANNEL_LIMIT);
+        assert!(
+            app.sent_channels
+                .iter()
+                .map(|item| item.payload.as_str().unwrap().len())
+                .sum::<usize>()
+                <= SENT_CHANNEL_BYTES
+        );
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        app.drain();
+        assert_eq!(
+            app.sent_channels.len(),
+            retained,
+            "an inbox refresh erased confirmed sends"
+        );
+        assert_eq!(
+            app.sent_channels.back().unwrap().id.as_str(),
+            format!("sent-{SENT_CHANNEL_LIMIT}")
+        );
     }
 
     #[test]
@@ -1405,6 +1600,200 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_ack_response_retains_the_message_and_its_draft() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing acknowledgement request");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).unwrap()["op"],
+                "ack_inbox"
+            );
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"messages\",\"messages\":[]}\n")
+                .unwrap();
+        });
+        let id = MessageId::from("retained".to_owned());
+        let error = run(
+            &Client::isolated(socket),
+            Cmd::DismissMessages(vec![id.clone()]),
+        )
+        .err()
+        .expect("unexpected success response must fail");
+        server.join().unwrap();
+        let (commands, _) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut envelope = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("message"),
+            None,
+            Utc::now(),
+        );
+        envelope.id = id.clone();
+        app.inbox.push(envelope.clone());
+        app.answers.insert(id.clone(), "unfinished".into());
+        app.dismissing.insert(id.clone());
+        messages
+            .send(Msg::MessagesDismissed(
+                vec![id.clone()],
+                Err(error.to_string()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox, vec![envelope]);
+        assert_eq!(app.answers[&id], "unfinished");
+        assert!(app.dismissing.is_empty());
+    }
+
+    #[test]
+    fn message_dismissal_waits_for_success_and_preserves_drafts_and_new_arrivals() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("first"),
+            None,
+            Utc::now(),
+        );
+        let second = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("second"),
+            None,
+            Utc::now(),
+        );
+        app.inbox.push(first.clone());
+        let question = MessageId::from("pending-question".to_owned());
+        app.answers
+            .insert(question.clone(), "unfinished answer".into());
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|command| matches!(command, Cmd::DismissMessages(_)))
+                .count(),
+            1
+        );
+        assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
+        messages
+            .send(Msg::MessagesDismissed(
+                vec![first.id.clone()],
+                Err("inbox retained".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox.as_slice(), std::slice::from_ref(&first));
+        assert!(!app.dismissing.contains(&first.id));
+        assert_eq!(app.status, "inbox retained");
+        let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
+        app.inbox.push(second.clone());
+        messages
+            .send(Msg::MessagesDismissed(vec![first.id.clone()], Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox, [second]);
+        assert_eq!(app.answers[&question], "unfinished answer");
+        assert!(!app.dismissing.contains(&first.id));
+    }
+
+    #[test]
+    fn bulk_dismissal_is_one_receipt_and_excludes_questions_and_unshown_messages() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let received: Vec<_> = (0..5)
+            .map(|index| {
+                agentdocker_core::Envelope::new(
+                    "peer",
+                    agentdocker_core::Destination::Agent("user".into()),
+                    "chat",
+                    serde_json::json!(index),
+                    None,
+                    Utc::now(),
+                )
+            })
+            .collect();
+        app.inbox = received[..4].to_vec();
+        let question = received[3].id.clone();
+        app.questions.push(Question {
+            id: question.clone(),
+            from: "peer".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Keep this question".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(1),
+        });
+        app.answers
+            .insert(question.clone(), "unfinished answer".into());
+        let _ = app.update(shell::Message::DismissInbox(vec![
+            received[1].id.clone(),
+            received[2].id.clone(),
+            received[1].id.clone(),
+            question.clone(),
+            MessageId::from("unknown".to_owned()),
+        ]));
+        let receipts: Vec<_> = requests
+            .try_iter()
+            .filter_map(|command| match command {
+                Cmd::DismissMessages(ids) => Some(ids),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(receipts.len(), 1);
+        let ids = &receipts[0];
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&received[1].id) && ids.contains(&received[2].id));
+        assert_eq!(app.inbox.len(), 4, "wait for the durable receipt");
+        app.inbox.push(received[4].clone());
+        messages
+            .send(Msg::MessagesDismissed(ids.clone(), Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.inbox,
+            [
+                received[0].clone(),
+                received[3].clone(),
+                received[4].clone()
+            ]
+        );
+        assert_eq!(app.answers[&question], "unfinished answer");
+        assert!(app.dismissing.is_empty());
+    }
+
+    #[test]
     fn a_full_command_queue_preserves_drafts_and_releases_busy_controls() {
         let (commands, requests) = queue::channel();
         for _ in 0..queue::CAPACITY {
@@ -1418,6 +1807,12 @@ mod tests {
         app.send(Cmd::Answer(id.clone(), "draft".into()));
         assert_eq!(app.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
+        assert!(app.status.contains("queue is full"));
+        app.dismissing.insert(id.clone());
+        let second = MessageId::from("second-message".to_owned());
+        app.dismissing.insert(second.clone());
+        app.send(Cmd::DismissMessages(vec![id.clone(), second]));
+        assert!(app.dismissing.is_empty());
         assert!(app.status.contains("queue is full"));
         app.setup_busy = true;
         app.send(Cmd::Setup(vec!["--health".into()]));
@@ -1561,7 +1956,9 @@ mod tests {
             agent.project = Some(project);
             agents.push(agent);
         }
-        messages.send(Msg::Agents(agents.clone())).unwrap();
+        messages
+            .send(Msg::Agents(agents.clone(), BTreeMap::new()))
+            .unwrap();
         app.drain();
         assert_eq!(
             requests
@@ -1604,7 +2001,7 @@ mod tests {
         assert_eq!(app.channels.len(), 1);
         assert_eq!(app.channels[0].project.as_str(), "project-b");
         agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
-        messages.send(Msg::Agents(agents)).unwrap();
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
         messages
             .send(Msg::Channels(
                 "project-b".into(),
@@ -2209,5 +2606,117 @@ mod tests {
         assert_eq!(span(45), "45s");
         assert_eq!(span(180), "3m");
         assert_eq!(span(7200), "2h");
+    }
+
+    #[test]
+    fn a_turn_finished_out_of_view_waits_to_be_viewed_and_idle_alone_is_not_seen() {
+        use agentdocker_core::AgentSpec;
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut agents = Vec::new();
+        for (name, root) in [("worker", "/fixture/alpha"), ("other", "/fixture/beta")] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let mut project = ProjectRef::directory(root);
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project.clone());
+            app.shell.catalog.remember(project, false);
+            agents.push(agent);
+        }
+        let (worker, other) = (agents[0].clone(), agents[1].clone());
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
+        app.drain();
+        let report = |records: &[(&AgentRecord, Activity)]| {
+            Msg::Activity(
+                records
+                    .iter()
+                    .map(|(agent, activity)| AgentActivity {
+                        agent: agent.id.clone(),
+                        name: agent.spec.name.clone(),
+                        project: agent.project.as_ref().map(|p| p.id()),
+                        activity: activity.clone(),
+                    })
+                    .collect(),
+            )
+        };
+        let working = Activity::Working { since: Utc::now() };
+        let idle = Activity::Idle { since: Utc::now() };
+
+        // Idle from the start is a state, not a completion.
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // The user is looking at beta while alpha's worker finishes.
+        let _ = app.update(Message::SelectProject("/fixture/beta".into()));
+        messages
+            .send(report(&[
+                (&worker, working.clone()),
+                (&other, working.clone()),
+            ]))
+            .unwrap();
+        app.drain();
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        assert!(
+            !app.shell.unviewed_done.contains(other.id.as_str()),
+            "a completion on the screen being looked at is viewed as it happens"
+        );
+        assert_eq!(
+            app.shell
+                .unviewed_in(&app.agents, std::path::Path::new("/fixture/alpha")),
+            1
+        );
+
+        // Idle reports keep arriving; none of them counts as viewing.
+        messages.send(report(&[(&worker, idle.clone())])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+
+        // Opening the project is viewing.
+        let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // In an unfocused window even the open project is not being looked at.
+        let _ = app.update(Message::Event(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        messages
+            .send(report(&[(&worker, working.clone())]))
+            .unwrap();
+        app.drain();
+        messages.send(report(&[(&worker, idle.clone())])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        // Selecting the session is viewing it.
+        let _ = app.update(Message::SelectSession(worker.id.to_string()));
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // Working again clears a stale badge without anyone viewing it.
+        let _ = app.update(Message::Event(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        messages
+            .send(report(&[(&worker, working.clone())]))
+            .unwrap();
+        app.drain();
+        messages.send(report(&[(&worker, idle)])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        messages.send(report(&[(&worker, working)])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.is_empty());
     }
 }

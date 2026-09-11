@@ -78,6 +78,30 @@ fn validate_file(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
     validate_owner(meta, path)
 }
 
+/// Validate existing state without creating files or changing permissions.
+/// Keeping the opened handle also avoids accepting a symlink at the final
+/// path component. Maintenance inspection must never use `private_file`,
+/// whose legacy-permission upgrade is intentionally a write.
+#[cfg(unix)]
+pub fn read_private_file(path: &Path) -> io::Result<std::fs::File> {
+    validate_file(&std::fs::symlink_metadata(path)?, path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    validate_file(&file.metadata()?, path)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+pub fn check_private_dir(path: &Path) -> io::Result<()> {
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    validate_owner(&directory.metadata()?, path)
+}
+
 /// Create `dir` for this user alone (mode `0700`) when it is missing, and
 /// refuse it when it is not a directory we own that nobody else can write
 /// to. A pre-planted directory or symlink under `/tmp` fails here instead
@@ -216,14 +240,17 @@ mod tests {
         let symlink = tmp.path().join("symlink");
         std::os::unix::fs::symlink(&target, &symlink).unwrap();
         assert!(private_file(&symlink, true, false).is_err());
+        assert!(read_private_file(&symlink).is_err());
         let hardlink = tmp.path().join("hardlink");
         std::fs::hard_link(&target, &hardlink).unwrap();
         assert!(private_file(&hardlink, true, false).is_err());
+        assert!(read_private_file(&hardlink).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
         assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o644);
         let dir_link = tmp.path().join("directory-link");
         std::os::unix::fs::symlink(tmp.path(), &dir_link).unwrap();
         assert!(secure_state_dir(&dir_link).is_err());
+        assert!(check_private_dir(&dir_link).is_err());
     }
 
     #[test]

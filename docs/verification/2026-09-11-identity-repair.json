@@ -1,0 +1,495 @@
+{
+  "format": 1,
+  "date": "2026-09-11",
+  "scope": "Explicit offline reconciliation of proven local external Claude/Codex duplicate records; durable exact aliases and preserved history. Not live transfer or a production repair.",
+  "native_checkpoint": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "d10f66d604cd1c2103ff5553642bc5a2eace51e1",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "e75b4d616850a365b6da08b756dc8d118393f4f6",
+    "source_input_sha256": "7f5eadc5bfbee2645e39b6f5d8aa180f43a8c92d06f4988fb08d5144cacc29c7",
+    "source_dirty": false,
+    "state_schema": 11,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 30762597,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 13334011
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "f664f5dd3d24151a2bc466e47af9e1e17cd562605a8c8dd5d87b3f8cf0047581",
+      "agentd": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd",
+      "agentdocker-ui": "4ab963bfa071dd1a38bcc90a51b26c8351e33a5500ac8c2f8c479a62256f6be9"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "c78478cdc4b20bdca2e59e41d851e6ed144b93a12153568be89394fc38110a20"
+    }
+  },
+  "validation": {
+    "rust_tests_passed": 752,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 54,
+    "ui_tests_passed": 108,
+    "standard_gate": "passed",
+    "workflow_lint": "passed"
+  },
+  "packaged_identity_repair": {
+    "result": "passed",
+    "steps": [
+      "read-only CLI preview leaves schema-10 records and database bytes unchanged",
+      "wrong plan digest refuses without database changes",
+      "idle existing database connection blocks apply independently of daemon socket",
+      "exact plan applies atomically and repeated apply returns the same receipt",
+      "daemon restart exposes one canonical agent, exact alias and original FIFO messages through both IDs",
+      "receipt through retired ID acknowledges the canonical inbox"
+    ],
+    "binaries": {
+      "agentdocker": {
+        "sha256": "f664f5dd3d24151a2bc466e47af9e1e17cd562605a8c8dd5d87b3f8cf0047581"
+      },
+      "agentd": {
+        "sha256": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd"
+      }
+    },
+    "driver_sha256": "2c6afd058f68e9a2e901d1a701577af381ff8e007dde392c415198c07d9ff611",
+    "helper_sha256": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f",
+    "manifest": {
+      "format": 1,
+      "product": "agentdocker",
+      "version": "0.1.0",
+      "source_commit": "d10f66d604cd1c2103ff5553642bc5a2eace51e1",
+      "target": "aarch64-apple-darwin",
+      "display_name": "agentdocker",
+      "signing": "local-preview",
+      "notarized": false,
+      "source_tree": "e75b4d616850a365b6da08b756dc8d118393f4f6",
+      "source_input_sha256": "7f5eadc5bfbee2645e39b6f5d8aa180f43a8c92d06f4988fb08d5144cacc29c7",
+      "source_dirty": false,
+      "state_schema": 11,
+      "installation_lock": 1,
+      "size": {
+        "payload_bytes": 30762597,
+        "archive_bytes": {
+          "agentdocker-desktop-aarch64-apple-darwin.zip": 13334011
+        },
+        "limits": {
+          "payload_bytes": 104857600,
+          "archive_bytes": 41943040
+        }
+      },
+      "binary_sha256": {
+        "agentdocker": "f664f5dd3d24151a2bc466e47af9e1e17cd562605a8c8dd5d87b3f8cf0047581",
+        "agentd": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd",
+        "agentdocker-ui": "4ab963bfa071dd1a38bcc90a51b26c8351e33a5500ac8c2f8c479a62256f6be9"
+      },
+      "artifacts": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": "c78478cdc4b20bdca2e59e41d851e6ed144b93a12153568be89394fc38110a20"
+      }
+    },
+    "scope": "owned synthetic legacy records, actual CLI and daemon; no real provider",
+    "owned_processes_running": 0,
+    "duration_seconds": 0.892
+  },
+  "native_workflows": {
+    "result": "passed",
+    "steps": 114,
+    "report": {
+      "result": "passed",
+      "checks": [
+        "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance"
+      ],
+      "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "binary_sha256": {
+        "agentd": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd",
+        "agentdocker": "f664f5dd3d24151a2bc466e47af9e1e17cd562605a8c8dd5d87b3f8cf0047581",
+        "agentdocker-ui": "4ab963bfa071dd1a38bcc90a51b26c8351e33a5500ac8c2f8c479a62256f6be9"
+      },
+      "first_window": {
+        "samples": 203,
+        "elapsed_seconds": 29.271855500002857,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "restored_window": {
+        "samples": 20,
+        "elapsed_seconds": 2.7229980410047574,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "idle_resources": {
+        "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+        "samples": [
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 2.7
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.6
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 1.6
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 1.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.7
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173604864,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 1.8
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.6
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 0.9
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 173588480,
+              "ps_cpu_percent": 21.1
+            },
+            "daemon": {
+              "rss_bytes": 17399808,
+              "ps_cpu_percent": 0.0
+            }
+          }
+        ],
+        "summary": {
+          "window": {
+            "median_rss_bytes": 173588480.0,
+            "maximum_rss_bytes": 173604864,
+            "median_ps_cpu_percent": 0.6499999999999999
+          },
+          "daemon": {
+            "median_rss_bytes": 17399808.0,
+            "maximum_rss_bytes": 17399808,
+            "median_ps_cpu_percent": 0.0
+          }
+        }
+      },
+      "elapsed_seconds": 47.48565149999922
+    }
+  },
+  "notifications": {
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd",
+      "agentdocker-ui": "4ab963bfa071dd1a38bcc90a51b26c8351e33a5500ac8c2f8c479a62256f6be9"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "accepted_activations": [
+      "9d9b0568a137492f",
+      "b42fc7aac33f422b",
+      "e03cc27befb54896"
+    ],
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "existing_window_steps": 21,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 8.198690833
+  },
+  "updater": {
+    "passed": true,
+    "source": {
+      "source_commit": "d10f66d604cd1c2103ff5553642bc5a2eace51e1",
+      "source_tree": "e75b4d616850a365b6da08b756dc8d118393f4f6",
+      "source_input_sha256": "7f5eadc5bfbee2645e39b6f5d8aa180f43a8c92d06f4988fb08d5144cacc29c7",
+      "source_dirty": false
+    },
+    "target": "aarch64-apple-darwin",
+    "steps": [
+      "file feed refused without local preview",
+      "check reports no update for the running version and downloads nothing",
+      "malformed version paths refused before staging",
+      "ambiguous duplicate target refused during check",
+      "check sees the advertised newer version",
+      "payload whose metadata disagrees with the feed is refused before install",
+      "tampered checksum refused; no partial file, no extraction",
+      "failed archive fetch leaves no partial download",
+      "download, verify, extract and preview of the newer release",
+      "apply produced a managed installation of the advertised version",
+      "second check finds nothing newer than the installed version"
+    ],
+    "scope": "Owned offline installation flow with synthetic version relabelling; not a distinct-source upgrade or hosted-download test.",
+    "driver_sha256": "75246ed59207497fc9ad853e18729445efa1017af04275612ba93015080c49ab",
+    "binary_sha256": {
+      "agentdocker": "f664f5dd3d24151a2bc466e47af9e1e17cd562605a8c8dd5d87b3f8cf0047581",
+      "agentd": "66d93d8725f307a4d3e1e1c3c8446eb05084de1895670c432d977ba5cd1202fd",
+      "agentdocker-ui": "4ab963bfa071dd1a38bcc90a51b26c8351e33a5500ac8c2f8c479a62256f6be9"
+    },
+    "installed": {
+      "id": "f749502190e8c54ebe28fc1bfc339e5b92ce90fb0b63940b724a6675a3a7047f",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "d10f66d604cd1c2103ff5553642bc5a2eace51e1",
+      "state_schema": 11,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "f749502190e8c54ebe28fc1bfc339e5b92ce90fb0b63940b724a6675a3a7047f",
+      "version": "0.1.1"
+    }
+  },
+  "retained_initial_failures": [
+    {
+      "log": "/private/tmp/agentdocker-identity-standard-check.log",
+      "cause": "A function attribute remained above a newly inserted helper instead of perform; corrected.",
+      "sha256": "0da25e6a087ce733790cc0de455949a2a6d03c23265f7995ad386157697dc817"
+    },
+    {
+      "log": "/private/tmp/agentdocker-identity-standard-check-final.log",
+      "cause": "Identity-filter helper was after the test module; moved before it.",
+      "sha256": "9c088bcff18f8e8aaf2853833dda64b79d02a3cebe3e7853aaa1664571b42b82"
+    },
+    {
+      "log": "/private/tmp/agentdocker-identity-ui-tests.log",
+      "cause": "Sandbox denied Unix-socket fixtures; authorized rerun passed all 108.",
+      "sha256": "326bae58eb8a4a0d18c3bfa0ddd8781446edc2ba2657798c98e89b2748b3ada2"
+    },
+    {
+      "log": "/private/tmp/agentdocker-identity-cli-tests-unsandboxed.log",
+      "cause": "Two parallel lock-release assertions observed the fork-to-exec inherited-descriptor interval. Bounded release waits now match the existing host lock tests; standard nextest uses zero retries.",
+      "sha256": "9d0ee50af480ddb1b3b74de0fc9c93b9703976a5d98c5fe931ad41f63a2d91d9"
+    }
+  ],
+  "remaining": [
+    "Final-head CI and actual review",
+    "Production identity maintenance and old launcher switch after active sessions finish",
+    "Physical Notification Center clicks and signed posting",
+    "Codex submitted-input idle wake",
+    "Actual-provider reconnect/ambiguous acceptance and sustained-use trials",
+    "Safe live daemon transfer",
+    "Windows product and target platform completion",
+    "Apple credentials and hands-on accessibility/IME acceptance"
+  ],
+  "followup_key_guard": {
+    "source": {
+      "format": 1,
+      "source_commit": "5fcf87322927779695e338a91e7b1b0bbb0e6726",
+      "source_tree": "4ca461dcc710275966fac1bd87cf20ae12c93901",
+      "source_input_sha256": "7f55c257caf2a89273756e76f467d7a615d1622b040c9d45c7b566347b6125c1",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 11,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "7226b7503501b4e60f94a8d731369b893b8e7ce6ff851223f22f8e713e78600e",
+        "agentd": "77549bf338ff63144bcd37c8642868d799356fa9c8ca557d1bbca4172cbdc1d1",
+        "agentdocker-ui": "2a9961f43a2509aa735fe4817967d26cbacd4e9fc792a7fa5ef07b426cd4e7c2"
+      }
+    },
+    "change": "Reject agent/lease SQL key mismatches before mutation; size guard runs before parsing and idempotent receipt replay.",
+    "validation": {
+      "rust_tests_passed": 753,
+      "rust_tests_skipped": 6,
+      "python_checks_passed": 54,
+      "standard_gate": "passed"
+    },
+    "actual_cli": {
+      "result": "passed",
+      "steps": [
+        "read-only CLI preview leaves schema-10 records and database bytes unchanged",
+        "wrong plan digest refuses without database changes",
+        "idle existing database connection blocks apply independently of daemon socket",
+        "exact plan applies atomically and repeated apply returns the same receipt",
+        "daemon restart exposes one canonical agent, exact alias and original FIFO messages through both IDs",
+        "receipt through retired ID acknowledges the canonical inbox"
+      ],
+      "binaries": {
+        "agentdocker": {
+          "sha256": "7226b7503501b4e60f94a8d731369b893b8e7ce6ff851223f22f8e713e78600e"
+        },
+        "agentd": {
+          "sha256": "77549bf338ff63144bcd37c8642868d799356fa9c8ca557d1bbca4172cbdc1d1"
+        }
+      },
+      "driver_sha256": "2c6afd058f68e9a2e901d1a701577af381ff8e007dde392c415198c07d9ff611",
+      "helper_sha256": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f",
+      "manifest": {
+        "format": 1,
+        "source_commit": "5fcf87322927779695e338a91e7b1b0bbb0e6726",
+        "source_tree": "4ca461dcc710275966fac1bd87cf20ae12c93901",
+        "source_input_sha256": "7f55c257caf2a89273756e76f467d7a615d1622b040c9d45c7b566347b6125c1",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 11,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "7226b7503501b4e60f94a8d731369b893b8e7ce6ff851223f22f8e713e78600e",
+          "agentd": "77549bf338ff63144bcd37c8642868d799356fa9c8ca557d1bbca4172cbdc1d1",
+          "agentdocker-ui": "2a9961f43a2509aa735fe4817967d26cbacd4e9fc792a7fa5ef07b426cd4e7c2"
+        }
+      },
+      "scope": "owned synthetic legacy records, actual CLI and daemon; no real provider",
+      "owned_processes_running": 0,
+      "duration_seconds": 0.666
+    }
+  },
+  "standard_gate_logs": [
+    {
+      "source_commit": "d10f66d604cd1c2103ff5553642bc5a2eace51e1",
+      "path": "/private/tmp/agentdocker-identity-standard-check-complete.log",
+      "sha256": "6409cd82cad17c1183cec547697d94bd98901b0be66dbb5a47bb30cca763d584"
+    },
+    {
+      "source_commit": "5fcf87322927779695e338a91e7b1b0bbb0e6726",
+      "path": "/private/tmp/agentdocker-identity-final-source-check.log",
+      "sha256": "fa319054ce752ad8e30fbda520df7e999ce0eb552023e3ab59e90cb42ccf240b"
+    }
+  ],
+  "review_followup": {
+    "source_commit": "bfa7c7aef628e55a96293a8fa5c0538d060c67b6",
+    "standard_command": "bash scripts/verify.sh check",
+    "standard_gate": {
+      "result": "passed",
+      "rust_passed": 756,
+      "rust_skipped": 6,
+      "retries": 0,
+      "python_passed": 54,
+      "format_lint_docs_package_release": "passed",
+      "log_sha256": "88079ed6e4c37b9b47c7d6a7d4397fbff8119adc80a4deb7bddfd432d2a8d6f5"
+    },
+    "changes": [
+      "Platform-native absolute checkout fixture preserves Windows expected-success assertion and tests matching relative paths are refused",
+      "Agent record, old-ID routes, inbox, cursor and removal event commit together; memory and live events change only after commit",
+      "Injected failures at all five write stages retain original data and daemon reports StorageUnavailable instead of success"
+    ],
+    "preceding_ci": {
+      "head": "e5366d0487226f7330f660c574dc7fae19fd6420",
+      "windows_run": 34650383158,
+      "windows_result": "failed: Unix-only absolute-path fixture",
+      "other_build_test_jobs": "passed, including four native desktop targets",
+      "actual_review": 5183731268
+    },
+    "final_ci_review": "pending on forthcoming pushed head"
+  }
+}

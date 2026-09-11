@@ -9,6 +9,11 @@ pub(super) struct State {
     pub catalog: Catalog,
     pub selected: Option<String>,
     pub search: String,
+    pub session_filter: super::sessions::Filter,
+    pub more: bool,
+    pub session_details: bool,
+    pub connection_details: Option<String>,
+    pub other_tools: bool,
     pub width: f32,
     pub height: f32,
     pub dpi: f32,
@@ -18,6 +23,11 @@ pub(super) struct State {
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
+    /// Explicit, per-launch opt-in to the Claude research-preview channel
+    /// that lets a new Claude Code session receive messages while idle.
+    /// Off every time the form opens; never persisted; only read for
+    /// claude-code, the one runtime the helper supports.
+    pub launch_channel: bool,
     pub launching: bool,
     pub error: Option<String>,
     pub setup_error: Option<String>,
@@ -32,6 +42,38 @@ pub(super) struct State {
     pub closing: bool,
     pub checked_project: Option<PathBuf>,
     pub project_available: Option<bool>,
+    pub notification_message: Option<MessageId>,
+    pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
+    /// Sessions whose turn finished while nobody was looking at them:
+    /// finished as observed, not yet viewed. Viewing is an explicit act
+    /// (opening the project or the session, or already having it on
+    /// screen in a focused window when it finished); an `idle` report on
+    /// its own never counts as seen. Window-local, never persisted.
+    pub unviewed_done: BTreeSet<String>,
+    /// The window has lost focus; what it shows is not being looked at.
+    pub unfocused: bool,
+}
+
+impl State {
+    /// Every unviewed completion in the project at `root`, for a badge.
+    pub fn unviewed_in(&self, agents: &[AgentRecord], root: &std::path::Path) -> usize {
+        agents
+            .iter()
+            .filter(|a| {
+                self.unviewed_done.contains(a.id.as_str())
+                    && a.project.as_ref().is_some_and(|p| p.root == root)
+            })
+            .count()
+    }
+
+    /// The user opened the project at `root`: its completions are viewed.
+    pub fn viewed_project(&mut self, agents: &[AgentRecord], root: &std::path::Path) {
+        for agent in agents {
+            if agent.project.as_ref().is_some_and(|p| p.root == root) {
+                self.unviewed_done.remove(agent.id.as_str());
+            }
+        }
+    }
 }
 
 /// Each room keeps its own draft; a late acknowledgement only clears the text sent.
@@ -90,6 +132,7 @@ impl State {
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
+    Notification(crate::notification_route::Activation),
     Navigate(Screen),
     SelectProject(PathBuf),
     Unassigned,
@@ -97,6 +140,11 @@ pub enum Message {
     SelectSession(String),
     CloseSession,
     Search(String),
+    SessionFilter(super::sessions::Filter),
+    More,
+    SessionDetails,
+    ConnectionDetails(String),
+    OtherTools,
     AddPath(String),
     ShowAdd,
     PickFolder,
@@ -109,6 +157,7 @@ pub enum Message {
     CatalogSaved(u64, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
+    DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
     Stop(String),
@@ -116,6 +165,7 @@ pub enum Message {
     LaunchRuntime(String),
     LaunchName(String),
     LaunchArguments(String),
+    LaunchChannel(bool),
     Launch,
     Attach(String),
     Detach,
@@ -198,6 +248,17 @@ impl App {
         let mut tasks = Vec::new();
         if matches!(
             &message,
+            Message::Navigate(_)
+                | Message::SelectProject(_)
+                | Message::Unassigned
+                | Message::SelectSession(_)
+                | Message::Search(_)
+        ) {
+            self.shell.pending_notification = None;
+            self.shell.notification_message = None;
+        }
+        if matches!(
+            &message,
             Message::Event(iced::Event::Window(
                 window::Event::Moved(_) | window::Event::Resized(_) | window::Event::Rescaled(_)
             ))
@@ -207,6 +268,9 @@ impl App {
         }
         match message {
             Message::Tick => {
+                for activation in crate::notification_route::take() {
+                    tasks.push(self.update(Message::Notification(activation)));
+                }
                 for action in crate::accessibility::take_actions() {
                     tasks.push(self.update(action));
                 }
@@ -224,12 +288,42 @@ impl App {
                     self.shell.changed();
                 }
                 self.refresh_project_context();
+                tasks.push(self.advance_notification());
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
                         self.connected.is_ok(),
                         self.runtimes.len(),
                         &self.discovered,
                     ));
+                }
+            }
+            Message::Notification(activation) => {
+                if let Some(id) = self.shell.window {
+                    tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
+                }
+                match activation {
+                    crate::notification_route::Activation::Open(action)
+                        if action.home == self.home
+                            && self
+                                .client
+                                .as_ref()
+                                .is_some_and(|c| c.socket() == action.socket) =>
+                    {
+                        self.shell.pending_notification = Some((action, Instant::now()));
+                        for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
+                            self.send(cmd);
+                        }
+                        tasks.push(self.advance_notification());
+                    }
+                    crate::notification_route::Activation::Open(_) => {
+                        self.say("This notification belongs to another local workspace.")
+                    }
+                    crate::notification_route::Activation::Focus => {}
+                    crate::notification_route::Activation::Inbox => {
+                        self.shell.pending_notification = None;
+                        self.shell.notification_message = None;
+                        self.screen = Screen::Questions;
+                    }
                 }
             }
             Message::Window(id) => {
@@ -247,7 +341,10 @@ impl App {
                 }
             }
             Message::Navigate(screen) => {
+                self.shell.pending_notification = None;
+                self.shell.notification_message = None;
                 self.screen = screen;
+                self.shell.more = false;
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                 }
@@ -261,6 +358,7 @@ impl App {
                 self.shell.catalog.selected = None;
                 self.shell.selected = None;
                 self.shell.search.clear();
+                self.reset_session_view();
                 self.screen = Screen::Agents;
                 self.shell.changed();
                 self.refresh_project_context();
@@ -274,16 +372,34 @@ impl App {
                     .any(|e| e.project.root == path)
                 {
                     self.shell.catalog.unassigned = false;
+                    self.shell.viewed_project(&self.agents, &path);
                     self.shell.catalog.selected = Some(path);
                     self.shell.selected = None;
                     self.shell.search.clear();
+                    self.reset_session_view();
                     self.screen = Screen::Agents;
                     self.shell.changed();
                     self.refresh_project_context();
                 }
             }
-            Message::SelectSession(id) => self.shell.selected = Some(id),
+            Message::SelectSession(id) => {
+                self.shell.unviewed_done.remove(&id);
+                self.shell.selected = Some(id);
+                self.shell.session_details = false;
+            }
             Message::CloseSession => self.shell.selected = None,
+            Message::SessionFilter(filter) => {
+                self.shell.session_filter = filter;
+                self.shell.selected = None;
+                self.confirm_stop = None;
+            }
+            Message::More => self.shell.more = !self.shell.more,
+            Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::ConnectionDetails(name) => {
+                self.shell.connection_details =
+                    (self.shell.connection_details.as_ref() != Some(&name)).then_some(name);
+            }
+            Message::OtherTools => self.shell.other_tools = !self.shell.other_tools,
             Message::Search(text) => {
                 self.shell.search = text.chars().take(1024).collect();
                 self.shell.selected = None;
@@ -326,6 +442,7 @@ impl App {
                         self.shell.adding = false;
                         self.shell.add_path.clear();
                         self.shell.selected = None;
+                        self.reset_session_view();
                         self.screen = Screen::Agents;
                         self.shell.changed();
                         self.refresh_project_context();
@@ -364,6 +481,7 @@ impl App {
                     .first()
                     .map(|e| e.project.root.clone());
                 self.shell.selected = None;
+                self.reset_session_view();
                 self.shell.changed();
                 self.refresh_project_context();
             }
@@ -401,6 +519,21 @@ impl App {
                     self.send(Cmd::Answer(id, answer));
                 }
             }
+            Message::DismissInbox(mut ids) => {
+                if self.connected.is_ok() && ids.len() <= 1000 {
+                    ids.retain(|id| {
+                        !self.dismissing.contains(id)
+                            && self.inbox.iter().any(|message| &message.id == id)
+                            && !self.questions.iter().any(|question| &question.id == id)
+                    });
+                    ids.sort();
+                    ids.dedup();
+                    if !ids.is_empty() {
+                        self.dismissing.extend(ids.iter().cloned());
+                        self.send(Cmd::DismissMessages(ids));
+                    }
+                }
+            }
             Message::AdoptAll => {
                 if self.connected.is_ok() {
                     self.send(Cmd::AdoptAll);
@@ -430,15 +563,31 @@ impl App {
                     }
                 }
             }
-            Message::ShowLaunch => self.shell.launch = !self.shell.launch,
-            Message::LaunchRuntime(runtime) => self.shell.launch_runtime = Some(runtime),
+            Message::ShowLaunch => {
+                self.shell.launch = !self.shell.launch;
+                self.shell.launch_channel = false;
+                if self.shell.launch {
+                    self.shell.selected = None;
+                    self.shell.session_filter = super::sessions::Filter::Current;
+                }
+            }
+            Message::LaunchRuntime(runtime) => {
+                // Consent is for one tool at a time: switching away and back
+                // asks again rather than carrying a tick across tools.
+                self.shell.launch_channel = false;
+                self.shell.launch_runtime = Some(runtime);
+            }
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
             }
+            Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::Launch => {
                 if self.connected.is_ok() && !self.shell.launching {
-                    match self.launch_spec() {
+                    match self
+                        .launch_spec()
+                        .and_then(|spec| self.prepare_launch(spec, sibling_cli()))
+                    {
                         Ok(spec) => {
                             self.shell.launching = true;
                             self.shell.error = None;
@@ -637,11 +786,13 @@ impl App {
                 self.shell.dpi = scale
             }
             Message::Event(iced::Event::Window(window::Event::Focused)) => {
+                self.shell.unfocused = false;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, true));
                 }
             }
             Message::Event(iced::Event::Window(window::Event::Unfocused)) => {
+                self.shell.unfocused = true;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, false));
                 }
@@ -670,17 +821,24 @@ impl App {
                         .chain(crate::accessibility::collect()),
                     ),
                     Key::Named(Named::Escape) => {
+                        self.shell.pending_notification = None;
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
+                        self.shell.more = false;
                     }
-                    Key::Character(key) if modifiers.command() => match key.as_str() {
-                        "1" => self.screen = Screen::Agents,
-                        "2" => self.screen = Screen::Questions,
-                        "3" => self.screen = Screen::Runtimes,
-                        "4" => self.screen = Screen::Settings,
-                        _ => {}
-                    },
+                    Key::Character(key) if modifiers.command() => {
+                        let screen = match key.as_str() {
+                            "1" => Some(Screen::Agents),
+                            "2" => Some(Screen::Questions),
+                            "3" => Some(Screen::Runtimes),
+                            "4" => Some(Screen::Settings),
+                            _ => None,
+                        };
+                        if let Some(screen) = screen {
+                            tasks.push(self.update(Message::Navigate(screen)));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -775,6 +933,124 @@ impl App {
         }
     }
 
+    /// Wait for initial/reconnected snapshots before resolving a click. Route
+    /// by the actual message and sender IDs, never by the notification's text.
+    fn advance_notification(&mut self) -> Task<Message> {
+        let Some((action, started)) = self.shell.pending_notification.clone() else {
+            return Task::none();
+        };
+        let target = &action.target;
+        let question = self.questions.iter().find(|q| {
+            q.id == target.message
+                && self.canonical_agent(&q.from) == self.canonical_agent(target.agent.as_str())
+        });
+        let envelope = self.inbox.iter().find(|m| {
+            m.id == target.message
+                && self.canonical_agent(&m.from) == self.canonical_agent(target.agent.as_str())
+        });
+        let channel = envelope.and_then(|m| match &m.to {
+            agentdocker_core::Destination::Channel(id) => Some(id.clone()),
+            _ => None,
+        });
+        let found = question.is_some() || envelope.is_some();
+        if !found {
+            if started.elapsed() >= Duration::from_secs(10) {
+                self.shell.pending_notification = None;
+                self.shell.notification_message = None;
+                self.screen = Screen::Questions;
+                self.say(if self.connected.is_ok() {
+                    "This notification's message is no longer available."
+                } else {
+                    "Cannot open the notification while disconnected. Try again after reconnecting."
+                });
+            }
+            return Task::none();
+        }
+        let is_question = question.is_some();
+        // Prefer the actual channel's project. The source agent may have moved
+        // since posting; a retained project ID is a fallback for direct messages.
+        let project = channel
+            .as_ref()
+            .and_then(|id| self.channels.iter().find(|c| &c.id == id))
+            .map(|c| c.project.clone())
+            .or_else(|| target.project.clone());
+        if let Some(project) = &project {
+            let root = self
+                .shell
+                .catalog
+                .projects
+                .iter()
+                .find(|entry| &entry.project.id() == project)
+                .map(|entry| entry.project.root.clone());
+            if let Some(root) = root {
+                self.shell.catalog.selected = Some(root);
+                self.shell.catalog.unassigned = false;
+                self.shell.changed();
+                self.refresh_project_context();
+            } else if started.elapsed() < Duration::from_secs(10) {
+                return Task::none();
+            } else {
+                self.shell.pending_notification = None;
+                self.shell.notification_message = None;
+                self.screen = Screen::Questions;
+                self.say("This notification's project is no longer available.");
+                return Task::none();
+            }
+        }
+        if let Some(channel) = &channel
+            && !self.channels.iter().any(|c| &c.id == channel)
+        {
+            if started.elapsed() < Duration::from_secs(10) {
+                return Task::none();
+            }
+            self.shell.pending_notification = None;
+            self.shell.notification_message = None;
+            self.screen = Screen::Questions;
+            self.say("This notification's channel is no longer available.");
+            return Task::none();
+        }
+        self.shell.pending_notification = None;
+        self.shell.notification_message = Some(target.message.clone());
+        self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
+        self.shell.more = false;
+        self.confirm_stop = None;
+        self.screen = if channel.is_some() {
+            Screen::Channels
+        } else {
+            Screen::Questions
+        };
+        if let Some(channel) = channel {
+            self.shell.channel_target = Some(channel.to_string());
+        }
+        // Revealing the card changes only scrolling. Existing answer/channel
+        // drafts and their keyboard focus are not submitted or rewritten.
+        crate::controls::reveal(format!(
+            "notification-{}-{}",
+            if is_question { "question" } else { "message" },
+            target.message
+        ))
+    }
+
+    /// The one launch-time transformation: the Claude channel, when the
+    /// user ticked it for a Claude launch. Any other runtime, or an
+    /// unticked box, passes the spec through untouched. The CLI must be
+    /// this app's own sibling: the helper pins the session to it, and a
+    /// `PATH` fallback could pin it to an older install that lacks the
+    /// channel.
+    fn prepare_launch(
+        &self,
+        mut spec: agentdocker_core::AgentSpec,
+        cli: Result<PathBuf, String>,
+    ) -> Result<agentdocker_core::AgentSpec, String> {
+        if !self.shell.launch_channel || spec.runtime != "claude-code" {
+            return Ok(spec);
+        }
+        let cli = cli?;
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
+            .map_err(|error| format!("Cannot enable messages while idle: {error}"))?;
+        Ok(spec)
+    }
+
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
         let entry = self
             .shell
@@ -818,6 +1094,21 @@ impl App {
     }
 }
 
+/// This app's own `agentdocker`, beside its executable, or why not. No
+/// `PATH` fallback: a session pinned to a stranger's CLI is worse than no
+/// session.
+fn sibling_cli() -> Result<PathBuf, String> {
+    let me = agentdocker_host::procinfo::executable_path()
+        .map_err(|error| format!("Cannot locate this app: {error}"))?;
+    let cli = me
+        .parent()
+        .map(|dir| dir.join("agentdocker"))
+        .filter(|cli| cli.is_file())
+        .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
+        .ok_or("The agentdocker command-line tool is not installed beside this app")?;
+    Ok(cli)
+}
+
 fn resolve_folder(path: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
@@ -838,6 +1129,211 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    fn notification_app() -> (
+        App,
+        CommandReceiver,
+        SyncSender<Msg>,
+        tempfile::TempDir,
+        agentdocker_host::notify::Action,
+    ) {
+        let (mut app, commands, messages) = app();
+        let home = tempfile::tempdir().unwrap();
+        let socket = home.path().join("agentd.sock");
+        app.home = home.path().to_owned();
+        app.client = Some(Arc::new(Client::isolated(socket.clone())));
+        let action = agentdocker_host::notify::Action {
+            home: app.home.clone(),
+            socket,
+            target: agentdocker_core::NotificationTarget {
+                message: MessageId::from("question-1".to_owned()),
+                agent: agentdocker_core::AgentId::from("sender-1"),
+                project: None,
+                channel: None,
+            },
+        };
+        (app, commands, messages, home, action)
+    }
+
+    #[test]
+    fn notification_waits_for_data_then_opens_the_question_without_submitting_drafts() {
+        let (mut app, commands, messages, home, mut action) = notification_app();
+        let project = crate::catalog::resolve(home.path()).unwrap();
+        app.shell.catalog.remember(project.clone(), false);
+        action.target.project = Some(project.id());
+        let question = Question {
+            id: action.target.message.clone(),
+            from: action.target.agent.to_string(),
+            to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
+            text: "which option?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.answers
+            .insert(question.id.clone(), "unfinished answer".into());
+        app.shell.channel_drafts.insert(
+            "another-room".into(),
+            ChannelDraft {
+                text: "unfinished channel message".into(),
+                ..Default::default()
+            },
+        );
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        assert!(app.shell.pending_notification.is_some());
+        assert_eq!(app.screen, Screen::Agents);
+        messages
+            .send(Msg::Questions(vec![question.clone()]))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
+        assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
+        assert!(app.shell.pending_notification.is_none());
+        assert_eq!(app.answers[&question.id], "unfinished answer");
+        assert_eq!(
+            app.shell.channel_drafts["another-room"].text,
+            "unfinished channel message"
+        );
+        assert!(app.sending.is_empty());
+        assert!(commands.try_iter().all(|cmd| !matches!(
+            cmd,
+            Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
+        )));
+    }
+
+    #[test]
+    fn former_identity_notification_finds_the_current_sender_without_changing_drafts() {
+        let (mut app, _, messages, _home, action) = notification_app();
+        let mut record = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "one-session".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.id = "canonical".into();
+        messages
+            .send(Msg::Agents(
+                vec![record],
+                BTreeMap::from([(action.target.agent.to_string(), "canonical".into())]),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Questions(vec![Question {
+                id: action.target.message.clone(),
+                from: "canonical".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "question".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            }]))
+            .unwrap();
+        app.answers
+            .insert(action.target.message.clone(), "unfinished".into());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action.clone()),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.selected.as_deref(), Some("canonical"));
+        assert_eq!(app.name_of(action.target.agent.as_str()), "one-session");
+        assert_eq!(
+            app.shell.notification_message.as_ref(),
+            Some(&action.target.message)
+        );
+        assert_eq!(app.answers[&action.target.message], "unfinished");
+        assert!(app.sending.is_empty());
+    }
+
+    #[test]
+    fn the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli() {
+        use agentdocker_core::AgentSpec;
+        let (mut app, _, _) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("agentdocker");
+        std::fs::write(&cli, b"fixture").unwrap();
+        let spec = |runtime: &str| AgentSpec {
+            name: "s".into(),
+            runtime: runtime.into(),
+            command: vec![runtime.into(), "--model".into(), "m".into()],
+            tty: true,
+            ..Default::default()
+        };
+
+        // Unticked: every runtime passes through, whatever the CLI situation.
+        for runtime in ["claude-code", "codex"] {
+            assert_eq!(
+                app.prepare_launch(spec(runtime), Err("no cli".into())),
+                Ok(spec(runtime))
+            );
+        }
+
+        let _ = app.update(Message::LaunchChannel(true));
+        // Other runtimes are untouched even when ticked: the box is only
+        // shown for Claude, and the flag must not leak into codex launches.
+        assert_eq!(
+            app.prepare_launch(spec("codex"), Ok(cli.clone())),
+            Ok(spec("codex"))
+        );
+        // Claude gains the channel, after the user's own arguments are kept.
+        let launched = app
+            .prepare_launch(spec("claude-code"), Ok(cli.clone()))
+            .unwrap();
+        assert!(launched.command.contains(&"--mcp-config".to_owned()));
+        assert!(
+            launched
+                .command
+                .contains(&"--dangerously-load-development-channels".to_owned())
+        );
+        assert_eq!(
+            &launched.command[launched.command.len() - 2..],
+            ["--model", "m"]
+        );
+        assert_eq!(
+            launched.env[agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV],
+            "1"
+        );
+        // Without the sibling CLI the launch fails instead of falling back.
+        let error = app
+            .prepare_launch(spec("claude-code"), Err("missing".into()))
+            .unwrap_err();
+        assert_eq!(error, "missing");
+        // Changing the tool, and reopening the form, both reset the opt-in.
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        assert!(!app.shell.launch_channel);
+        let _ = app.update(Message::LaunchChannel(true));
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        assert!(!app.shell.launch_channel);
+        let _ = app.update(Message::LaunchChannel(true));
+        let _ = app.update(Message::ShowLaunch);
+        assert!(!app.shell.launch_channel);
+    }
+
+    #[test]
+    fn notification_cannot_hijack_manual_navigation_or_a_different_daemon() {
+        let (mut app, _, _, _home, action) = notification_app();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action.clone()),
+        ));
+        assert!(app.shell.pending_notification.is_some());
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        assert!(app.shell.pending_notification.is_none());
+        let mut foreign = action.clone();
+        foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(foreign),
+        ));
+        assert_eq!(app.screen, Screen::Settings);
+        assert!(app.status.contains("another local workspace"));
+        app.shell.pending_notification = Some((action, Instant::now() - Duration::from_secs(11)));
+        let _ = app.advance_notification();
+        assert_eq!(app.screen, Screen::Questions);
+        assert!(app.status.contains("no longer available"));
+        assert!(app.shell.notification_message.is_none());
     }
     #[test]
     fn adding_an_existing_folder_only_pins_and_reads_context() {
@@ -880,11 +1376,15 @@ mod tests {
         );
         app.shell.channel_drafts.get_mut("one").unwrap().begin();
         messages
-            .send(Msg::ChannelSent("one".into(), Ok(())))
+            .send(Msg::ChannelSent(
+                "one".into(),
+                Ok(MessageId::from("confirmed".to_owned())),
+            ))
             .unwrap();
         app.drain();
         assert!(app.shell.channel_drafts["one"].text.is_empty());
         assert_eq!(app.shell.channel_drafts["two"].text, "other room");
+        assert_eq!(app.sent_channels.back().unwrap().payload, "next thought");
     }
     #[test]
     fn commands_capture_project_context_and_a_late_reply_does_not_navigate() {

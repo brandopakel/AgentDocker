@@ -1,0 +1,122 @@
+{
+  "date": "2026-09-10",
+  "source_commit": "1be976c391086406a01620e3ecc52cc0ae352ecd",
+  "source_tree": "04dbbe23bc7725593ee42d7f5094f200f4aac189",
+  "source_input_sha256": "194b67af562ef7cc06ca8cd0c10344c4baadd7a3abdd2e035b8164c2f77a6645",
+  "source_dirty": false,
+  "platform": "macOS 26.5.1 arm64",
+  "state_schema": 9,
+  "standard_gate": {
+    "rust_passed": 695,
+    "rust_skipped": 6,
+    "python_passed": 48,
+    "formatting": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "cargo_package": "passed",
+    "release_build": "passed"
+  },
+  "release_binary_sha256": {
+    "agentdocker": "e46a3da834e9be6f945d1f98f88380da8309ef50dec3524b24a79448cf7808d4",
+    "agentd": "4760da05ef6ac7bea1947108c22c98a79f4f8e2324991bf2c270628fbfeb2bca",
+    "agentdocker-ui": "62467652ddbd51df2db5bcd0ae61bbf1132468195cd0585eb0d1f6dbbbcf4f58"
+  },
+  "release_workflow": {
+    "steps": 105,
+    "elapsed_seconds": 46.836724875,
+    "result": "passed",
+    "scope": "Production rendered callbacks and native windows, not physical keyboard or VoiceOver"
+  },
+  "notification_navigation": {
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "release": {
+      "result": "passed",
+      "existing_window_steps": 21,
+      "cold_start_steps": 2,
+      "elapsed_seconds": 9.916013541998836,
+      "binaries_unchanged": true,
+      "surviving_children": []
+    },
+    "packaged": {
+      "result": "passed",
+      "existing_window_steps": 21,
+      "cold_start_steps": 2,
+      "elapsed_seconds": 10.309920666997641,
+      "binaries_unchanged": true,
+      "surviving_children": []
+    },
+    "physical_notification_click_tested": false
+  },
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "1be976c391086406a01620e3ecc52cc0ae352ecd",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "04dbbe23bc7725593ee42d7f5094f200f4aac189",
+    "source_input_sha256": "194b67af562ef7cc06ca8cd0c10344c4baadd7a3abdd2e035b8164c2f77a6645",
+    "source_dirty": false,
+    "state_schema": 9,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 27552740,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 11829122,
+        "agentdocker-desktop-aarch64-apple-darwin.dmg": 12918730
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "4c1e183ab9b83cc0eb69c6bbf6828ed00409573c6d426f99c59002127a19d8fb",
+      "agentd": "8af287d7bc6b698d78cd39479c7e8aa9aad4bba7670a323c41bb7e2cfb3565cb",
+      "agentdocker-ui": "dda8d3da1060be877a51e32d8ab21b55aacb9a9e4eabeb6d0b9890e1fc72b66c"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "5656f41d22a4b0f967af59803ce98641925a93f0de663ee151e145758cd9e2c7",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "f858724f715db21196c55ef5addd21eae5a90e6a0c53b240a083326c99eb0aac"
+    }
+  },
+  "native_posting": {
+    "result": "refused",
+    "exit_code": 1,
+    "diagnostic": "notifications are not permitted: Notifications are not allowed for this application (1)",
+    "window_permission_diagnostic": "Notifications are not allowed for this application (1)",
+    "valid_local_signing_identities": 0,
+    "membership_causation_established": false
+  },
+  "font_license": {
+    "path_in_bundle": "Contents/Resources/licenses/LICENSE-Inter.txt",
+    "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+  },
+  "diagnostic_failures_retained": [
+    {
+      "build": "debug",
+      "result": "channel navigation gate exceeded30seconds",
+      "attempts": 2,
+      "second_attempt_sample": "main thread samples in tiny-skia software drawing; no deadlock established"
+    }
+  ],
+  "limitations": [
+    "Native Notification Center clicks and old/new bundle registration remain unverified",
+    "Developer ID signing, notarization and Gatekeeper distribution remain pending",
+    "Installed launcher and active daemon were not replaced",
+    "Cross-origin forwarding and missing-target paths have source/unit evidence; this process trial uses one daemon origin",
+    "This does not establish provider idle wake or shared input queue behavior"
+  ]
+}

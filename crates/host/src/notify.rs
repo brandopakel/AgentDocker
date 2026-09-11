@@ -1,138 +1,139 @@
-//! Desktop notifications, so a question put to the human is noticed.
-//!
-//! An agent that asks a person something and gets no answer is stuck, and
-//! a person cannot answer a question they never saw. The daemon has no
-//! window of its own, so it borrows one.
-//!
-//! On macOS it prefers AgentDocker.app's own executable, in its
-//! one-shot `--notify` mode, because a notification wears the icon of
-//! the bundle that posted it and that is the only bundle that is ours.
-//! Every alternative is closed: the `UserNotifications` framework
-//! refuses a spoofed sender, which is why `terminal-notifier` withdrew
-//! `-sender`, and an `osascript` notification belongs to Script Editor.
-//!
-//! That path needs the app to be signed with a real identity —
-//! `UNUserNotificationCenter` will not register an ad-hoc signed bundle
-//! and answers `Notifications are not allowed for this application`. So
-//! `osascript` remains behind it: the wrong icon beats no notification,
-//! and the ordering means the right icon arrives the day the signature
-//! does, with nothing here to change.
-//!
-//! Best-effort by design. A headless box has none of these, and that is
-//! not an error — the message is still queued, still in the inbox, still
-//! on the event stream. Nothing here waits for the notification to be
-//! dismissed, and nothing here reports whether anyone looked.
+//! Desktop notifications with stable destinations and bounded native posting.
+//! macOS notifications must originate from our app bundle. AppleScript notices
+//! open Script Editor when clicked, so they are deliberately not a fallback.
+//! Posting failure leaves messages in the inbox and reports a bounded reason.
 
-use std::process::{Command, Stdio};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-/// What a person should see.
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub const ACTION_BYTES: usize = 16 * 1024;
+
+/// Distinguish custom daemon endpoints as well as independent homes.
+pub fn instance_key(home: &Path, socket: &Path) -> String {
+    let mut bytes = home.as_os_str().as_encoded_bytes().to_vec();
+    bytes.push(0);
+    bytes.extend_from_slice(socket.as_os_str().as_encoded_bytes());
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, &bytes)
+        .simple()
+        .to_string()
+}
+
+/// The precise local daemon and destination that produced a notification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Action {
+    pub home: PathBuf,
+    pub socket: PathBuf,
+    pub target: agentdocker_core::NotificationTarget,
+}
+impl Action {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if text.len() > ACTION_BYTES {
+            return Err("notification destination is too large".into());
+        }
+        let action: Self = serde_json::from_str(text)
+            .map_err(|_| "invalid notification destination".to_owned())?;
+        if !action.home.is_absolute() || !action.socket.is_absolute() || !action.target.is_valid() {
+            return Err("invalid notification destination".into());
+        }
+        Ok(action)
+    }
+}
+
+/// Visible text is independent of activation metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Notification {
     pub title: String,
     pub body: String,
+    #[serde(default)]
+    pub action: Option<Action>,
+}
+impl Notification {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if text.len() > ACTION_BYTES + 4096 {
+            return Err("notification is too large".into());
+        }
+        let notice: Self =
+            serde_json::from_str(text).map_err(|_| "invalid notification".to_owned())?;
+        if notice.title.len() > 1024 || notice.body.len() > 4096 {
+            return Err("notification text is too large".into());
+        }
+        if let Some(action) = &notice.action {
+            Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
+        }
+        Ok(notice)
+    }
 }
 
-/// Post a notification, returning whether a tool was found to post it
-/// with. Blocking: the child is waited for, because the tools are
-/// short-lived and a stray unreaped child is worse than a millisecond.
-pub fn post(notification: &Notification) -> bool {
-    for argv in candidates(notification) {
-        let Some((program, args)) = argv.split_first() else {
-            continue;
-        };
-        let ran = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if let Ok(status) = ran
-            && status.success()
-        {
-            return true;
+/// Wait only for posting acceptance, never for dismissal or a human response.
+/// No private text is included in the returned failure reason.
+pub fn post(notification: &Notification) -> Result<(), String> {
+    let commands = candidates(notification)?;
+    if commands.is_empty() {
+        return Err("AgentDocker notification app is unavailable".into());
+    }
+    for argv in commands {
+        match crate::command::run(Path::new("/"), &argv, Duration::from_secs(5)) {
+            Ok(result) if result.success => return Ok(()),
+            // Do not copy arbitrary child output: older binaries can echo
+            // unknown arguments containing the private notification payload.
+            _ => continue,
         }
     }
-    false
+    Err("Native notification posting failed; check app notification permission and signing. The message remains in Inbox.".into())
 }
 
-/// The command lines worth trying on this platform, best first.
-fn candidates(notification: &Notification) -> Vec<Vec<String>> {
-    let Notification { title, body } = notification;
+fn candidates(notification: &Notification) -> Result<Vec<Vec<String>>, String> {
     if cfg!(target_os = "macos") {
-        let mut tried = Vec::new();
-        if let Some(app) = desktop_app() {
-            tried.push(vec![
-                app.to_string_lossy().into_owned(),
-                "--notify".into(),
-                title.clone(),
-                body.clone(),
-            ]);
-        }
-        tried.push(vec![
-            "osascript".into(),
-            "-e".into(),
-            applescript(title, body),
-        ]);
-        tried
+        let encoded = serde_json::to_string(notification)
+            .map_err(|_| "Cannot encode the notification destination.".to_owned())?;
+        Ok(desktop_app()
+            .into_iter()
+            .map(|app| {
+                vec![
+                    app.to_string_lossy().into_owned(),
+                    "--notify-json".into(),
+                    encoded.clone(),
+                ]
+            })
+            .collect())
     } else {
-        vec![vec![
+        Ok(vec![vec![
             "notify-send".into(),
             "--app-name=AgentDocker".into(),
-            title.clone(),
-            body.clone(),
-        ]]
+            "--".into(),
+            notification.title.clone(),
+            notification.body.clone(),
+        ]])
     }
 }
 
-/// The desktop app's own executable, if it is installed.
-///
-/// Looked up rather than configured: the daemon and the app are
-/// installed together by every route we ship, and a notification is not
-/// worth a setting.
-fn desktop_app() -> Option<std::path::PathBuf> {
+/// Prefer the poster bundled with the running daemon over an older installation.
+fn desktop_app() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+        && directory.file_name().is_some_and(|name| name == "MacOS")
+        && directory
+            .parent()
+            .is_some_and(|p| p.file_name().is_some_and(|name| name == "Contents"))
+    {
+        let sibling = directory.join("agentdocker-ui");
+        if sibling.is_file() {
+            return Some(sibling);
+        }
+    }
     let roots = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .into_iter()
-        .chain(std::iter::once(std::path::PathBuf::from("/")));
-    for root in roots {
-        let inner = root.join("Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui");
-        if inner.is_file() {
-            return Some(inner);
-        }
-    }
-    None
-}
-
-/// AppleScript has no parameters, so the text goes into the source. Quote
-/// it properly rather than hoping: a message is arbitrary text and may
-/// well contain a quote or a backslash.
-fn applescript(title: &str, body: &str) -> String {
-    format!(
-        "display notification {} with title {}",
-        quote(body),
-        quote(title)
-    )
-}
-
-fn quote(text: &str) -> String {
-    let mut quoted = String::with_capacity(text.len() + 2);
-    quoted.push('"');
-    for c in text.chars() {
-        match c {
-            '"' | '\\' => {
-                quoted.push('\\');
-                quoted.push(c);
-            }
-            // A literal newline ends the AppleScript statement.
-            '\n' | '\r' => quoted.push(' '),
-            _ => quoted.push(c),
-        }
-    }
-    quoted.push('"');
-    quoted
+        .chain(std::iter::once(PathBuf::from("/")));
+    roots
+        .map(|root| root.join("Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui"))
+        .find(|inner| inner.is_file())
 }
 
 /// Trim a message to something a notification can show, on a word
@@ -163,13 +164,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn applescript_survives_quotes_and_newlines() {
-        let script = applescript("a \"title\"", "line one\nline \\ two");
-        assert_eq!(
-            script,
-            r#"display notification "line one line \\ two" with title "a \"title\"""#
+    fn invalid_destinations_cannot_select_another_state_path() {
+        for text in [
+            "{}",
+            r#"{"home":"relative","socket":"relative","target":null}"#,
+            &"x".repeat(ACTION_BYTES + 1),
+        ] {
+            assert!(Action::parse(text).is_err());
+        }
+    }
+
+    #[test]
+    fn notification_text_stays_data_and_macos_never_invokes_script_editor() {
+        let notification = Notification {
+            title: "--action=bad".into(),
+            body: "quotes \" and $(data)".into(),
+            action: None,
+        };
+        let encoded = serde_json::to_string(&notification).unwrap();
+        assert_eq!(Notification::parse(&encoded).unwrap(), notification);
+        let candidates = candidates(&notification).unwrap();
+        assert!(
+            candidates
+                .iter()
+                .all(|argv| !argv.iter().any(|v| v == "osascript" || v == "-e"))
         );
-        assert!(!script.contains('\n'), "one statement, one line: {script}");
+        for argv in candidates {
+            if cfg!(target_os = "macos") {
+                assert_eq!(argv[1], "--notify-json");
+                assert_eq!(Notification::parse(&argv[2]).unwrap(), notification);
+            } else {
+                assert_eq!(argv[2], "--");
+                assert_eq!(argv[3], notification.title);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn non_utf8_origin_returns_a_bounded_error_without_posting_or_panicking() {
+        use std::os::unix::ffi::OsStringExt;
+        let notice = Notification {
+            title: "private title".into(),
+            body: "private body".into(),
+            action: Some(Action {
+                home: PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/private-\xff".to_vec())),
+                socket: PathBuf::from("/tmp/agentd.sock"),
+                target: agentdocker_core::NotificationTarget {
+                    message: "message".to_owned().into(),
+                    agent: "agent".into(),
+                    project: None,
+                    channel: None,
+                },
+            }),
+        };
+        assert_eq!(
+            post(&notice).unwrap_err(),
+            "Cannot encode the notification destination."
+        );
     }
 
     #[test]
@@ -179,40 +231,7 @@ mod tests {
             summarise("the quick brown fox jumps over it", 20),
             "the quick brown fox…"
         );
-        // No usable boundary: cut mid-word rather than return almost nothing.
         assert_eq!(summarise("aaaaaaaaaaaaaaaaaaaa b", 10), "aaaaaaaaa…");
-        // Whitespace, including newlines, is collapsed first.
         assert_eq!(summarise("two\n\nlines", 40), "two lines");
-    }
-
-    #[test]
-    fn candidates_are_platform_shaped() {
-        let candidates = candidates(&Notification {
-            title: "t".into(),
-            body: "b".into(),
-        });
-        assert!(!candidates.is_empty());
-        let first = &candidates[0][0];
-        if cfg!(target_os = "macos") {
-            // The app when it is installed, `osascript` otherwise, and
-            // never anything a person has to install first.
-            let last = candidates.last().unwrap();
-            assert_eq!(last[0], "osascript", "the fallback is always there");
-            if desktop_app().is_some() {
-                assert!(
-                    first.ends_with("AgentDocker.app/Contents/MacOS/agentdocker-ui"),
-                    "our own bundle leads, so the notification wears our icon: {first}"
-                );
-                assert_eq!(candidates[0][1], "--notify");
-            } else {
-                assert_eq!(first, "osascript");
-            }
-            assert!(
-                !candidates.iter().any(|argv| argv[0] == "terminal-notifier"),
-                "nothing that has to be installed separately"
-            );
-        } else {
-            assert_eq!(first, "notify-send");
-        }
     }
 }

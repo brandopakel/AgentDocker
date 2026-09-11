@@ -48,6 +48,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Preview a legacy identity repair; apply its exact plan only with daemon and sessions stopped.
+    IdentityRepair {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        keep: String,
+        #[arg(long)]
+        retire: String,
+        #[arg(long, value_name = "PLAN_SHA256")]
+        apply: Option<String>,
+    },
     /// Check that agentd is reachable.
     Ping,
     /// Build an image with an explicit engine and retain immutable input provenance.
@@ -473,7 +484,7 @@ enum Command {
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
     },
-    /// Stream messages for an agent and/or matching topic patterns.
+    /// Stream messages without consuming them; acknowledge received IDs with inbox --ack.
     Watch {
         /// Receive messages addressed to this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -555,13 +566,16 @@ enum Command {
         #[arg(long, conflicts_with = "agent")]
         me: bool,
     },
-    /// Show messages queued for an agent while it was not watching.
+    /// Show unacknowledged messages, or acknowledge specific received IDs.
     Inbox {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
         /// Remove queued messages before replying; a broken connection can lose this delivery.
         #[arg(long)]
         drain: bool,
+        /// Acknowledge only these received message IDs, preserving later arrivals.
+        #[arg(long, num_args = 1.., conflicts_with = "drain")]
+        ack: Vec<String>,
     },
     /// Claim a lease on a resource (`path:...`, `branch:...`, `task:...`).
     Claim(ClaimArgs),
@@ -632,6 +646,9 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Enable idle-message input for a new interactive Claude session (experimental; Claude consent still applies).
+    #[arg(long, conflicts_with = "image_build")]
+    claude_channel: bool,
     /// Run inside this recorded image build (mounts and network are opt-in).
     #[arg(long)]
     image_build: Option<String>,
@@ -951,6 +968,19 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.socket);
 
     match cli.command {
+        Command::IdentityRepair {
+            home,
+            keep,
+            retire,
+            apply,
+        } => {
+            print_json(&agentd::reconcile::repair(
+                &home,
+                &keep,
+                &retire,
+                apply.as_deref(),
+            )?)?;
+        }
         Command::ImageBuild {
             engine,
             connection,
@@ -1257,7 +1287,7 @@ async fn main() -> Result<()> {
                 project: project.as_deref().map(project_selector),
                 labels: parse_pairs(&labels)?,
             };
-            let Response::Agents { agents } = client.call(&request).await? else {
+            let Response::Agents { agents, .. } = client.call(&request).await? else {
                 return Ok(());
             };
             let mut unadopted = Vec::new();
@@ -1543,7 +1573,7 @@ async fn main() -> Result<()> {
                         args.restart
                     )
                 })?;
-            let spec = AgentSpec {
+            let mut spec = AgentSpec {
                 name: args.name.unwrap_or_default(),
                 runtime: args.runtime,
                 provider: args.provider,
@@ -1559,6 +1589,12 @@ async fn main() -> Result<()> {
                 restart,
                 depends_on: Vec::new(),
             };
+            if args.claude_channel {
+                agentdocker_host::provider_input::enable_claude_channel(
+                    &mut spec,
+                    &agentdocker_host::procinfo::executable_path()?,
+                )?;
+            }
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
                     spec,
@@ -1851,8 +1887,15 @@ async fn main() -> Result<()> {
                 })
                 .await?;
         }
-        Command::Inbox { agent, drain } => {
-            if let Response::Messages { messages } =
+        Command::Inbox { agent, drain, ack } => {
+            if !ack.is_empty() {
+                client
+                    .call(&Request::AckInbox {
+                        agent,
+                        messages: ack.into_iter().map(MessageId::from).collect(),
+                    })
+                    .await?;
+            } else if let Response::Messages { messages } =
                 client.call(&Request::Inbox { agent, drain }).await?
             {
                 for message in &messages {
@@ -2147,7 +2190,7 @@ async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),
@@ -2615,7 +2658,7 @@ async fn agent_names(client: &Client) -> BTreeMap<String, String> {
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),
@@ -2850,7 +2893,7 @@ async fn print_overlaps(client: &Client, overlaps: &[agentdocker_core::Overlap])
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),
@@ -2916,6 +2959,41 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn claude_channel_is_a_native_launch_option_and_preserves_provider_arguments() {
+        let parsed = Cli::try_parse_from([
+            "agentdocker",
+            "run",
+            "--claude-channel",
+            "--runtime",
+            "claude-code",
+            "--tty",
+            "--",
+            "claude",
+            "--model",
+            "chosen-model",
+        ])
+        .unwrap();
+        let Command::Run(args) = parsed.command else {
+            panic!("expected launch")
+        };
+        assert!(args.claude_channel && args.tty);
+        assert_eq!(args.runtime, "claude-code");
+        assert_eq!(args.command, ["claude", "--model", "chosen-model"]);
+        assert!(
+            Cli::try_parse_from([
+                "agentdocker",
+                "run",
+                "--claude-channel",
+                "--image-build",
+                "image",
+                "--",
+                "claude",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn desktop_launch_prefers_matching_release_over_installed_app_and_path() {

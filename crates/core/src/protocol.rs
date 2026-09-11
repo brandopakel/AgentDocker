@@ -14,8 +14,8 @@ use serde_json::Value;
 use crate::handoff::HandoffBundle;
 use crate::journal::{Digest, SummarySource};
 use crate::{
-    AgentRecord, Change, ContestId, DiscoveredProcess, Envelope, Event, JournalEntry, Lease,
-    LeaseId, LeaseMode, MessageId, VcsState,
+    AgentId, AgentRecord, Change, ContestId, DiscoveredProcess, Envelope, Event, JournalEntry,
+    Lease, LeaseId, LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -277,14 +277,15 @@ pub enum Request {
         reply_to: Option<MessageId>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
-    /// connection closes. Queued inbox messages are flushed first.
+    /// connection closes. Queued messages are replayed first and retained
+    /// until explicit Inbox draining or AckInbox, including after disconnect.
     Subscribe {
         #[serde(default)]
         agent: Option<String>,
         #[serde(default)]
         topics: Vec<String>,
     },
-    /// Messages delivered to an agent while it was not subscribed.
+    /// Unacknowledged messages, including those offered to live subscribers.
     Inbox {
         agent: String,
         #[serde(default)]
@@ -652,6 +653,9 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    /// Accepted work already fills a recipient's queue. Nothing was published;
+    /// acknowledge existing messages before retrying this submission.
+    Backpressure,
     EngineUnavailable,
     BuildFailed,
     /// A part of the daemon is off — the restricted container endpoint
@@ -753,6 +757,10 @@ pub enum Response {
     },
     Agents {
         agents: Vec<AgentRecord>,
+        /// Exact former IDs for the returned records. Historical attribution
+        /// remains unchanged; clients use these only for current navigation.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        aliases: BTreeMap<AgentId, AgentId>,
     },
     Processes {
         processes: Vec<DiscoveredProcess>,

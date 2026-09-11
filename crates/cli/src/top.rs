@@ -110,7 +110,7 @@ async fn frame(client: &Client) -> Result<String> {
         })
         .await?
     {
-        Response::Agents { agents } => agents,
+        Response::Agents { agents, .. } => agents,
         _ => Vec::new(),
     };
     let activity = match client

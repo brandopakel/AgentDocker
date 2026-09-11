@@ -56,7 +56,7 @@ pub struct HookArgs {
 pub enum HookCommand {
     /// Handle one Claude Code hook event, read as JSON from stdin.
     ClaudeCode(ClaudeCodeArgs),
-    /// Report Codex lifecycle activity from a hook event on stdin.
+    /// Report Codex activity and deliver queued messages at lifecycle boundaries.
     Codex,
     /// Write the hook configuration into a host's settings file.
     Install(InstallArgs),
@@ -129,14 +129,6 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             if let Err(error) = codex::run(&client).await {
                 eprintln!("agentdocker hook codex: {error:#}");
             }
-            // A no-op JSON result is accepted by Stop as well as tool hooks.
-            if let Err(error) = write_output_before(
-                1,
-                b"{}\n",
-                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
-            ) {
-                eprintln!("agentdocker hook codex: output delivery failed: {error}");
-            }
             Ok(())
         }
         HookCommand::Install(install) => install_hooks(&install),
@@ -154,6 +146,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
+                channel_input: std::env::var(crate::mcp::CLAUDE_CHANNEL_INPUT).as_deref()
+                    == Ok("1"),
+                channel_home: Some(agentdocker_host::dirs::home()),
             };
             let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
                 Ok(output) => output,
@@ -214,11 +209,29 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
 struct HookDelivery<'a, B> {
     backend: &'a B,
     pending: RefCell<Vec<Request>>,
+    /// Parent-session opt-in selects one inbox delivery path. Other lifecycle
+    /// observations and lease operations continue through the hooks adapter.
+    channel_input: bool,
+    /// Detect a live channel even if an MCP entry supplied the opt-in only to
+    /// its own child environment. Test backends omit host filesystem probing.
+    channel_home: Option<PathBuf>,
 }
 
 impl<B: Backend> Backend for HookDelivery<'_, B> {
     async fn call(&self, request: Request) -> Result<Response> {
         if let Request::Inbox { agent, .. } = request {
+            if self.channel_input
+                || self
+                    .channel_home
+                    .as_ref()
+                    .map(|home| crate::mcp::channel_input_active(home, &agent))
+                    .transpose()?
+                    .unwrap_or(false)
+            {
+                return Ok(Response::Messages {
+                    messages: Vec::new(),
+                });
+            }
             let response = self
                 .backend
                 .call(Request::Inbox {
@@ -676,7 +689,7 @@ async fn found_by_pid<B: Backend>(
         })
         .await?
     {
-        Response::Agents { agents } => {
+        Response::Agents { agents, .. } => {
             let mut matching = agents.into_iter().filter(ours);
             let first = matching.next();
             Ok(if matching.next().is_none() {
@@ -828,7 +841,7 @@ async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
         })
         .await?
     {
-        Response::Agents { agents } => Ok(agents),
+        Response::Agents { agents, .. } => Ok(agents),
         _ => Ok(Vec::new()),
     }
 }
@@ -1127,7 +1140,7 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     .with_context(|| format!("cannot write {}", path.display()))?;
     if runtime == "codex" {
         eprintln!(
-            "Codex activity hooks require review and trust in /hooks; MCP remains the coordination adapter. Existing sessions may need to be resumed to load configuration."
+            "Codex hooks deliver queued messages and require review/trust in /hooks. MCP supplies coordination tools. Existing sessions may need to be resumed to load configuration."
         );
     }
     eprintln!(
@@ -1364,6 +1377,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![me.clone()],
             },
             Response::Messages {
@@ -1425,7 +1439,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "hi")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
             digest_reply(
                 "Since you last looked (1 entry):\n- 1m ago   codex-1 [main] noted: \"x\"\n",
             ),
@@ -1560,6 +1577,7 @@ mod tests {
                 // A genuinely different process, which is the only kind
                 // of "somebody else" there can be once one process is
                 // one agent.
+                aliases: Default::default(),
                 agents: vec![
                     {
                         let mut other = agent("somebody-else", true);
@@ -1576,6 +1594,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![theirs.clone(), matching("legacy-duplicate")],
             },
         ]);
@@ -1611,6 +1630,7 @@ mod tests {
             let backend = Mock::with(vec![
                 Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
                 Response::Agents {
+                    aliases: Default::default(),
                     agents: vec![impostor],
                 },
             ]);
@@ -1639,6 +1659,7 @@ mod tests {
                 agent: impostor_by_name,
             },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![real.clone()],
             },
         ]);
@@ -1686,6 +1707,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![elsewhere],
             },
         ]);
@@ -1706,6 +1728,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![ours_by_id.clone()],
             },
         ]);
@@ -1849,6 +1872,7 @@ mod tests {
             Response::error(ErrorCode::NotFound, "no agent"),
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![other.clone(), me.clone(), agent("old", false)],
             },
             Response::Messages {
@@ -1886,6 +1910,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![stranger, me.clone(), mate, agent("nowhere", true)],
             },
             Response::Messages {
@@ -1999,7 +2024,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "ping")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         let out = claude_code(&busy, &input("PostToolUse"), &opts())
             .await
@@ -2023,7 +2051,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "please review PR 7")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         let out = claude_code(&backend, &input("Stop"), &opts())
             .await
@@ -2097,7 +2128,10 @@ mod tests {
         // missing still means there is nothing to end.
         let backend = Mock::with(vec![
             Response::error(ErrorCode::NotFound, "nope"),
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         assert!(
             claude_code(&backend, &input("SessionEnd"), &opts())
@@ -2331,6 +2365,8 @@ mod tests {
         let delivery = HookDelivery {
             backend: &slow,
             pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
         };
         let mut event = input("UserPromptSubmit");
         event.cwd = Some(checkout.path().to_path_buf());
@@ -2341,6 +2377,32 @@ mod tests {
         );
         assert_eq!(slow.queued.borrow().len(), 1);
         assert_eq!(delivery.pending.borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_channel_input_skips_hook_inbox_delivery_but_forwards_other_requests() {
+        struct Observed(RefCell<Vec<Request>>);
+        impl Backend for Observed {
+            async fn call(&self, request: Request) -> Result<Response> {
+                self.0.borrow_mut().push(request);
+                Ok(Response::Ok)
+            }
+        }
+        let backend = Observed(RefCell::new(Vec::new()));
+        let delivery = HookDelivery {
+            backend: &backend,
+            pending: RefCell::new(Vec::new()),
+            channel_input: true,
+            channel_home: None,
+        };
+        assert!(
+            matches!(delivery.call(Request::Inbox { agent: "me".into(), drain: true }).await.unwrap(),
+            Response::Messages { messages } if messages.is_empty())
+        );
+        assert!(backend.0.borrow().is_empty());
+        assert!(delivery.pending.borrow().is_empty());
+        delivery.call(Request::Ping).await.unwrap();
+        assert!(matches!(backend.0.borrow().as_slice(), [Request::Ping]));
     }
 
     #[tokio::test]

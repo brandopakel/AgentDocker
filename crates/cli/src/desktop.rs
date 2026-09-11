@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use agentdocker_host::{command, dirs, project};
 
 mod maintenance;
+mod update;
 
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
 
@@ -128,6 +129,24 @@ enum DesktopCommand {
     },
     /// Show the active and previous retained versions without starting the daemon.
     Status,
+    /// Check the published download feed and, unless --check, download, verify and preview the newer release; --apply installs it for the next launch.
+    Update {
+        /// Feed URL (https://, or file:// with --local-preview). Defaults to the latest GitHub release asset, or AGENTDOCKER_UPDATE_FEED.
+        #[arg(long, env = update::FEED_ENV, default_value = update::DEFAULT_FEED)]
+        feed: String,
+        /// Only report whether a newer release exists; download nothing.
+        #[arg(long)]
+        check: bool,
+        /// Install the verified release for the next launch instead of previewing it.
+        #[arg(long)]
+        apply: bool,
+        /// Permit an ad-hoc-signed Mac preview and preview feeds; public updates require Gatekeeper acceptance.
+        #[arg(long)]
+        local_preview: bool,
+        /// Socket of the agentd daemon, asked only whether agents are live; never started.
+        #[arg(long, env = "AGENTDOCKER_SOCKET")]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,7 +162,7 @@ struct Release {
     payload: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Activation {
     format: u32,
     current: Release,
@@ -739,6 +758,25 @@ pub fn run(args: DesktopArgs) -> Result<()> {
                 );
                 return Ok(());
             }
+            DesktopCommand::Update {
+                feed,
+                check,
+                apply,
+                local_preview,
+                socket,
+            } => {
+                return update::run(
+                    &layout,
+                    active.as_ref(),
+                    update::Options {
+                        feed,
+                        check,
+                        apply,
+                        local_preview,
+                        socket,
+                    },
+                );
+            }
             DesktopCommand::Install {
                 from,
                 preview,
@@ -786,6 +824,40 @@ pub fn run(args: DesktopArgs) -> Result<()> {
                 )
             }
         };
+    let report = perform(
+        &layout,
+        active,
+        source,
+        candidate,
+        preview,
+        local_preview,
+        expect_release,
+        expect_current,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn required_state_schema(active: Option<&Activation>, home: &Path) -> Result<u32> {
+    Ok(agentd::STATE_SCHEMA_VERSION
+        .max(active.map_or(0, |active| active.current.state_schema))
+        .max(agentd::stored_state_schema(home)?.unwrap_or(0)))
+}
+
+/// Check, preview and, unless `preview`, install one inspected candidate:
+/// the part of an install that does not care where the payload came from.
+/// Returns the report the command prints.
+#[allow(clippy::too_many_arguments)]
+fn perform(
+    layout: &Layout,
+    active: Option<Activation>,
+    source: PathBuf,
+    candidate: Release,
+    preview: bool,
+    local_preview: bool,
+    expect_release: Option<String>,
+    expect_current: Option<String>,
+) -> Result<serde_json::Value> {
     if let Some(expected) = expect_release {
         ensure!(
             expected == candidate.id,
@@ -801,20 +873,17 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             "active installation changed since preview; review again"
         );
     }
-    if let Some(active) = &active {
-        ensure!(
-            candidate.state_schema >= active.current.state_schema,
-            "artifact uses an older state schema; binary replacement cannot roll back the database"
-        );
-    }
+    ensure!(
+        candidate.state_schema >= required_state_schema(active.as_ref(), &dirs::home())?,
+        "artifact uses an older state schema; binary replacement cannot roll back the database"
+    );
     layout.preflight()?;
     let report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
         "application":layout.application, "bin":layout.bin, "versions":layout.root.join("versions"),
         "preview":preview, "local_preview":local_preview,
         "activation":"next app/CLI launch; an already-running daemon continues until explicitly restarted or reloaded"});
     if preview {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return Ok(report);
     }
     layout.ensure_root()?;
     let lock = layout.root.join("install.lock");
@@ -822,6 +891,10 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     let _held = agentdocker_host::lock::try_exclusive(&lock)?
         .context("another desktop installation is in progress")?;
     let current = layout.active()?;
+    ensure!(
+        candidate.state_schema >= required_state_schema(current.as_ref(), &dirs::home())?,
+        "stored state changed since preview; review the installation again"
+    );
     ensure!(
         current == active,
         "active installation changed; review again"
@@ -849,8 +922,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     {
         layout.activate(candidate, current.map(|active| active.current))?;
     }
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -863,7 +935,7 @@ mod tests {
             id: id.clone(),
             version: "0.1.0".into(),
             source_commit: "a".repeat(40),
-            state_schema: 8,
+            state_schema: agentd::STATE_SCHEMA_VERSION,
             target: "fixture".into(),
             tree_sha256: id,
             installation_lock: agentdocker_host::installation::LOCK_FORMAT,

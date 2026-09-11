@@ -28,10 +28,27 @@ impl Panel {
         if self.busy
             || !matches!(
                 operation,
-                "status" | "install" | "rollback" | "uninstall" | "prune"
+                "status"
+                    | "install"
+                    | "rollback"
+                    | "uninstall"
+                    | "prune"
+                    | "update-check"
+                    | "update"
             )
         {
             return None;
+        }
+        // Updates come from the published feed, not from a typed source. A
+        // check downloads nothing; `update` downloads, verifies and previews,
+        // and the ordinary Apply then pins what was previewed.
+        if operation == "update-check" {
+            let mut args = self.command("update");
+            args.push("--check".into());
+            return Some(args);
+        }
+        if operation == "update" {
+            return self.update_available().map(|_| self.command("update"));
         }
         let mut args = self.command(operation);
         if operation == "install" {
@@ -105,10 +122,18 @@ impl Panel {
             args.extend(["--prefix".into(), self.prefix.clone()]);
         }
         args.push(operation.into());
-        if self.local_preview && matches!(operation, "install" | "rollback") {
+        if self.local_preview && matches!(operation, "install" | "rollback" | "update") {
             args.push("--local-preview".into());
         }
         args
+    }
+
+    /// The newer version the last check or preview found, if any.
+    pub fn update_available(&self) -> Option<&str> {
+        let update = self.report.as_ref()?.get("update")?;
+        (update["update_available"] == true)
+            .then(|| update["available"]["version"].as_str())
+            .flatten()
     }
 }
 
@@ -133,6 +158,65 @@ pub fn pinned_maintenance(report: &Value) -> Option<(&str, &str)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn update_check_needs_no_source_and_update_needs_a_found_version() {
+        let idle = Panel::default();
+        assert_eq!(
+            idle.preview("update-check"),
+            Some(vec!["update".to_owned(), "--check".to_owned()])
+        );
+        assert_eq!(idle.preview("update"), None, "nothing found yet");
+        let nothing_newer = Panel {
+            report: Some(
+                json!({"update": {"update_available": false, "available": {"version": "0.1.0"}}}),
+            ),
+            ..Panel::default()
+        };
+        assert_eq!(nothing_newer.update_available(), None);
+        assert_eq!(nothing_newer.preview("update"), None);
+        let found = Panel {
+            report: Some(
+                json!({"update": {"update_available": true, "available": {"version": "0.2.0"}}}),
+            ),
+            local_preview: true,
+            ..Panel::default()
+        };
+        assert_eq!(found.update_available(), Some("0.2.0"));
+        assert_eq!(
+            found.preview("update"),
+            Some(vec!["update".to_owned(), "--local-preview".to_owned()])
+        );
+        let busy = Panel {
+            busy: true,
+            ..Panel::default()
+        };
+        assert_eq!(busy.preview("update-check"), None);
+    }
+
+    #[test]
+    fn a_downloaded_update_preview_applies_through_the_ordinary_pin() {
+        let p = Panel {
+            report: Some(
+                json!({"preview": true, "source": "/tmp/payload/AgentDocker.app",
+                "candidate": {"id": "abc"}, "previous": {"id": "old"},
+                "update": {"update_available": true, "available": {"version": "0.2.0"}}}),
+            ),
+            ..Panel::default()
+        };
+        assert_eq!(
+            p.apply(),
+            Some(vec![
+                "install".to_owned(),
+                "--from".to_owned(),
+                "/tmp/payload/AgentDocker.app".to_owned(),
+                "--expect-release".to_owned(),
+                "abc".to_owned(),
+                "--expect-current".to_owned(),
+                "old".to_owned()
+            ])
+        );
+    }
 
     fn panel() -> Panel {
         Panel::default()

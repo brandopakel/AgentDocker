@@ -13,20 +13,33 @@ in the same repository appear there automatically. Linked worktrees share a
 project and retain their session checkout details.
 
 Quiet projects remain available. An unavailable folder stays selected and offers
-**Check folder again**. **Unpin project** keeps it in recent projects; **Forget
+**Check folder again**. **More → Unpin project** keeps it in recent projects; **More → Forget
 project** removes its workspace entry. Neither deletes files nor stops sessions.
 A project with active agents can be discovered again. Sessions whose project is
 unknown appear under **Unassigned sessions**.
 
-Session rows show the name, runtime, branch and observed activity. A selected row
-opens details beside the list or below it, depending on the window width.
+**Current** shows live sessions; **History** holds finished sessions, including
+previous runs with the same name. **Needs input** shows this project's unanswered,
+unexpired questions, including questions from a session that has since finished.
+Search applies to the selected project and all three filters. Switching projects
+returns to Current. Nothing is deleted when a row moves to History.
+
+Session rows show the name, runtime, branch and observed activity. Sessions needing
+input appear first. Select a row for terminal access, reply, or stop. On a narrow
+window, the session replaces the list; **Back to sessions** returns to it. On a
+wide window, it opens beside the list. **Details** reveals the session ID, process,
+checkout, commit and last-seen time.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
-in the header. **Register session** adopts a discovered process for coordination.
+in the header. **Connect** under **Available to connect** adopts a discovered process for
+coordination. Known Codex Node launchers with a native Codex child are omitted
+from discovery. A discovery row overlapping a live registration is hidden only
+when its PID and process birth time both match. Separate registrations are never
+merged by display name.
 Installation or configuration alone does not prove that an agent is working.
 
 **Stop session…** changes to **Confirm stop** for five seconds. Confirm sends the
 stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
-view while the process continues. Finished sessions remain visible.
+view while the process continues. Finished sessions remain available in History.
 
 Project tabs provide:
 
@@ -34,8 +47,8 @@ Project tabs provide:
 - **Channels:** project rooms, membership, reviews, resolution and messages still
   queued for you. This view does not drain your inbox or fabricate chat history.
   Each room retains its own draft across navigation and failed delivery.
-- **Coordination:** current leases and their holders.
-- **Commands:** the real bundled `agentdocker` CLI in the selected project folder.
+- **More → Coordination:** current leases and their holders.
+- **More → Commands:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
 
 ## Inbox and connections
@@ -45,7 +58,9 @@ a failed request and disconnection preserve drafts. A pending answer cannot be
 sent twice. Delivery does not establish that the recipient consumed it. Direct
 messages remain queued until a consumer explicitly takes them.
 
-Connections lists installed runtimes and their reported capabilities. **Review
+Connections starts with installed tools. **Details** reveals versions, executable
+paths and MCP/hooks configuration. **Other supported tools** expands the inventory
+of tools that are not installed. **Review
 setup** prepares a specific plan; **Apply reviewed changes** and **Undo this setup**
 use the existing checked CLI operations. Health and saved plans remain available.
 A connection failure retains the last snapshot and clearly pauses daemon actions.

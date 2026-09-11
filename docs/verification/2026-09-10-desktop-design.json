@@ -1,0 +1,142 @@
+{
+  "scope": "Iced desktop design rounds of 2026-09-10: visual, interaction and idle-cost verification for commits 4f5b921, 17ca37a, 00c1c98, 4f0f579 on codex/desktop-delivery. Source-bound to the release UI binary below. Not a release acceptance report; native workflow acceptance and packaging remain in the delivery reports.",
+  "source": {
+    "branch": "codex/desktop-delivery",
+    "ui_head": "4f0f579",
+    "baseline_for_idle": "5772736"
+  },
+  "binaries": {
+    "release_agentdocker_ui_sha256_at_4f0f579": "ba86f973a37ce289adea92f59cb556c3da8b18482951ccdfb30530250fa8643b",
+    "release_agentdocker_ui_sha256_at_5772736_baseline": "20ac844ceea966c88d6745b0c975caef4daae2b32dd5ed17e2c7c92ccfe77927",
+    "release_agentdocker_ui_sha256_at_00c1c98": "62467652ddbd51df2db5bcd0ae61bbf1132468195cd0585eb0d1f6dbbbcf4f58"
+  },
+  "standard_gate": {
+    "command": "bash scripts/verify.sh check",
+    "at": "00c1c98 plus uncommitted notification sources",
+    "result": "passed",
+    "rust_tests": "695 passed, 6 skipped",
+    "also": [
+      "fmt --check",
+      "clippy -D warnings",
+      "doctests",
+      "cargo package",
+      "release build"
+    ]
+  },
+  "ui_crate_gate_at_4f0f579": {
+    "clippy": "passed (-D warnings)",
+    "unit_tests": "97 passed",
+    "native_workflow_smoke_release": {
+      "result": "passed",
+      "steps": 105,
+      "elapsed_seconds": 46,
+      "binary_sha256": "ba86f973a37ce289adea92f59cb556c3da8b18482951ccdfb30530250fa8643b"
+    },
+    "native_workflow_smoke_debug": {
+      "result": "timed out at step 64 of 96 in the first window",
+      "note": "debug rendering sits at the 150 s per-window budget; two earlier debug runs of the same day passed at 152 s and 116 s. Release is the acceptance path."
+    }
+  },
+  "real_pointer_hover": {
+    "method": "A compiled Swift helper reads the window frame with CGWindowListCopyWindowInfo, activates the process, and posts CGEvent mouseMoved to the HID tap while the release window runs in smoke mode on a private fixture daemon; the scenario pauses 5 s and then captures. Pointer position was read back after posting. No accessibility permission was required. Raw captures show local project names and are kept off the repository.",
+    "results": [
+      {
+        "target": "rail project dot, second row",
+        "window_offset_points": [
+          31,
+          324
+        ],
+        "outcome": "tooltip 'Discovered \u00b7 no live agents' rendered beside the dot",
+        "capture_sha256": "505648b20466843a1378deb85d53081c89369675b583537995f54e6e99393607"
+      },
+      {
+        "target": "rail project row label",
+        "window_offset_points": [
+          90,
+          318
+        ],
+        "outcome": "row hover surface rendered; proves pointer delivery",
+        "capture_sha256": "2a6c2af29f828e0d3271b08c344bc03628e163b815f0941039d190eeffdefb80"
+      },
+      {
+        "target": "session row dot (before tooltips were removed there in 4f0f579)",
+        "window_offset_points": [
+          293,
+          276
+        ],
+        "outcome": "tooltip rendered; the row's own words were visible beside it, which is why 4f0f579 removes tooltips from rows that print their words",
+        "capture_sha256": "2649b3e758a75a229b933412b0b52ec1cf2c95486c94c59c4d86134f75638819"
+      }
+    ],
+    "capture_artifact": "Captures come from iced's window::screenshot, which re-renders the renderer's last layers; text primitives hold weak paragraph references, so text whose widget state was re-created since the last frame is absent from the image. Opening a tooltip invalidates layout, so in the rail-dot capture the selected session row's texts were re-created immediately before the capture and are missing while its dot and chip render. The same fixture and binary rendered that row fully in the session-row capture, and the codex live look on the real daemon rendered rows normally. External screenshots were not used."
+  },
+  "idle_cpu": {
+    "method": "Release window on a private fixture daemon with one registered agent, no pointer input, 30 s and 60 s runs; CPU seconds from os.wait4 rusage; idle percent = (cpu_60s - cpu_30s) / 30. One core = 100. High variance: the window refreshes runtimes every 30 s and redraws on a 2 s tick, so alignment differs between runs.",
+    "samples": {
+      "current_00c1c98_uncached_icons": {
+        "light": {
+          "cpu_30s": 2.1,
+          "cpu_60s": 3.75,
+          "idle_cpu_percent": 5.5
+        },
+        "dark": {
+          "cpu_30s": 1.95,
+          "cpu_60s": 3.1,
+          "idle_cpu_percent": 3.83
+        }
+      },
+      "current_cached_icons_sample_1": {
+        "light": {
+          "cpu_30s": 1.55,
+          "cpu_60s": 2.74,
+          "idle_cpu_percent": 3.96
+        },
+        "dark": {
+          "cpu_30s": 1.14,
+          "cpu_60s": 2.26,
+          "idle_cpu_percent": 3.73
+        }
+      },
+      "current_cached_icons_sample_2": {
+        "light": {
+          "cpu_30s": 2.01,
+          "cpu_60s": 3.44,
+          "idle_cpu_percent": 4.75
+        },
+        "dark": {
+          "cpu_30s": 1.06,
+          "cpu_60s": 2.73,
+          "idle_cpu_percent": 5.57
+        }
+      },
+      "baseline_5772736_sample_1": {
+        "light": {
+          "cpu_30s": 1.76,
+          "cpu_60s": 5.71,
+          "idle_cpu_percent": 13.15
+        },
+        "dark": {
+          "cpu_30s": 1.35,
+          "cpu_60s": 3.56,
+          "idle_cpu_percent": 7.35
+        }
+      },
+      "baseline_5772736_sample_2": {
+        "light": {
+          "cpu_30s": 1.6,
+          "cpu_60s": 3.99,
+          "idle_cpu_percent": 7.97
+        },
+        "dark": {
+          "cpu_30s": 1.86,
+          "cpu_60s": 2.55,
+          "idle_cpu_percent": 2.32
+        }
+      }
+    },
+    "note": "The first 'dark' sample under current_00c1c98_uncached_icons ran with rejected preferences and is effectively a light run. Caching icon geometry removed the per-frame geometry damage (tiny-skia treats live geometry as always damaged). Within this method's variance the redesigned window is not costlier at idle than the pre-redesign build; the 0.5 percent figure in the 2026-09-09 report used ps pcpu sampling, a different method, and is not comparable."
+  },
+  "memory": {
+    "note": "ps RSS medians from the standard smoke: 2026-09-09 release 169.6 MiB; 2026-09-10 release at 00c1c98 188.7 MiB (bundled Inter faces, raster image support, canvas)."
+  }
+}

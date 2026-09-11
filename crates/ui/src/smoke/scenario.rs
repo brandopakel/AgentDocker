@@ -15,6 +15,7 @@ pub enum Step {
     Click { id: String },
     Fill { id: String, text: String },
     WaitText { text: String },
+    WaitControl { id: String, present: bool },
     Focus { id: String },
     WaitFocus { id: String },
     Capture { name: String },
@@ -29,6 +30,9 @@ pub struct Scenario {
     pub snapshot: Snapshot,
     pub capture: Option<String>,
     after: Instant,
+    /// A capture waits one extra beat after the step before it, so the
+    /// frame it reads has been drawn from the current widget tree.
+    settled: bool,
 }
 impl Scenario {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -68,6 +72,7 @@ impl Scenario {
             snapshot: Snapshot::default(),
             capture: None,
             after: Instant::now(),
+            settled: false,
         })
     }
     pub fn done(&self) -> bool {
@@ -107,6 +112,12 @@ impl Scenario {
                 }
                 Task::none()
             }
+            Step::WaitControl { id, present } => {
+                if control(id).is_some() != *present {
+                    return Task::none();
+                }
+                Task::none()
+            }
             Step::Focus { id } => {
                 if control(id).is_none() {
                     return Task::none();
@@ -125,6 +136,17 @@ impl Scenario {
                 Task::none()
             }
             Step::Capture { name } => {
+                // A screenshot renders the last frame's primitives, and text
+                // primitives only draw while the widget state that produced
+                // them is alive. Taking it in the same beat as a change can
+                // therefore render a stale layout with its text missing, so a
+                // capture first lets a redraw happen and then reads the frame.
+                if !self.settled {
+                    self.settled = true;
+                    self.after = Instant::now() + Duration::from_millis(400);
+                    return Task::none();
+                }
+                self.settled = false;
                 self.capture = Some(name.clone());
                 window::oldest()
                     .and_then(window::screenshot)

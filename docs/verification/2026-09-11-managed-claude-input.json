@@ -1,0 +1,100 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_bounded_managed_launch_acceptance",
+  "source": {
+    "format": 1,
+    "source_commit": "78fc835e9895b4eb0a95806c49f3cf0c4dca618c",
+    "source_tree": "042522c1eef0afeb744d06c63694a48691b59bb7",
+    "source_input_sha256": "4a5afe4e9882a5c750ffe0dd908304acca915090a657dd97f6471491d8838fa8",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "state_schema": 10,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "e6d6c5ab2abc6b692dff355ca26ce67db2049089805e9bbd9af62acf2add56a8",
+      "agentd": "2618dad90b86d5d9512abe86ee148b49618ed9f33ca7b082417c5f1fd3e0edbf",
+      "agentdocker-ui": "2fd825d4d190b34d8208e81ad1b7159f7788b6b55ab943e79e9bfb19a5ff6b0f"
+    }
+  },
+  "provider": {
+    "version": "2.1.268 (Claude Code)",
+    "model": "claude-sonnet-5",
+    "launch": "agentdocker run --runtime claude-code --tty --claude-channel; normal agentdocker attach",
+    "scope": "Private daemon/home/socket/workspace/profile. Owned executable wrapper reads existing login in memory and execs Claude. Authentication is never sent in the persisted launch specification.",
+    "managed_agent": "d5abd63581c3486e95cda2fdc0fb0e41",
+    "initial_model_prompt_typed": false,
+    "consent": "Accepted only the owned empty workspace and locally built AgentDocker development channel."
+  },
+  "cases": [
+    {
+      "sender": "peer",
+      "message_id": "d55bc438c6b5411d",
+      "nonce": "AD-MANAGED-FIRST-1922",
+      "acknowledged_at": "2026-09-11T19:21:05.231Z",
+      "reply_id": "5ae96d2fa9eb43ce",
+      "replied_at": "2026-09-11T19:21:05.738901Z"
+    },
+    {
+      "sender": "human",
+      "message_id": "de53f714fdf84ac1",
+      "nonce": "AD-MANAGED-HUMAN-1922",
+      "acknowledged_at": "2026-09-11T19:21:32.633Z",
+      "reply_id": "55273a7c6c7c425e",
+      "replied_at": "2026-09-11T19:21:33.222618Z"
+    }
+  ],
+  "draft": {
+    "text": "UNSUBMITTED-MANAGED-DRAFT-1922",
+    "submitted": false,
+    "preserved_after_canonical_user_turn": true,
+    "evidence": "Observed in the managed PTY before, during and after the model turn."
+  },
+  "identity": {
+    "claude_registration_count": 1,
+    "all_receipts_and_replies_use_original_managed_id": true,
+    "spec_environment_keys": [
+      "AGENTDOCKER_CLAUDE_CHANNEL_INPUT",
+      "CLAUDE_CONFIG_DIR",
+      "DISABLE_AUTOUPDATER",
+      "XDG_CONFIG_HOME"
+    ]
+  },
+  "cleanup": {
+    "provider_and_attach_exited": true,
+    "daemon_exited": true,
+    "remaining_owned_processes": 0,
+    "monitored_user_configuration_unchanged": true,
+    "existing_sessions_restarted": false
+  },
+  "validation": {
+    "rust_passed": 735,
+    "rust_skipped": 6,
+    "python_passed": 54,
+    "format_clippy_doctests_packaging_release": "passed",
+    "final_ui_recheck_passed": 106,
+    "separate_visual_steps_passed": 26
+  },
+  "retained_failures": [
+    "Initial full gate stopped at host module ordering; corrected before successful gate.",
+    "Restricted final UI recheck failed 10 private-socket fixture binds with Operation not permitted; authorized rerun passed all 106.",
+    "During cleanup /exit was unavailable with slash commands disabled; two Ctrl-D keys within the confirmation interval exited normally."
+  ],
+  "private_evidence_sha256": {
+    "launch-driver.py": "7f267bed41bb384e6c5a70abd1f2f39c8e21aa1ec46d288a557926f63fb40ecf",
+    "result.json": "7968a9639629e20ef9d0f7222cb7cbd59758a5fc05d40b05cd573175575a387a",
+    "final-status.json": "44da80959d0631a6bc6acd5d5832a7f32bd937f7c795d15e14a512a16f59bb3f",
+    "delivery-transcript.json": "af56729456be6e48bc748605270ac62e6b57fd1b15c7d7bc38cc624bad7beaa0",
+    "managed-inspect.json": "6735a2638f86664128d555867bdb31056e970b169d978acb14381c048e67c969",
+    "config-before.json": "6bd55b783570c2d4547c18ab9ec377b5babed426f07936d2650a55243d8776d0",
+    "config-after.json": "6bd55b783570c2d4547c18ab9ec377b5babed426f07936d2650a55243d8776d0"
+  },
+  "limits": [
+    "This trial covers one provider version, policy and platform.",
+    "Private trial explicitly used --strict-mcp-config for isolation; normal managed launch does not add it. Coexistence with every existing MCP/policy configuration is not certified.",
+    "No actual-provider reconnect/ambiguous receipt, cancellation/starvation, overnight or reboot acceptance in this trial.",
+    "UI checkbox rendering is separate fixture evidence, not an actual model launched by clicking the checkbox.",
+    "Codex submitted input and idle wake remain open.",
+    "Installed launcher and daemon are unchanged; physical notification clicks, signing and independent hardware acceptance remain open."
+  ]
+}

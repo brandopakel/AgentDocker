@@ -25,6 +25,16 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    /// A question's answer route is durable until answered or expired.
+    QuestionOpened {
+        question: MessageId,
+        expires_at: DateTime<Utc>,
+    },
+    /// No answer means the question expired. The original inbox message remains.
+    QuestionClosed {
+        question: MessageId,
+        answer: Option<MessageId>,
+    },
     AgentActivityReported {
         agent: AgentId,
         observation: crate::ActivityObservation,
@@ -185,6 +195,13 @@ pub enum EventKind {
     AgentSessionBound {
         agent: AgentId,
         session: String,
+    },
+    /// Maintenance committed an exact-ID redirect and all operational moves.
+    /// Original history and before-images remain available in the repair archive.
+    AgentReconciled {
+        canonical: AgentId,
+        retired: AgentId,
+        plan_sha256: String,
     },
     /// A task several agents will attempt, with the measure that ranks
     /// them fixed before any of them starts.

@@ -160,7 +160,7 @@ async fn live_agents(client: &Client) -> Result<Vec<AgentRecord>> {
         })
         .await?
     {
-        Response::Agents { agents } => Ok(agents),
+        Response::Agents { agents, .. } => Ok(agents),
         other => bail!("unexpected reply to list: {other:?}"),
     }
 }

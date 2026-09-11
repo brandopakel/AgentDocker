@@ -2,43 +2,18 @@
 use crate::{accessibility::Semantic, app::Message};
 use iced::advanced::Renderer as _;
 
-/// Scroll ancestors just enough to reveal the newly focused control.
+/// Scroll ancestors just enough to reveal the newly focused control, or,
+/// given a `target`, the container carrying that id. Revealing a target
+/// moves nothing but scroll offsets: focus stays where it was.
 #[derive(Default)]
 struct Reveal {
+    target: Option<widget::Id>,
     pending: Option<(widget::Id, Rectangle, iced::Vector)>,
     parents: Vec<(widget::Id, Rectangle, iced::Vector)>,
     adjustments: Vec<(widget::Id, iced::Vector)>,
 }
-impl Operation for Reveal {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-        let pushed = self.pending.take();
-        if let Some(parent) = pushed.clone() {
-            self.parents.push(parent);
-        }
-        operate(self);
-        if pushed.is_some() {
-            self.parents.pop();
-        }
-    }
-    fn scrollable(
-        &mut self,
-        id: Option<&widget::Id>,
-        bounds: Rectangle,
-        _: Rectangle,
-        translation: iced::Vector,
-        _: &mut dyn widget::operation::Scrollable,
-    ) {
-        self.pending = id.cloned().map(|id| (id, bounds, translation));
-    }
-    fn focusable(
-        &mut self,
-        _: Option<&widget::Id>,
-        bounds: Rectangle,
-        state: &mut dyn widget::operation::Focusable,
-    ) {
-        if !state.is_focused() {
-            return;
-        }
+impl Reveal {
+    fn reveal(&mut self, bounds: Rectangle) {
         for (id, viewport, offset) in &self.parents {
             let x = (bounds.x - offset.x).max(viewport.x);
             let y = (bounds.y - offset.y).max(viewport.y);
@@ -61,6 +36,43 @@ impl Operation for Reveal {
             if want != *offset {
                 self.adjustments.push((id.clone(), want));
             }
+        }
+    }
+}
+impl Operation for Reveal {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        let pushed = self.pending.take();
+        if let Some(parent) = pushed.clone() {
+            self.parents.push(parent);
+        }
+        operate(self);
+        if pushed.is_some() {
+            self.parents.pop();
+        }
+    }
+    fn scrollable(
+        &mut self,
+        id: Option<&widget::Id>,
+        bounds: Rectangle,
+        _: Rectangle,
+        translation: iced::Vector,
+        _: &mut dyn widget::operation::Scrollable,
+    ) {
+        self.pending = id.cloned().map(|id| (id, bounds, translation));
+    }
+    fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
+        if self.target.is_some() && id == self.target.as_ref() {
+            self.reveal(bounds);
+        }
+    }
+    fn focusable(
+        &mut self,
+        _: Option<&widget::Id>,
+        bounds: Rectangle,
+        state: &mut dyn widget::operation::Focusable,
+    ) {
+        if self.target.is_none() && state.is_focused() {
+            self.reveal(bounds);
         }
     }
     fn finish(&self) -> widget::operation::Outcome<()> {
@@ -94,6 +106,18 @@ impl Operation for Adjust {
 }
 pub fn reveal_focus() -> iced::Task<Message> {
     iced::advanced::widget::operate(Reveal::default()).discard()
+}
+/// Scroll so the container with this id is in view, without touching focus.
+/// Ids the view hands out for this: `notification-question-<id>`,
+/// `notification-message-<id>`, `notification-channel-<id>`.
+// Wired by notification routing in `app/shell.rs`; unused until that lands.
+#[allow(dead_code)]
+pub fn reveal(id: impl Into<String>) -> iced::Task<Message> {
+    iced::advanced::widget::operate(Reveal {
+        target: Some(widget::Id::from(id.into())),
+        ..Reveal::default()
+    })
+    .discard()
 }
 use iced::advanced::{
     Clipboard, Layout, Shell, Widget, layout, renderer,
@@ -251,7 +275,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
                     border: Border {
                         color: theme.palette().primary,
                         width: 2.0,
-                        radius: 7.0.into(),
+                        radius: 9.0.into(),
                     },
                     ..Default::default()
                 },
@@ -293,58 +317,230 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
     }
 }
 
+/// How a button asks to be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// The one thing to do on this screen: filled with the accent.
+    Primary,
+    /// An ordinary action: a quiet raised surface.
+    Secondary,
+    /// Rows and navigation: no surface until hovered or selected.
+    Quiet,
+    /// A section switch: an underline rather than a surface.
+    Tab,
+    /// An action with a cost that has already been armed once.
+    Danger,
+    /// One choice in a segmented control: the selected one is lifted off
+    /// the track, the others sit quietly on it.
+    Segment,
+}
+
+fn button_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    kind: Kind,
+    selected: bool,
+) -> iced::widget::button::Style {
+    use crate::app::style::{Colors, alpha, mix};
+    use iced::widget::button::Status;
+    let c = Colors::of(theme);
+    let (mut background, mut text) = match (kind, selected) {
+        (Kind::Primary, _) => (Some(c.accent), iced::Color::WHITE),
+        (Kind::Danger, _) => (Some(alpha(c.red, if c.dark { 0.18 } else { 0.12 })), c.red),
+        (Kind::Tab, true) => (None, c.accent_ink),
+        (Kind::Segment, true) => (Some(if c.dark { c.ground } else { c.card }), c.text),
+        (Kind::Segment, false) => (None, c.muted),
+        (_, true) => (Some(c.accent_soft), c.accent_ink),
+        (Kind::Secondary, false) => (Some(c.raised), c.text),
+        (Kind::Quiet | Kind::Tab, false) => (None, c.text),
+    };
+    let lift = |amount: f32| match (kind, selected) {
+        (Kind::Primary, _) => mix(c.accent, iced::Color::BLACK, amount),
+        (Kind::Danger, _) => alpha(c.red, 0.18 + amount),
+        (Kind::Tab, _) => alpha(c.raised, 0.7 + amount),
+        (Kind::Segment, true) => mix(if c.dark { c.ground } else { c.card }, c.text, amount * 0.3),
+        (Kind::Segment, false) => alpha(c.text, amount * 0.6),
+        (_, true) => mix(c.accent_soft, c.accent, amount * 0.6),
+        (Kind::Secondary, false) => mix(c.raised, c.text, amount * 0.5),
+        (Kind::Quiet, false) => c.raised,
+    };
+    match status {
+        Status::Active => {}
+        Status::Hovered => background = Some(lift(0.08)),
+        Status::Pressed => background = Some(lift(0.16)),
+        Status::Disabled => {
+            text = alpha(text, 0.45);
+            background = background.map(|b| alpha(b, 0.5));
+        }
+    }
+    iced::widget::button::Style {
+        background: background.map(Into::into),
+        text_color: text,
+        border: Border {
+            radius: if kind == Kind::Segment { 7.0 } else { 9.0 }.into(),
+            ..Default::default()
+        },
+        shadow: if kind == Kind::Segment && selected && status != Status::Disabled {
+            iced::Shadow {
+                color: iced::Color::from_rgba8(16, 24, 40, if c.dark { 0.4 } else { 0.1 }),
+                offset: iced::Vector::new(0.0, 1.0),
+                blur_radius: 2.0,
+            }
+        } else {
+            Default::default()
+        },
+        snap: true,
+    }
+}
+
+/// A labelled action; `selected` marks the current choice among peers.
 pub fn button<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     message: Option<Message>,
     selected: bool,
 ) -> Element<'a, Message> {
-    sized_button(id, label, message, selected, false)
+    let label = label.into();
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(
+        id,
+        label,
+        content,
+        message,
+        selected,
+        Kind::Secondary,
+        [9, 13],
+    )
 }
+/// The one action a screen leads with.
+pub fn primary<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let label = label.into();
+    // Regular weight: the heavier faces of the system sans lack the
+    // ellipsis glyph and borrow it from a monospace fallback.
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(id, label, content, message, false, Kind::Primary, [9, 15])
+}
+/// An armed destructive action.
+pub fn danger<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let content = iced::widget::text(label.clone()).size(14);
+    custom(id, label, content, message, false, Kind::Danger, [9, 13])
+}
+/// One choice of a segmented control. Lay several in a `segmented` track.
+pub fn segment<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+    selected: bool,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let content = iced::widget::text(label.clone())
+        .size(13)
+        .font(crate::app::style::weight(if selected {
+            iced::font::Weight::Semibold
+        } else {
+            iced::font::Weight::Medium
+        }));
+    custom(
+        id,
+        label,
+        content,
+        message,
+        selected,
+        Kind::Segment,
+        [6, 12],
+    )
+}
+/// A full-width quiet row: sidebar entries and list rows.
 pub fn block_button<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     message: Option<Message>,
     selected: bool,
 ) -> Element<'a, Message> {
-    sized_button(id, label, message, selected, true)
+    let label = label.into();
+    let content = iced::widget::text(label.clone())
+        .size(14)
+        .width(Length::Fill);
+    custom(id, label, content, message, selected, Kind::Quiet, [9, 12])
 }
-fn sized_button<'a>(
+/// A section switch drawn as an underline.
+pub fn tab<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
+    glyph: Option<Element<'a, Message>>,
     message: Option<Message>,
     selected: bool,
-    block: bool,
+) -> Element<'a, Message> {
+    let label = label.into();
+    let mut title = iced::widget::row![].spacing(7).align_y(iced::Center);
+    if let Some(glyph) = glyph {
+        title = title.push(glyph);
+    }
+    title = title.push(
+        iced::widget::text(label.clone())
+            .size(14)
+            .font(crate::app::style::weight(if selected {
+                iced::font::Weight::Semibold
+            } else {
+                iced::font::Weight::Normal
+            })),
+    );
+    let content = iced::widget::column![
+        title,
+        iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(2)).style(
+            move |theme: &iced::Theme| {
+                let c = crate::app::style::Colors::of(theme);
+                iced::widget::container::Style {
+                    background: Some(
+                        if selected {
+                            c.accent
+                        } else {
+                            iced::Color::TRANSPARENT
+                        }
+                        .into(),
+                    ),
+                    border: Border {
+                        radius: 1.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }
+        )
+    ]
+    .spacing(8);
+    custom(id, label, content, message, selected, Kind::Tab, [8, 6])
+}
+/// Any content as a keyboard-focusable, accessible button. `label` is what
+/// assistive technology reads; the content is what the eye does.
+pub fn custom<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    content: impl Into<Element<'a, Message>>,
+    message: Option<Message>,
+    selected: bool,
+    kind: Kind,
+    padding: [u16; 2],
 ) -> Element<'a, Message> {
     let (id, label) = (id.into(), label.into());
-    let content = iced::widget::button(iced::widget::text(label.clone()).size(14))
-        .padding([10, 12])
-        .width(if block { Length::Fill } else { Length::Shrink })
+    let content = iced::widget::button(content)
+        .padding(padding)
+        .width(if kind == Kind::Quiet {
+            Length::Fill
+        } else {
+            Length::Shrink
+        })
         .on_press_maybe(message.clone())
-        .style(move |theme, status| {
-            let mut style = iced::widget::button::subtle(theme, status);
-            if block && !selected && status == iced::widget::button::Status::Active {
-                style.background = None;
-            }
-            if selected {
-                let dark = theme.palette().background.r < 0.5;
-                style.background = Some(
-                    if dark {
-                        iced::color!(0x263a59)
-                    } else {
-                        iced::color!(0xe8effb)
-                    }
-                    .into(),
-                );
-                style.text_color = if dark {
-                    iced::color!(0xb8d0ff)
-                } else {
-                    iced::color!(0x1d4fa4)
-                };
-            }
-            style.border.radius = 7.0.into();
-            style
-        });
+        .style(move |theme, status| button_style(theme, status, kind, selected));
     Control {
         content: content.into(),
         semantic: Semantic::button(id, label, message),
@@ -374,7 +570,35 @@ pub fn input_enabled<'a>(
     let on_input = change.clone();
     let content = iced::widget::text_input(label, value)
         .id(widget::Id::from(id.clone()))
-        .padding(12)
+        .padding([11, 13])
+        .size(14)
+        .style(|theme, status| {
+            use crate::app::style::{Colors, alpha};
+            use iced::widget::text_input::Status;
+            let c = Colors::of(theme);
+            let (border, background) = match status {
+                Status::Focused { .. } => (c.accent, c.card),
+                Status::Hovered => (alpha(c.accent, 0.6), c.card),
+                Status::Active => (c.line, c.card),
+                Status::Disabled => (c.line, c.raised),
+            };
+            iced::widget::text_input::Style {
+                background: background.into(),
+                border: Border {
+                    color: border,
+                    width: 1.0,
+                    radius: 9.0.into(),
+                },
+                icon: c.muted,
+                placeholder: c.faint,
+                value: if matches!(status, Status::Disabled) {
+                    c.muted
+                } else {
+                    c.text
+                },
+                selection: alpha(c.accent, 0.35),
+            }
+        })
         .on_input_maybe(enabled.then_some(move |v| on_input(v)));
     let mut semantic = Semantic::input(id, label.into(), value.into(), change);
     if !enabled {
@@ -391,6 +615,42 @@ pub fn input_enabled<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_labels_keep_contrast_during_pointer_interaction() {
+        use crate::app::style::Colors;
+        use iced::widget::button::Status;
+
+        let luminance = |color: iced::Color| {
+            let linear = |channel: f32| {
+                if channel <= 0.04045 {
+                    channel / 12.92
+                } else {
+                    ((channel + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+        };
+        for dark in [false, true] {
+            let theme = Colors::new(dark).theme();
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let style = button_style(&theme, status, Kind::Primary, false);
+                let Some(iced::Background::Color(background)) = style.background else {
+                    panic!("primary button needs a solid background");
+                };
+                assert_eq!(style.text_color.a, 1.0);
+                assert_eq!(background.a, 1.0);
+                let foreground = luminance(style.text_color) + 0.05;
+                let background = luminance(background) + 0.05;
+                let contrast = foreground.max(background) / foreground.min(background);
+                assert!(
+                    contrast >= 4.5,
+                    "dark={dark}, status={status:?}: {contrast}"
+                );
+            }
+        }
+    }
+
     fn press(key: keyboard::Key, repeat: bool) -> Event {
         Event::Keyboard(keyboard::Event::KeyPressed {
             modified_key: key.clone(),

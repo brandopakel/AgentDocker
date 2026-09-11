@@ -1,0 +1,721 @@
+{
+  "format": 1,
+  "recorded_date": "2026-09-10",
+  "scope": "Iced usability, provider lifecycle delivery, durable coordination, package acceptance and bounded resource trials",
+  "source_commit": "bf392805af4c1c90392c4461976aa3647ae9c495",
+  "source_tree": "0dcc3dcb697e353580dade96f3f79eb339b6e8c9",
+  "source_input_sha256": "cf36e10fe69e9c0d45a9465cff943315df3a9583703d68f0514d11e2f1f1aaf7",
+  "source_dirty": false,
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests_passed": 686,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 48,
+    "fmt": true,
+    "strict_clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "log_sha256": "7f495eac85ffd8ff845093a1baff062ee9535924f8843d846fd6e5674b387837"
+  },
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "bf392805af4c1c90392c4461976aa3647ae9c495",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "0dcc3dcb697e353580dade96f3f79eb339b6e8c9",
+    "source_input_sha256": "cf36e10fe69e9c0d45a9465cff943315df3a9583703d68f0514d11e2f1f1aaf7",
+    "source_dirty": false,
+    "state_schema": 9,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 26033302,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 11107228,
+        "agentdocker-desktop-aarch64-apple-darwin.dmg": 12162654
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "4627d2ce2f233bfa7f9112ffbb80c613e7129e1cdf8bcd6bf099e95af7159133",
+      "agentd": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4",
+      "agentdocker-ui": "b40f3f19bcc1deb88596178c4c504ca82644c3b88b03dd9cf107c3cb6e95d479"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "d9ce9c0183c2ad7a381483785f3213d07763724ce5482a241ab6b5651c6090f2",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "89a1d179791fefcae3709d3d24435f698dc5d3f0e7b64cb4cfa3f41c3aa6b27a"
+    }
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 105,
+    "elapsed_seconds": 46.111415208000835,
+    "checks": [
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "binary_sha256": {
+      "agentd": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4",
+      "agentdocker": "4627d2ce2f233bfa7f9112ffbb80c613e7129e1cdf8bcd6bf099e95af7159133",
+      "agentdocker-ui": "b40f3f19bcc1deb88596178c4c504ca82644c3b88b03dd9cf107c3cb6e95d479"
+    },
+    "idle_resources": {
+      "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+      "summary": {
+        "window": {
+          "median_rss_bytes": 171900928.0,
+          "maximum_rss_bytes": 171950080,
+          "median_ps_cpu_percent": 1.65
+        },
+        "daemon": {
+          "median_rss_bytes": 17448960.0,
+          "maximum_rss_bytes": 17465344,
+          "median_ps_cpu_percent": 0.0
+        }
+      }
+    },
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "visual_review": [
+      "Current sessions and History separated",
+      "Confirmed own channel text visible after navigating away and back",
+      "Narrow selected-session actions legible without clipping"
+    ]
+  },
+  "actual_codex": {
+    "result": "passed",
+    "scope": "actual Codex lifecycle context, no inbox tools",
+    "driver_sha256": "b3b9ed269544ba10ea79f3f0eb1452c37cfabb4c02488fe9020b9efb59989ebd",
+    "binary_sha256": {
+      "agentdocker": "4627d2ce2f233bfa7f9112ffbb80c613e7129e1cdf8bcd6bf099e95af7159133",
+      "agentd": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4"
+    },
+    "checks": [
+      {
+        "boundary": "PostToolUse",
+        "correlated_reply": true,
+        "acknowledged": true
+      },
+      {
+        "boundary": "Stop",
+        "correlated_reply": true,
+        "acknowledged": true
+      },
+      {
+        "boundary": "UserPromptSubmit",
+        "correlated_reply": true,
+        "acknowledged": true
+      }
+    ],
+    "provider_version": "codex-cli 0.153.4",
+    "identity_count": 1,
+    "duration_seconds": 26.006184375000885,
+    "provider_configuration_unchanged": true,
+    "owned_children_remaining": 0
+  },
+  "actual_claude_peer": {
+    "result": "passed",
+    "scope": "Two-way correlated messages with the user-launched live Claude session through the existing installed daemon; separate from final-package hook acceptance and idle wake.",
+    "private_evidence": "Retained in the session coordination journal; raw peer messages and identity paths are not published."
+  },
+  "restart_upgrade": {
+    "result": "passed",
+    "steps": [
+      "two live identities, one exact lease and queued message established",
+      "distinct-binary crash and upgrade preserved identities, lease expiry and inbox",
+      "crash 1: pending question restored, correlated reply delivered and acknowledged",
+      "crash 2: pending question restored, correlated reply delivered and acknowledged",
+      "crash 3: pending question restored, correlated reply delivered and acknowledged",
+      "graceful shutdown preserved externally owned processes",
+      "older daemon refused newer schema without changing database or WAL bytes"
+    ],
+    "driver_sha256": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f",
+    "current": {
+      "sha256": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 9,
+        "version": "0.1.0"
+      }
+    },
+    "scope": "externally owned processes, durable coordination and actual daemon crashes",
+    "previous": {
+      "sha256": "d60e5e367334dd5102351b418546d30091c664d56931dbd7c8dd8a9a107ab463",
+      "metadata": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "os": "macos",
+        "state_schema": 8,
+        "version": "0.1.0"
+      }
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 0.2927092089994403
+  },
+  "distinct_source_installation": {
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "activation keeps the existing fixture daemon responsive",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "synthetic_second_generation": false,
+    "first": {
+      "id": "cda7f2c9ae3542cda122591af77bc0d7f576e59b4a7a17cd2d145853bed8e258",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "9befe4337eebf71c0fc871e3fc06b4ae105f0f42",
+      "state_schema": 9,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "cda7f2c9ae3542cda122591af77bc0d7f576e59b4a7a17cd2d145853bed8e258",
+      "version": "0.1.0"
+    },
+    "second": {
+      "id": "079a47a56785911a8d6d1746b9a3e6e3ffa88115287392d2bf30f65f96220670",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "bf392805af4c1c90392c4461976aa3647ae9c495",
+      "state_schema": 9,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "079a47a56785911a8d6d1746b9a3e6e3ffa88115287392d2bf30f65f96220670",
+      "version": "0.1.0"
+    }
+  },
+  "sustained_use": {
+    "binary_sha256": "cbc20042868065511aad27163f874fa128c3253bea48c12b9e496077f2ef7737",
+    "driver_sha256": "30afc147b8bc9e9c1b73a3c121f07f55ff0972ae75733800e131444d3c10a006",
+    "started_at": "2026-09-10T16:48:02.079397+00:00",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "result": "passed",
+    "populations": [
+      {
+        "agents": 1,
+        "requested_seconds": 600,
+        "checkout_files": 10000,
+        "result": "passed",
+        "scope": "supervised sleep processes plus concurrent IPC clients",
+        "startup_seconds": 0.22238512500007346,
+        "daemon_exit": 0,
+        "remaining_child_pids": [],
+        "duration_seconds": 600.3305456670005,
+        "cycles": 2335,
+        "latency_sample_count": 11675,
+        "latency_sample_scope": "last at most 100000 requests; all cycles counted",
+        "request_ms": {
+          "0.5": 0.48216699906333815,
+          "0.95": 1.8726250000327127,
+          "0.99": 2.146875000107684,
+          "1": 10.842708999916795
+        },
+        "daemon_rss_kib": {
+          "first": 13712,
+          "last": 18896,
+          "maximum": 18896,
+          "median": 17936
+        },
+        "maximum_descriptors": 22
+      },
+      {
+        "agents": 10,
+        "requested_seconds": 600,
+        "checkout_files": 10000,
+        "result": "passed",
+        "scope": "supervised sleep processes plus concurrent IPC clients",
+        "startup_seconds": 0.07555183400108945,
+        "daemon_exit": 0,
+        "remaining_child_pids": [],
+        "duration_seconds": 600.4053117500007,
+        "cycles": 23278,
+        "latency_sample_count": 100000,
+        "latency_sample_scope": "last at most 100000 requests; all cycles counted",
+        "request_ms": {
+          "0.5": 0.47541599997202866,
+          "0.95": 2.3467920000257436,
+          "0.99": 6.615292000788031,
+          "1": 58.54029200054356
+        },
+        "daemon_rss_kib": {
+          "first": 15376,
+          "last": 21344,
+          "maximum": 21344,
+          "median": 21296
+        },
+        "maximum_descriptors": 50
+      },
+      {
+        "agents": 100,
+        "requested_seconds": 600,
+        "checkout_files": 10000,
+        "result": "passed",
+        "scope": "supervised sleep processes plus concurrent IPC clients",
+        "startup_seconds": 0.2042236249999405,
+        "daemon_exit": 0,
+        "remaining_child_pids": [],
+        "duration_seconds": 600.5647599999993,
+        "cycles": 230278,
+        "latency_sample_count": 100000,
+        "latency_sample_scope": "last at most 100000 requests; all cycles counted",
+        "request_ms": {
+          "0.5": 0.4248749992257217,
+          "0.95": 2.8538749993458623,
+          "0.99": 5.271291998724337,
+          "1": 23.081749999619205
+        },
+        "daemon_rss_kib": {
+          "first": 20704,
+          "last": 27344,
+          "maximum": 28016,
+          "median": 27296
+        },
+        "maximum_descriptors": 434
+      }
+    ],
+    "binary_unchanged": true,
+    "driver_unchanged": true,
+    "source_commit": "9befe4337eebf71c0fc871e3fc06b4ae105f0f42",
+    "limitations": [
+      "Ten minutes per population, one Mac, supervised sleep processes and task-key IPC workloads.",
+      "Local build/check activity overlapped portions of this run; timing is advisory.",
+      "This immutable source checkpoint predates the final wrapper-detection and ambiguous-name recovery changes.",
+      "Does not establish overnight growth bounds, actual-provider idle wake, terminal workloads or explain the retained physical-path benchmark timeout."
+    ]
+  },
+  "diagnostic_benchmark": {
+    "result": "passed",
+    "manifest": {
+      "commit": "bf392805af4c1c90392c4461976aa3647ae9c495",
+      "source_sha256": "dcf17a39e0fd6d3b0f00b3af546393f4028249a3d69f2480b4e1c6d4f5c44f76",
+      "dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "processor": "arm",
+      "cpu_count": 12,
+      "profile": "release",
+      "container_engine": null,
+      "workloads": {
+        "lease_counts": [
+          1,
+          100,
+          1000
+        ],
+        "fingerprint_files": 100,
+        "fingerprint_bytes_per_file": 4096,
+        "socket_clients": [
+          1,
+          10,
+          100
+        ],
+        "socket_checkout_kind": "plain-unwatched",
+        "socket_format": 2,
+        "socket_workloads": [
+          "shared",
+          "disjoint"
+        ],
+        "socket_state_timing": true,
+        "socket_outcomes": [
+          "claim_release",
+          "claim_conflict"
+        ],
+        "socket_iterations_per_client": 100
+      }
+    },
+    "source_and_environment_unchanged": true,
+    "binaries_unchanged": true,
+    "binaries": [
+      {
+        "path": "agentd",
+        "sha256": "4525805356b924c1aedad4d37b291ff84ecc86179b959fff82f0047ce733ab5a"
+      },
+      {
+        "path": "socket_load",
+        "sha256": "e6b9b99053c3ddd4d5cefa3a7c5fcb2b4c4534c616b66b3a43538fb5c41d81a3"
+      }
+    ],
+    "scenario_exit_statuses": [
+      "shared\t1\t0",
+      "disjoint\t1\t0",
+      "shared\t10\t0",
+      "disjoint\t10\t0",
+      "shared\t100\t0",
+      "disjoint\t100\t0"
+    ],
+    "socket_results": {
+      "socket-shared-1": {
+        "socket_v2/shared/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.026165625
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 3821.8081930013136
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 3821.8081930013136
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 252208.00000000003
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 308166.0
+          }
+        },
+        "socket_v2/shared/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 549834.0
+          }
+        }
+      },
+      "socket-disjoint-1": {
+        "socket_v2/disjoint/1_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.026262291
+          },
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 3807.7409164341375
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 100
+          },
+          "throughput": {
+            "value": 3807.7409164341375
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 251667.00000000003
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 346792.0
+          }
+        },
+        "socket_v2/disjoint/1_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 539916.0
+          }
+        }
+      },
+      "socket-shared-10": {
+        "socket_v2/shared/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.834
+          },
+          "elapsed-seconds": {
+            "value": 0.080759083
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 12382.508107478141
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 834
+          },
+          "throughput": {
+            "value": 10327.01176163677
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 670542.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 1296334.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 1533500.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 166
+          },
+          "throughput": {
+            "value": 2055.4963458413713
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1105084.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 1995584.0
+          }
+        },
+        "socket_v2/shared/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 2340041.0
+          }
+        }
+      },
+      "socket-disjoint-10": {
+        "socket_v2/disjoint/10_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 0.140545292
+          },
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 7115.144063310211
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 1000
+          },
+          "throughput": {
+            "value": 7115.144063310211
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 1311334.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 2231917.0
+          }
+        },
+        "socket_v2/disjoint/10_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 2773166.0
+          }
+        }
+      },
+      "socket-shared-100": {
+        "socket_v2/shared/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.9868
+          },
+          "elapsed-seconds": {
+            "value": 0.623687875
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 16033.661068046256
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 9868
+          },
+          "throughput": {
+            "value": 15822.016741948046
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p50": {
+          "latency": {
+            "value": 5444875.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p95": {
+          "latency": {
+            "value": 11557542.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_conflict/p99": {
+          "latency": {
+            "value": 18466250.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 132
+          },
+          "throughput": {
+            "value": 211.64432609821057
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 11059000.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 17936500.0
+          }
+        },
+        "socket_v2/shared/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 34326250.0
+          }
+        }
+      },
+      "socket-disjoint-100": {
+        "socket_v2/disjoint/100_clients/100_iterations/attempts": {
+          "conflict-ratio": {
+            "value": 0.0
+          },
+          "elapsed-seconds": {
+            "value": 1.487641625
+          },
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 6722.049068773536
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_conflict": {
+          "sample-count": {
+            "value": 0
+          },
+          "throughput": {
+            "value": 0.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release": {
+          "sample-count": {
+            "value": 10000
+          },
+          "throughput": {
+            "value": 6722.049068773536
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p50": {
+          "latency": {
+            "value": 14027291.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p95": {
+          "latency": {
+            "value": 24318708.0
+          }
+        },
+        "socket_v2/disjoint/100_clients/100_iterations/claim_release/p99": {
+          "latency": {
+            "value": 29664083.0
+          }
+        }
+      }
+    },
+    "criterion_completed": true,
+    "slow_state_samples": 0,
+    "interpretation": "All six physical-path workloads passed. No operation crossed the 250 ms diagnostic threshold. This fresh Mac result does not explain or erase earlier retained timeout failures."
+  },
+  "github_ci": {
+    "source_commit": "bf392805af4c1c90392c4461976aa3647ae9c495",
+    "result": "passed",
+    "runs": {
+      "ci": 34507321470,
+      "native_desktop_four_targets": 34507321477,
+      "windows_foundations": 34507321459,
+      "docker_and_podman": 34507321484,
+      "performance": 34507321449
+    },
+    "private_bencher_reporting": "Skipped as configured; credentials were not placed in GitHub.",
+    "review": "CodeRabbit reviewed 9befe4337eebf71c0fc871e3fc06b4ae105f0f42; its four findings were fixed. Follow-up review remains rate-limited at report creation."
+  },
+  "retained_failed_campaign": {
+    "path": "artifacts/sustained-2026-09-10/result.json",
+    "result": "failed",
+    "reason": "The shared debug daemon was rebuilt during the original run. Per-population checks passed, but binary provenance failed; this is not a passing stable-source baseline. The corrected harness snapshots its executable."
+  },
+  "remaining": [
+    "Unified submitted-input queue and idle wake for Claude/Codex; see docs/MESSAGE-DELIVERY-AUDIT.md.",
+    "Durable legacy-identity aliases and atomic reference migration.",
+    "Supervised child, batch/PTY I/O and log ownership transfer during live daemon replacement.",
+    "Hours/overnight, actual-provider, sleep/reboot and independent-machine trials; retained socket timeout diagnosis.",
+    "Public signed/notarized releases, hosted update feed/consumer/scheduler, real tap/cask publication and Linux packages.",
+    "Full native Windows daemon, lifecycle, terminal, provider, service and installer acceptance.",
+    "Physical screen-reader/IME acceptance and switching the old launcher after active sessions finish."
+  ]
+}

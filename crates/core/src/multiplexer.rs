@@ -114,20 +114,21 @@ pub fn from_environment(env: &BTreeMap<String, String>) -> Option<Session> {
             evidence: Evidence::Environment,
         });
     }
-    // herdr. Its variables are read here rather than assumed: whichever
-    // of these it sets, the session is named by it, and if it sets none
-    // of them ancestry still catches it.
-    for key in ["HERDR_SESSION", "HERDR_SESSION_ID", "HERDR"] {
-        if let Some(session) = get(key) {
-            return Some(Session {
-                kind: "herdr".to_owned(),
-                session: Some(session.to_owned()),
-                pane: get("HERDR_PANE")
-                    .or_else(|| get("HERDR_PANE_ID"))
-                    .map(str::to_owned),
-                evidence: Evidence::Environment,
-            });
-        }
+    // herdr (0.9) marks every pane process with HERDR_ENV=1 and names the
+    // pane in HERDR_PANE_ID (`w1:p1`). HERDR_SESSION is set only inside a
+    // named session; the default session has no name, so the pane id has
+    // to carry the evidence on its own there.
+    let herdr_pane = get("HERDR_PANE").or_else(|| get("HERDR_PANE_ID"));
+    let herdr_session = ["HERDR_SESSION", "HERDR_SESSION_ID", "HERDR"]
+        .into_iter()
+        .find_map(get);
+    if herdr_session.is_some() || (get("HERDR_ENV") == Some("1") && herdr_pane.is_some()) {
+        return Some(Session {
+            kind: "herdr".to_owned(),
+            session: herdr_session.map(str::to_owned),
+            pane: herdr_pane.map(str::to_owned),
+            evidence: Evidence::Environment,
+        });
     }
     None
 }
@@ -186,6 +187,38 @@ mod tests {
         let herdr = from_environment(&env(&[("HERDR_SESSION", "backend")])).unwrap();
         assert_eq!(herdr.kind, "herdr");
         assert_eq!(herdr.session.as_deref(), Some("backend"));
+    }
+
+    #[test]
+    fn herdr_default_session_is_known_by_its_pane() {
+        // What herdr 0.9 injects into a pane of the unnamed default
+        // session: no HERDR_SESSION, but HERDR_ENV=1 and the public ids.
+        let herdr = from_environment(&env(&[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p1"),
+            ("HERDR_TAB_ID", "w1:t1"),
+            ("HERDR_WORKSPACE_ID", "w1"),
+            ("HERDR_SOCKET_PATH", "/Users/me/.config/herdr/herdr.sock"),
+        ]))
+        .expect("a herdr pane names itself");
+        assert_eq!(herdr.kind, "herdr");
+        assert_eq!(herdr.session, None);
+        assert_eq!(herdr.pane.as_deref(), Some("w1:p1"));
+        assert_eq!(herdr.describe(), "herdr:w1:p1");
+
+        let named = from_environment(&env(&[
+            ("HERDR_ENV", "1"),
+            ("HERDR_SESSION", "ad-probe"),
+            ("HERDR_PANE_ID", "w1:p2"),
+        ]))
+        .unwrap();
+        assert_eq!(named.session.as_deref(), Some("ad-probe"));
+        assert_eq!(named.describe(), "herdr:w1:p2");
+
+        // HERDR_ENV alone, or a pane id without the marker, is a leftover
+        // export, not evidence of a pane.
+        assert!(from_environment(&env(&[("HERDR_ENV", "1")])).is_none());
+        assert!(from_environment(&env(&[("HERDR_PANE_ID", "w1:p1")])).is_none());
     }
 
     #[test]

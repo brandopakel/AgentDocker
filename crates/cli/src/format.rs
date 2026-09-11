@@ -113,8 +113,9 @@ pub fn message_line(message: &Envelope) -> String {
         .map(|id| format!(" re:{id}"))
         .unwrap_or_default();
     format!(
-        "{}  {from} → {}  [{}{reply}]  {}",
+        "{}  {}  {from} → {}  [{}{reply}]  {}",
         clock(message.sent_at),
+        message.id,
         message.to,
         message.kind,
         payload_text(&message.payload)
@@ -458,6 +459,16 @@ pub fn event_line(event: &Event) -> String {
             format!("agent exited     {} {status}", agent.short())
         }
         EventKind::AgentRemoved { agent } => format!("agent removed    {}", agent.short()),
+        EventKind::QuestionOpened {
+            question,
+            expires_at,
+        } => {
+            format!("question opened  {question} until {expires_at}")
+        }
+        EventKind::QuestionClosed { question, answer } => match answer {
+            Some(answer) => format!("question answered {question} by message {answer}"),
+            None => format!("question expired {question}"),
+        },
         EventKind::MessageSent {
             message,
             from,
@@ -543,6 +554,11 @@ pub fn event_line(event: &Event) -> String {
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
         // A newer daemon than this CLI. Saying so beats a blank line,
         // and beats refusing to print the rest of the stream.
+        EventKind::AgentReconciled {
+            canonical, retired, ..
+        } => {
+            format!("reconciled {} into {}", retired.short(), canonical.short())
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))

@@ -17,9 +17,12 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-// v8 makes restore points durable launch intent (including Created records).
-// Older daemons must not reinterpret these records as failed initial launches.
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) mod reconcile;
+
+// v9 retains pending questions. v10 retains addressed messages while subscribed
+// and refuses inbox overflow. v11 adds durable identity redirects; older daemons
+// would route former IDs incorrectly and must not open repaired state.
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -559,7 +562,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=7)) => {
+            Some(Ok(1..=10)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -635,16 +638,22 @@ impl Store {
         Ok(())
     }
 
-    /// Forget an agent and anything queued for it.
-    pub fn delete_agent(&self, id: &AgentId) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
-        self.conn.execute(
+    /// Forget an agent, its old-ID routes and queued work in one transition.
+    pub fn delete_agent(&self, id: &AgentId, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM documents WHERE kind = 'identity_alias'
+             AND json_extract(json, '$.canonical') = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
+        tx.execute(
             "DELETE FROM journal_cursors WHERE agent = ?1",
             params![id.as_str()],
         )?;
-        self.conn
-            .execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
+        tx.execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
+        self.append_event(event)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -718,9 +727,74 @@ impl Store {
 
     // ----- inboxes --------------------------------------------------------
 
-    /// Queue a message for an agent, keeping only the newest `capacity`.
+    /// Message routing, sender activity and question lifecycle are one durable
+    /// transition. Nothing may reach memory, live subscribers or notifications
+    /// before this commits, including a broadcast's partially written inboxes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_message(
+        &self,
+        message: &Envelope,
+        recipients: &[AgentId],
+        capacity: usize,
+        sender: Option<&AgentRecord>,
+        question: Option<&agentdocker_core::Question>,
+        closed: Option<&agentdocker_core::MessageId>,
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for recipient in recipients {
+            self.insert_inbox(recipient, message, capacity)?;
+        }
+        if let Some(sender) = sender {
+            self.upsert_agent(sender)?;
+        }
+        if let Some(question) = question {
+            self.put_document("question", question.id.as_str(), question)?;
+        }
+        if let Some(closed) = closed {
+            self.delete_document("question", closed.as_str())?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn close_questions(
+        &self,
+        questions: &[agentdocker_core::MessageId],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for question in questions {
+            self.delete_document("question", question.as_str())?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn enqueue(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
+        self.insert_inbox(agent, message, capacity)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn insert_inbox(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM inbox WHERE agent = ?1",
+            [agent.as_str()],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            usize::try_from(count)? < capacity,
+            "recipient inbox is full"
+        );
         self.conn.execute(
             "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
             params![
@@ -729,13 +803,6 @@ impl Store {
                 serde_json::to_string(message)?
             ],
         )?;
-        self.conn.execute(
-            "DELETE FROM inbox WHERE agent = ?1 AND seq NOT IN (
-                 SELECT seq FROM inbox WHERE agent = ?1 ORDER BY seq DESC LIMIT ?2
-             )",
-            params![agent.as_str(), i64::try_from(capacity).unwrap_or(i64::MAX)],
-        )?;
-        tx.commit()?;
         Ok(())
     }
 
@@ -868,7 +935,7 @@ impl Store {
         }
         if let Some(agent) = &query.agent {
             args.push(Box::new(agent.as_str().to_owned()));
-            sql.push_str(&format!(" AND by_agent = ?{}", args.len()));
+            sql.push_str(&identity_filter("by_agent", args.len()));
         }
         if let Some(after) = &query.after {
             args.push(Box::new(after.to_rfc3339()));
@@ -1047,7 +1114,7 @@ impl Store {
         }
         if let Some(agent) = &query.agent {
             args.push(Box::new(agent.as_str().to_owned()));
-            sql.push_str(&format!(" AND agent = ?{}", args.len()));
+            sql.push_str(&identity_filter("agent", args.len()));
         }
         if let Some(branch) = &query.branch {
             args.push(Box::new(branch.clone()));
@@ -1232,6 +1299,17 @@ impl Store {
     }
 }
 
+/// Include original attribution under every exact former identity. The alias
+/// table is authoritative; history remains byte-for-byte as originally stored.
+fn identity_filter(column: &str, parameter: usize) -> String {
+    let canonical = format!(
+        "COALESCE((SELECT json_extract(json, '$.canonical') FROM documents WHERE kind='identity_alias' AND id=?{parameter}), ?{parameter})"
+    );
+    format!(
+        " AND ({column} = {canonical} OR {column} IN (SELECT id FROM documents WHERE kind='identity_alias' AND json_extract(json, '$.canonical') = {canonical}))"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,7 +1381,17 @@ mod tests {
         let loaded = store.load_agents().unwrap();
         assert_eq!(loaded, vec![a.clone()]);
 
-        store.delete_agent(&a.id).unwrap();
+        store
+            .delete_agent(
+                &a.id,
+                &Event::new(
+                    EventKind::AgentRemoved {
+                        agent: a.id.clone(),
+                    },
+                    Utc::now(),
+                ),
+            )
+            .unwrap();
         assert!(store.load_agents().unwrap().is_empty());
     }
 
@@ -1365,18 +1453,19 @@ mod tests {
     }
 
     #[test]
-    fn inbox_keeps_newest_up_to_capacity() {
+    fn full_inbox_refuses_new_work_and_preserves_every_accepted_message() {
         let store = Store::in_memory().unwrap();
         let agent = AgentId::from("a");
-        for i in 0..5 {
+        for i in 0..3 {
             store.enqueue(&agent, &envelope(&i.to_string()), 3).unwrap();
         }
+        assert!(store.enqueue(&agent, &envelope("refused"), 3).is_err());
         let inboxes = store.load_inboxes().unwrap();
         let texts: Vec<String> = inboxes[&agent]
             .iter()
             .map(|m| m.payload["text"].as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(texts, vec!["2", "3", "4"]);
+        assert_eq!(texts, vec!["0", "1", "2"]);
 
         let ids = inboxes[&agent]
             .iter()
@@ -1448,8 +1537,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_schemas_upgrade_to_container_lifetime_guard() {
-        for version in 1..=7 {
+    fn legacy_schemas_upgrade_to_durable_delivery_guard() {
+        for version in 1..SCHEMA_VERSION {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
@@ -1466,7 +1555,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "8");
+            assert_eq!(version, SCHEMA_VERSION.to_string());
         }
     }
 
@@ -1769,7 +1858,12 @@ mod tests {
             None,
             "one cursor per project"
         );
-        store.delete_agent(&AgentId::from("a1")).unwrap();
+        store
+            .delete_agent(
+                &AgentId::from("a1"),
+                &Event::new(EventKind::AgentRemoved { agent: "a1".into() }, Utc::now()),
+            )
+            .unwrap();
         assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
         assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
     }

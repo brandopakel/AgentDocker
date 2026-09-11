@@ -153,11 +153,19 @@ fn reconcile_watches(
     let wanted_dirs: HashSet<&Path> = wanted.iter().map(|c| c.dir.as_path()).collect();
     let stale: Vec<PathBuf> = watched
         .keys()
-        .filter(|dir| !wanted_dirs.contains(dir.as_path()))
+        .filter(|dir| !wanted_dirs.contains(dir.as_path()) || !dir.is_dir())
         .cloned()
         .collect();
     for dir in stale {
         if let Some(entry) = watched.remove(&dir) {
+            if !dir.is_dir() {
+                daemon.emit(agentdocker_core::EventKind::WatcherGap {
+                    reason: format!(
+                        "Checkout {} was removed or became unavailable; its removal notifications are not competing file edits",
+                        dir.display()
+                    ),
+                });
+            }
             let _ = watcher.unwatch(&dir);
             if let Some(gitdir) = &entry.gitdir {
                 let _ = watcher.unwatch(gitdir);
@@ -219,6 +227,14 @@ fn classify(
     let mut seen: HashSet<(PathBuf, PathBuf, ChangeKind)> = HashSet::new();
     let mut vcs_touched: Vec<Checkout> = Vec::new();
     let mut vcs_dirs: HashSet<PathBuf> = HashSet::new();
+    // A removed temporary worktree generates a file-removal event for every
+    // path. It is no longer a competing checkout. Keep ordinary deletions in
+    // surviving roots; reconciliation reports unavailable roots as watcher gaps.
+    let available: HashSet<&Path> = watched
+        .keys()
+        .filter(|dir| dir.is_dir())
+        .map(PathBuf::as_path)
+        .collect();
 
     for event in batch {
         let Some(kind) = kind_of(&event.kind) else {
@@ -229,6 +245,9 @@ fn classify(
                 continue;
             };
             let dir = &entry.checkout.dir;
+            if !available.contains(dir.as_path()) {
+                continue;
+            }
             if entry.gitdir.as_ref().is_some_and(|g| path.starts_with(g)) {
                 if head_moved(
                     path.strip_prefix(entry.gitdir.as_ref().unwrap())
@@ -352,6 +371,48 @@ fn kind_of(kind: &EventKind) -> Option<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_checkout_does_not_turn_its_entire_tree_into_contested_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        let removed = tmp.path().join("temporary-worktree");
+        let mut watched = BTreeMap::new();
+        for root in [&primary, &removed] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("shared.rs"), "fixture").unwrap();
+            watched.insert(
+                root.clone(),
+                Watched {
+                    checkout: Checkout {
+                        dir: root.clone(),
+                        project: "project".into(),
+                        worktree: Some(root.clone()),
+                    },
+                    gitdir: None,
+                },
+            );
+        }
+        std::fs::remove_file(primary.join("shared.rs")).unwrap();
+        std::fs::remove_dir_all(&removed).unwrap();
+        let events = [&primary, &removed].map(|root| {
+            notify::Event::new(EventKind::Remove(notify::event::RemoveKind::File))
+                .add_path(root.join("shared.rs"))
+        });
+        let (observed, _) = classify(&events, &watched);
+        assert_eq!(
+            observed.len(),
+            1,
+            "removed checkouts must not create competing edits"
+        );
+        assert_eq!(observed[0].checkout.dir, primary);
+        assert_eq!(observed[0].path, Path::new("shared.rs"));
+        assert_eq!(
+            observed[0].kind,
+            ChangeKind::Removed,
+            "a normal file deletion still reaches the ledger"
+        );
+    }
 
     #[test]
     fn removed_directories_keep_their_type_for_ignore_rules() {

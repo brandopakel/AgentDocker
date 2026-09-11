@@ -1,0 +1,133 @@
+{
+  "format": 1,
+  "recorded_date": "2026-09-10",
+  "scope": "Primary button text contrast during pointer interaction; follow-up to desktop delivery verification",
+  "source_commit": "577273663d4fabee6c503e213caf1afa3fd6adee",
+  "source_tree": "f764432a8e0953f3abfe6e03039e3557305366a8",
+  "source_input_sha256": "703275836f0016d737b06fbfc8cf8da32c9388e65290208d874c45d0291d140b",
+  "source_dirty": false,
+  "target": "aarch64-apple-darwin",
+  "change": "Darken primary button backgrounds on hover and press to retain white-label contrast; validate actual button styles in both themes.",
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests_passed": 687,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 48,
+    "fmt": true,
+    "strict_clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "log_sha256": "a236e167641e7c46847ee1a2cd744fb96047751181ae614f6946a5e433ed53df"
+  },
+  "contrast": {
+    "minimum_ratio": 4.5,
+    "states": [
+      "active",
+      "hovered",
+      "pressed"
+    ],
+    "themes": [
+      "light",
+      "dark"
+    ],
+    "test": "controls::tests::primary_labels_keep_contrast_during_pointer_interaction",
+    "previous_hover_press_ratios": {
+      "light": [
+        4.0715,
+        3.5673
+      ],
+      "dark": [
+        4.2772,
+        3.7137
+      ]
+    }
+  },
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "577273663d4fabee6c503e213caf1afa3fd6adee",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "f764432a8e0953f3abfe6e03039e3557305366a8",
+    "source_input_sha256": "703275836f0016d737b06fbfc8cf8da32c9388e65290208d874c45d0291d140b",
+    "source_dirty": false,
+    "state_schema": 9,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 26033302,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 11107167,
+        "agentdocker-desktop-aarch64-apple-darwin.dmg": 12162604
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "4627d2ce2f233bfa7f9112ffbb80c613e7129e1cdf8bcd6bf099e95af7159133",
+      "agentd": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4",
+      "agentdocker-ui": "4b7fd40b79310e520f174e43b18e566ffe0ad6e4c1d6c09fec73b4637103cc7c"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "92c2c897cbb01b459a0c29b850734071d062c510331b53a625764104605889ad",
+      "agentdocker-desktop-aarch64-apple-darwin.dmg": "7ca62b68e3b143e4d5fabda4957ac22e6847d9be902389fbb83dd1fe6076a04d"
+    }
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 105,
+    "counts": {
+      "workflows": 99,
+      "restored": 6
+    },
+    "elapsed_seconds": 46.24435333300062,
+    "checks": [
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "binary_sha256": {
+      "agentd": "0b1038a70ccd3a1016791c05d34531aa1de0d73b2e116971bfcfd8a07ca093f4",
+      "agentdocker": "4627d2ce2f233bfa7f9112ffbb80c613e7129e1cdf8bcd6bf099e95af7159133",
+      "agentdocker-ui": "4b7fd40b79310e520f174e43b18e566ffe0ad6e4c1d6c09fec73b4637103cc7c"
+    },
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "raw_result_sha256": "6e2f1d5880af36ba17607885119d7d33b9d9c02398f856e2c8c125c985fa0c47"
+  },
+  "earlier_evidence": {
+    "report": "2026-09-10-desktop-delivery.json",
+    "unchanged_packaged_binaries": {
+      "agentdocker": true,
+      "agentd": true
+    },
+    "scope": "Earlier Codex delivery and crash-recovery trials used these identical CLI/daemon bytes; the new UI received its own native workflow run. The sustained-use campaign remains pinned to its earlier checkpoint."
+  },
+  "review": {
+    "pull_request": "https://github.com/brandopakel/AgentDocker/pull/98",
+    "status": "Final-head CI and CodeRabbit review required before integration; follow-up review currently rate limited."
+  },
+  "open_requirements": [
+    "Provider submitted-input parity and idle wake",
+    "Notification clicks opening Script Editor and missing destination navigation",
+    "Remaining engineering and manual gates in ../REMAINING-WORK.md"
+  ]
+}

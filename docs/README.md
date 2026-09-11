@@ -2,11 +2,15 @@
 
 AgentDocker runs native agents directly on the user's computer. Docker and Podman are optional execution adapters. The desktop product targets macOS, Linux and Windows; the current host implementation supports macOS and Linux.
 
+- [Current remaining engineering and manual release steps](REMAINING-WORK.md)
 - [Getting started, adapters and working sets](../README.md)
+- [Build and install the current desktop locally](LOCAL-BUILD.md)
 - [Using AgentDocker: the app, the console, every command, tutorials](GUIDE.md)
 - [The desktop app, screen by screen: what every control does and what it will not claim](DESKTOP-UX.md)
 - [Setting up distribution: the Homebrew tap, and what a Developer ID is actually for](DISTRIBUTION-SETUP.md)
+- [Release archives, update feeds and signing automation](RELEASE-AUTOMATION.md)
 - [Product direction and current delivery order](PRODUCT-DIRECTION.md)
+- [Dax and herdr research notes, September 11](LANDSCAPE-2026-09-11.md)
 - [Active delivery plan, commit/PR review and complete testing crosswalk](DELIVERY-PLAN.md)
 - [September 7 review scope, evidence and gap ledger](REVIEW-2026-09-07.md)
 - [Engineering audit, feature coverage and known blockers](AUDIT-2026-09-06.md)
@@ -21,3 +25,5 @@ AgentDocker runs native agents directly on the user's computer. Docker and Podma
 Historical phase numbers are dependency sequence numbers, not GitHub PR numbers. The product-direction page defines upcoming priorities; command-specific `--help` describes the installed binary.
 
 Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIBUTION.md), [guided setup and health checks](GUIDED-SETUP.md), [bounded real-provider acceptance](INTEGRATION-ACCEPTANCE.md), and the [implementation/acceptance tracker](NATIVE-DELIVERY.md). The [macOS runner workaround](TEST-RUNNER-MACOS.md) preserves strict leak detection while avoiding captured cross-test descriptor inheritance.
+
+- [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — explicit local opt-in, retained offers/receipts and provider acceptance limits.

@@ -120,6 +120,11 @@ def zip_app(app, archive):
     run("/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive)
 
 
+def copy_licenses(destination):
+    destination.mkdir(parents=True)
+    shutil.copyfile(ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt", destination / "LICENSE-Inter.txt")
+
+
 def notarize(artifact, profile, report):
     reply = subprocess.check_output([
         "xcrun", "notarytool", "submit", str(artifact), "--keychain-profile", profile,
@@ -138,6 +143,7 @@ def macos(args, stage, info):
     copy_binaries(args, contents / "MacOS")
     resources = contents / "Resources"
     resources.mkdir()
+    copy_licenses(resources / "licenses")
     with tempfile.TemporaryDirectory(prefix="ad-icons-") as scratch:
         # One mark, from one place. This used to render its own icon in
         # Swift while `scripts/bundle-macos.sh` rendered a different one
@@ -207,6 +213,7 @@ def linux(args, stage, info):
     app = stage / "agentdocker-desktop"
     copy_binaries(args, app / "bin")
     share = app / "share"
+    copy_licenses(share / "licenses/agentdocker")
     for directory in ["applications", "metainfo", "icons/hicolor/scalable/apps"]:
         (share / directory).mkdir(parents=True)
     shutil.copyfile(ROOT / "packaging/linux/agentdocker.desktop", share / "applications/agentdocker.desktop")
