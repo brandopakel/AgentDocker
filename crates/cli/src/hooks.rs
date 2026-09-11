@@ -146,6 +146,9 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
+                channel_input: std::env::var(crate::mcp::CLAUDE_CHANNEL_INPUT).as_deref()
+                    == Ok("1"),
+                channel_home: Some(agentdocker_host::dirs::home()),
             };
             let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
                 Ok(output) => output,
@@ -206,11 +209,29 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
 struct HookDelivery<'a, B> {
     backend: &'a B,
     pending: RefCell<Vec<Request>>,
+    /// Parent-session opt-in selects one inbox delivery path. Other lifecycle
+    /// observations and lease operations continue through the hooks adapter.
+    channel_input: bool,
+    /// Detect a live channel even if an MCP entry supplied the opt-in only to
+    /// its own child environment. Test backends omit host filesystem probing.
+    channel_home: Option<PathBuf>,
 }
 
 impl<B: Backend> Backend for HookDelivery<'_, B> {
     async fn call(&self, request: Request) -> Result<Response> {
         if let Request::Inbox { agent, .. } = request {
+            if self.channel_input
+                || self
+                    .channel_home
+                    .as_ref()
+                    .map(|home| crate::mcp::channel_input_active(home, &agent))
+                    .transpose()?
+                    .unwrap_or(false)
+            {
+                return Ok(Response::Messages {
+                    messages: Vec::new(),
+                });
+            }
             let response = self
                 .backend
                 .call(Request::Inbox {
@@ -2323,6 +2344,8 @@ mod tests {
         let delivery = HookDelivery {
             backend: &slow,
             pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
         };
         let mut event = input("UserPromptSubmit");
         event.cwd = Some(checkout.path().to_path_buf());
@@ -2333,6 +2356,32 @@ mod tests {
         );
         assert_eq!(slow.queued.borrow().len(), 1);
         assert_eq!(delivery.pending.borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_channel_input_skips_hook_inbox_delivery_but_forwards_other_requests() {
+        struct Observed(RefCell<Vec<Request>>);
+        impl Backend for Observed {
+            async fn call(&self, request: Request) -> Result<Response> {
+                self.0.borrow_mut().push(request);
+                Ok(Response::Ok)
+            }
+        }
+        let backend = Observed(RefCell::new(Vec::new()));
+        let delivery = HookDelivery {
+            backend: &backend,
+            pending: RefCell::new(Vec::new()),
+            channel_input: true,
+            channel_home: None,
+        };
+        assert!(
+            matches!(delivery.call(Request::Inbox { agent: "me".into(), drain: true }).await.unwrap(),
+            Response::Messages { messages } if messages.is_empty())
+        );
+        assert!(backend.0.borrow().is_empty());
+        assert!(delivery.pending.borrow().is_empty());
+        delivery.call(Request::Ping).await.unwrap();
+        assert!(matches!(backend.0.borrow().as_slice(), [Request::Ping]));
     }
 
     #[tokio::test]

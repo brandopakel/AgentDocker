@@ -173,3 +173,7 @@ The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clea
 ### September 10: visible-message receipts and checkout removal
 
 [Checkpoint `796270a`](verification/2026-09-10-bulk-receipts.json) adds explicit batch dismissal of shown messages, retains unseen messages and drafts, removes duplicate pending-question presentation, exposes CLI receipt IDs, and ignores repeated/unknown receipt events. Removed temporary checkouts no longer masquerade as competing edits in the reproduced classifier and actual macOS watcher trials. The full gate passed 710 Rust tests and 48 Python checks; queue/MCP, 114 native control steps and 23 routing steps passed. The first GUI idle-sample exit remains unexplained, and high UI resource use remains under investigation. Supported provider idle-wake adapters are the next implementation task.
+
+### September 11: opt-in Claude channel adapter
+
+The [Claude input adapter](CLAUDE-CHANNEL-INPUT.md) now has source implementation: retained inbox offers over the provider channel, explicit receipts, stable IDs, initialization gating, a single-owner lock, hook delivery suppression and a receipt path independent of long-running tools. A real transport trial exposed blocked Tokio stdin during broken-output shutdown; bounded dedicated stdio workers address that failure. Compilation, the full gate, fresh transport runs and actual-provider acceptance must be tied to the final source before closing any input/wake requirement. This does not complete Codex input delivery or managed launch integration.

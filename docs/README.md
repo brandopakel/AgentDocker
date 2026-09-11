@@ -23,3 +23,5 @@ AgentDocker runs native agents directly on the user's computer. Docker and Podma
 Historical phase numbers are dependency sequence numbers, not GitHub PR numbers. The product-direction page defines upcoming priorities; command-specific `--help` describes the installed binary.
 
 Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIBUTION.md), [guided setup and health checks](GUIDED-SETUP.md), [bounded real-provider acceptance](INTEGRATION-ACCEPTANCE.md), and the [implementation/acceptance tracker](NATIVE-DELIVERY.md). The [macOS runner workaround](TEST-RUNNER-MACOS.md) preserves strict leak detection while avoiding captured cross-test descriptor inheritance.
+
+- [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — explicit local opt-in, retained offers/receipts and provider acceptance limits.
