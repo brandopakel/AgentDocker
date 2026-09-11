@@ -27,10 +27,17 @@ terminal prompt during a blocked tool; explicit ordered receipts and correlated
 replies; and an unsubmitted terminal draft preserved through a second idle wake.
 Claude 2.1.268 processed four fixture messages. Six release-transport cases also
 cover pressure, reconnect and broken/unread output. Actual model recovery around
-ambiguous acceptance, managed launch, durable UI receipt state and sustained
+ambiguous acceptance, durable UI receipt state and sustained
 conversations remain. A profile guard detected three global Claude usage-counter
 changes during concurrent sessions; the full failure and narrower investigation
 are retained rather than reporting an unchanged profile.
+
+The [managed-launch checkpoint](verification/2026-09-11-managed-claude-input.json)
+at `78fc835` connects the adapter to a per-launch desktop checkbox and CLI option.
+Actual Claude received its first input from a peer queue message without a typed
+model prompt, then received canonical-user input while preserving a draft. Both
+receipts and replies used the original managed identity, with one Claude record.
+This bounded trial passed without changes to monitored user configuration files.
 
 The following lifecycle-only gap still applies to Codex and ordinary hook/MCP
 configurations without the enabled Claude channel adapter.
@@ -191,4 +198,4 @@ The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clea
 
 ### September 11: opt-in Claude channel adapter
 
-The [Claude input adapter](CLAUDE-CHANNEL-INPUT.md) now has source implementation: retained inbox offers over the provider channel, explicit receipts, stable IDs, initialization gating, a single-owner lock, hook delivery suppression and a receipt path independent of long-running tools. A real transport trial exposed blocked Tokio stdin during broken-output shutdown; bounded dedicated stdio workers address that failure. Compilation, the full gate, fresh transport runs and actual-provider acceptance must be tied to the final source before closing any input/wake requirement. This does not complete Codex input delivery or managed launch integration.
+The [Claude input adapter](CLAUDE-CHANNEL-INPUT.md) has retained inbox offers over the provider channel, explicit receipts, stable IDs, initialization gating, a single-owner lock, hook delivery suppression and a receipt path independent of long-running tools. A real transport trial exposed blocked Tokio stdin during broken-output shutdown; bounded dedicated stdio workers address that failure. The source-pinned September 11 reports above now cover transport and actual-provider acceptance, including managed launch. They do not complete Codex input delivery, ambiguous provider recovery or sustained conversations.

@@ -31,10 +31,22 @@ a queued terminal prompt and preserved unsubmitted draft. Four actual model
 receipts/replies and six release-transport scenarios passed at `c9677ab`. A
 whole-file profile guard failed; exact backup comparison isolated changes to
 three Claude usage counters, with no provider settings/authentication changes.
-Managed launch, visible provider receipt state, Codex input/wake, actual-provider
+Visible provider receipt state, Codex input/wake, actual-provider
 reconnect and sustained acceptance remain. The full standard gate passed 715
 Rust tests and 48 Python checks; native workflows passed 114 steps and routing
 passed 23 steps.
+
+The [managed Claude launch checkpoint](verification/2026-09-11-managed-claude-input.json)
+at `78fc835` adds an explicit desktop option and CLI `run --claude-channel`.
+Actual Claude 2.1.268 received its first input while idle without any typed model
+prompt, and a canonical-user follow-up preserved a terminal draft. Both messages
+were explicitly acknowledged and replied to under the original managed identity.
+Standard validation passed 735 Rust tests and 54 Python checks; the UI recheck
+passed 106 tests and the separate visual trial passed 26 steps. These close the
+bounded managed-launch item; provider recovery/status and sustained acceptance
+remain open. CI for the preceding `d630d9f` checkpoint passed all four native
+desktop targets, Windows foundations, container engines, coverage and benchmarks;
+CodeRabbit's actual review is still pending.
 
 The update consumer is implemented in CLI and Settings with local preview/apply
 evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installable

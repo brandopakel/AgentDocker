@@ -131,7 +131,17 @@ concurrent-session trial, despite the private profile. Authentication, MCP
 entries, provider settings and the other monitored files were unchanged.
 Attribution of those counter changes is unproven; no user files were restored.
 
-Codex's supported input adapter, managed-launch acceptance, durable provider
+The [managed-launch trial](verification/2026-09-11-managed-claude-input.json)
+at `78fc835` used `run --claude-channel`, the daemon's managed PTY and normal
+`attach`. Its first model turn came from a queued peer message, without a typed
+model prompt. A second canonical-user message preserved an unsubmitted draft.
+Both received explicit receipts and correlated replies under the original managed
+identity; no duplicate Claude registration appeared. The private launch spec
+contained no authentication token. The monitored user configuration hashes were
+unchanged and the owned processes exited. The UI's separate 26-step rendering
+trial covers the checkbox; it does not replace this actual-provider evidence.
+
+Codex's supported input adapter, durable provider
 delivery status in the desktop, actual-provider reconnect/ambiguous receipt,
 additional versions/policies and sustained-use acceptance remain in the
 [message delivery audit](MESSAGE-DELIVERY-AUDIT.md).
