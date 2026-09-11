@@ -10,7 +10,26 @@ Claude session must enable the MCP entry as a channel and satisfy its provider
 consent and organization policy. Merely configuring MCP does not enable input.
 See the [official channel contract](https://code.claude.com/docs/en/channels-reference).
 
-## Fresh local trial
+## Launch from AgentDocker
+
+For a new Claude session, open **New session**, choose Claude Code and enable
+**Receive messages while idle (experimental)**. The choice resets when the form
+opens or the provider changes. Complete Claude's consent in the terminal. The CLI
+equivalent is:
+
+```sh
+agentdocker run --runtime claude-code --tty --claude-channel -- claude
+```
+
+This launch passes an inline MCP entry and the channel flag to the new process,
+using AgentDocker's matching absolute CLI path. It sets the input-mode variable
+on the managed parent so hooks cannot race channel delivery. It does not write
+provider configuration files or take over existing sessions. Claude may still
+update its own usage counters. Other configured MCP entries remain available;
+an explicit competing MCP/channel configuration or print-mode command is rejected
+before launch. Provider consent and organization policy still apply.
+
+## Manual local trial
 
 Use the rebuilt CLI; older installed binaries do not have this option. In a
 disposable project, write a private MCP configuration using that CLI's absolute
@@ -112,7 +131,7 @@ concurrent-session trial, despite the private profile. Authentication, MCP
 entries, provider settings and the other monitored files were unchanged.
 Attribution of those counter changes is unproven; no user files were restored.
 
-Codex's supported input adapter, managed launch integration, durable provider
+Codex's supported input adapter, managed-launch acceptance, durable provider
 delivery status in the desktop, actual-provider reconnect/ambiguous receipt,
 additional versions/policies and sustained-use acceptance remain in the
 [message delivery audit](MESSAGE-DELIVERY-AUDIT.md).

@@ -635,6 +635,9 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Enable idle-message input for a new interactive Claude session (experimental; Claude consent still applies).
+    #[arg(long, conflicts_with = "image_build")]
+    claude_channel: bool,
     /// Run inside this recorded image build (mounts and network are opt-in).
     #[arg(long)]
     image_build: Option<String>,
@@ -1546,7 +1549,7 @@ async fn main() -> Result<()> {
                         args.restart
                     )
                 })?;
-            let spec = AgentSpec {
+            let mut spec = AgentSpec {
                 name: args.name.unwrap_or_default(),
                 runtime: args.runtime,
                 provider: args.provider,
@@ -1562,6 +1565,12 @@ async fn main() -> Result<()> {
                 restart,
                 depends_on: Vec::new(),
             };
+            if args.claude_channel {
+                agentdocker_host::provider_input::enable_claude_channel(
+                    &mut spec,
+                    &agentdocker_host::procinfo::executable_path()?,
+                )?;
+            }
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
                     spec,
@@ -2926,6 +2935,41 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn claude_channel_is_a_native_launch_option_and_preserves_provider_arguments() {
+        let parsed = Cli::try_parse_from([
+            "agentdocker",
+            "run",
+            "--claude-channel",
+            "--runtime",
+            "claude-code",
+            "--tty",
+            "--",
+            "claude",
+            "--model",
+            "chosen-model",
+        ])
+        .unwrap();
+        let Command::Run(args) = parsed.command else {
+            panic!("expected launch")
+        };
+        assert!(args.claude_channel && args.tty);
+        assert_eq!(args.runtime, "claude-code");
+        assert_eq!(args.command, ["claude", "--model", "chosen-model"]);
+        assert!(
+            Cli::try_parse_from([
+                "agentdocker",
+                "run",
+                "--claude-channel",
+                "--image-build",
+                "image",
+                "--",
+                "claude",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn desktop_launch_prefers_matching_release_over_installed_app_and_path() {
