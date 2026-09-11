@@ -571,7 +571,12 @@ impl App {
                     self.shell.session_filter = super::sessions::Filter::Current;
                 }
             }
-            Message::LaunchRuntime(runtime) => self.shell.launch_runtime = Some(runtime),
+            Message::LaunchRuntime(runtime) => {
+                // Consent is for one tool at a time: switching away and back
+                // asks again rather than carrying a tick across tools.
+                self.shell.launch_channel = false;
+                self.shell.launch_runtime = Some(runtime);
+            }
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
             Message::LaunchArguments(args) => {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
@@ -1252,7 +1257,13 @@ mod tests {
             .prepare_launch(spec("claude-code"), Err("missing".into()))
             .unwrap_err();
         assert_eq!(error, "missing");
-        // Reopening the form resets the opt-in.
+        // Changing the tool, and reopening the form, both reset the opt-in.
+        let _ = app.update(Message::LaunchRuntime("codex".into()));
+        assert!(!app.shell.launch_channel);
+        let _ = app.update(Message::LaunchChannel(true));
+        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
+        assert!(!app.shell.launch_channel);
+        let _ = app.update(Message::LaunchChannel(true));
         let _ = app.update(Message::ShowLaunch);
         assert!(!app.shell.launch_channel);
     }

@@ -1190,10 +1190,8 @@ impl App {
                         .size(16)
                         .text_size(13),
                     small(
-                        "Starts this session with AgentDocker's channel so replies reach it \
-                         between turns. Uses the Claude Code research preview; Claude asks \
-                         for consent in the terminal. Your own Claude configuration is not \
-                         changed.",
+                        "Replies reach this session between turns. Requires Claude consent \
+                         in the terminal. Applies to this new session only.",
                         c
                     )
                 ]
