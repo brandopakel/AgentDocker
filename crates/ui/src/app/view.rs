@@ -106,11 +106,9 @@ fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Element<'a, Mes
         text(initial)
             .size(size * 0.55)
             .font(weight(iced::font::Weight::Semibold))
-            .color(ink)
-            .center(),
+            .color(ink),
     )
-    .width(size)
-    .height(size)
+    .center(size)
     .style(move |_| container::Style {
         background: Some(tint.into()),
         border: iced::Border {
