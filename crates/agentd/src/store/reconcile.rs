@@ -64,6 +64,34 @@ impl Store {
         .collect()
     }
 
+    fn check_repair_size(&self) -> Result<()> {
+        let mut total_bytes = 0i64;
+        for table in ["agents", "leases", "inbox", "documents"] {
+            let (rows, bytes): (i64, i64) = self.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(SUM(length(CAST(json AS BLOB))),0) FROM {table}"
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            total_bytes = total_bytes.saturating_add(bytes);
+            anyhow::ensure!(
+                rows <= ROW_LIMIT as i64 && total_bytes <= INPUT_BYTES as i64,
+                "state exceeds bounded identity-repair inspection capacity"
+            );
+        }
+        let cursor_bytes: i64 = self.conn.query_row("SELECT COALESCE(SUM(length(agent)+length(project)+length(updated_at)+8),0) FROM journal_cursors", [], |row|row.get(0))?;
+        let cursor_rows: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM journal_cursors", [], |row| row.get(0))?;
+        anyhow::ensure!(
+            cursor_rows <= ROW_LIMIT as i64
+                && total_bytes.saturating_add(cursor_bytes) <= INPUT_BYTES as i64,
+            "journal cursors exceed bounded identity-repair inspection capacity"
+        );
+        Ok(())
+    }
+
     pub(crate) fn repair(
         &self,
         kept: &AgentId,
@@ -73,6 +101,30 @@ impl Store {
         quiescent: impl Fn(&[AgentRecord]) -> Result<()>,
     ) -> Result<RepairPreview> {
         let tx = self.conn.unchecked_transaction()?;
+        self.check_repair_size()?;
+        // The JSON describes the identity evidence, while writes address SQL
+        // keys. Refuse disagreement before either one can authorize a move of
+        // a different stored record. This also applies to receipt replay.
+        for (table, mismatch) in [
+            (
+                "agents",
+                "id IS NOT json_extract(json,'$.id') OR name IS NOT json_extract(json,'$.spec.name')",
+            ),
+            (
+                "leases",
+                "id IS NOT json_extract(json,'$.id') OR holder IS NOT json_extract(json,'$.holder') OR resource IS NOT json_extract(json,'$.resource')",
+            ),
+        ] {
+            let inconsistent: bool = self.conn.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {mismatch})"),
+                [],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !inconsistent,
+                "{table} keys disagree with stored identity evidence; repair refused"
+            );
+        }
         if let Some(alias) = self.document::<AgentAlias>("identity_alias", retired.as_str())? {
             anyhow::ensure!(
                 &alias.canonical == kept,
@@ -164,30 +216,6 @@ impl Store {
 
     /// Must run inside the caller's snapshot/maintenance transaction.
     pub(crate) fn plan_repair(&self, kept: &AgentId, retired: &AgentId) -> Result<RepairPlan> {
-        let mut total_bytes = 0i64;
-        for table in ["agents", "leases", "inbox", "documents"] {
-            let (rows, bytes): (i64, i64) = self.conn.query_row(
-                &format!(
-                    "SELECT COUNT(*), COALESCE(SUM(length(CAST(json AS BLOB))),0) FROM {table}"
-                ),
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            total_bytes = total_bytes.saturating_add(bytes);
-            anyhow::ensure!(
-                rows <= ROW_LIMIT as i64 && total_bytes <= INPUT_BYTES as i64,
-                "state exceeds bounded identity-repair inspection capacity"
-            );
-        }
-        let cursor_bytes: i64 = self.conn.query_row("SELECT COALESCE(SUM(length(agent)+length(project)+length(updated_at)+8),0) FROM journal_cursors", [], |row|row.get(0))?;
-        let cursor_rows: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM journal_cursors", [], |row| row.get(0))?;
-        anyhow::ensure!(
-            cursor_rows <= ROW_LIMIT as i64
-                && total_bytes.saturating_add(cursor_bytes) <= INPUT_BYTES as i64,
-            "journal cursors exceed bounded identity-repair inspection capacity"
-        );
         let mut records = self.load_agents()?;
         records.sort_by(|a, b| a.id.cmp(&b.id));
         repair_pair(&records, kept, retired).map_err(anyhow::Error::msg)?;

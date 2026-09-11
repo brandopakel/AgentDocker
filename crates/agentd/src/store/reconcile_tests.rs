@@ -295,6 +295,34 @@ fn changed_plan_and_failed_commit_leave_all_state_untouched() {
 }
 
 #[test]
+fn mismatched_database_keys_cannot_authorize_removing_another_identity() {
+    let store = Store::in_memory().unwrap();
+    let (a, b) = seed(&store);
+    store
+        .conn
+        .execute(
+            "UPDATE agents SET id='different-row' WHERE id=?1",
+            [b.as_str()],
+        )
+        .unwrap();
+    let before = snapshot(&store);
+    let error = store.repair(&a, &b, None, now(), |_| Ok(())).unwrap_err();
+    assert!(error.to_string().contains("keys disagree"));
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT id FROM agents WHERE id='different-row'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "different-row"
+    );
+}
+
+#[test]
 fn repair_refuses_conflicting_copies_capacity_and_unsupported_state() {
     for case in 0..7 {
         let store = Store::in_memory().unwrap();
