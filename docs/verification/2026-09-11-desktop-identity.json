@@ -1,0 +1,64 @@
+{
+ "scope": "Iced desktop identity round of 2026-09-11 on codex/desktop-delivery: per-project monogram tiles, the window-local unviewed-done badge, the Connections hooks copy and the per-launch Claude channel checkbox. Rendering verification only; the channel itself was not exercised here (the fixture claude is a shell stub) and native workflow acceptance stays in the delivery reports.",
+ "source": {
+  "branch": "codex/desktop-delivery",
+  "ui_head": "78fc835"
+ },
+ "binaries": {
+  "release_agentdocker_ui_sha256": "2fd825d4d190b34d8208e81ad1b7159f7788b6b55ab943e79e9bfb19a5ff6b0f",
+  "release_agentd_sha256": "2618dad90b86d5d9512abe86ee148b49618ed9f33ca7b082417c5f1fd3e0edbf"
+ },
+ "unit_gate": {
+  "command": "cargo test -p agentdocker-ui; cargo clippy -p agentdocker-ui --all-targets -- -D warnings",
+  "result": "106 passed, clippy clean",
+  "new_tests": [
+   "style::tests::every_project_identity_carries_its_ink (12 hue stops x 2 themes at >= 4.5:1)",
+   "style::tests::hsl_reaches_the_primaries",
+   "app::tests::a_turn_finished_out_of_view_waits_to_be_viewed_and_idle_alone_is_not_seen",
+   "shell::tests::the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli",
+   "core multiplexer::tests::herdr_default_session_is_known_by_its_pane"
+  ]
+ },
+ "fixture": {
+  "method": "private agentd (AGENTDOCKER_HOME under the session scratchpad) with two directory projects and three tty fixture sessions; activity reported working, then idle for the two alpha sessions after the window had selected beta; stub codex/claude executables on PATH answer --version only",
+  "scenario_steps": 26,
+  "completed": 26
+ },
+ "observed": [
+  {
+   "frame": "rail-unviewed-badge.png",
+   "outcome": "Projects entry badge 2; alpha-service row shows monogram A, accent pill 2 (finished unviewed) and green dot 2 (live); beta-web selected and unbadged"
+  },
+  {
+   "frame": "alpha-viewed.png",
+   "outcome": "after opening alpha-service the pill and Projects badge are gone; rows still read idle (observed state unchanged); heading leads with the 30-point tile"
+  },
+  {
+   "frame": "connections-hooks.png",
+   "outcome": "Claude Code and Codex cards show Install hooks and the one-sentence hooks explanation; Claude Desktop keeps Review setup"
+  },
+  {
+   "frame": "launch-claude-channel.png",
+   "outcome": "Claude launch shows the unchecked 'Receive messages while idle (experimental)' box with the agreed helper copy"
+  },
+  {
+   "frame": "launch-codex-plain.png",
+   "outcome": "switching to Codex removes the checkbox"
+  },
+  {
+   "frame": "dark-beta.png",
+   "outcome": "dark theme: tiles use the dark identity stops, ink legible"
+  }
+ ],
+ "capture_sha256": {
+  "alpha-viewed.png": "d2e729abe8d30ec129b448793e62d399abd47d00ab90ffb60cbb054219e96687",
+  "beta-selected.png": "d812ca5bbde636b09d31eeb54e8d56b5e4cd07c51f9fb09323acc7aa9bfb7c07",
+  "connections-hooks.png": "a4070ded566806a387cc29114e74e742aee5f6da852502c60e50a4506752d30e",
+  "dark-beta.png": "30cf60f2f0a2bc63800c06d320201e7eedc2c897e3dabec7bfc23a8beb9c0d16",
+  "launch-claude-channel.png": "612b1f7d154ef4a0b4a52ffffd5466f9e0075f21dc5c3afe3ca02e2d85c7b4d4",
+  "launch-codex-plain.png": "8b863aaa63e90ffd3ba90452cb2bf6569729eef0f068c171402660462ca4f7a3",
+  "rail-unviewed-badge.png": "aeff32e1b3ca99ea0c890d1f24fb23c0eea3c9e0cd77098aa640a9ff6e1265e0",
+  "window.png": "30cf60f2f0a2bc63800c06d320201e7eedc2c897e3dabec7bfc23a8beb9c0d16"
+ },
+ "raw_captures": "kept off the repository; they show local project names"
+}
