@@ -160,6 +160,26 @@ Only help/schema inspection and documentation reads were used for these leads.
 No provider daemon was started or attached, no message was submitted, and no user
 provider configuration was changed by this inspection.
 
+### Codex submitted-input trial (September 11 follow-up)
+
+An [owned ephemeral app-server trial](verification/2026-09-11-codex-appserver-input.json)
+with Codex 0.153.4 started idle turns from peer and human fixture envelopes, then
+accepted peer and human steering into the same active turn. Every submission
+appeared as a provider user-message item. The busy peer message did not receive
+its own model echo; acceptance is not a correlated reply or task completion.
+
+Repeating the first envelope with the same `clientUserMessageId` started a second
+turn and produced a distinct provider item. Provider-generated item IDs also
+differed from that supplied ID. The bridge must persist each submission attempt,
+its exact envelope and returned thread/turn/item correlation before acknowledging
+the daemon queue. Loss of an acceptance response must pause the attempt for
+reconciliation; blindly replaying the client ID is unsafe in this tested version.
+
+This probe exercised the provider interface directly. It did not implement the
+AgentDocker queue bridge, reconnect recovery, approval handling, draft preservation
+or control of an existing terminal session. Two failed launch attempts are retained.
+No monitored provider configuration changed and no owned child remained.
+
 ### Claude Code channels (September 10 follow-up)
 
 Installed Claude Code 2.1.267 and the official channels reference provide another

@@ -1,0 +1,405 @@
+{
+  "result": "passed",
+  "scope": "owned ephemeral app-server, submitted-input protocol only",
+  "driver_sha256": "1ad928800aadedf303fbf311d8ac150db4e0a742fd4b25164795c834aafe81be",
+  "cases": [
+    {
+      "case": "idle-peer",
+      "message_id": "6bca81adb7ec414580ccd1b706ba1ade",
+      "nonce": "ad-input-bed0d54b0a2c45698a76582f0e18d37f",
+      "method": "turn/start",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "rpc_accepted": true,
+      "user_item_observed": true,
+      "user_item_ids": [
+        "01a092b8-9050-7e53-b9d3-18a8a65394f1"
+      ],
+      "model_echo_observed": true
+    },
+    {
+      "case": "idle-human",
+      "message_id": "63a78633233c4434aaedd13e6c88fde0",
+      "nonce": "ad-input-cca67bd1b6f74678821012d31ceaf291",
+      "method": "turn/start",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "rpc_accepted": true,
+      "user_item_observed": true,
+      "user_item_ids": [
+        "01a092b8-9bd5-7e10-b85f-f2b9d449b27c"
+      ],
+      "model_echo_observed": true
+    },
+    {
+      "case": "busy-peer",
+      "message_id": "e0d025fabfff44debfc5b5f8135d5aa8",
+      "nonce": "ad-input-967284f856d045a8b0fdfc5562765ea5",
+      "method": "turn/steer",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "rpc_accepted": true,
+      "user_item_observed": true,
+      "user_item_ids": [
+        "01a092b8-a311-7132-a279-01a7b7d0d4e7"
+      ],
+      "model_echo_observed": false
+    },
+    {
+      "case": "busy-human",
+      "message_id": "ad3c6ab31ae64ca085691fc22dc656b5",
+      "nonce": "ad-input-8384d360e93248b59db9fbd6ebcc8133",
+      "method": "turn/steer",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "rpc_accepted": true,
+      "user_item_observed": true,
+      "user_item_ids": [
+        "01a092b8-a312-7d61-80d2-7b7ef50c9db5"
+      ],
+      "model_echo_observed": true
+    },
+    {
+      "case": "same-client-id-probe",
+      "message_id": "6bca81adb7ec414580ccd1b706ba1ade",
+      "nonce": "ad-input-bed0d54b0a2c45698a76582f0e18d37f",
+      "method": "turn/start",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "rpc_accepted": true,
+      "user_item_observed": true,
+      "user_item_ids": [
+        "01a092b8-b073-7360-ab66-4e36ee1b0728"
+      ],
+      "model_echo_observed": true
+    }
+  ],
+  "events": [
+    {
+      "method": "turn/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "status": "inProgress"
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-9050-7e53-b9d3-18a8a65394f1",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"6bca81adb7ec414580ccd1b706ba1ade\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-bed0d54b0a2c45698a76582f0e18d37f\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-9050-7e53-b9d3-18a8a65394f1",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"6bca81adb7ec414580ccd1b706ba1ade\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-bed0d54b0a2c45698a76582f0e18d37f\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa4895e728887d0aec18259de786b52",
+        "text": "",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa4895e728887d0aec18259de786b52",
+        "text": "ad-input-bed0d54b0a2c45698a76582f0e18d37f",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "turn/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-8c69-7fb0-915e-94e3d211fef0",
+      "status": "completed"
+    },
+    {
+      "method": "turn/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "status": "inProgress"
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-9bd5-7e10-b85f-f2b9d449b27c",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"63a78633233c4434aaedd13e6c88fde0\", \"from\": \"human\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-cca67bd1b6f74678821012d31ceaf291\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-9bd5-7e10-b85f-f2b9d449b27c",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"63a78633233c4434aaedd13e6c88fde0\", \"from\": \"human\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-cca67bd1b6f74678821012d31ceaf291\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa489605ee887d0a3fb1ecd8a0b9115",
+        "text": "",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa489605ee887d0a3fb1ecd8a0b9115",
+        "text": "ad-input-cca67bd1b6f74678821012d31ceaf291",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-a311-7132-a279-01a7b7d0d4e7",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"e0d025fabfff44debfc5b5f8135d5aa8\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-967284f856d045a8b0fdfc5562765ea5\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-a311-7132-a279-01a7b7d0d4e7",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"e0d025fabfff44debfc5b5f8135d5aa8\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-967284f856d045a8b0fdfc5562765ea5\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-a312-7d61-80d2-7b7ef50c9db5",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"ad3c6ab31ae64ca085691fc22dc656b5\", \"from\": \"human\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-8384d360e93248b59db9fbd6ebcc8133\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-a312-7d61-80d2-7b7ef50c9db5",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"ad3c6ab31ae64ca085691fc22dc656b5\", \"from\": \"human\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-8384d360e93248b59db9fbd6ebcc8133\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa48963b54087d09db650e979ffc95a",
+        "text": "",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa48963b54087d09db650e979ffc95a",
+        "text": "ad-input-8384d360e93248b59db9fbd6ebcc8133",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "turn/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-9bbd-7a82-8feb-9f23f758b1d9",
+      "status": "completed"
+    },
+    {
+      "method": "turn/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "status": "inProgress"
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-b073-7360-ab66-4e36ee1b0728",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"6bca81adb7ec414580ccd1b706ba1ade\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-bed0d54b0a2c45698a76582f0e18d37f\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "item": {
+        "type": "userMessage",
+        "id": "01a092b8-b073-7360-ab66-4e36ee1b0728",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\": \"6bca81adb7ec414580ccd1b706ba1ade\", \"from\": \"fixture-peer\", \"to\": \"owned-codex\", \"kind\": \"fixture\", \"payload\": {\"text\": \"Reply with only ad-input-bed0d54b0a2c45698a76582f0e18d37f\"}, \"reply_to\": null}",
+            "text_elements": []
+          }
+        ]
+      }
+    },
+    {
+      "method": "item/started",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa489664ba887d0b72bc3e141dfdb2f",
+        "text": "",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "item/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_08b122e49f5e2214016aa489664ba887d0b72bc3e141dfdb2f",
+        "text": "ad-input-bed0d54b0a2c45698a76582f0e18d37f",
+        "phase": "final_answer"
+      }
+    },
+    {
+      "method": "turn/completed",
+      "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+      "turn": "01a092b8-b060-7453-999f-7cfb272f3b28",
+      "status": "completed"
+    }
+  ],
+  "provider_version": "codex-cli 0.153.4",
+  "owned_pid": 48327,
+  "platform": {
+    "platformFamily": "unix",
+    "platformOs": "macos"
+  },
+  "thread": "01a092b8-8c47-7281-acec-cce1660568eb",
+  "same_client_id_started_another_turn": true,
+  "provider_configuration_unchanged": true,
+  "owned_children_remaining": 0,
+  "source_context": {
+    "repository_head": "bfa7c7aef628e55a96293a8fa5c0538d060c67b6",
+    "implementation": "private protocol probe; no AgentDocker bridge installed"
+  },
+  "raw_report_sha256": "d27e3f7cd68ec624b8ffef551b5ddc60ec1830e4ddfb63e3c1a18582f815a146",
+  "correlation_correction": "Case receipts and model echoes below are filtered to their returned turn. The raw prototype matched nonce across all turns, so the identical replay appeared in both case item-ID lists.",
+  "limits": [
+    "No AgentDocker daemon queue or production adapter used",
+    "Ephemeral thread: no persisted-history or reconnect acceptance",
+    "No approval, permission or user-input request exercised",
+    "No terminal draft, long tool, sustained-use or existing-session ownership proof",
+    "Busy peer accepted but no separate model echo; no claim of reply parity"
+  ],
+  "preceding_failures": [
+    {
+      "result": "failed",
+      "stage": "launch and cleanup",
+      "error": "Quoted dotted config key created a different incomplete MCP entry; provider closed before handshake. Cleanup signal returned PermissionError for the exited process. Process inspection found no survivor. Original harness failed before serializing its report."
+    },
+    {
+      "result": "failed",
+      "stage": "launch with retained report",
+      "report": {
+        "result": "failed",
+        "scope": "owned ephemeral app-server, submitted-input protocol only",
+        "driver_sha256": "d1b936ff0ba975d92969b34936853260ce37c7964771df30dcc0a55a30c2b1f4",
+        "cases": [],
+        "events": [],
+        "provider_version": "codex-cli 0.153.4",
+        "owned_pid": 47294,
+        "error": "provider transport closed",
+        "cleanup_signal_error": "PermissionError",
+        "provider_configuration_unchanged": true,
+        "owned_children_remaining": 0
+      }
+    }
+  ]
+}

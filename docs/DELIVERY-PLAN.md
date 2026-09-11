@@ -655,3 +655,18 @@ ownership transfer remains unfinished; `daemon reload` stays unavailable.
 ### September 10: visible-message receipts and checkout removal
 
 [Checkpoint `796270a`](verification/2026-09-10-bulk-receipts.json) adds explicit batch dismissal of shown messages, retains unseen messages and drafts, removes duplicate pending-question presentation, exposes CLI receipt IDs, and ignores repeated/unknown receipt events. Removed temporary checkouts no longer masquerade as competing edits in the reproduced classifier and actual macOS watcher trials. The full gate passed 710 Rust tests and 48 Python checks; queue/MCP, 114 native control steps and 23 routing steps passed. The first GUI idle-sample exit remains unexplained, and high UI resource use remains under investigation. Supported provider idle-wake adapters are the next implementation task.
+
+### September 11: final review and Codex input acceptance
+
+At `bfa7c7a`, deletion of a reconciled identity commits its canonical record, old-ID
+routes, inbox, cursor and removal event together before changing daemon memory.
+Fault injection covers each write stage. The Windows identity fixture now uses a
+native absolute path. The [review follow-up](verification/2026-09-11-identity-repair.json)
+passed 756 Rust tests, 54 Python checks and the full package/release gate. The
+preceding Windows CI failure is retained; final-head CI and review remain required.
+
+The [actual Codex app-server probe](verification/2026-09-11-codex-appserver-input.json)
+accepted idle peer/human input and mixed steering in one active turn. Replaying
+the same client message ID started another turn. The owned input adapter therefore
+needs durable attempt tracking and an explicit uncertain-acceptance state before
+retries; this prototype does not close queue integration or provider recovery.
