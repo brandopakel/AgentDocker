@@ -39,7 +39,8 @@ AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude \
 Complete Claude's displayed consent for this trusted local server. The
 development flag bypasses its channel allowlist for this entry; it does not
 bypass organization policy or general tool permissions. The `--strict-mcp-config`
-option makes this an isolated integration trial. Existing sessions must be
+option limits which MCP entries load; it does not isolate the provider profile.
+Existing sessions must be
 relaunched normally to load another configuration.
 
 Actual-provider acceptance uses an owned `CLAUDE_CONFIG_DIR` and private daemon
@@ -55,8 +56,8 @@ agentdocker send --from user --to <agent-name-or-id> "Your message"
 
 Peer `send_message` calls and these user sends enter the same durable inbox and
 channel path. Direct typing into Claude's terminal still belongs to Claude's
-own input handling; ordering relative to channel events needs an actual mixed
-input trial before claiming complete submitted-input parity.
+own input handling. The September 11 trial exercised both paths during a blocked
+tool call; broader ordering, approval, cancellation and starvation cases remain.
 
 ## Delivery and recovery
 
@@ -95,7 +96,23 @@ receipts during waiting calls, daemon/MCP restart, idle transport offers, and
 broken or unread stdout. It speaks MCP itself; passing it does not prove that a
 Claude model received or acted on a message.
 
-Fresh actual Claude idle, busy and mixed-input trials remain required. Codex's
-supported input adapter, managed launch integration, durable provider-specific
-delivery status in the desktop, additional provider versions and sustained-use
-acceptance also remain in the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md).
+The [September 11 source-pinned trial](verification/2026-09-11-claude-channel-input.json)
+used actual Claude Code 2.1.268 with the AgentDocker adapter. Idle peer input
+started a turn without another prompt; peer and canonical-user messages queued
+during a 45-second tool call, then received ordered explicit receipts and
+correlated replies. A terminal prompt submitted during the wait also completed.
+A second idle delivery preserved an unsubmitted terminal draft. Four model
+receipts/replies and six release-transport scenarios passed.
+
+The first isolated profile had nonessential traffic disabled and reported
+channels unavailable. A fresh trial with normal traffic enabled channel consent
+and registration. A failed whole-file configuration guard is retained: backup
+comparison found only three global Claude usage counters changed during the
+concurrent-session trial, despite the private profile. Authentication, MCP
+entries, provider settings and the other monitored files were unchanged.
+Attribution of those counter changes is unproven; no user files were restored.
+
+Codex's supported input adapter, managed launch integration, durable provider
+delivery status in the desktop, actual-provider reconnect/ambiguous receipt,
+additional versions/policies and sustained-use acceptance remain in the
+[message delivery audit](MESSAGE-DELIVERY-AUDIT.md).

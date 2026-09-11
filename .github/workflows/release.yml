@@ -5,7 +5,19 @@ on:
 permissions:
   contents: read
 jobs:
+  validate:
+    if: github.ref_protected
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate tag before building
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 packaging/desktop/release.py validate --tag "$RELEASE_TAG"
   build:
+    needs: validate
     if: github.ref_protected
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -13,8 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest, target: aarch64-apple-darwin, ui: true }
-          - { os: macos-latest, target: x86_64-apple-darwin, ui: true }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
           - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
     steps:
@@ -35,30 +47,14 @@ jobs:
       - name: Build and archive
         env:
           BUILD_TARGET: ${{ matrix.target }}
-          WITH_UI: ${{ matrix.ui }}
         run: |
           cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker --bins
           binaries="agentdocker agentd"
           mkdir dist
-          if [ "$WITH_UI" = "true" ]; then
-            cargo build --locked --release --target "$BUILD_TARGET" -p agentdocker-ui
-            # The desktop download contains each executable once. CLI-only
-            # users download just the two commands in the separate tarball.
-            sh scripts/bundle-macos.sh \
-              "target/${BUILD_TARGET}/release/agentdocker-ui" \
-              "target/${BUILD_TARGET}/release" \
-              "${GITHUB_REF_NAME#v}"
-            ditto -c -k --sequesterRsrc --keepParent \
-              "target/${BUILD_TARGET}/release/AgentDocker.app" \
-              "dist/agentdocker-desktop-${BUILD_TARGET}.zip"
-          fi
           # shellcheck disable=SC2086  # the binary list is deliberately split
           COPYFILE_DISABLE=1 tar -czf "dist/agentdocker-${BUILD_TARGET}.tar.gz" -C "target/${BUILD_TARGET}/release" $binaries
           cd dist
           shasum -a 256 "agentdocker-${BUILD_TARGET}.tar.gz" > "agentdocker-${BUILD_TARGET}.tar.gz.sha256"
-          if [ "$WITH_UI" = "true" ]; then
-            shasum -a 256 "agentdocker-desktop-${BUILD_TARGET}.zip" > "agentdocker-desktop-${BUILD_TARGET}.zip.sha256"
-          fi
       - name: Enforce download and payload size budgets
         env:
           BUILD_TARGET: ${{ matrix.target }}
@@ -68,9 +64,94 @@ jobs:
           name: binary-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+  desktop:
+    needs: validate
+    if: github.ref_protected
+    name: Installable desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libegl1-mesa-dev
+      - name: Check Mac signing setup before building
+        if: runner.os == 'macOS'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+        run: |
+          python3 -c 'import os, sys; sys.path.insert(0, "packaging/desktop"); import release; release.signing_config(os.environ, required=not release.preview(os.environ["RELEASE_TAG"]))'
+      - name: Build exact native source
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p artifacts
+          python3 scripts/build_native.py --target "$NATIVE_TARGET" > artifacts/native-build.json
+      - name: Package installable release and verify signing policy
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          MACOS_CERTIFICATE_BASE64: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_BASE64 || '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          MACOS_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.MACOS_SIGNING_IDENTITY || '' }}
+          MACOS_NOTARY_KEY: ${{ runner.os == 'macOS' && secrets.MACOS_NOTARY_KEY || '' }}
+          MACOS_NOTARY_KEY_ID: ${{ runner.os == 'macOS' && secrets.MACOS_NOTARY_KEY_ID || '' }}
+          MACOS_NOTARY_ISSUER: ${{ runner.os == 'macOS' && secrets.MACOS_NOTARY_ISSUER || '' }}
+        run: |
+          python3 packaging/desktop/release.py package --native-manifest artifacts/native-build.json \
+            --tag "$RELEASE_TAG" --output dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+  feed:
+    name: Verify complete desktop update feed
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-release-*
+          merge-multiple: true
+          path: downloads
+      - name: Generate feed from verified archive bytes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          feed_name=updates.json
+          version=${RELEASE_TAG#v}
+          case "${version%%+*}" in *-*) feed_name=updates-preview.json ;; esac
+          python3 packaging/desktop/release.py feed --directory downloads --tag "$RELEASE_TAG" --output "dist/$feed_name"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: update-feed
+          path: dist/
+          if-no-files-found: error
   formula:
     name: Generate verified Homebrew formula
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -79,6 +160,11 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: binary-*
+          merge-multiple: true
+          path: checksums
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-release-*
           merge-multiple: true
           path: checksums
       - name: Generate formula
@@ -99,11 +185,17 @@ jobs:
             agentdocker-app.rb
           if-no-files-found: error
   publish:
-    needs: [build, formula]
+    needs: [build, desktop, feed, formula]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
@@ -113,14 +205,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"; then
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > release.json; then
+            python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to replace a published release"'
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --draft
           fi
           gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          # A 404 means the first stable release; other lookup failures are
+          # rejected by publication(), leaving the draft intact.
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > latest.json || true
+          make_latest=$(python3 packaging/desktop/release.py publication --tag "$RELEASE_TAG" --latest latest.json)
+          version=${RELEASE_TAG#v}
+          case "${version%%+*}" in
+            *-*) gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false ;;
+            *) gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$make_latest" ;;
+          esac
   tap:
     name: Publish Homebrew after release assets
     needs: publish
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-publication
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -134,11 +240,20 @@ jobs:
         env:
           TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
           # Fail rather than ask. A bad token with a prompt available is
           # a job that waits for a username nobody will type.
           GIT_TERMINAL_PROMPT: "0"
         run: |
+          # Maintenance and preview releases retain their downloadable formula
+          # artifacts, but cannot move the tap backwards or into a prerelease.
+          case "$RELEASE_TAG" in *-*) echo "Preview release; leaving the Homebrew tap unchanged."; exit 0 ;; esac
+          latest_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [ "$latest_tag" != "$RELEASE_TAG" ]; then
+            echo "Release is not latest; leaving the Homebrew tap unchanged."
+            exit 0
+          fi
           if [ -z "${TAP_REPOSITORY:-}" ] || [ -z "${TAP_TOKEN:-}" ]; then
             echo "No tap configured. Set the HOMEBREW_TAP_REPOSITORY variable"
             echo "(owner/homebrew-tap) and the HOMEBREW_TAP_TOKEN secret to"

@@ -766,4 +766,16 @@ The desktop exposes **Dismiss** on received messages. It acknowledges exact huma
 
 ### Opt-in Claude channel input
 
-`agentdocker mcp --runtime claude-code --claude-channel` requires an explicitly selected parent input mode and a freshly enabled Claude channel. It offers one retained inbox envelope at a time, with stable sender/message metadata, and advances only after an explicit model receipt removes that ID. Writes are unconfirmed; reconnect replays unacknowledged IDs. Eight ordinary RPC slots and a separate bounded receipt/control path prevent long waits from starving acknowledgements. A held private ownership lock prevents duplicate adapters and suppresses competing hook inbox delivery. Parent-session opt-in preserves that suppression across disconnects; activity/lease hooks still run. Dedicated bounded stdio workers avoid blocking Tokio shutdown on pipes. The [adapter guide](CLAUDE-CHANNEL-INPUT.md) describes bounds, opt-in and unfinished actual-provider acceptance.
+`agentdocker mcp --runtime claude-code --claude-channel` requires an explicitly selected parent input mode and a freshly enabled Claude channel. It offers one retained inbox envelope at a time, with stable sender/message metadata, and advances only after an explicit model receipt removes that ID. Writes are unconfirmed; reconnect replays unacknowledged IDs. Eight ordinary RPC slots and a separate bounded receipt/control path prevent long waits from starving acknowledgements. A held private ownership lock prevents duplicate adapters and suppresses competing hook inbox delivery. Parent-session opt-in preserves that suppression across disconnects; activity/lease hooks still run. Dedicated bounded stdio workers avoid blocking Tokio shutdown on pipes. The [adapter guide](CLAUDE-CHANNEL-INPUT.md) records actual Claude idle/busy/mixed-input evidence and the remaining acceptance.
+
+### Downloaded desktop updates
+
+`agentdocker desktop update` reads the published feed, verifies archive bytes and
+SHA-256, audits entries before extraction, and inspects the extracted payload
+through the existing installer. It requires the version/source/schema/target
+described by the feed and a version newer than the managed installation. Applying
+pins both candidate and current release identities and never restarts the daemon.
+Settings exposes check, download/preview and apply through the same CLI path.
+[Release automation](RELEASE-AUTOMATION.md) produces installable archives and a
+verified feed for all four native targets; stable Mac assets require Developer ID
+signing and notarization before publication.

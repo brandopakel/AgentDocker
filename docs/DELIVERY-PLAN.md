@@ -1,6 +1,6 @@
 # Native delivery and verification plan
 
-Updated September 10, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
+Updated September 11, 2026. This is the active delivery plan requested by the user, including a renewed review of recent commits, PRs and all project documentation. The [product direction](PRODUCT-DIRECTION.md) defines the intended product; [the delivery record](NATIVE-DELIVERY.md) records implementation progress. The [review ledger](REVIEW-2026-09-07.md) pins the initial review scope and evidence. This plan is unfinished work, not release certification.
 
 
 For the September 9 desktop cleanup and a consolidated distinction between open
@@ -24,6 +24,22 @@ prove provider acceptance. The audit document defines the required artifacts and
 negative-path acceptance cases.
 
 The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.
+
+The [September 11 Claude adapter checkpoint](verification/2026-09-11-claude-channel-input.json)
+adds actual idle wake and ordered peer/user delivery while a tool waits, including
+a queued terminal prompt and preserved unsubmitted draft. Four actual model
+receipts/replies and six release-transport scenarios passed at `c9677ab`. A
+whole-file profile guard failed; exact backup comparison isolated changes to
+three Claude usage counters, with no provider settings/authentication changes.
+Managed launch, visible provider receipt state, Codex input/wake, actual-provider
+reconnect and sustained acceptance remain. The full standard gate passed 715
+Rust tests and 48 Python checks; native workflows passed 114 steps and routing
+passed 23 steps.
+
+The update consumer is implemented in CLI and Settings with local preview/apply
+evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installable
+archives and complete feed. Signed protected-tag publication, hosted update
+verification and scheduled checks remain release work.
 
 ### Notification clicks open Script Editor (September 10)
 

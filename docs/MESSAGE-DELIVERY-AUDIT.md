@@ -2,7 +2,7 @@
 
 Added September 10, 2026 at the user's request. This is a top-priority requirement
 in the [active delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
-It is planned work, not a claim that the current adapters already satisfy it.
+It tracks partial implementation and the acceptance still needed for each provider.
 
 ## Required behavior
 
@@ -19,6 +19,21 @@ steal focus, submit another person's unfinished draft, or type into an unrelated
 terminal. Repeated pings must not create duplicate turns or unbounded reply loops.
 
 ## Current evidence and gap
+
+The opt-in [Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) now has
+[actual-provider evidence](verification/2026-09-11-claude-channel-input.json)
+at `c9677ab`: idle wake without prompt input; queued peer/user messages and a
+terminal prompt during a blocked tool; explicit ordered receipts and correlated
+replies; and an unsubmitted terminal draft preserved through a second idle wake.
+Claude 2.1.268 processed four fixture messages. Six release-transport cases also
+cover pressure, reconnect and broken/unread output. Actual model recovery around
+ambiguous acceptance, managed launch, durable UI receipt state and sustained
+conversations remain. A profile guard detected three global Claude usage-counter
+changes during concurrent sessions; the full failure and narrower investigation
+are retained rather than reporting an unchanged profile.
+
+The following lifecycle-only gap still applies to Codex and ordinary hook/MCP
+configurations without the enabled Claude channel adapter.
 
 The daemon has inbox queues and live subscriptions. A successful send establishes
 routing/queue acceptance, not provider input acceptance or model consumption.

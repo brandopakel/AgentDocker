@@ -1,6 +1,6 @@
 # Remaining engineering and release work
 
-Reconciled September 10, 2026 against this checkout's implementation and project
+Reconciled September 11, 2026 against this checkout's implementation and project
 documents. This is the current backlog summary; dated audits and verification
 reports retain their original source-specific results. It is not a fresh audit
 of remote PRs or other machines. A targeted read-only GitHub check verified the
@@ -70,17 +70,31 @@ launcher or the daemon hosting existing sessions.
 
 Schema 10 now retains addressed messages during streaming and rejects full inboxes without silent eviction. Its full standard gate passed 701 Rust tests (six skipped), 48 Python checks and lint/package/release gates. Actual-daemon trials passed reconnect/crash recovery, over-limit schema-9 migration, atomic full-recipient rejection, byte pressure and downgrade refusal. Provider input/wake adapters remain open below.
 
+The opt-in Claude channel adapter now has actual idle/busy/mixed-input evidence
+at clean source `c9677ab`: four model receipts and correlated replies, six
+release-transport scenarios, 114 native workflow steps and 23 notification
+navigation steps. The standard gate passed 715 Rust tests and 48 Python checks.
+The trial preserved an unsubmitted terminal draft. Three global Claude usage
+counters changed during concurrent use; the failed whole-file guard and narrower
+backup comparison are retained in the [report](verification/2026-09-11-claude-channel-input.json).
+
+The updater now checks the feed, verifies and previews its archive, and applies
+through the existing installation pins. Its CLI and native Settings path have
+isolated fixture evidence. Release automation now prepares installable archives
+for four native targets and a verified stable/preview feed before publishing a
+draft release. Real signing, hosted-release and update-download acceptance remain.
+
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
 | --- | --- | --- | --- |
-| Top priority | Unified user/agent input queue and idle wake | Audit and implement peer messages through the same provider input workflow as user submissions. Wake idle agents without another prompt/hook; preserve busy-queue order, attribution, backpressure, retries and restart continuity, with truthful delivery receipts. Actual Claude/Codex idle and mixed-input trials must pass. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
+| Top priority; Claude partial acceptance | Unified user/agent input queue and idle wake | The opt-in Claude adapter passed actual idle, busy, mixed-sender and terminal-draft cases. Complete managed launch, compact durable delivery status, actual-provider reconnect/ambiguous receipt and sustained conversations. Implement and verify Codex's submitted-input adapter; lifecycle hooks alone do not wake idle Codex. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Claude input guide](CLAUDE-CHANNEL-INPUT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | High priority | Notification clicks open blank Script Editor | Trace the actual installed notification sender and fallback, retain stable destination IDs, and implement native click activation/navigation into the correct project, agent, message or question. Test existing windows, cold launch, drafts, expired targets and preview/signed builds. Signing alone does not implement routing. | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | Next | Legacy duplicate registry reconciliation | Provide a reviewed migration for proven duplicate identities, preserving inboxes, leases, channel membership, history and routing. Reject ambiguous provider sessions, process births and physical checkouts. Hiding history is not this migration. | [Activity and messaging](ACTIVITY-AND-MESSAGING.md), [delivery checkpoints](DELIVERY-PLAN.md), [identity acceptance](INTEGRATION-ACCEPTANCE.md) |
 | Partial implementation | Codex incoming-message delivery | Prompt/tool/Stop context delivery and acknowledgement after output are implemented. A fresh Codex 0.153.4 trial passed all three boundaries with correlated replies and one identity. This does not satisfy the required shared submitted-input queue or idle wake; those, additional provider versions and sustained conversations remain open. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [activity and messaging](ACTIVITY-AND-MESSAGING.md), [integration acceptance](INTEGRATION-ACCEPTANCE.md) |
 | Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
 | Partial acceptance | Sustained-use bounds and unresolved performance failures | A stable schema-9 checkpoint passed ten minutes each at 1/10/100 agents (255,891 cycles); the final package passed actual crash/schema-upgrade and distinct-source installation/rollback trials. Hours/overnight, actual-provider queues, reboot/sleep, growth/retention and broader checkout workloads remain. Diagnose the retained socket timeout; a fresh passing diagnostic campaign does not explain it. | [Current verification](verification/2026-09-10-desktop-delivery.json), [testing standard](TESTING-AND-BENCHMARKS.md), [local trial](LOCAL-TRIAL.md) |
-| Release | Download/update distribution | Feed generation now verifies source/schema, archive bytes and public Mac signing metadata; hosting, consumer and daily scheduling remain. Tap publication now waits for release assets; verify the next real formula/cask publication and deliver supported Linux packages. Registry Cargo publication is not an established supported route. | [Desktop distribution](DESKTOP-DISTRIBUTION.md), [distribution setup](DISTRIBUTION-SETUP.md), [product direction](PRODUCT-DIRECTION.md) |
+| Release; consumer and producer implemented | Download/update distribution | CLI and Settings update check/download/preview/apply exist with local fixture evidence. Release automation prepares package.py archives and verified stable/preview feeds. Complete protected-tag signing, hosted archive/feed downloads, formula/cask publication, target Linux acceptance and scheduled checks. Registry Cargo publication is not an established supported route. | [Desktop distribution](DESKTOP-DISTRIBUTION.md), [release automation](RELEASE-AUTOMATION.md), [distribution setup](DISTRIBUTION-SETUP.md) |
 | Platform | Linux delivery acceptance | ARM64/x86-64 Linux and Mac graphical/package CI passed code checkpoint `bf39280`. Target-distribution desktop/service/package trials and independent hardware acceptance remain gates. | [Current verification](verification/2026-09-10-desktop-delivery.json), [product direction](PRODUCT-DIRECTION.md), [local trial](LOCAL-TRIAL.md) |
 | Platform | Full native Windows product | Integrate the daemon and clients with named pipes; finish supervised lifecycle, ConPTY, identity-safe stopping/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Core/host/desktop adapter coverage is only a foundation. | [Windows port](WINDOWS-PORT.md), [architecture](ARCHITECTURE.md) |
 | Follow-up | Terminal selection and richer interaction | Implement arbitrary terminal cell-range selection/copy; test physical keyboard focus, text editing and input methods with users, and repair observed usability/accessibility defects. Current copy takes the visible screen. | [Iced contracts](ICED-DESIGN.md), [desktop guide](DESKTOP-UX.md) |

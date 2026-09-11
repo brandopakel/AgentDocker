@@ -13,13 +13,14 @@
 //! Nothing here restarts a daemon or stops an agent. The report says whether
 //! agents are live so the person can decide when to restart.
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentdocker_core::{Request, Response};
 use agentdocker_host::{command, dirs};
 use anyhow::{Context, Result, bail, ensure};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -89,32 +90,13 @@ fn host_target() -> &'static str {
 
 /// `MAJOR.MINOR.PATCH[-pre][+build]`, compared the way semantic versioning
 /// says: numbers first, a pre-release below its release, build ignored.
-fn compare_versions(a: &str, b: &str) -> Ordering {
-    fn split(version: &str) -> (Vec<u64>, Option<String>) {
-        let core = version.split('+').next().unwrap_or(version);
-        let (numbers, pre) = match core.split_once('-') {
-            Some((numbers, pre)) => (numbers, Some(pre.to_owned())),
-            None => (core, None),
-        };
-        (
-            numbers
-                .split('.')
-                .map(|part| part.parse::<u64>().unwrap_or(0))
-                .collect(),
-            pre,
-        )
-    }
-    let (na, pa) = split(a);
-    let (nb, pb) = split(b);
-    match na.cmp(&nb) {
-        Ordering::Equal => match (pa, pb) {
-            (None, None) => Ordering::Equal,
-            (None, Some(_)) => Ordering::Greater,
-            (Some(_), None) => Ordering::Less,
-            (Some(x), Some(y)) => x.cmp(&y),
-        },
-        other => other,
-    }
+fn compare_versions(a: &str, b: &str) -> Result<Ordering> {
+    Ok(parse_version(a)?.cmp_precedence(&parse_version(b)?))
+}
+
+fn parse_version(value: &str) -> Result<Version> {
+    ensure!(value.len() <= 64, "update version exceeds 64 bytes");
+    Version::parse(value).context("update version is not a semantic version")
 }
 
 fn curl_binary() -> String {
@@ -155,6 +137,21 @@ fn curl_argv(url: &str, destination: &Path, max_bytes: u64) -> Vec<String> {
 /// Read a URL into `destination`. `https://` goes through `curl`; `file://`
 /// is copied and only when a local preview was asked for.
 fn fetch(url: &str, destination: &Path, max_bytes: u64, local_preview: bool) -> Result<()> {
+    let result = fetch_inner(url, destination, max_bytes, local_preview).and_then(|()| {
+        let metadata = destination.symlink_metadata()?;
+        ensure!(
+            metadata.is_file() && metadata.len() <= max_bytes,
+            "download exceeds its byte limit"
+        );
+        Ok(())
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(destination);
+    }
+    result
+}
+
+fn fetch_inner(url: &str, destination: &Path, max_bytes: u64, local_preview: bool) -> Result<()> {
     if let Some(path) = url.strip_prefix("file://") {
         ensure!(
             local_preview,
@@ -210,6 +207,55 @@ fn select(feed: &Feed, target: &str, local_preview: bool) -> Result<FeedRelease>
         feed.channel == "stable" || local_preview,
         "this is a preview feed; pass --local-preview to accept preview builds"
     );
+    ensure!(!feed.releases.is_empty(), "update feed is empty");
+    let mut targets = BTreeSet::new();
+    let first = &feed.releases[0];
+    for entry in &feed.releases {
+        ensure!(
+            matches!(
+                entry.target.as_str(),
+                "aarch64-apple-darwin"
+                    | "x86_64-apple-darwin"
+                    | "universal-apple-darwin"
+                    | "aarch64-unknown-linux-gnu"
+                    | "x86_64-unknown-linux-gnu"
+            ),
+            "unsupported feed target"
+        );
+        ensure!(targets.insert(&entry.target), "duplicate feed target");
+        let parsed = parse_version(&entry.version)?;
+        ensure!(
+            feed.channel != "stable" || parsed.pre.is_empty(),
+            "stable feed contains a prerelease"
+        );
+        ensure!(
+            entry.version == first.version
+                && entry.source_commit == first.source_commit
+                && entry.state_schema == first.state_schema,
+            "feed mixes versions, source or schemas"
+        );
+        ensure!(
+            entry.source_commit.len() == 40
+                && entry.source_commit.bytes().all(|b| b.is_ascii_hexdigit()),
+            "feed source is not a commit SHA"
+        );
+        ensure!(entry.state_schema > 0, "feed state schema must be positive");
+        let mac = entry.target.ends_with("apple-darwin");
+        ensure!(
+            if mac {
+                matches!(entry.signing.as_str(), "developer-id" | "local-preview")
+            } else {
+                entry.signing == "checksum"
+            },
+            "unknown feed signing policy"
+        );
+        ensure!(
+            feed.channel != "stable"
+                || !mac
+                || (entry.signing == "developer-id" && entry.notarized),
+            "stable Mac feed requires notarized Developer ID packages"
+        );
+    }
     let release = feed
         .releases
         .iter()
@@ -259,15 +305,6 @@ fn select(feed: &Feed, target: &str, local_preview: bool) -> Result<FeedRelease>
             || (local_preview && release.archive.url.starts_with("file://")),
         "feed archive URL must be https://"
     );
-    ensure!(
-        !release.version.is_empty()
-            && release.version.len() <= 64
-            && release
-                .version
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)),
-        "feed version is not a plain version string"
-    );
     Ok(release)
 }
 
@@ -308,7 +345,12 @@ fn live_agents(socket: Option<PathBuf>) -> Option<usize> {
 
 /// The entry names an archive listing tool printed, one per line.
 fn listing(argv: &[String]) -> Result<Vec<String>> {
-    let output = command::run(Path::new("/"), argv, FETCH_TIMEOUT)?;
+    let output = command::run_with_env(
+        Path::new("/"),
+        argv,
+        FETCH_TIMEOUT,
+        &[("LC_ALL", Some(std::ffi::OsStr::new("C")))],
+    )?;
     ensure!(
         output.success,
         "cannot list the archive: {}",
@@ -349,10 +391,10 @@ fn audit_entry_name(name: &str, payload: &str) -> Result<()> {
 /// link written first could redirect a later entry outside the destination.
 fn audit_entry_modes(long_lines: &[String]) -> Result<()> {
     for line in long_lines {
-        let kind = line.trim_start().chars().next().unwrap_or('-');
+        let kind = line.chars().next().unwrap_or('?');
         ensure!(
-            !matches!(kind, 'l' | 'b' | 'c' | 'p' | 's'),
-            "archive contains a link or special file: {}",
+            matches!(kind, '-' | 'd'),
+            "archive contains a link, special file or unknown mode: {}",
             line.trim()
         );
     }
@@ -373,16 +415,45 @@ fn audit_archive(archive: &Path, payload: &str) -> Result<()> {
             listing(&["tar".into(), "-tvzf".into(), path])?,
         )
     };
-    ensure!(!names.is_empty(), "archive is empty");
+    ensure!(
+        !names.is_empty() && names.len() <= 4096,
+        "archive must contain 1 to 4096 entries"
+    );
     for name in &names {
         audit_entry_name(name, payload)?;
     }
-    // zipinfo's long listing ends with summary lines that start with a digit.
+    // Reject every entry with an unknown type; only known zipinfo headers and
+    // the numeric summary are excluded. Counts must agree with the name list.
     let modes: Vec<String> = long
         .into_iter()
-        .filter(|l| l.starts_with(['-', 'd', 'l', 'b', 'c', 'p', 's']))
+        .filter(|l| {
+            !(cfg!(target_os = "macos")
+                && (l.starts_with("Archive: ")
+                    || l.starts_with("Zip file size: ")
+                    || l.as_bytes().first().is_some_and(u8::is_ascii_digit)))
+        })
         .collect();
-    audit_entry_modes(&modes)
+    ensure!(
+        modes.len() == names.len(),
+        "archive listing has ambiguous entries"
+    );
+    audit_entry_modes(&modes)?;
+    let mut bytes = 0u64;
+    for line in &modes {
+        // zipinfo: mode/version/host/size; GNU tar: mode/owner/size.
+        let size = line
+            .split_whitespace()
+            .nth(if cfg!(target_os = "macos") { 3 } else { 2 })
+            .context("archive listing lacks an entry size")?
+            .parse::<u64>()
+            .context("archive listing has an invalid entry size")?;
+        bytes = bytes.checked_add(size).context("archive size overflow")?;
+        ensure!(
+            bytes <= 210 * 1024 * 1024,
+            "archive exceeds the expanded payload budget"
+        );
+    }
+    Ok(())
 }
 
 fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
@@ -446,7 +517,7 @@ pub fn run(layout: &Layout, active: Option<&Activation>, options: Options) -> Re
     let installed = active.map(|a| a.current.version.as_str());
     let running = env!("CARGO_PKG_VERSION");
     let baseline = installed.unwrap_or(running);
-    let update_available = compare_versions(&release.version, baseline) == Ordering::Greater;
+    let update_available = compare_versions(&release.version, baseline)? == Ordering::Greater;
     let schema_change = active.is_some_and(|a| release.state_schema > a.current.state_schema);
     let live = live_agents(options.socket.clone());
     let guidance = match live {
@@ -485,12 +556,17 @@ pub fn run(layout: &Layout, active: Option<&Activation>, options: Options) -> Re
     layout.ensure_root()?;
     let staging = layout.root.join("downloads");
     dirs::ensure_private_dir(&staging)?;
-    let version_dir = staging.join(&release.version);
+    let version_dir = staging.join(parse_version(&release.version)?.to_string());
     dirs::ensure_private_dir(&version_dir)?;
     let archive = version_dir.join(&release.archive.name);
     let matches = |path: &Path| -> Result<bool> {
-        Ok(path.is_file()
-            && path.metadata()?.len() == release.archive.bytes
+        let metadata = match path.symlink_metadata() {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(metadata.is_file()
+            && metadata.len() == release.archive.bytes
             && file_sha256(path)? == release.archive.sha256)
     };
     if !matches(&archive)? {
@@ -532,7 +608,7 @@ pub fn run(layout: &Layout, active: Option<&Activation>, options: Options) -> Re
             "the archive's payload does not match the feed entry (version, source, schema or target)"
         );
         ensure!(
-            compare_versions(&candidate.version, baseline) == Ordering::Greater,
+            compare_versions(&candidate.version, baseline)? == Ordering::Greater,
             "the payload is not newer than what is installed; nothing installed"
         );
         Ok((source, candidate))
@@ -571,7 +647,7 @@ mod tests {
             "policy": {"download": "manual"},
             "releases": [{
                 "target": target, "version": "0.2.0", "source_commit": "a".repeat(40),
-                "state_schema": 10, "signing": "developer-id", "notarized": true,
+                "state_schema": 10, "signing": if target.ends_with("apple-darwin") {"developer-id"} else {"checksum"}, "notarized": target.ends_with("apple-darwin"),
                 "archive": {"name": format!("agentdocker-desktop-{target}.{}", if target.ends_with("apple-darwin") {"zip"} else {"tar.gz"}),
                             "sha256": "b".repeat(64), "bytes": 12_345_678, "url": url}
             }]
@@ -615,15 +691,135 @@ mod tests {
 
     #[test]
     fn versions_compare_like_semantic_versions() {
-        assert_eq!(compare_versions("0.2.0", "0.1.0"), Ordering::Greater);
-        assert_eq!(compare_versions("0.1.10", "0.1.9"), Ordering::Greater);
-        assert_eq!(compare_versions("1.0.0", "1.0.0+build.7"), Ordering::Equal);
-        assert_eq!(compare_versions("1.0.0-rc.1", "1.0.0"), Ordering::Less);
         assert_eq!(
-            compare_versions("1.0.0-rc.2", "1.0.0-rc.1"),
+            compare_versions("0.2.0", "0.1.0").unwrap(),
             Ordering::Greater
         );
-        assert_eq!(compare_versions("0.1.0", "0.1.0"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("0.1.10", "0.1.9").unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("1.0.0", "1.0.0+build.7").unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare_versions("1.0.0-rc.1", "1.0.0").unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("1.0.0-rc.2", "1.0.0-rc.1").unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(compare_versions("0.1.0", "0.1.0").unwrap(), Ordering::Equal);
+        assert_eq!(
+            compare_versions("1.0.0-rc.10", "1.0.0-rc.2").unwrap(),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("1.0.0-2", "1.0.0-alpha").unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn malformed_and_ambiguous_feed_entries_are_refused_before_staging() {
+        let target = host_target();
+        for version in [
+            ".",
+            "..",
+            "1",
+            "01.2.3",
+            "1.2.3-01",
+            "18446744073709551616.0.0",
+        ] {
+            let mut invalid = feed("stable", target, "https://example.invalid/a.zip");
+            invalid.releases[0].version = version.into();
+            assert!(
+                select(&invalid, target, false).is_err(),
+                "accepted version {version}"
+            );
+        }
+        let mut duplicate = feed("stable", target, "https://example.invalid/a.zip");
+        duplicate.releases.push(duplicate.releases[0].clone());
+        assert!(select(&duplicate, target, false).is_err());
+        for (source, schema) in [("invalid".into(), 10), ("a".repeat(40), 0)] {
+            let mut invalid = feed("stable", target, "https://example.invalid/a.zip");
+            invalid.releases[0].source_commit = source;
+            invalid.releases[0].state_schema = schema;
+            assert!(select(&invalid, target, false).is_err());
+        }
+    }
+
+    #[test]
+    fn hardlinks_and_unrecognized_archive_modes_are_refused() {
+        for mode in [
+            "hrw-r--r-- 0 root root 0 file link to outside",
+            "?rw-r--r-- unknown",
+        ] {
+            assert!(audit_entry_modes(&[mode.into()]).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_audit_rejects_a_real_link_before_extraction() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = if cfg!(target_os = "macos") {
+            "AgentDocker.app"
+        } else {
+            "agentdocker-desktop"
+        };
+        let directory = root.path().join(payload);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("regular"), b"fixture").unwrap();
+        let make_archive = |name: &str| {
+            let archive = root.path().join(name);
+            let argv = if cfg!(target_os = "macos") {
+                vec![
+                    "/usr/bin/zip".into(),
+                    "-qyr".into(),
+                    archive.to_string_lossy().into_owned(),
+                    payload.into(),
+                ]
+            } else {
+                vec![
+                    "tar".into(),
+                    "-czf".into(),
+                    archive.to_string_lossy().into_owned(),
+                    payload.into(),
+                ]
+            };
+            assert!(
+                command::run(root.path(), &argv, Duration::from_secs(5))
+                    .unwrap()
+                    .success
+            );
+            archive
+        };
+        let good = make_archive("regular.zip");
+        audit_archive(&good, payload).unwrap();
+        std::os::unix::fs::symlink("../outside", directory.join("link")).unwrap();
+        let linked = make_archive("symlink.zip");
+        assert!(audit_archive(&linked, payload).is_err());
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::remove_file(directory.join("link")).unwrap();
+            std::fs::hard_link(directory.join("regular"), directory.join("hardlink")).unwrap();
+            let hardlinked = make_archive("hardlink.tar.gz");
+            assert!(audit_archive(&hardlinked, payload).is_err());
+        }
+        assert!(!root.path().join("outside").exists());
+    }
+
+    #[test]
+    fn failed_fetch_removes_the_owned_partial_file() {
+        let root = tempfile::tempdir().unwrap();
+        let partial = root.path().join("update.part");
+        std::fs::write(&partial, b"interrupted").unwrap();
+        let source = format!("file://{}", root.path().join("missing").display());
+        assert!(fetch(&source, &partial, 1024, true).is_err());
+        assert!(!partial.exists());
     }
 
     #[test]
