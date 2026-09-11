@@ -445,7 +445,12 @@ fn invalid_alias_aborts_before_recovery_and_removal_cleans_valid_routes() {
     store
         .repair(&a, &b, Some(&plan.plan_sha256), now(), |_| Ok(()))
         .unwrap();
-    store.delete_agent(&a).unwrap();
+    store
+        .delete_agent(
+            &a,
+            &Event::new(EventKind::AgentRemoved { agent: a.clone() }, now()),
+        )
+        .unwrap();
     assert!(store.identity_aliases().unwrap().is_empty());
     assert!(
         store
@@ -479,6 +484,61 @@ fn invalid_alias_aborts_before_recovery_and_removal_cleans_valid_routes() {
     assert!(err.to_string().contains("key disagrees"));
     let store = Store::open(&path).unwrap();
     assert_eq!(snapshot(&store), before);
+}
+
+#[test]
+fn removal_rolls_back_routes_queue_cursors_and_history_at_every_failure() {
+    for table in ["documents", "inbox", "journal_cursors", "agents", "events"] {
+        let store = Store::in_memory().unwrap();
+        let (a, b) = seed(&store);
+        store.enqueue(&b, &envelope("retained", &b), 1000).unwrap();
+        let project = record("canonical").project.unwrap().id();
+        store
+            .set_journal_cursor(a.as_str(), &project, 7, now())
+            .unwrap();
+        store
+            .set_journal_cursor(b.as_str(), &project, 7, now())
+            .unwrap();
+        let plan = preview(&store, &a, &b);
+        store
+            .repair(&a, &b, Some(&plan.plan_sha256), now(), |_| Ok(()))
+            .unwrap();
+        let before = snapshot(&store);
+        let mut event = Event::new(EventKind::AgentRemoved { agent: a.clone() }, now());
+        event.seq = store.max_event_seq().unwrap() + 1;
+        let operation = if table == "events" {
+            "INSERT"
+        } else {
+            "DELETE"
+        };
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_removal BEFORE {operation} ON {table}
+             BEGIN SELECT RAISE(ABORT, 'fixture removal failure'); END;"
+            ))
+            .unwrap();
+        assert!(store.delete_agent(&a, &event).is_err(), "{table}");
+        assert_eq!(snapshot(&store), before, "{table}");
+        assert_eq!(store.journal_cursor(a.as_str(), &project).unwrap(), Some(7));
+        assert_eq!(store.identity_aliases().unwrap()[0].canonical, a);
+        store
+            .conn
+            .execute_batch("DROP TRIGGER reject_removal")
+            .unwrap();
+        store.delete_agent(&a, &event).unwrap();
+        assert!(store.load_agents().unwrap().is_empty());
+        assert!(store.identity_aliases().unwrap().is_empty());
+        assert!(store.load_inboxes().unwrap().is_empty());
+        assert_eq!(store.journal_cursor(a.as_str(), &project).unwrap(), None);
+        assert_eq!(store.recent_events(1).unwrap()[0].seq, event.seq);
+        assert!(
+            store
+                .document::<Value>("identity_reconciliation", b.as_str())
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[test]

@@ -9,15 +9,20 @@
   "release_agentd_sha256": "2618dad90b86d5d9512abe86ee148b49618ed9f33ca7b082417c5f1fd3e0edbf"
  },
  "unit_gate": {
-  "command": "cargo test -p agentdocker-ui; cargo clippy -p agentdocker-ui --all-targets -- -D warnings",
   "result": "106 passed, clippy clean",
   "new_tests": [
    "style::tests::every_project_identity_carries_its_ink (12 hue stops x 2 themes at >= 4.5:1)",
    "style::tests::hsl_reaches_the_primaries",
    "app::tests::a_turn_finished_out_of_view_waits_to_be_viewed_and_idle_alone_is_not_seen",
-   "shell::tests::the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli",
+   "shell::tests::the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli"
+  ],
+  "reported_command": "cargo test -p agentdocker-ui; cargo clippy -p agentdocker-ui --all-targets -- -D warnings",
+  "reproduction_command": "cargo test --locked -p agentdocker-core -p agentdocker-ui && cargo clippy --locked -p agentdocker-ui --all-targets -- -D warnings",
+  "evidence_limit": "The original combined shell command could mask a failed test exit status. Its UI test invocation did not execute core tests. The reported 106 UI tests and clippy result are historical; the newer full-workspace gate is recorded separately.",
+  "not_covered_by_reported_command": [
    "core multiplexer::tests::herdr_default_session_is_known_by_its_pane"
-  ]
+  ],
+  "later_workspace_gate": "2026-09-11-identity-repair.json"
  },
  "fixture": {
   "method": "private agentd (AGENTDOCKER_HOME under the session scratchpad) with two directory projects and three tty fixture sessions; activity reported working, then idle for the two alpha sessions after the window had selected beta; stub codex/claude executables on PATH answer --version only",

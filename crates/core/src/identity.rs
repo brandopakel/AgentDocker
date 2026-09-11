@@ -130,13 +130,18 @@ mod tests {
     use crate::AgentSpec;
 
     fn record(id: &str, session: Option<&str>) -> AgentRecord {
+        let checkout = if cfg!(windows) {
+            r"C:\fixture\checkout"
+        } else {
+            "/fixture/checkout"
+        };
         let now = DateTime::parse_from_rfc3339("2026-09-11T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let mut record = AgentRecord::new(
             AgentSpec {
                 runtime: "claude-code".into(),
-                workdir: Some("/fixture/checkout".into()),
+                workdir: Some(checkout.into()),
                 ..Default::default()
             },
             false,
@@ -145,7 +150,7 @@ mod tests {
         record.id = id.into();
         record.pid = Some(123);
         record.process_started_at = Some(now);
-        record.project = Some(ProjectRef::directory("/fixture/checkout"));
+        record.project = Some(ProjectRef::directory(checkout));
         if let Some(session) = session {
             record
                 .spec
@@ -195,5 +200,20 @@ mod tests {
                 "case {changed}"
             );
         }
+    }
+
+    #[test]
+    fn matching_relative_checkouts_are_not_physical_identity_evidence() {
+        let mut a = record("a", Some("session"));
+        let mut b = record("b", Some("session"));
+        for record in [&mut a, &mut b] {
+            record.spec.workdir = Some("relative/checkout".into());
+            record.project = Some(ProjectRef::directory("relative/checkout"));
+        }
+        assert!(same_registration(&a, &b));
+        assert_eq!(
+            repair_pair([&a, &b], &a.id, &b.id),
+            Err("physical process and checkout evidence is incomplete")
+        );
     }
 }

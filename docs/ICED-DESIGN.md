@@ -53,11 +53,12 @@ system, which is drawn from the mark:
   The mark also anchors empty states at reduced opacity.
 - **Every project has its own mark.** A rounded tile with the project's
   initial on a tint derived from the project's identity (`style::identity`:
-  an FNV hash of the fingerprint, or of the root path when there is no git,
+  an FNV hash of the repository fingerprint, or of a root-path UUID without one,
   picks one of twelve hue stops; saturation and lightness are fixed per theme
-  and a unit test keeps the ink at 4.5:1 on every stop). The same repository
-  therefore looks the same on every machine, in both themes, with nothing to
-  choose or store. The tile leads each rail row at 20 points and the project
+  and a unit test keeps the ink at 4.5:1 on every stop). Colours stay the same
+  across machines when they use the same repository fingerprint. Root-path UUID
+  seeds can differ between machines or checkouts. Nothing needs to be chosen or
+  stored. The tile leads each rail row at 20 points and the project
   heading at 30.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project

@@ -638,23 +638,22 @@ impl Store {
         Ok(())
     }
 
-    /// Forget an agent and anything queued for it.
-    pub fn delete_agent(&self, id: &AgentId) -> Result<()> {
-        for alias in
-            self.documents::<agentdocker_core::identity::AgentAlias>("identity_alias", None)?
-        {
-            if &alias.canonical == id {
-                self.delete_document("identity_alias", alias.retired.as_str())?;
-            }
-        }
-        self.conn
-            .execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
-        self.conn.execute(
+    /// Forget an agent, its old-ID routes and queued work in one transition.
+    pub fn delete_agent(&self, id: &AgentId, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM documents WHERE kind = 'identity_alias'
+             AND json_extract(json, '$.canonical') = ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
+        tx.execute(
             "DELETE FROM journal_cursors WHERE agent = ?1",
             params![id.as_str()],
         )?;
-        self.conn
-            .execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
+        tx.execute("DELETE FROM agents WHERE id = ?1", params![id.as_str()])?;
+        self.append_event(event)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1382,7 +1381,17 @@ mod tests {
         let loaded = store.load_agents().unwrap();
         assert_eq!(loaded, vec![a.clone()]);
 
-        store.delete_agent(&a.id).unwrap();
+        store
+            .delete_agent(
+                &a.id,
+                &Event::new(
+                    EventKind::AgentRemoved {
+                        agent: a.id.clone(),
+                    },
+                    Utc::now(),
+                ),
+            )
+            .unwrap();
         assert!(store.load_agents().unwrap().is_empty());
     }
 
@@ -1849,7 +1858,12 @@ mod tests {
             None,
             "one cursor per project"
         );
-        store.delete_agent(&AgentId::from("a1")).unwrap();
+        store
+            .delete_agent(
+                &AgentId::from("a1"),
+                &Event::new(EventKind::AgentRemoved { agent: "a1".into() }, Utc::now()),
+            )
+            .unwrap();
         assert_eq!(store.journal_cursor("a1", &project).unwrap(), None);
         assert_eq!(store.journal_cursor("user", &project).unwrap(), Some(3));
     }

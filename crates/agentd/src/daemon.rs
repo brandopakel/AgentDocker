@@ -3353,13 +3353,19 @@ impl State {
         if self.is_live(&id) {
             return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
         }
+        let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
+        event.seq = self.next_seq;
+        self.persist("agent removal", |store| store.delete_agent(&id, &event));
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
         self.registry.remove(&id);
         self.inboxes.remove(&id);
         self.inbox_bytes.remove(&id);
         self.journal_cursors
             .retain(|(reader, _), _| reader != id.as_str());
-        self.persist("agent", |store| store.delete_agent(&id));
-        self.emit(EventKind::AgentRemoved { agent: id });
+        self.next_seq += 1;
+        let _ = self.events.send(event);
         Response::Ok
     }
 
@@ -8528,6 +8534,65 @@ deny = ["send:all"]
             Response::Messages { messages } => messages,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn failed_removal_retains_memory_and_never_reports_success() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = register(&daemon, "receiver", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: "user".into(),
+                    to: "receiver".into(),
+                    kind: "chat".into(),
+                    payload: json!({"text":"retain if removal fails"}),
+                    reply_to: None,
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        let next_seq = {
+            let state = lock(&daemon.state);
+            state.store.reject_event_for_test("agent_removed");
+            state.next_seq
+        };
+        let response = daemon
+            .handle(Request::Remove {
+                agent: receiver.id.to_string(),
+            })
+            .await;
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert!(state.registry.get(&receiver.id).is_some());
+        assert_eq!(state.inboxes[&receiver.id].len(), 1);
+        assert_eq!(state.store.load_inboxes().unwrap()[&receiver.id].len(), 1);
+        assert!(
+            state
+                .store
+                .load_agents()
+                .unwrap()
+                .iter()
+                .any(|a| a.id == receiver.id)
+        );
+        assert_eq!(state.next_seq, next_seq);
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
