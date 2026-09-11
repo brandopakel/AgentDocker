@@ -1179,6 +1179,27 @@ impl App {
                 &self.shell.launch_arguments,
                 Message::LaunchArguments,
             ));
+        if self.shell.launch_runtime.as_deref() == Some("claude-code") {
+            // Explicit and per launch: nothing on disk changes, and an
+            // existing session is never taken over.
+            tools = tools.push(
+                column![
+                    iced::widget::checkbox(self.shell.launch_channel)
+                        .label("Receive messages while idle (experimental)")
+                        .on_toggle(Message::LaunchChannel)
+                        .size(16)
+                        .text_size(13),
+                    small(
+                        "Starts this session with AgentDocker's channel so replies reach it \
+                         between turns. Uses the Claude Code research preview; Claude asks \
+                         for consent in the terminal. Your own Claude configuration is not \
+                         changed.",
+                        c
+                    )
+                ]
+                .spacing(4),
+            );
+        }
         if let Some(runtime) = self
             .runtimes
             .iter()

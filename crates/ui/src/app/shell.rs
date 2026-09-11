@@ -23,6 +23,11 @@ pub(super) struct State {
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
+    /// Explicit, per-launch opt-in to the Claude research-preview channel
+    /// that lets a new Claude Code session receive messages while idle.
+    /// Off every time the form opens; never persisted; only read for
+    /// claude-code, the one runtime the helper supports.
+    pub launch_channel: bool,
     pub launching: bool,
     pub error: Option<String>,
     pub setup_error: Option<String>,
@@ -160,6 +165,7 @@ pub enum Message {
     LaunchRuntime(String),
     LaunchName(String),
     LaunchArguments(String),
+    LaunchChannel(bool),
     Launch,
     Attach(String),
     Detach,
@@ -559,6 +565,7 @@ impl App {
             }
             Message::ShowLaunch => {
                 self.shell.launch = !self.shell.launch;
+                self.shell.launch_channel = false;
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
@@ -569,9 +576,13 @@ impl App {
             Message::LaunchArguments(args) => {
                 self.shell.launch_arguments = args.chars().take(8192).collect()
             }
+            Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::Launch => {
                 if self.connected.is_ok() && !self.shell.launching {
-                    match self.launch_spec() {
+                    match self
+                        .launch_spec()
+                        .and_then(|spec| self.prepare_launch(spec, sibling_cli()))
+                    {
                         Ok(spec) => {
                             self.shell.launching = true;
                             self.shell.error = None;
@@ -1015,6 +1026,26 @@ impl App {
         ))
     }
 
+    /// The one launch-time transformation: the Claude channel, when the
+    /// user ticked it for a Claude launch. Any other runtime, or an
+    /// unticked box, passes the spec through untouched. The CLI must be
+    /// this app's own sibling: the helper pins the session to it, and a
+    /// `PATH` fallback could pin it to an older install that lacks the
+    /// channel.
+    fn prepare_launch(
+        &self,
+        mut spec: agentdocker_core::AgentSpec,
+        cli: Result<PathBuf, String>,
+    ) -> Result<agentdocker_core::AgentSpec, String> {
+        if !self.shell.launch_channel || spec.runtime != "claude-code" {
+            return Ok(spec);
+        }
+        let cli = cli?;
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
+            .map_err(|error| format!("Cannot enable messages while idle: {error}"))?;
+        Ok(spec)
+    }
+
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
         let entry = self
             .shell
@@ -1056,6 +1087,21 @@ impl App {
             depends_on: Vec::new(),
         })
     }
+}
+
+/// This app's own `agentdocker`, beside its executable, or why not. No
+/// `PATH` fallback: a session pinned to a stranger's CLI is worse than no
+/// session.
+fn sibling_cli() -> Result<PathBuf, String> {
+    let me = agentdocker_host::procinfo::executable_path()
+        .map_err(|error| format!("Cannot locate this app: {error}"))?;
+    let cli = me
+        .parent()
+        .map(|dir| dir.join("agentdocker"))
+        .filter(|cli| cli.is_file())
+        .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
+        .ok_or("The agentdocker command-line tool is not installed beside this app")?;
+    Ok(cli)
 }
 
 fn resolve_folder(path: PathBuf) -> Task<Message> {
@@ -1151,6 +1197,64 @@ mod tests {
             cmd,
             Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
         )));
+    }
+
+    #[test]
+    fn the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli() {
+        use agentdocker_core::AgentSpec;
+        let (mut app, _, _) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("agentdocker");
+        std::fs::write(&cli, b"fixture").unwrap();
+        let spec = |runtime: &str| AgentSpec {
+            name: "s".into(),
+            runtime: runtime.into(),
+            command: vec![runtime.into(), "--model".into(), "m".into()],
+            tty: true,
+            ..Default::default()
+        };
+
+        // Unticked: every runtime passes through, whatever the CLI situation.
+        for runtime in ["claude-code", "codex"] {
+            assert_eq!(
+                app.prepare_launch(spec(runtime), Err("no cli".into())),
+                Ok(spec(runtime))
+            );
+        }
+
+        let _ = app.update(Message::LaunchChannel(true));
+        // Other runtimes are untouched even when ticked: the box is only
+        // shown for Claude, and the flag must not leak into codex launches.
+        assert_eq!(
+            app.prepare_launch(spec("codex"), Ok(cli.clone())),
+            Ok(spec("codex"))
+        );
+        // Claude gains the channel, after the user's own arguments are kept.
+        let launched = app
+            .prepare_launch(spec("claude-code"), Ok(cli.clone()))
+            .unwrap();
+        assert!(launched.command.contains(&"--mcp-config".to_owned()));
+        assert!(
+            launched
+                .command
+                .contains(&"--dangerously-load-development-channels".to_owned())
+        );
+        assert_eq!(
+            &launched.command[launched.command.len() - 2..],
+            ["--model", "m"]
+        );
+        assert_eq!(
+            launched.env[agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV],
+            "1"
+        );
+        // Without the sibling CLI the launch fails instead of falling back.
+        let error = app
+            .prepare_launch(spec("claude-code"), Err("missing".into()))
+            .unwrap_err();
+        assert_eq!(error, "missing");
+        // Reopening the form resets the opt-in.
+        let _ = app.update(Message::ShowLaunch);
+        assert!(!app.shell.launch_channel);
     }
 
     #[test]
