@@ -56,6 +56,14 @@ backup=~/AgentDocker-old-$(date +%Y%m%d-%H%M%S) && [ ! -e "$backup" ] && mkdir "
 make install
 ```
 
+## Source builds versus published updates
+
+`make install` is for people building from source. Everyone else installs a
+published release (Homebrew tap or `install.sh`) and later runs
+`agentdocker desktop update`, or presses **Check for updates** in Settings →
+Installation, which verifies and previews the newer release before installing
+it for the next launch. See [Desktop distribution](DESKTOP-DISTRIBUTION.md).
+
 ## Other targets
 
 | Target | Purpose |

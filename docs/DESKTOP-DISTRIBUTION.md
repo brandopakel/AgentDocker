@@ -62,6 +62,38 @@ Omit `--prefix` to install beneath your home. Mac launchers go into `~/Applicati
 
 Complete copied payloads are verified and synced before activation. Immutable version directories and activation records retain the previous release; one atomic pointer switches all managed launchers. A crash before that switch leaves the prior release active, although unused staging/generation files can remain. A single installer lock excludes concurrent updates. Preview and status do not create an installation. Newly configured provider connections use the stable managed CLI link. A stale running app must be reopened before setup; configurations written by earlier builds are not silently rewritten.
 
+### Updating from the published feed
+
+`agentdocker desktop update` reads the download feed (`updates.json`, by default
+the asset of the latest GitHub release), picks this machine's target, and says
+whether a newer release exists than the managed installation (or, with none,
+than the running command):
+
+```sh
+agentdocker desktop update --check            # report only; downloads nothing
+agentdocker desktop update                    # download, verify, extract, preview
+agentdocker desktop update --apply            # the same, then install for the next launch
+```
+
+The archive is fetched with the system `curl`, HTTPS only including redirects,
+bounded in size and time, into `~/.local/share/agentdocker/desktop/downloads/<version>/`
+(private), then compared byte for byte and by SHA-256 with what the feed
+advertised; a mismatch deletes the download and installs nothing. The extracted
+payload goes through the same inspection as `install --from` (links, targets,
+checksums, signature and Gatekeeper unless `--local-preview`), must be the very
+release the feed described (version, source, state schema, target), and must be
+newer than what is installed; `--apply` pins the reviewed release and current
+IDs exactly as the desktop screen's Apply does. The report includes how many
+agents the running daemon says are live, so the person can choose when to
+restart it; the command never restarts anything. The desktop screen offers
+**Check for updates** and **Download and preview** on Settings → Installation,
+and the footer says when a newer version is known. A preview feed or a
+`file://` feed is accepted only with `--local-preview`; `AGENTDOCKER_UPDATE_FEED`
+overrides the feed URL. `scripts/desktop_update_smoke.py --source <package dir>
+--output <dir>` exercises the whole path offline against a locally packaged
+release. Publication of `updates.json` beside the release archives is part of
+the release workflow.
+
 Updates affect the next app/CLI launch. They do not stop a live daemon or its agents. Daemon replacement remains an explicit lifecycle operation. Rollback verifies the retained payload and requires equal daemon state schemas; it does not restore or downgrade the database. Keep a matching state backup for any manual downgrade. Retained versions are not automatically pruned.
 
 `scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/install-smoke` tests this flow under a disposable prefix, including stale-preview rejection, tampered executables, private activation metadata, retained versions and a responsive daemon across activation/rollback. CI uses two package generations of the same binaries and labels that limitation. `--previous-source` accepts a separately built older package for a trial between source revisions. Graphical acceptance and real-provider round trips are separate checks.

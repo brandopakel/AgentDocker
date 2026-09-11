@@ -584,7 +584,14 @@ impl App {
                     c
                 )
                 .width(Fill),
-                small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c)
+                match self.desktop.update_available() {
+                    Some(version) => small(
+                        format!("Update {version} available · Settings › Installation"),
+                        c
+                    )
+                    .color(c.accent_ink),
+                    None => small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c),
+                }
             ]
             .spacing(8)
             .align_y(Center),
@@ -2225,6 +2232,28 @@ impl App {
                 p.local_preview,
             ));
         }
+        let updates = row![
+            primary(
+                "desktop-update-check",
+                "Check for updates",
+                p.preview("update-check")
+                    .map(|_| Message::DesktopPreview("update-check".into())),
+            ),
+            action(
+                "desktop-update",
+                match p.update_available() {
+                    Some(version) => format!("Download and preview {version}"),
+                    None => "Download and preview update".to_owned(),
+                },
+                p.preview("update")
+                    .map(|_| Message::DesktopPreview("update".into())),
+                false,
+            )
+        ]
+        .spacing(6)
+        .align_y(Center)
+        .wrap();
+        body = body.push(column![eyebrow("Updates", c), updates].spacing(8));
         let mut operations = row![].spacing(6);
         for (operation, label) in [
             ("status", "Show installed versions"),
@@ -2249,6 +2278,35 @@ impl App {
             body = body.push(text(error.clone()).size(13).color(c.amber));
         }
         let mut screen = column![card(body, c)].spacing(14);
+        if let Some(update) = p.report.as_ref().and_then(|r| r.get("update")) {
+            let available = update["available"]["version"].as_str().unwrap_or("unknown");
+            let installed = update["installed_version"]
+                .as_str()
+                .or(update["running_version"].as_str())
+                .unwrap_or("unknown");
+            let mut facts = column![
+                heading(
+                    if update["update_available"] == true {
+                        format!("Version {available} is available")
+                    } else {
+                        "You have the newest release".to_owned()
+                    },
+                    16
+                ),
+                kv("Installed", installed, c),
+                kv("Available", available, c),
+                kv("Channel", value(update, "channel"), c),
+                kv("Daemon", value(update, "daemon"), c),
+            ]
+            .spacing(6);
+            if update["state_schema_change"] == true {
+                facts = facts.push(note(
+                    "This release changes the daemon's state schema: after installing, rollback needs a matching state backup.",
+                    c,
+                ));
+            }
+            screen = screen.push(card(facts, c));
+        }
         if let Some(report) = &p.report {
             let mut details = column![heading(
                 if report["preview"] == true {

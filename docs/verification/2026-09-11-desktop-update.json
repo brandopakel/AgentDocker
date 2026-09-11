@@ -1,0 +1,68 @@
+{
+ "scope": "Update consumer ('agentdocker desktop update') verification on 2026-09-11: unit tests, lint and the offline update smoke against a locally packaged release under a disposable prefix. Online verification against a published updates.json awaits the first release that ships one.",
+ "source": {
+  "branch": "codex/desktop-delivery",
+  "base": "c9677ab",
+  "note": "updater committed on top of c9677ab; the tree also carried no other uncommitted sources at smoke time"
+ },
+ "package": {
+  "path_in_session": "artifacts/local/desktop-20260911-113457",
+  "source_commit": "c9677ab662465633a49a8b52785cc9926c5d3fc1",
+  "version": "0.1.0",
+  "target": "aarch64-apple-darwin",
+  "artifacts_sha256": {
+   "agentdocker-desktop-aarch64-apple-darwin.zip": "b12cf8f4e0f853528cf10c83bf468fad650bb8f0f7ccb0fa0914371b834f0783"
+  },
+  "binary_sha256": {
+   "agentdocker": "3e00a111b00d5f09c9c779bd484a641a462e13ec656d582c3f7dea0236d74b15",
+   "agentd": "9f6c3e9d1f50676e9a9abcc52d9572b258fdbd7c0821d1d3e8948fadcd252c22",
+   "agentdocker-ui": "8df4943c09fd9a3f8efe6e6480a63fa3079b7e750d570e0b0b915626a5c1cee5"
+  }
+ },
+ "unit_tests": {
+  "agentdocker": "152 passed, 2 ignored (includes update: version ordering, target selection incl. universal Mac fallback, preview/file feeds need --local-preview, curl pinned to https/redirect/size/time bounds, checksum/size/name validation, archive entry audit)",
+  "agentdocker-ui": "102 passed (includes panel update-check/update operations and apply pin through an update preview)",
+  "clippy": "-D warnings clean for both crates",
+  "fmt": "cargo fmt --all --check clean"
+ },
+ "offline_update_smoke": {
+  "passed": true,
+  "source": "/Users/brandopakel/AgentDocker/artifacts/local/desktop-20260911-113457",
+  "target": "aarch64-apple-darwin",
+  "steps": [
+   "file feed refused without local preview",
+   "check reports no update for the running version and downloads nothing",
+   "check sees the advertised newer version",
+   "payload whose metadata disagrees with the feed is refused before install",
+   "tampered checksum refused; no partial file, no extraction",
+   "download, verify, extract and preview of the newer release",
+   "apply produced a managed installation of the advertised version",
+   "second check finds nothing newer than the installed version"
+  ],
+  "installed": {
+   "id": "a22e33bd9e16eeeb44d03a62123797031b07d8bf43fce6eeaa88266794e2ff9a",
+   "installation_lock": 1,
+   "payload": "AgentDocker.app",
+   "source_commit": "c9677ab662465633a49a8b52785cc9926c5d3fc1",
+   "state_schema": 10,
+   "target": "aarch64-apple-darwin",
+   "tree_sha256": "a22e33bd9e16eeeb44d03a62123797031b07d8bf43fce6eeaa88266794e2ff9a",
+   "version": "0.1.1"
+  }
+ },
+ "guards": [
+  "https only, including redirects (--proto/--proto-redir =https, --tlsv1.2, --max-redirs 5)",
+  "feed <= 128 KiB read into scratch; a --check writes nothing under the prefix",
+  "archive size from the feed enforced by --max-filesize, then bytes and SHA-256 verified; .part removed on mismatch",
+  "archive entries listed and audited before extraction: absolute, '.'/'..', backslash, outside payload/__MACOSX, link or special entries refused",
+  "payload inspected by the installer (links, target, checksums, codesign, Gatekeeper unless --local-preview) and must equal the feed's version/source/schema/target and be newer than the installed or running version",
+  "install pins --expect-release/--expect-current; schema downgrade refused; rejected payload/archive removed",
+  "daemon queried without autostart for live agents; never restarted"
+ ],
+ "not_covered": [
+  "a real https feed and GitHub redirect",
+  "Linux tar path (audited by the same rules, not exercised here)",
+  "Gatekeeper path without --local-preview",
+  "scheduled checks"
+ ]
+}
