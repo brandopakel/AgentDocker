@@ -68,11 +68,13 @@ migration, not an unbounded in-memory rewrite.
 
 ## Acceptance still required
 
-The standard gate passed 752 Rust tests (six skipped), 54 Python checks, lint,
+The [recorded standard gate](verification/2026-09-11-identity-repair.json) passed
+753 Rust tests (six skipped), 54 Python checks, lint,
 packaging and release compilation. The actual CLI/daemon trial passed six steps,
 including unchanged preview bytes, stale-digest refusal, idle-connection refusal,
 idempotent apply, restarted alias/FIFO access and an acknowledgement through the
 retired ID. All owned processes exited. UI tests passed 108 checks, including
-former-ID notification navigation and draft preservation. Final packaged native
-workflow checks, CI and final-head review remain before this item can close. Applying repair to the
+former-ID notification navigation and draft preservation. The clean packaged checkpoint passed 114 native workflow steps, 23 notification
+routing steps and 11 updater cases. CI and final-head review remain before this
+item can close. Applying repair to the
 user's actual legacy database remains a separate maintenance operation.

@@ -65,9 +65,11 @@ distinct-source or hosted-update acceptance.
 exact-plan apply transaction under exclusive database ownership. It preserves
 accepted messages and original history, records before-images, and exposes
 former-ID routes to the desktop. Proven external local Claude/Codex pairs are
-supported; live and managed transfers remain refused. Local validation passed 752 Rust tests, 54 Python checks and six actual
-CLI/restart steps; the separate UI suite passed 108 tests. Packaged native
-checks, CI and review of the final source remain before this item can close.
+supported; live and managed transfers remain refused. [Recorded validation](verification/2026-09-11-identity-repair.json) passed 753 Rust
+tests, 54 Python checks and six actual CLI/restart steps. The clean packaged
+checkpoint passed 114 native workflow steps, 23 routing steps and 11 updater
+cases. The later database-key refusal guard passed the full gate and another
+source-pinned CLI trial. CI and actual final-head review remain.
 
 ### Notification clicks open Script Editor (September 10)
 
