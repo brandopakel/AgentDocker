@@ -9,6 +9,7 @@ advertised version, and that a second check then finds nothing newer.
 No real launcher, daemon or provider configuration is touched.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -21,6 +22,17 @@ from pathlib import Path
 MAC = sys.platform == "darwin"
 PAYLOAD = "AgentDocker.app" if MAC else "agentdocker-desktop"
 BIN = Path("Contents/MacOS") if MAC else Path("bin")
+
+
+@contextmanager
+def record(report, output):
+    try:
+        yield
+    except Exception as error:
+        report["error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def cli(binary, prefix, *arguments, env, success=True):
@@ -46,12 +58,19 @@ def main():
     archive = source / archive_name
     assert archive.is_file(), f"missing {archive}"
     binary = source / PAYLOAD / BIN / "agentdocker"
-    report = {"passed": False, "source": str(source), "target": target, "steps": []}
-    with tempfile.TemporaryDirectory(prefix="ad-update-", dir="/tmp") as scratch:
+    report = {"passed": False, "source": {key: manifest[key] for key in
+              ("source_commit", "source_tree", "source_input_sha256", "source_dirty")},
+              "target": target, "steps": [], "scope": "Owned offline installation flow with synthetic version relabelling; not a distinct-source upgrade or hosted-download test.",
+              "driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              "binary_sha256": {name: hashlib.sha256((source / PAYLOAD / BIN / name).read_bytes()).hexdigest()
+                                for name in ("agentdocker", "agentd", "agentdocker-ui")}}
+    with record(report, args.output), tempfile.TemporaryDirectory(prefix="ad-update-", dir="/tmp") as scratch:
         root = Path(scratch)
         prefix = root / "prefix"
         prefix.mkdir(mode=0o700)
-        env = {**os.environ, "AGENTDOCKER_NO_AUTOSTART": "1", "AGENTDOCKER_SOCKET": str(root / "no.sock")}
+        env = {key: value for key, value in os.environ.items() if not key.startswith("AGENTDOCKER_")}
+        env.update(AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_SOCKET=str(root / "no.sock"),
+                   AGENTDOCKER_HOME=str(root / "state"), AGENTDOCKER_NO_NOTIFICATIONS="1")
         # A preview feed for one made-up newer version pointing at the local archive.
         version = manifest["version"]
         major, minor, patch = version.split("+")[0].split("-")[0].split(".")
@@ -61,7 +80,7 @@ def main():
             "format": 1, "product": "agentdocker", "channel": "preview",
             "policy": {"check_interval_hours": 24, "download": "manual", "activation": "explicit"},
             "releases": [{"target": target, "version": version, "source_commit": manifest["source_commit"],
-                          "state_schema": manifest["state_schema"], "signing": manifest.get("signing", "ad-hoc"),
+                          "state_schema": manifest["state_schema"], "signing": manifest["signing"],
                           "notarized": False,
                           "archive": {"name": archive_name, "sha256": digest, "bytes": archive.stat().st_size,
                                       "url": "file://" + str(archive)}}],
@@ -79,6 +98,21 @@ def main():
         assert same["update"]["update_available"] is False, same
         assert not (prefix / ".local/share/agentdocker/desktop/downloads" / version).exists(), "check downloaded something"
         report["steps"].append("check reports no update for the running version and downloads nothing")
+
+        for invalid in (".", "..", "1.2.3-01"):
+            feed["releases"][0]["version"] = invalid
+            feed_path.write_text(json.dumps(feed))
+            rejected = cli(binary, prefix, "update", "--feed", feed_url, "--local-preview", env=env, success=False)
+            assert "semantic version" in rejected, rejected
+        assert not (prefix / ".local/share/agentdocker/desktop/downloads").exists()
+        report["steps"].append("malformed version paths refused before staging")
+        feed["releases"][0]["version"] = version
+        feed["releases"].append(dict(feed["releases"][0]))
+        feed_path.write_text(json.dumps(feed))
+        ambiguous = cli(binary, prefix, "update", "--feed", feed_url, "--check", "--local-preview", env=env, success=False)
+        assert "duplicate feed target" in ambiguous, ambiguous
+        feed["releases"].pop()
+        report["steps"].append("ambiguous duplicate target refused during check")
 
         # 3. Advertise a newer version but keep the real archive: the check believes the feed, the
         #    download then finds a payload whose own metadata disagrees, and nothing is installed.
@@ -102,8 +136,15 @@ def main():
         assert not (downloads / "payload").exists(), "tampered archive was extracted"
         report["steps"].append("tampered checksum refused; no partial file, no extraction")
 
-        # 5. An honest newer release: the same payload relabelled to the newer version (its build.json
-        #    edited and re-signed ad hoc) so the feed, the archive and the payload agree.
+        feed["releases"][0]["archive"]["url"] = "file://" + str(root / "missing-archive")
+        feed_path.write_text(json.dumps(feed))
+        failed = cli(binary, prefix, "update", "--feed", feed_url, "--local-preview", env=env, success=False)
+        assert "cannot download the update archive" in failed, failed
+        assert not any(downloads.glob("*.part")), "failed fetch retained a partial file"
+        report["steps"].append("failed archive fetch leaves no partial download")
+
+        # 5. A synthetic newer version: relabel this payload and sign ad hoc so the
+        #    installation flow can run. This does not prove a distinct-source upgrade.
         relabel_dir = root / "relabelled"
         relabel_dir.mkdir()
         payload_copy = relabel_dir / PAYLOAD
@@ -140,7 +181,6 @@ def main():
         report["steps"].append("second check finds nothing newer than the installed version")
         report["installed"] = status["installation"]["current"]
         report["passed"] = True
-    (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

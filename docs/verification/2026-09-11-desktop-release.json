@@ -1,0 +1,293 @@
+{
+  "date": "2026-09-11",
+  "result": "implemented_and_local_acceptance_passed",
+  "source": {
+    "source_commit": "a910d812b50fbe8b0dc1160b0fe62f5713dbcbbc",
+    "source_tree": "253e4bffea19338b0411821b7446619b667a8029",
+    "source_input_sha256": "da922c4d70b55106c54ac8e350086dc141b4b63caeab325580a2fd6baf827893",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "state_schema": 10,
+    "installation_lock": 1
+  },
+  "changes": [
+    "CLI and Settings update check, verified download, preview and explicit installation",
+    "Strict semantic-version paths and numeric prerelease order using locked semver1.0.28",
+    "Reject mixed or duplicate feed identities and invalid stable signing metadata before displaying availability",
+    "Reject links, hardlinks, unknown archive types, ambiguous listings, more than4096 entries and more than210MiB expanded bytes before extraction",
+    "Remove owned partial files after failed downloads; pin current and candidate installation identities",
+    "Produce package.py archives for four native targets, verify all archive bytes in stable/preview feeds, and publish complete drafts",
+    "Require protected matching tags and Mac signing configuration before building; scope Mac secrets to Mac jobs; keep older/preview releases from moving latest or the tap"
+  ],
+  "validation": {
+    "rust": {
+      "passed": 727,
+      "skipped": 6,
+      "standard_gate": "fmt, strict clippy, nextest, doctest, package and release build passed",
+      "gate_log_sha256": "fc92e25c902c276800f32113545980ae2af19ecd5b6c0b6aab40b3863bcad3ef"
+    },
+    "python": {
+      "in_standard_gate": 53,
+      "after_producer_review_followup": 54,
+      "result": "passed"
+    },
+    "workflow_lint": {
+      "tool": "actionlint1.7.12",
+      "official_archive_sha256": "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f",
+      "workflows": [
+        ".github/workflows/release.yml",
+        ".github/workflows/desktop.yml"
+      ],
+      "result": "passed"
+    },
+    "focused_updater_tests": {
+      "passed": 10,
+      "includes": "Actual regular archive accepted and actual symlink archive rejected on macOS; actual tar hardlink case runs on Linux."
+    }
+  },
+  "package": {
+    "format": 1,
+    "product": "agentdocker",
+    "version": "0.1.0",
+    "source_commit": "a910d812b50fbe8b0dc1160b0fe62f5713dbcbbc",
+    "target": "aarch64-apple-darwin",
+    "display_name": "agentdocker",
+    "signing": "local-preview",
+    "notarized": false,
+    "source_tree": "253e4bffea19338b0411821b7446619b667a8029",
+    "source_input_sha256": "da922c4d70b55106c54ac8e350086dc141b4b63caeab325580a2fd6baf827893",
+    "source_dirty": false,
+    "state_schema": 10,
+    "installation_lock": 1,
+    "size": {
+      "payload_bytes": 27949493,
+      "archive_bytes": {
+        "agentdocker-desktop-aarch64-apple-darwin.zip": 11999065
+      },
+      "limits": {
+        "payload_bytes": 104857600,
+        "archive_bytes": 41943040
+      }
+    },
+    "binary_sha256": {
+      "agentdocker": "6d143edd1ea8079ea40f37dfb5afe2e2fd98571de82031cc352194122f1c9632",
+      "agentd": "cc8334197c3ecd73478feba0d4faa45094ed2c9d99e377b7d17b8dd6443f5555",
+      "agentdocker-ui": "590c7d291f84919c01b8e7438d5bb4865b7d558e5191dcac3706d8458cf75902"
+    },
+    "artifacts": {
+      "agentdocker-desktop-aarch64-apple-darwin.zip": "e2542c4369bc5eaf9c384ede5997936712c1c16fa903627945c4e1a736039533"
+    }
+  },
+  "offline_update": {
+    "passed": true,
+    "source": {
+      "source_commit": "a910d812b50fbe8b0dc1160b0fe62f5713dbcbbc",
+      "source_tree": "253e4bffea19338b0411821b7446619b667a8029",
+      "source_input_sha256": "da922c4d70b55106c54ac8e350086dc141b4b63caeab325580a2fd6baf827893",
+      "source_dirty": false
+    },
+    "target": "aarch64-apple-darwin",
+    "steps": [
+      "file feed refused without local preview",
+      "check reports no update for the running version and downloads nothing",
+      "malformed version paths refused before staging",
+      "ambiguous duplicate target refused during check",
+      "check sees the advertised newer version",
+      "payload whose metadata disagrees with the feed is refused before install",
+      "tampered checksum refused; no partial file, no extraction",
+      "failed archive fetch leaves no partial download",
+      "download, verify, extract and preview of the newer release",
+      "apply produced a managed installation of the advertised version",
+      "second check finds nothing newer than the installed version"
+    ],
+    "scope": "Owned offline installation flow with synthetic version relabelling; not a distinct-source upgrade or hosted-download test.",
+    "driver_sha256": "75246ed59207497fc9ad853e18729445efa1017af04275612ba93015080c49ab",
+    "binary_sha256": {
+      "agentdocker": "6d143edd1ea8079ea40f37dfb5afe2e2fd98571de82031cc352194122f1c9632",
+      "agentd": "cc8334197c3ecd73478feba0d4faa45094ed2c9d99e377b7d17b8dd6443f5555",
+      "agentdocker-ui": "590c7d291f84919c01b8e7438d5bb4865b7d558e5191dcac3706d8458cf75902"
+    },
+    "installed": {
+      "id": "a45ff6ca42be8f0d9af834bb548f7a7ebbdfabcadef87fd9bce668e6cd164542",
+      "installation_lock": 1,
+      "payload": "AgentDocker.app",
+      "source_commit": "a910d812b50fbe8b0dc1160b0fe62f5713dbcbbc",
+      "state_schema": 10,
+      "target": "aarch64-apple-darwin",
+      "tree_sha256": "a45ff6ca42be8f0d9af834bb548f7a7ebbdfabcadef87fd9bce668e6cd164542",
+      "version": "0.1.1"
+    }
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 114,
+    "raw_result_sha256": "e6e9909a19b8057ecbde407ba5812abf47b1f48b4be5f52e414c41afb4f5185c",
+    "driver_sha256": "fdf91ec7d0bc018bfeaf44cbdb08258385e31ef9730b7c1a831c343dcc57dc1b",
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "idle_resources": {
+      "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+      "samples": [
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 1.7
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 0.7
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 1.5
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173408256,
+            "ps_cpu_percent": 0.7
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173424640,
+            "ps_cpu_percent": 0.0
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173375488,
+            "ps_cpu_percent": 1.6
+          },
+          "daemon": {
+            "rss_bytes": 17481728,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173375488,
+            "ps_cpu_percent": 39.2
+          },
+          "daemon": {
+            "rss_bytes": 17514496,
+            "ps_cpu_percent": 1.3
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173375488,
+            "ps_cpu_percent": 1.0
+          },
+          "daemon": {
+            "rss_bytes": 17514496,
+            "ps_cpu_percent": 0.0
+          }
+        },
+        {
+          "window": {
+            "rss_bytes": 173375488,
+            "ps_cpu_percent": 18.3
+          },
+          "daemon": {
+            "rss_bytes": 17514496,
+            "ps_cpu_percent": 0.0
+          }
+        }
+      ],
+      "summary": {
+        "window": {
+          "median_rss_bytes": 173408256.0,
+          "maximum_rss_bytes": 173424640,
+          "median_ps_cpu_percent": 0.85
+        },
+        "daemon": {
+          "median_rss_bytes": 17481728.0,
+          "maximum_rss_bytes": 17514496,
+          "median_ps_cpu_percent": 0.0
+        }
+      }
+    },
+    "elapsed_seconds": 47.12717312500172
+  },
+  "reproduced_before_fix": {
+    "baseline": "Updater implementation cbd1da1 plus focused regression tests, before a910d81 corrections",
+    "log_sha256": "6a984f66c5d4de175e19f4410c5a67ff4c3aee0b2e5726d269febd512c86fb08",
+    "failures": [
+      "version . accepted before staging",
+      "rc.10 compared below rc.2",
+      "hardlink or unknown archive mode accepted"
+    ],
+    "after": "All10 focused updater tests and the full727-test gate passed; packaged CLI additionally passed malformed-version, duplicate-feed and failed-fetch cases."
+  },
+  "other_retained_failures": [
+    {
+      "case": "Python suite in restricted sandbox",
+      "result": "51 passed; owned TCP-listener fixture and macOS bundle fixture could not run correctly",
+      "followup": "Full53 checks passed outside the sandbox, then54 after the added maintenance-release case; no production change inferred from sandbox failure."
+    }
+  ],
+  "remaining": [
+    "Actual protected-tag run with Apple signing/notarization credentials",
+    "Hosted feed/archive checks and independent Gatekeeper acceptance",
+    "Scheduled update checks and distinct-source hosted upgrade acceptance",
+    "Safe live daemon transfer remains unavailable; updater never restarts or kills active sessions",
+    "CI and actual CodeRabbit review must cover the pushed checkpoint",
+    "Windows/native platform and long sustained-use acceptance"
+  ],
+  "evidence_scope": "Package is a local ad-hoc preview. Offline flow uses synthetic version relabelling of one source, not a distinct-source upgrade. No installed launchers, user provider sessions, signing credentials or published release were changed."
+}

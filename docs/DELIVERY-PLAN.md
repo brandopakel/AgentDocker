@@ -41,6 +41,12 @@ evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installab
 archives and complete feed. Signed protected-tag publication, hosted update
 verification and scheduled checks remain release work.
 
+The [reviewed update checkpoint](verification/2026-09-11-desktop-release.json)
+at `a910d81` passed 727 Rust tests, 54 Python checks, 114 packaged native steps and
+11 packaged updater scenarios. Workflow lint passed. The update smoke now also
+runs in all four desktop CI jobs; its synthetic version exercise does not replace
+distinct-source or hosted-update acceptance.
+
 ### Notification clicks open Script Editor (September 10)
 
 The user reports that notification clicks repeatedly open a blank Script Editor

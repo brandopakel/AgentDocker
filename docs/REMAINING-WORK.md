@@ -171,3 +171,13 @@ The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clea
 The [receipt follow-up](verification/2026-09-10-message-receipts.json) pins `f81df24`: MCP reads retain messages by default, agents explicitly acknowledge received IDs, and the desktop can dismiss one received message without disturbing later arrivals or drafts. Validation passed 704 Rust tests, 48 Python checks, real MCP interruption/receipt scenarios, 110 native workflow steps and 23 notification-navigation steps. Provider idle-wake integration remains open.
 
 The [bulk-receipt checkpoint](verification/2026-09-10-bulk-receipts.json) pins `796270a`: Dismiss shown clears only currently displayed received messages; unanswered questions appear once, CLI output exposes receipt IDs, repeated acknowledgements emit no false events, and legacy duplicate channel membership produces one delivery. Validation passed 710 Rust tests, 48 Python checks, actual queue/MCP trials, 114 native workflow steps on a diagnostic repeat, and 23 notification-routing steps. The original idle-sample process exit is retained as unexplained; high UI resource use also needs investigation. These results do not complete provider idle wake or physical notification-click acceptance.
+
+The [update and release checkpoint](verification/2026-09-11-desktop-release.json)
+pins clean source `a910d81`: 727 Rust tests, 54 Python checks, strict lint/package
+gates, 114 packaged native steps and 11 packaged updater scenarios passed.
+Malformed versions, ambiguous feeds, archive links and failed downloads now have
+explicit rejection coverage. Release automation produces installable archives
+and keeps older/preview releases from moving stable distribution backwards.
+The earlier large light-theme shadow allocation was corrected; measured native
+resource samples are retained separately from long-duration acceptance. Public
+signing, hosted downloads, scheduled checks and safe daemon transfer remain open.
