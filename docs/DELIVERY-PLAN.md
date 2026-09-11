@@ -69,7 +69,10 @@ supported; live and managed transfers remain refused. [Recorded validation](veri
 tests, 54 Python checks and six actual CLI/restart steps. The clean packaged
 checkpoint passed 114 native workflow steps, 23 routing steps and 11 updater
 cases. The later database-key refusal guard passed the full gate and another
-source-pinned CLI trial. CI and actual final-head review remain.
+source-pinned CLI trial. The removal review follow-up passed 756 Rust tests and
+54 Python checks. All CI and actual final-head review passed at `f9caf00`;
+[PR #98](https://github.com/brandopakel/AgentDocker/pull/98) merged as `aca89e1`.
+Production repair and the installed-launcher switch have not been performed.
 
 ### Notification clicks open Script Editor (September 10)
 
@@ -670,3 +673,18 @@ accepted idle peer/human input and mixed steering in one active turn. Replaying
 the same client message ID started another turn. The owned input adapter therefore
 needs durable attempt tracking and an explicit uncertain-acceptance state before
 retries; this prototype does not close queue integration or provider recovery.
+
+### September 11: terminal selection and interrupted test recovery
+
+The terminal follow-up adds mouse range selection and copies the highlighted
+visible-grid snapshot while live output continues draining. Copy, Escape, input,
+scroll, resize and window blur release the snapshot. Focused tests cover reverse
+ranges, wide/combining text, soft wraps, changed output and control-key behavior.
+Native acceptance and the follow-up PR gate remain pending.
+
+The interrupted one-hour run at `f9caf00` is not counted as acceptance. Its daemon
+shut down, then harness cleanup raised PermissionError before serializing samples.
+The corrected driver records samples incrementally, handles SIGINT/SIGTERM as
+interruption and waits for an already-exiting daemon before considering a signal.
+A normal short run and intentional interruption both completed cleanup; the latter
+retained 21 cycles and two samples, reported interrupted, and left no children.

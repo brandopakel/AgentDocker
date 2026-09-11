@@ -30,6 +30,46 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def save_report(path, report):
+    """Replace one owned report atomically; previous evidence survives a failed write."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w") as stream:
+        json.dump(report, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+def stop_daemon(daemon, endpoint):
+    """Reap an exited child before considering a signal; retain all cleanup failures."""
+    cleanup = {"forced": False, "errors": []}
+    if daemon.poll() is not None:
+        cleanup["exit"] = daemon.returncode
+        return cleanup
+    try:
+        rpc(endpoint, {"op": "shutdown"})
+    except (OSError, ValueError, RuntimeError) as error:
+        cleanup["errors"].append(f"shutdown: {type(error).__name__}: {error}")
+    try:
+        # A disappearing socket can mean graceful shutdown is already in flight.
+        daemon.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        cleanup["forced"] = True
+        if daemon.poll() is None:
+            try:
+                # The unreaped owned leader still reserves the process group.
+                os.killpg(daemon.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError) as error:
+                cleanup["errors"].append(f"signal: {type(error).__name__}: {error}")
+        try:
+            daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            cleanup["errors"].append(f"wait: {error}")
+    cleanup["exit"] = daemon.returncode
+    return cleanup
+
+
 def rpc(endpoint, request):
     started = time.monotonic()
     with socket.socket(socket.AF_UNIX) as stream:
@@ -59,7 +99,8 @@ def sample(pid, state):
             "rows": counts}
 
 
-def population(binary, output, count, seconds, files):
+def population(binary, output, count, seconds, files, interrupted=None):
+    interrupted = interrupted if interrupted is not None else threading.Event()
     report = {"agents": count, "requested_seconds": seconds, "checkout_files": files,
               "result": "failed", "samples": [], "scope": "supervised sleep processes plus concurrent IPC clients"}
     with tempfile.TemporaryDirectory(prefix="ad-soak-", dir="/tmp") as scratch:
@@ -80,6 +121,7 @@ def population(binary, output, count, seconds, files):
         cycles = 0
         sample_lock = threading.Lock()
         started = time.monotonic()
+        save_report(output / f"population-{count}.json", report)
         try:
             with (output / f"daemon-{count}.log").open("wb") as log:
                 daemon = subprocess.Popen([str(binary)], cwd=checkout, env=env,
@@ -96,6 +138,8 @@ def population(binary, output, count, seconds, files):
                     time.sleep(0.05)
                 agents = []
                 for index in range(count):
+                    if interrupted.is_set():
+                        break
                     reply, _ = rpc(endpoint, {"op": "run", "spec": {"name": f"soak-{index}",
                         "runtime": "fixture", "workdir": str(checkout),
                         "command": ["/bin/sleep", str(seconds + 300)]}})
@@ -107,7 +151,7 @@ def population(binary, output, count, seconds, files):
                 def worker(agent):
                     nonlocal cycles
                     index = 0
-                    while not stop_workers.is_set() and time.monotonic() < deadline:
+                    while not stop_workers.is_set() and not interrupted.is_set() and time.monotonic() < deadline:
                         durations = []
                         token = {"sequence": index, "agent": agent}
                         sent, duration = rpc(endpoint, {"op": "send", "from": agent,
@@ -133,14 +177,21 @@ def population(binary, output, count, seconds, files):
                 with ThreadPoolExecutor(max_workers=count) as pool:
                     workers = [pool.submit(worker, agent) for agent in agents]
                     try:
-                        while time.monotonic() < deadline:
+                        while time.monotonic() < deadline and not interrupted.is_set():
                             for worker_result in workers:
                                 if worker_result.done():
                                     worker_result.result()
                             current = sample(daemon.pid, state)
                             current["at"] -= started
                             report["samples"].append(current)
-                            stop_workers.wait(min(5, max(0, deadline - time.monotonic())))
+                            with sample_lock:
+                                current["completed_cycles"] = cycles
+                            # Keep completed samples even after a hard interruption
+                            # or a later exception in cleanup/final serialization.
+                            with (output / f"samples-{count}.jsonl").open("a") as sample_log:
+                                sample_log.write(json.dumps(current) + "\n")
+                                sample_log.flush()
+                            interrupted.wait(min(5, max(0, deadline - time.monotonic())))
                         for worker_result in workers:
                             worker_result.result()
                     finally:
@@ -150,25 +201,19 @@ def population(binary, output, count, seconds, files):
                     assert not rpc(endpoint, {"op": "leases", "agent": agent})[0]["leases"]
                     record = rpc(endpoint, {"op": "inspect", "agent": agent})[0]["agent"]
                     assert record["status"]["state"] == "running", "supervised child unexpectedly stopped"
-                report["result"] = "passed"
+                report["result"] = "interrupted" if interrupted.is_set() else "passed"
         except Exception as error:
             report["error"] = str(error)
         finally:
             stop_workers.set()
-            if daemon is not None and daemon.returncode is None:
+            if daemon is not None:
                 try:
-                    rpc(endpoint, {"op": "shutdown"})
-                    daemon.wait(timeout=30)
-                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    # Only our unreaped daemon group is signalled; native child
-                    # ownership gates handle its independently supervised groups.
-                    try:
-                        os.killpg(daemon.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    daemon.wait(timeout=5)
+                    report["cleanup"] = stop_daemon(daemon, endpoint)
+                    if report["cleanup"]["forced"]:
+                        report["result"] = "failed"
+                except Exception as error:
+                    report["cleanup_error"] = f"{type(error).__name__}: {error}"
                     report["result"] = "failed"
-                    report["shutdown_forced"] = True
             report["daemon_exit"] = daemon.returncode if daemon else None
             survivors = []
             for pid in child_pids:
@@ -177,10 +222,13 @@ def population(binary, output, count, seconds, files):
                     survivors.append(pid)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    survivors.append(pid)
             report["remaining_child_pids"] = survivors
             if survivors or report["daemon_exit"] != 0:
                 report["result"] = "failed"
             report["duration_seconds"] = time.monotonic() - started
+            report["interrupted"] = interrupted.is_set()
             report["cycles"] = cycles
             ordered = sorted(latencies)
             report["latency_sample_count"] = len(ordered)
@@ -190,11 +238,12 @@ def population(binary, output, count, seconds, files):
             if report["samples"]:
                 rss = [s["rss_kib"] for s in report["samples"]]
                 report["daemon_rss_kib"] = {"first": rss[0], "last": rss[-1], "maximum": max(rss), "median": statistics.median(rss)}
-                report["maximum_descriptors"] = max(s["descriptors"] for s in report["samples"] if s["descriptors"] is not None)
+                report["maximum_descriptors"] = max((s["descriptors"] for s in report["samples"] if s["descriptors"] is not None), default=None)
+            save_report(output / f"population-{count}.json", report)
     return report
 
 
-def main(args):
+def run(args, interrupted):
     os.umask(0o077)
     args.output.mkdir(mode=0o700)
     original = args.binary.resolve(strict=True)
@@ -209,21 +258,36 @@ def main(args):
     report = {"binary_sha256": original_digest, "driver_sha256": digest(Path(__file__)),
               "started_at": datetime.now(timezone.utc).isoformat(),
               "platform": platform.platform(), "result": "running", "populations": []}
+    save_report(args.output / "result.json", report)
     for count in args.agents:
         print(f"starting {count} supervised agents for {args.seconds} seconds", flush=True)
-        result = population(binary, args.output, count, args.seconds, args.files)
+        result = population(binary, args.output, count, args.seconds, args.files, interrupted)
         report["populations"].append(result)
-        (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        save_report(args.output / "result.json", report)
         print(json.dumps({key: result.get(key) for key in ["agents", "result", "error", "cycles", "request_ms", "daemon_rss_kib"]}), flush=True)
         if result["result"] != "passed":
-            report["result"] = "failed"
-            (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-            return 1
+            report["result"] = result["result"]
+            save_report(args.output / "result.json", report)
+            return 130 if result["result"] == "interrupted" else 1
     report["binary_unchanged"] = digest(binary) == report["binary_sha256"]
     report["driver_unchanged"] = digest(Path(__file__)) == report["driver_sha256"]
     report["result"] = "passed" if report["binary_unchanged"] and report["driver_unchanged"] else "failed"
-    (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    save_report(args.output / "result.json", report)
     return int(report["result"] != "passed")
+
+
+def main(args):
+    interrupted = threading.Event()
+    old_handlers = {}
+    old_mask = os.umask(0o077)
+    try:
+        for signum in [signal.SIGINT, signal.SIGTERM]:
+            old_handlers[signum] = signal.signal(signum, lambda *_: interrupted.set())
+        return run(args, interrupted)
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
+        os.umask(old_mask)
 
 
 if __name__ == "__main__":
