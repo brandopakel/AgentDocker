@@ -465,10 +465,12 @@ impl App {
                     }
                 }
                 Msg::Activity(activity) => {
-                    self.activity = activity
+                    let fresh: BTreeMap<String, Activity> = activity
                         .into_iter()
                         .map(|a| (a.agent.to_string(), a.activity))
                         .collect();
+                    self.note_completions(&fresh);
+                    self.activity = fresh;
                 }
                 Msg::Questions(questions) => {
                     // Forget drafts for questions nobody is waiting on any
@@ -676,6 +678,40 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// A turn just finished: an agent that was working or blocked is now
+    /// idle or gone. That is the observed state; whether anyone saw it is
+    /// a separate question, answered here once and then only by the user.
+    /// A completion on the screen the user is looking at, in a focused
+    /// window, is viewed as it happens; every other one waits for them.
+    fn note_completions(&mut self, fresh: &BTreeMap<String, Activity>) {
+        for (id, now) in fresh {
+            let was_busy = matches!(
+                self.activity.get(id),
+                Some(Activity::Working { .. } | Activity::Blocked { .. })
+            );
+            if !was_busy || !matches!(now, Activity::Idle { .. } | Activity::Finished) {
+                continue;
+            }
+            let on_screen = self.screen == Screen::Agents
+                && !self.shell.unfocused
+                && self.agents.iter().any(|a| {
+                    a.id.as_str() == id
+                        && a.project.as_ref().map(|p| p.root.as_path()) == self.selected_root()
+                });
+            if !on_screen {
+                self.shell.unviewed_done.insert(id.clone());
+            }
+        }
+        // A session that started working again, or left, is no longer a
+        // finished-and-unviewed one.
+        self.shell.unviewed_done.retain(|id| {
+            matches!(
+                fresh.get(id),
+                Some(Activity::Idle { .. } | Activity::Finished)
+            )
+        });
     }
 
     fn name_of(&self, id: &str) -> String {
@@ -2472,5 +2508,117 @@ mod tests {
         assert_eq!(span(45), "45s");
         assert_eq!(span(180), "3m");
         assert_eq!(span(7200), "2h");
+    }
+
+    #[test]
+    fn a_turn_finished_out_of_view_waits_to_be_viewed_and_idle_alone_is_not_seen() {
+        use agentdocker_core::AgentSpec;
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut agents = Vec::new();
+        for (name, root) in [("worker", "/fixture/alpha"), ("other", "/fixture/beta")] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let mut project = ProjectRef::directory(root);
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project.clone());
+            app.shell.catalog.remember(project, false);
+            agents.push(agent);
+        }
+        let (worker, other) = (agents[0].clone(), agents[1].clone());
+        messages.send(Msg::Agents(agents)).unwrap();
+        app.drain();
+        let report = |records: &[(&AgentRecord, Activity)]| {
+            Msg::Activity(
+                records
+                    .iter()
+                    .map(|(agent, activity)| AgentActivity {
+                        agent: agent.id.clone(),
+                        name: agent.spec.name.clone(),
+                        project: agent.project.as_ref().map(|p| p.id()),
+                        activity: activity.clone(),
+                    })
+                    .collect(),
+            )
+        };
+        let working = Activity::Working { since: Utc::now() };
+        let idle = Activity::Idle { since: Utc::now() };
+
+        // Idle from the start is a state, not a completion.
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // The user is looking at beta while alpha's worker finishes.
+        let _ = app.update(Message::SelectProject("/fixture/beta".into()));
+        messages
+            .send(report(&[
+                (&worker, working.clone()),
+                (&other, working.clone()),
+            ]))
+            .unwrap();
+        app.drain();
+        messages
+            .send(report(&[(&worker, idle.clone()), (&other, idle.clone())]))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        assert!(
+            !app.shell.unviewed_done.contains(other.id.as_str()),
+            "a completion on the screen being looked at is viewed as it happens"
+        );
+        assert_eq!(
+            app.shell
+                .unviewed_in(&app.agents, std::path::Path::new("/fixture/alpha")),
+            1
+        );
+
+        // Idle reports keep arriving; none of them counts as viewing.
+        messages.send(report(&[(&worker, idle.clone())])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+
+        // Opening the project is viewing.
+        let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // In an unfocused window even the open project is not being looked at.
+        let _ = app.update(Message::Event(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        messages
+            .send(report(&[(&worker, working.clone())]))
+            .unwrap();
+        app.drain();
+        messages.send(report(&[(&worker, idle.clone())])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        // Selecting the session is viewing it.
+        let _ = app.update(Message::SelectSession(worker.id.to_string()));
+        assert!(app.shell.unviewed_done.is_empty());
+
+        // Working again clears a stale badge without anyone viewing it.
+        let _ = app.update(Message::Event(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        messages
+            .send(report(&[(&worker, working.clone())]))
+            .unwrap();
+        app.drain();
+        messages.send(report(&[(&worker, idle)])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.contains(worker.id.as_str()));
+        messages.send(report(&[(&worker, working)])).unwrap();
+        app.drain();
+        assert!(app.shell.unviewed_done.is_empty());
     }
 }

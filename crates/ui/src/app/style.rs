@@ -176,6 +176,45 @@ impl Colors {
 }
 
 /// `color` at `a` opacity.
+/// A project's own colour: a tint to sit behind its monogram and an ink
+/// to draw the letter in. The hue is a hash of the project's identity, so
+/// the same repository looks the same on every machine and in both
+/// themes, and nothing has to be chosen or stored. Saturation and
+/// lightness are fixed per theme so every tint carries the ink at 4.5:1.
+pub fn identity(seed: &str, dark: bool) -> (Color, Color) {
+    // FNV-1a: cheap, stable, and spread well enough for a hue wheel.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in seed.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    // Twelve stops rather than a continuous wheel: neighbouring projects
+    // land on visibly different hues instead of two near-identical blues.
+    let hue = f32::from((hash % 12) as u8) * 30.0 + 15.0;
+    if dark {
+        (hsl(hue, 0.42, 0.26), hsl(hue, 0.70, 0.84))
+    } else {
+        (hsl(hue, 0.60, 0.90), hsl(hue, 0.65, 0.28))
+    }
+}
+
+/// HSL to sRGB, hue in degrees.
+fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color {
+    let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let h = (hue.rem_euclid(360.0)) / 60.0;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u8 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = lightness - c / 2.0;
+    Color::from_rgb(r + m, g + m, b + m)
+}
+
 pub fn alpha(color: Color, a: f32) -> Color {
     Color { a, ..color }
 }
@@ -244,6 +283,51 @@ mod tests {
         for dark in [false, true] {
             assert_eq!(Colors::of(&Colors::new(dark).theme()).dark, dark);
         }
+    }
+
+    #[test]
+    fn every_project_identity_carries_its_ink() {
+        let seeds = [
+            "AgentDocker",
+            "aistor",
+            "7d0e1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a697887",
+            "/Users/me/src/tools",
+            "",
+        ];
+        for dark in [false, true] {
+            for seed in seeds {
+                let (tint, ink) = identity(seed, dark);
+                assert!(
+                    contrast(ink, tint) >= 4.5,
+                    "ink on tint for {seed:?}, dark={dark}: {}",
+                    contrast(ink, tint)
+                );
+                assert_eq!(identity(seed, dark), (tint, ink), "stable for {seed:?}");
+            }
+            // Exhaust the wheel: every stop must carry its ink, not just
+            // the ones these seeds happen to land on.
+            let mut hues = std::collections::BTreeSet::new();
+            for n in 0..200u32 {
+                let (tint, ink) = identity(&n.to_string(), dark);
+                assert!(contrast(ink, tint) >= 4.5, "stop for seed {n}, dark={dark}");
+                hues.insert(format!("{:.3},{:.3},{:.3}", tint.r, tint.g, tint.b));
+            }
+            assert_eq!(hues.len(), 12, "twelve distinct stops, dark={dark}");
+        }
+        assert_ne!(
+            identity("AgentDocker", false).0,
+            identity("aistor", false).0
+        );
+    }
+
+    #[test]
+    fn hsl_reaches_the_primaries() {
+        let red = hsl(0.0, 1.0, 0.5);
+        assert!((red.r - 1.0).abs() < 1e-6 && red.g.abs() < 1e-6 && red.b.abs() < 1e-6);
+        let green = hsl(120.0, 1.0, 0.5);
+        assert!(green.r.abs() < 1e-6 && (green.g - 1.0).abs() < 1e-6);
+        let grey = hsl(200.0, 0.0, 0.5);
+        assert!((grey.r - 0.5).abs() < 1e-6 && (grey.b - 0.5).abs() < 1e-6);
     }
 
     #[test]

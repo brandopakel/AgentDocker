@@ -91,19 +91,48 @@ fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
         .style(move |_| c.dot(fill))
         .into()
 }
-/// A dot that says what it means when pointed at. Used only where the
-/// words are not already printed beside it (the rail's project dots); a
-/// tooltip that repeats visible text is noise.
-fn status_dot<'a>(
-    fill: iced::Color,
-    size: f32,
+/// A project's mark: its initial on its own tint. The tint comes from
+/// the project's identity, so a repository keeps its colour across
+/// clones, machines and themes, and two projects side by side are told
+/// apart before their names are read.
+fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Element<'a, Message> {
+    let (tint, ink) = super::style::identity(seed, c.dark);
+    let initial: String = name
+        .chars()
+        .find(|ch| ch.is_alphanumeric())
+        .map(|ch| ch.to_uppercase().collect())
+        .unwrap_or_else(|| "·".to_owned());
+    container(
+        text(initial)
+            .size(size * 0.55)
+            .font(weight(iced::font::Weight::Semibold))
+            .color(ink)
+            .center(),
+    )
+    .width(size)
+    .height(size)
+    .style(move |_| container::Style {
+        background: Some(tint.into()),
+        border: iced::Border {
+            radius: (size * 0.28).into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+/// Something small that says what it means when pointed at. Used only
+/// where the words are not already printed beside it (the rail's project
+/// marks); a tooltip that repeats visible text is noise.
+fn hint<'a>(
+    content: impl Into<Element<'a, Message>>,
     label: impl Into<String>,
     c: Colors,
 ) -> Element<'a, Message> {
-    // The dot is small; the thing you point at is not. Padding widens the
-    // hover target to a comfortable size without moving the dot.
+    // The mark is small; the thing you point at is not. Padding widens
+    // the hover target to a comfortable size without moving the mark.
     iced::widget::tooltip(
-        container(dot(fill, size, c)).padding(5),
+        container(content).padding(5),
         container(text(label.into()).size(12).color(c.text))
             .padding([5, 9])
             .style(move |_| container::Style {
@@ -279,7 +308,7 @@ impl App {
     pub fn scale_factor(&self) -> f32 {
         self.settings.text_size / 14.0
     }
-    fn selected_root(&self) -> Option<&std::path::Path> {
+    pub(super) fn selected_root(&self) -> Option<&std::path::Path> {
         self.shell.catalog.selected.as_deref()
     }
     pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
@@ -348,7 +377,16 @@ impl App {
             }
             .into()
         };
-        let mut heading_row = row![title(title_text, 26)].spacing(10).align_y(Center);
+        let mut heading_row = row![].spacing(10).align_y(Center);
+        if in_project && let Some(entry) = self.shell.catalog.selected() {
+            heading_row = heading_row.push(monogram(
+                &entry.project.name(),
+                &entry.project.id().to_string(),
+                30.0,
+                c,
+            ));
+        }
+        heading_row = heading_row.push(title(title_text, 26));
         if in_project
             && let Some(entry) = self.shell.catalog.selected()
             && entry.pinned
@@ -660,11 +698,12 @@ impl App {
     fn sidebar(&self, c: Colors) -> Element<'_, Message> {
         let project_page = self.in_project();
         let mut nav = column![brand(c), Space::new().height(22)].spacing(4);
+        let unviewed = self.shell.unviewed_done.len();
         nav = nav.push(self.nav_item(
             "projects",
             "Projects",
             Icon::Projects,
-            None,
+            (unviewed > 0).then(|| unviewed.to_string()),
             Message::Navigate(Screen::Agents),
             project_page,
         ));
@@ -702,31 +741,33 @@ impl App {
                         && a.project.as_ref().is_some_and(|p| p.root == path)
                 })
                 .count();
+            let done = self.shell.unviewed_in(&self.agents, &path);
+            let mut hint_text = if live > 0 {
+                format!("{live} live agent{}", if live == 1 { "" } else { "s" })
+            } else if entry.pinned {
+                "Pinned · no live agents".to_owned()
+            } else {
+                "Discovered · no live agents".to_owned()
+            };
+            if done > 0 {
+                hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
+            }
+            let seed = entry.project.id().to_string();
             let mut content = row![
-                status_dot(
-                    if live > 0 {
-                        c.green
-                    } else if entry.pinned {
-                        c.cyan
-                    } else {
-                        c.faint
-                    },
-                    6.0,
-                    if live > 0 {
-                        format!("{live} live agent{}", if live == 1 { "" } else { "s" })
-                    } else if entry.pinned {
-                        "Pinned · no live agents".to_owned()
-                    } else {
-                        "Discovered · no live agents".to_owned()
-                    },
-                    c
-                ),
+                hint(monogram(&name, &seed, 20.0, c), hint_text, c),
                 text(name.clone()).size(14).width(Fill)
             ]
-            .spacing(10)
+            .spacing(6)
             .align_y(Center);
+            if done > 0 {
+                content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
+            }
             if live > 0 {
-                content = content.push(small(live.to_string(), c));
+                content = content.push(
+                    row![dot(c.green, 6.0, c), small(live.to_string(), c)]
+                        .spacing(5)
+                        .align_y(Center),
+                );
             }
             projects = projects.push(custom(
                 format!("project-{}", path.display()),
@@ -904,14 +945,20 @@ impl App {
                         .padding([3, 0]),
                 );
             }
-            let content = row![
-                dot(self.activity_color(agent, c), 8.0, c),
-                lines,
-                small(format!("started {}", ago(Utc::now(), agent.created_at)), c),
-                pill(agent.spec.runtime.clone(), c.raised, c.muted, c)
-            ]
-            .spacing(12)
-            .align_y(Center);
+            let mut content = row![dot(self.activity_color(agent, c), 8.0, c), lines]
+                .spacing(12)
+                .align_y(Center);
+            if self.shell.unviewed_done.contains(&id) {
+                // Finished since you last looked. The observed state stays
+                // in the meta line; this says only that it is new to you.
+                content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
+            }
+            content = content
+                .push(small(
+                    format!("started {}", ago(Utc::now(), agent.created_at)),
+                    c,
+                ))
+                .push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
             rows = rows.push(custom(
                 format!("session-{id}"),
                 spoken,
@@ -1882,7 +1929,11 @@ impl App {
             if supported {
                 actions = actions.push(primary(
                     format!("setup-{}", runtime.name),
-                    "Review setup",
+                    if runtime.hooks.needs_review() {
+                        "Install hooks"
+                    } else {
+                        "Review setup"
+                    },
                     (!self.setup_busy).then_some(Message::Setup(vec![
                         runtime.name.clone(),
                         "--preview".into(),
@@ -1896,6 +1947,15 @@ impl App {
                 expanded,
             ));
             let mut details = column![actions].spacing(10);
+            if installed && runtime.hooks.needs_review() {
+                // Why the button matters, in the words of what changes.
+                details = details.push(note(
+                    "Hooks tell AgentDocker what this tool is doing as it happens: working, \
+                     waiting on you, finished. Without them only the process is visible, \
+                     so activity can lag and questions can go unnoticed.",
+                    c,
+                ));
+            }
             if expanded {
                 let mut facts = column![
                     kv("Vendor", runtime.vendor.to_string(), c),

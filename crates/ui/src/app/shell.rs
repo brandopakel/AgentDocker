@@ -39,6 +39,36 @@ pub(super) struct State {
     pub project_available: Option<bool>,
     pub notification_message: Option<MessageId>,
     pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
+    /// Sessions whose turn finished while nobody was looking at them:
+    /// finished as observed, not yet viewed. Viewing is an explicit act
+    /// (opening the project or the session, or already having it on
+    /// screen in a focused window when it finished); an `idle` report on
+    /// its own never counts as seen. Window-local, never persisted.
+    pub unviewed_done: BTreeSet<String>,
+    /// The window has lost focus; what it shows is not being looked at.
+    pub unfocused: bool,
+}
+
+impl State {
+    /// Every unviewed completion in the project at `root`, for a badge.
+    pub fn unviewed_in(&self, agents: &[AgentRecord], root: &std::path::Path) -> usize {
+        agents
+            .iter()
+            .filter(|a| {
+                self.unviewed_done.contains(a.id.as_str())
+                    && a.project.as_ref().is_some_and(|p| p.root == root)
+            })
+            .count()
+    }
+
+    /// The user opened the project at `root`: its completions are viewed.
+    pub fn viewed_project(&mut self, agents: &[AgentRecord], root: &std::path::Path) {
+        for agent in agents {
+            if agent.project.as_ref().is_some_and(|p| p.root == root) {
+                self.unviewed_done.remove(agent.id.as_str());
+            }
+        }
+    }
 }
 
 /// Each room keeps its own draft; a late acknowledgement only clears the text sent.
@@ -336,6 +366,7 @@ impl App {
                     .any(|e| e.project.root == path)
                 {
                     self.shell.catalog.unassigned = false;
+                    self.shell.viewed_project(&self.agents, &path);
                     self.shell.catalog.selected = Some(path);
                     self.shell.selected = None;
                     self.shell.search.clear();
@@ -346,6 +377,7 @@ impl App {
                 }
             }
             Message::SelectSession(id) => {
+                self.shell.unviewed_done.remove(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
             }
@@ -738,11 +770,13 @@ impl App {
                 self.shell.dpi = scale
             }
             Message::Event(iced::Event::Window(window::Event::Focused)) => {
+                self.shell.unfocused = false;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, true));
                 }
             }
             Message::Event(iced::Event::Window(window::Event::Unfocused)) => {
+                self.shell.unfocused = true;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, false));
                 }

@@ -41,7 +41,7 @@ appearance preferences are read when no new appearance has been saved.
 | --- | --- |
 | Projects | Sessions and contextual Activity, Channels, Coordination and Commands |
 | Inbox | Questions, retained answer drafts and messages addressed to the user |
-| Connections | Installed tools, explicit capabilities, reviewed setup, health and undo |
+| Connections | Installed tools, explicit capabilities, reviewed setup, health and undo. A tool whose hooks are missing or unverified gets an explicit **Install hooks** action and one sentence on what hooks add (live working, waiting and finished states) |
 | Settings | Appearance, installation, retained versions and diagnostics |
 
 Light and dark appearances share the same hierarchy and the same visual
@@ -51,6 +51,23 @@ system, which is drawn from the mark:
   transparent mark downscaled to 96 px for a 30-point slot at 2× density) and
   the two-tone wordmark: *Agent* in the text colour, *Docker* in the accent.
   The mark also anchors empty states at reduced opacity.
+- **Every project has its own mark.** A rounded tile with the project's
+  initial on a tint derived from the project's identity (`style::identity`:
+  an FNV hash of the fingerprint, or of the root path when there is no git,
+  picks one of twelve hue stops; saturation and lightness are fixed per theme
+  and a unit test keeps the ink at 4.5:1 on every stop). The same repository
+  therefore looks the same on every machine, in both themes, with nothing to
+  choose or store. The tile leads each rail row at 20 points and the project
+  heading at 30.
+- **Finished, not yet viewed.** When a session's activity goes from working
+  or blocked to idle or finished while the user is not looking at its project
+  in a focused window, the session is marked unviewed: an accent pill on the
+  row ("Done"), a count on its rail row, and a total on the Projects entry.
+  Opening the project or selecting the session clears it, as does the session
+  starting to work again. An idle report on its own never counts as viewing,
+  and the observed state stays in the row's meta line unchanged. Window-local
+  state, never persisted (`shell::State::unviewed_done`, filled by
+  `App::note_completions`).
 - **Colour roles** live in `app/style.rs`: ground, rail, card, raised, text,
   muted, faint, line, accent, accent-soft/ink, cyan, green, amber, red. Dark
   is a deep navy; light is cool off-white with white cards. A unit test keeps
@@ -84,10 +101,11 @@ system, which is drawn from the mark:
 - **Segmented controls** (`controls::segment` in a `segmented` track) pick one
   of a few peers: the session filters and the theme. The selected segment lifts
   off the track; the others sit quietly on it.
-- **Dots explain themselves.** Where a status dot has no words beside it (the
-  rail's project dots), pointing at it shows a tooltip with the words the row
-  would otherwise print; dots that already sit next to their words get no
-  tooltip. The hover target is padded to about sixteen points; the dot itself
+- **Marks explain themselves.** Where a mark has no words beside it (the
+  rail's project tiles), pointing at it shows a tooltip with the words the row
+  would otherwise print: live agents, pinned or discovered, and how many
+  finished unviewed (`hint`); dots that already sit next to their words get no
+  tooltip. The hover target is padded to about sixteen points; the mark itself
   stays small. Verified with the real macOS pointer (a CGEvent helper moving
   the cursor over the running release window while the smoke captured the
   frame), not only with widget callbacks.
