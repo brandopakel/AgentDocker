@@ -175,7 +175,6 @@ impl Colors {
     }
 }
 
-/// `color` at `a` opacity.
 /// A project's own colour: a tint to sit behind its monogram and an ink
 /// to draw the letter in. The hue is a hash of the project's identity, so
 /// the same repository looks the same on every machine and in both
@@ -215,6 +214,7 @@ fn hsl(hue: f32, saturation: f32, lightness: f32) -> Color {
     Color::from_rgb(r + m, g + m, b + m)
 }
 
+/// `color` at `a` opacity.
 pub fn alpha(color: Color, a: f32) -> Color {
     Color { a, ..color }
 }
