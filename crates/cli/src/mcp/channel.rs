@@ -174,8 +174,35 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
 }
 
 fn priority(value: &Value) -> bool {
+    match value {
+        Value::Array(requests) => !requests.is_empty() && requests.iter().all(priority_request),
+        request => priority_request(request),
+    }
+}
+
+fn priority_request(value: &Value) -> bool {
     matches!(value["method"].as_str(), Some("initialize" | "ping"))
         || (value["method"] == "tools/call" && value["params"]["name"] == "acknowledge_messages")
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_only_batches_bypass_busy_tools_but_mixed_or_invalid_batches_do_not() {
+        let ack = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"acknowledge_messages"}});
+        let ping = json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+        assert!(priority(&ack));
+        assert!(priority(&json!([ack.clone(), ack.clone()])));
+        assert!(priority(&json!([ack.clone(), ping])));
+        assert!(!priority(
+            &json!([ack.clone(),{"method":"tools/call","params":{"name":"ask_human"}}])
+        ));
+        for invalid in [json!([]), json!([null]), json!([[ack]])] {
+            assert!(!priority(&invalid));
+        }
+    }
 }
 
 async fn write(output: &mut impl stdio::Output, value: &Value) -> Result<()> {
@@ -226,7 +253,16 @@ mod tests {
         assert!(acquire_at(home.path(), "receiver").is_err());
         assert!(!active(home.path(), "other").unwrap());
         drop(owner);
-        assert!(!active(home.path(), "receiver").unwrap());
+        // Concurrent tests can fork between open and drop; the inherited
+        // descriptor holds flock until that child execs (CLOEXEC).
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while active(home.path(), "receiver").unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "channel ownership never released"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert!(active(home.path(), "../escape").is_err());
     }
 
@@ -353,12 +389,16 @@ mod tests {
             assert_eq!(receive(&mut reader).await["id"], 2);
             write_line(
                 &mut writer,
-                &json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
-                "params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}}),
+                &json!([{ "jsonrpc":"2.0","id":3,"method":"tools/call",
+                "params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}},
+                {"jsonrpc":"2.0","id":4,"method":"ping"}]),
             )
             .await
             .unwrap();
-            assert_eq!(receive(&mut reader).await["id"], 3);
+            let receipt = receive(&mut reader).await;
+            assert_eq!(receipt[0]["id"], 3);
+            assert_eq!(receipt[1]["id"], 4);
+            assert!(receipt[0].get("error").is_none(), "{receipt}");
             let next = receive(&mut reader).await;
             assert_eq!(next["params"]["meta"]["message_id"], ids[1].as_str());
             assert_eq!(next["params"]["meta"]["from_agent"], "peer");

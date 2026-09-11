@@ -17,9 +17,12 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
+pub(crate) mod reconcile;
+
 // v9 retains pending questions. v10 retains addressed messages while subscribed
-// and refuses inbox overflow. Older daemons would drain/evict that accepted work.
-pub(crate) const SCHEMA_VERSION: i64 = 10;
+// and refuses inbox overflow. v11 adds durable identity redirects; older daemons
+// would route former IDs incorrectly and must not open repaired state.
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -559,7 +562,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=9)) => {
+            Some(Ok(1..=10)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -637,6 +640,13 @@ impl Store {
 
     /// Forget an agent and anything queued for it.
     pub fn delete_agent(&self, id: &AgentId) -> Result<()> {
+        for alias in
+            self.documents::<agentdocker_core::identity::AgentAlias>("identity_alias", None)?
+        {
+            if &alias.canonical == id {
+                self.delete_document("identity_alias", alias.retired.as_str())?;
+            }
+        }
         self.conn
             .execute("DELETE FROM inbox WHERE agent = ?1", params![id.as_str()])?;
         self.conn.execute(
@@ -926,7 +936,7 @@ impl Store {
         }
         if let Some(agent) = &query.agent {
             args.push(Box::new(agent.as_str().to_owned()));
-            sql.push_str(&format!(" AND by_agent = ?{}", args.len()));
+            sql.push_str(&identity_filter("by_agent", args.len()));
         }
         if let Some(after) = &query.after {
             args.push(Box::new(after.to_rfc3339()));
@@ -1105,7 +1115,7 @@ impl Store {
         }
         if let Some(agent) = &query.agent {
             args.push(Box::new(agent.as_str().to_owned()));
-            sql.push_str(&format!(" AND agent = ?{}", args.len()));
+            sql.push_str(&identity_filter("agent", args.len()));
         }
         if let Some(branch) = &query.branch {
             args.push(Box::new(branch.clone()));
@@ -1288,6 +1298,17 @@ impl Store {
         )?;
         Ok(removed)
     }
+}
+
+/// Include original attribution under every exact former identity. The alias
+/// table is authoritative; history remains byte-for-byte as originally stored.
+fn identity_filter(column: &str, parameter: usize) -> String {
+    let canonical = format!(
+        "COALESCE((SELECT json_extract(json, '$.canonical') FROM documents WHERE kind='identity_alias' AND id=?{parameter}), ?{parameter})"
+    );
+    format!(
+        " AND ({column} = {canonical} OR {column} IN (SELECT id FROM documents WHERE kind='identity_alias' AND json_extract(json, '$.canonical') = {canonical}))"
+    )
 }
 
 #[cfg(test)]

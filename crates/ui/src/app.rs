@@ -100,7 +100,7 @@ enum Cmd {
 
 /// What comes back to the window.
 enum Msg {
-    Agents(Vec<AgentRecord>),
+    Agents(Vec<AgentRecord>, BTreeMap<String, String>),
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
     Discovered(Vec<DiscoveredProcess>),
@@ -156,6 +156,7 @@ pub struct App {
     rx: Receiver<Msg>,
     screen: Screen,
     agents: Vec<AgentRecord>,
+    aliases: BTreeMap<String, String>,
     leases: Vec<Lease>,
     runtimes: Vec<RuntimeInfo>,
     discovered: Vec<DiscoveredProcess>,
@@ -263,6 +264,7 @@ impl App {
             rx: msg_rx,
             screen: Screen::Agents,
             agents: Vec::new(),
+            aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
             discovered: Vec::new(),
@@ -314,6 +316,7 @@ impl App {
             rx,
             screen: Screen::Agents,
             agents: Vec::new(),
+            aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
             discovered: Vec::new(),
@@ -400,7 +403,11 @@ impl App {
         for _ in 0..MESSAGE_CAPACITY {
             let Ok(msg) = self.rx.try_recv() else { break };
             match msg {
-                Msg::Agents(agents) => {
+                Msg::Agents(agents, aliases) => {
+                    self.aliases = aliases;
+                    if let Some(selected) = &self.shell.selected {
+                        self.shell.selected = Some(self.canonical_agent(selected).to_owned());
+                    }
                     self.agents = agents;
                     let projects = self.channel_projects();
                     self.channels
@@ -649,6 +656,7 @@ impl App {
             | EventKind::AgentStopping { .. }
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
+            | EventKind::AgentReconciled { .. }
             | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
@@ -714,7 +722,12 @@ impl App {
         });
     }
 
+    fn canonical_agent<'a>(&'a self, id: &'a str) -> &'a str {
+        self.aliases.get(id).map(String::as_str).unwrap_or(id)
+    }
+
     fn name_of(&self, id: &str) -> String {
+        let id = self.canonical_agent(id);
         self.agents
             .iter()
             .find(|a| a.id.as_str() == id)
@@ -1095,7 +1108,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             project: None,
             labels: BTreeMap::new(),
         })? {
-            Response::Agents { agents } => Some(Msg::Agents(agents)),
+            Response::Agents { agents, aliases } => Some(Msg::Agents(
+                agents,
+                aliases
+                    .into_iter()
+                    .map(|(old, current)| (old.to_string(), current.to_string()))
+                    .collect(),
+            )),
             _ => None,
         },
         Cmd::Leases => match client.call(&Request::Leases {
@@ -1178,10 +1197,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Some(Msg::Answered(message, Ok(())))
         }
         Cmd::DismissMessages(message) => {
-            client.call(&Request::AckInbox {
+            let response = client.call(&Request::AckInbox {
                 agent: agentdocker_core::HUMAN.to_owned(),
                 messages: message.clone(),
             })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "The daemon did not confirm dismissal; messages were retained."
+            );
             Some(Msg::MessagesDismissed(message, Ok(())))
         }
         Cmd::Adopt(pid) => Some(
@@ -1577,6 +1600,79 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_ack_response_retains_the_message_and_its_draft() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing acknowledgement request");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).unwrap()["op"],
+                "ack_inbox"
+            );
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"messages\",\"messages\":[]}\n")
+                .unwrap();
+        });
+        let id = MessageId::from("retained".to_owned());
+        let error = run(
+            &Client::isolated(socket),
+            Cmd::DismissMessages(vec![id.clone()]),
+        )
+        .err()
+        .expect("unexpected success response must fail");
+        server.join().unwrap();
+        let (commands, _) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut envelope = agentdocker_core::Envelope::new(
+            "peer",
+            agentdocker_core::Destination::Agent("user".into()),
+            "chat",
+            serde_json::json!("message"),
+            None,
+            Utc::now(),
+        );
+        envelope.id = id.clone();
+        app.inbox.push(envelope.clone());
+        app.answers.insert(id.clone(), "unfinished".into());
+        app.dismissing.insert(id.clone());
+        messages
+            .send(Msg::MessagesDismissed(
+                vec![id.clone()],
+                Err(error.to_string()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.inbox, vec![envelope]);
+        assert_eq!(app.answers[&id], "unfinished");
+        assert!(app.dismissing.is_empty());
+    }
+
+    #[test]
     fn message_dismissal_waits_for_success_and_preserves_drafts_and_new_arrivals() {
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
@@ -1860,7 +1956,9 @@ mod tests {
             agent.project = Some(project);
             agents.push(agent);
         }
-        messages.send(Msg::Agents(agents.clone())).unwrap();
+        messages
+            .send(Msg::Agents(agents.clone(), BTreeMap::new()))
+            .unwrap();
         app.drain();
         assert_eq!(
             requests
@@ -1903,7 +2001,7 @@ mod tests {
         assert_eq!(app.channels.len(), 1);
         assert_eq!(app.channels[0].project.as_str(), "project-b");
         agents.retain(|agent| agent.project.as_ref().unwrap().id().as_str() == "project-a");
-        messages.send(Msg::Agents(agents)).unwrap();
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
         messages
             .send(Msg::Channels(
                 "project-b".into(),
@@ -2533,7 +2631,7 @@ mod tests {
             agents.push(agent);
         }
         let (worker, other) = (agents[0].clone(), agents[1].clone());
-        messages.send(Msg::Agents(agents)).unwrap();
+        messages.send(Msg::Agents(agents, BTreeMap::new())).unwrap();
         app.drain();
         let report = |records: &[(&AgentRecord, Activity)]| {
             Msg::Activity(

@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod change;
 pub mod event;
+pub mod identity;
 pub mod journal;
 pub mod lease;
 pub mod message;

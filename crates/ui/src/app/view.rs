@@ -1022,12 +1022,11 @@ impl App {
             };
             panel_col = panel_col.push(empty(title_text, hint, None, c));
         }
-        if let Some(agent) = self
-            .shell
-            .selected
-            .as_ref()
-            .and_then(|id| self.agents.iter().find(|a| a.id.as_str() == id))
-        {
+        if let Some(agent) = self.shell.selected.as_ref().and_then(|id| {
+            self.agents
+                .iter()
+                .find(|a| a.id.as_str() == self.canonical_agent(id))
+        }) {
             let inspector = self.inspector(agent, c);
             if self.shell.width / self.scale_factor() >= 1120.0 {
                 return row![panel_col, container(inspector).width(320)]

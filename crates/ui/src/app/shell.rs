@@ -940,14 +940,14 @@ impl App {
             return Task::none();
         };
         let target = &action.target;
-        let question = self
-            .questions
-            .iter()
-            .find(|q| q.id == target.message && q.from == target.agent.as_str());
-        let envelope = self
-            .inbox
-            .iter()
-            .find(|m| m.id == target.message && m.from == target.agent.as_str());
+        let question = self.questions.iter().find(|q| {
+            q.id == target.message
+                && self.canonical_agent(&q.from) == self.canonical_agent(target.agent.as_str())
+        });
+        let envelope = self.inbox.iter().find(|m| {
+            m.id == target.message
+                && self.canonical_agent(&m.from) == self.canonical_agent(target.agent.as_str())
+        });
         let channel = envelope.and_then(|m| match &m.to {
             agentdocker_core::Destination::Channel(id) => Some(id.clone()),
             _ => None,
@@ -1011,7 +1011,7 @@ impl App {
         }
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
-        self.shell.selected = Some(target.agent.to_string());
+        self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
         self.screen = if channel.is_some() {
@@ -1202,6 +1202,51 @@ mod tests {
             cmd,
             Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
         )));
+    }
+
+    #[test]
+    fn former_identity_notification_finds_the_current_sender_without_changing_drafts() {
+        let (mut app, _, messages, _home, action) = notification_app();
+        let mut record = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "one-session".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.id = "canonical".into();
+        messages
+            .send(Msg::Agents(
+                vec![record],
+                BTreeMap::from([(action.target.agent.to_string(), "canonical".into())]),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Questions(vec![Question {
+                id: action.target.message.clone(),
+                from: "canonical".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "question".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            }]))
+            .unwrap();
+        app.answers
+            .insert(action.target.message.clone(), "unfinished".into());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action.clone()),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.selected.as_deref(), Some("canonical"));
+        assert_eq!(app.name_of(action.target.agent.as_str()), "one-session");
+        assert_eq!(
+            app.shell.notification_message.as_ref(),
+            Some(&action.target.message)
+        );
+        assert_eq!(app.answers[&action.target.message], "unfinished");
+        assert!(app.sending.is_empty());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! binary is [`main`] and nothing else.
 
 pub mod daemon;
+pub mod reconcile;
 mod server;
 mod store;
 mod supervisor;
@@ -27,6 +28,46 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::daemon::Daemon;
+
+/// The schema this executable writes when it opens daemon state.
+pub const STATE_SCHEMA_VERSION: u32 = store::SCHEMA_VERSION as u32;
+
+/// Read the compatibility floor without creating, migrating or opening a
+/// daemon. An unreadable existing database is an error, never an absent home.
+pub fn stored_state_schema(home: &std::path::Path) -> anyhow::Result<Option<u32>> {
+    use anyhow::Context;
+    let path = home.join("state.db");
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    agentdocker_host::dirs::check_private_dir(home)?;
+    agentdocker_host::dirs::read_private_file(&path)?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut companion = path.as_os_str().to_owned();
+        companion.push(suffix);
+        let companion = PathBuf::from(companion);
+        match std::fs::symlink_metadata(&companion) {
+            Ok(_) => {
+                agentdocker_host::dirs::read_private_file(&companion)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let connection =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_millis(250))?;
+    let value: String = connection.query_row(
+        "SELECT value FROM meta WHERE key='schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    let schema: u32 = value.parse().context("stored state schema is invalid")?;
+    anyhow::ensure!(schema > 0, "stored state schema must be positive");
+    Ok(Some(schema))
+}
 
 #[derive(Parser)]
 #[command(
@@ -163,5 +204,27 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    #[test]
+    fn schema_probe_reports_newer_state_without_migrating_or_creating_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+        assert_eq!(stored_state_schema(&missing).unwrap(), None);
+        assert!(!missing.exists());
+        let path = tmp.path().join("state.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('schema_version','999');").unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(stored_state_schema(tmp.path()).unwrap(), Some(999));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::write(&path, b"unreadable schema").unwrap();
+        assert!(stored_state_schema(tmp.path()).is_err());
     }
 }

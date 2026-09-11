@@ -334,8 +334,22 @@ mod tests {
                 .exists()
         );
         drop(pinned);
-        let (next, _) = plan(&layout, Some(0), false, false).unwrap();
-        assert_eq!(next.remove, [layout.root.join("versions").join(&busy.id)]);
+        // Other tests may have forked with the pin descriptor before drop;
+        // their exec closes it. Wait for that bounded release, as lock's own
+        // tests do, while still requiring precisely the former busy version.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (next, _) = plan(&layout, Some(0), false, false).unwrap();
+            if !next.remove.is_empty() {
+                assert_eq!(next.remove, [layout.root.join("versions").join(&busy.id)]);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "release pin never cleared"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

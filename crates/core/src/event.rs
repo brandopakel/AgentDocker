@@ -196,6 +196,13 @@ pub enum EventKind {
         agent: AgentId,
         session: String,
     },
+    /// Maintenance committed an exact-ID redirect and all operational moves.
+    /// Original history and before-images remain available in the repair archive.
+    AgentReconciled {
+        canonical: AgentId,
+        retired: AgentId,
+        plan_sha256: String,
+    },
     /// A task several agents will attempt, with the measure that ranks
     /// them fixed before any of them starts.
     ContestOpened {

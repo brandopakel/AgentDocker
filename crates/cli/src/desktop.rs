@@ -838,6 +838,12 @@ pub fn run(args: DesktopArgs) -> Result<()> {
     Ok(())
 }
 
+fn required_state_schema(active: Option<&Activation>, home: &Path) -> Result<u32> {
+    Ok(agentd::STATE_SCHEMA_VERSION
+        .max(active.map_or(0, |active| active.current.state_schema))
+        .max(agentd::stored_state_schema(home)?.unwrap_or(0)))
+}
+
 /// Check, preview and, unless `preview`, install one inspected candidate:
 /// the part of an install that does not care where the payload came from.
 /// Returns the report the command prints.
@@ -867,12 +873,10 @@ fn perform(
             "active installation changed since preview; review again"
         );
     }
-    if let Some(active) = &active {
-        ensure!(
-            candidate.state_schema >= active.current.state_schema,
-            "artifact uses an older state schema; binary replacement cannot roll back the database"
-        );
-    }
+    ensure!(
+        candidate.state_schema >= required_state_schema(active.as_ref(), &dirs::home())?,
+        "artifact uses an older state schema; binary replacement cannot roll back the database"
+    );
     layout.preflight()?;
     let report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
         "application":layout.application, "bin":layout.bin, "versions":layout.root.join("versions"),
@@ -887,6 +891,10 @@ fn perform(
     let _held = agentdocker_host::lock::try_exclusive(&lock)?
         .context("another desktop installation is in progress")?;
     let current = layout.active()?;
+    ensure!(
+        candidate.state_schema >= required_state_schema(current.as_ref(), &dirs::home())?,
+        "stored state changed since preview; review the installation again"
+    );
     ensure!(
         current == active,
         "active installation changed; review again"
@@ -927,7 +935,7 @@ mod tests {
             id: id.clone(),
             version: "0.1.0".into(),
             source_commit: "a".repeat(40),
-            state_schema: 8,
+            state_schema: agentd::STATE_SCHEMA_VERSION,
             target: "fixture".into(),
             tree_sha256: id,
             installation_lock: agentdocker_host::installation::LOCK_FORMAT,

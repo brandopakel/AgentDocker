@@ -48,6 +48,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Preview a legacy identity repair; apply its exact plan only with daemon and sessions stopped.
+    IdentityRepair {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        keep: String,
+        #[arg(long)]
+        retire: String,
+        #[arg(long, value_name = "PLAN_SHA256")]
+        apply: Option<String>,
+    },
     /// Check that agentd is reachable.
     Ping,
     /// Build an image with an explicit engine and retain immutable input provenance.
@@ -957,6 +968,19 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.socket);
 
     match cli.command {
+        Command::IdentityRepair {
+            home,
+            keep,
+            retire,
+            apply,
+        } => {
+            print_json(&agentd::reconcile::repair(
+                &home,
+                &keep,
+                &retire,
+                apply.as_deref(),
+            )?)?;
+        }
         Command::ImageBuild {
             engine,
             connection,
@@ -1263,7 +1287,7 @@ async fn main() -> Result<()> {
                 project: project.as_deref().map(project_selector),
                 labels: parse_pairs(&labels)?,
             };
-            let Response::Agents { agents } = client.call(&request).await? else {
+            let Response::Agents { agents, .. } = client.call(&request).await? else {
                 return Ok(());
             };
             let mut unadopted = Vec::new();
@@ -2166,7 +2190,7 @@ async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),
@@ -2634,7 +2658,7 @@ async fn agent_names(client: &Client) -> BTreeMap<String, String> {
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),
@@ -2869,7 +2893,7 @@ async fn print_overlaps(client: &Client, overlaps: &[agentdocker_core::Overlap])
         })
         .await
     {
-        Ok(Response::Agents { agents }) => agents
+        Ok(Response::Agents { agents, .. }) => agents
             .into_iter()
             .map(|a| (a.id.to_string(), a.spec.name))
             .collect(),

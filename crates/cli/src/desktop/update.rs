@@ -326,7 +326,7 @@ fn live_agents(socket: Option<PathBuf>) -> Option<usize> {
                 })
                 .await
             {
-                Ok(Response::Agents { agents }) => Some(
+                Ok(Response::Agents { agents, .. }) => Some(
                     agents
                         .iter()
                         .filter(|a| {
@@ -499,6 +499,15 @@ fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
 }
 
 pub fn run(layout: &Layout, active: Option<&Activation>, options: Options) -> Result<()> {
+    run_with_home(layout, active, options, &dirs::home())
+}
+
+fn run_with_home(
+    layout: &Layout,
+    active: Option<&Activation>,
+    options: Options,
+    state_home: &Path,
+) -> Result<()> {
     let target = host_target();
     // A check must leave no trace, so the feed lands in scratch; only a
     // download creates the private staging area beside the versions.
@@ -518,7 +527,13 @@ pub fn run(layout: &Layout, active: Option<&Activation>, options: Options) -> Re
     let running = env!("CARGO_PKG_VERSION");
     let baseline = installed.unwrap_or(running);
     let update_available = compare_versions(&release.version, baseline)? == Ordering::Greater;
-    let schema_change = active.is_some_and(|a| release.state_schema > a.current.state_schema);
+    let minimum_schema = super::required_state_schema(active, state_home)?;
+    ensure!(
+        !update_available || release.state_schema >= minimum_schema,
+        "update uses an older state schema ({}) than required ({minimum_schema}); binary replacement cannot roll back the database",
+        release.state_schema
+    );
+    let schema_change = release.state_schema > minimum_schema;
     let live = live_agents(options.socket.clone());
     let guidance = match live {
         Some(0) => "no agents are live; `agentdocker daemon restart` switches the daemon now",
@@ -653,6 +668,44 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn newer_feed_cannot_downgrade_schema_without_managed_activation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = host_target();
+        let feed = tmp.path().join("feed.json");
+        let payload = tmp.path().join("missing-archive");
+        std::fs::write(&feed, serde_json::to_vec(&json!({
+            "format":1,"product":"agentdocker","channel":"preview", "policy":{"download":"manual"},
+            "releases":[{"target":target,"version":"0.2.0","source_commit":"a".repeat(40),
+                "state_schema":agentd::STATE_SCHEMA_VERSION-1,"signing":if cfg!(target_os="macos"){"local-preview"}else{"checksum"},"notarized":false,
+                "archive":{"name":format!("agentdocker-desktop-{target}.{}",if cfg!(target_os="macos"){"zip"}else{"tar.gz"}),"sha256":"b".repeat(64),"bytes":12,
+                    "url":format!("file://{}",payload.display())}}]
+        })).unwrap()).unwrap();
+        let layout = Layout::new(tmp.path().join("uninstalled")).unwrap();
+        let error = run_with_home(
+            &layout,
+            None,
+            Options {
+                feed: format!("file://{}", feed.display()),
+                check: false,
+                apply: true,
+                local_preview: true,
+                socket: None,
+            },
+            &tmp.path().join("state"),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("older state schema"),
+            "{error:#}"
+        );
+        assert!(
+            !layout.prefix.exists(),
+            "must refuse before creating installation or staging"
+        );
+        assert!(!payload.exists());
     }
 
     #[test]

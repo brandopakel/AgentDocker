@@ -46,7 +46,7 @@ passed 106 tests and the separate visual trial passed 26 steps. These close the
 bounded managed-launch item; provider recovery/status and sustained acceptance
 remain open. CI for the preceding `d630d9f` checkpoint passed all four native
 desktop targets, Windows foundations, container engines, coverage and benchmarks;
-CodeRabbit's actual review is still pending.
+CodeRabbit reviewed `d630d9f` and reported three findings: schema downgrade checks without an activation record, priority receipt batches and explicit inbox-acknowledgement success. Fixes are now in the working tree; final validation and follow-up review remain.
 
 The update consumer is implemented in CLI and Settings with local preview/apply
 evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installable
@@ -58,6 +58,16 @@ at `a910d81` passed 727 Rust tests, 54 Python checks, 114 packaged native steps 
 11 packaged updater scenarios. Workflow lint passed. The update smoke now also
 runs in all four desktop CI jobs; its synthetic version exercise does not replace
 distinct-source or hosted-update acceptance.
+
+### Legacy duplicate repair (September 11)
+
+[Offline identity repair](IDENTITY-REPAIR.md) now has a read-only preview and an
+exact-plan apply transaction under exclusive database ownership. It preserves
+accepted messages and original history, records before-images, and exposes
+former-ID routes to the desktop. Proven external local Claude/Codex pairs are
+supported; live and managed transfers remain refused. Local validation passed 752 Rust tests, 54 Python checks and six actual
+CLI/restart steps; the separate UI suite passed 108 tests. Packaged native
+checks, CI and review of the final source remain before this item can close.
 
 ### Notification clicks open Script Editor (September 10)
 

@@ -90,6 +90,7 @@ jobs:
             identity_binary_dir=artifacts/desktop/agentdocker-desktop/bin
           fi
           python3 scripts/identity_smoke.py --binary-dir "$identity_binary_dir" --manifest artifacts/desktop/manifest.json --output artifacts/identity-smoke
+          python3 scripts/identity_repair_smoke.py --binary-dir "$identity_binary_dir" --manifest artifacts/desktop/manifest.json --output artifacts/identity-repair-smoke
           python3 scripts/hook_input_smoke.py --binary "$identity_binary_dir/agentdocker" --manifest artifacts/desktop/manifest.json --output artifacts/hook-input-smoke
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -108,5 +109,6 @@ jobs:
             artifacts/desktop-update-smoke
             artifacts/terminal-smoke
             artifacts/identity-smoke
+            artifacts/identity-repair-smoke
             artifacts/hook-input-smoke
           if-no-files-found: warn

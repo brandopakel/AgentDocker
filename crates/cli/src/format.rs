@@ -554,6 +554,11 @@ pub fn event_line(event: &Event) -> String {
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
         // A newer daemon than this CLI. Saying so beats a blank line,
         // and beats refusing to print the rest of the stream.
+        EventKind::AgentReconciled {
+            canonical, retired, ..
+        } => {
+            format!("reconciled {} into {}", retired.short(), canonical.short())
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))

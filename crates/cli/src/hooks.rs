@@ -689,7 +689,7 @@ async fn found_by_pid<B: Backend>(
         })
         .await?
     {
-        Response::Agents { agents } => {
+        Response::Agents { agents, .. } => {
             let mut matching = agents.into_iter().filter(ours);
             let first = matching.next();
             Ok(if matching.next().is_none() {
@@ -841,7 +841,7 @@ async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
         })
         .await?
     {
-        Response::Agents { agents } => Ok(agents),
+        Response::Agents { agents, .. } => Ok(agents),
         _ => Ok(Vec::new()),
     }
 }
@@ -1377,6 +1377,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![me.clone()],
             },
             Response::Messages {
@@ -1438,7 +1439,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "hi")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
             digest_reply(
                 "Since you last looked (1 entry):\n- 1m ago   codex-1 [main] noted: \"x\"\n",
             ),
@@ -1573,6 +1577,7 @@ mod tests {
                 // A genuinely different process, which is the only kind
                 // of "somebody else" there can be once one process is
                 // one agent.
+                aliases: Default::default(),
                 agents: vec![
                     {
                         let mut other = agent("somebody-else", true);
@@ -1589,6 +1594,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![theirs.clone(), matching("legacy-duplicate")],
             },
         ]);
@@ -1624,6 +1630,7 @@ mod tests {
             let backend = Mock::with(vec![
                 Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
                 Response::Agents {
+                    aliases: Default::default(),
                     agents: vec![impostor],
                 },
             ]);
@@ -1652,6 +1659,7 @@ mod tests {
                 agent: impostor_by_name,
             },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![real.clone()],
             },
         ]);
@@ -1699,6 +1707,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![elsewhere],
             },
         ]);
@@ -1719,6 +1728,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::error(agentdocker_core::ErrorCode::NotFound, "no such agent"),
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![ours_by_id.clone()],
             },
         ]);
@@ -1862,6 +1872,7 @@ mod tests {
             Response::error(ErrorCode::NotFound, "no agent"),
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![other.clone(), me.clone(), agent("old", false)],
             },
             Response::Messages {
@@ -1899,6 +1910,7 @@ mod tests {
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Agents {
+                aliases: Default::default(),
                 agents: vec![stranger, me.clone(), mate, agent("nowhere", true)],
             },
             Response::Messages {
@@ -2012,7 +2024,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "ping")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         let out = claude_code(&busy, &input("PostToolUse"), &opts())
             .await
@@ -2036,7 +2051,10 @@ mod tests {
             Response::Messages {
                 messages: vec![message("someone", "please review PR 7")],
             },
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         let out = claude_code(&backend, &input("Stop"), &opts())
             .await
@@ -2110,7 +2128,10 @@ mod tests {
         // missing still means there is nothing to end.
         let backend = Mock::with(vec![
             Response::error(ErrorCode::NotFound, "nope"),
-            Response::Agents { agents: vec![] },
+            Response::Agents {
+                aliases: Default::default(),
+                agents: vec![],
+            },
         ]);
         assert!(
             claude_code(&backend, &input("SessionEnd"), &opts())

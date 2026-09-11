@@ -309,6 +309,7 @@ fn watchable(record: &AgentRecord) -> bool {
 
 fn registry_error(err: RegistryError) -> Response {
     let code = match err {
+        RegistryError::IdentityReserved(_) => ErrorCode::Conflict,
         RegistryError::NameTaken(_) => ErrorCode::NameTaken,
         RegistryError::NotFound(_) => ErrorCode::NotFound,
         RegistryError::Ambiguous(_) | RegistryError::ProjectAmbiguous(_) => ErrorCode::Ambiguous,
@@ -370,42 +371,7 @@ fn signal_pid(pid: u32) -> Option<Pid> {
 /// other half of a session I am already part of", while two *different*
 /// ids mean two sessions that happen to share a process.
 fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
-    let session_of = |r: &AgentRecord| {
-        r.spec
-            .labels
-            .get("session_id")
-            .filter(|id| !id.is_empty())
-            .cloned()
-    };
-    b.pid.is_some()
-        && b.process_started_at.is_some()
-        && a.pid == b.pid
-        && a.process_started_at == b.process_started_at
-        && a.spec.runtime == b.spec.runtime
-        && a.project.as_ref().map(ProjectRef::id) == b.project.as_ref().map(ProjectRef::id)
-        // The physical checkout, not only the project. A project spans
-        // its main checkout and every linked worktree, so two agents in
-        // two worktrees of one repository agree on the project and are
-        // still in two different trees — matching on the project alone
-        // would collapse them into one identity. Compared as recorded:
-        // registration resolves a workdir once, so by here both are
-        // already canonical, and touching the filesystem under the state
-        // mutex is not something this may do.
-        //
-        // Both have to be known. An absent checkout is not evidence of
-        // anything, and `None == None` would make two agents that could
-        // not say where they are into one agent — the same mistake as
-        // agreeing on two unreadable birth times. Registration refuses a
-        // workdir it cannot resolve, so a `Some` here is always a
-        // directory that existed when it was recorded.
-        && match (&a.spec.workdir, &b.spec.workdir) {
-            (Some(one), Some(other)) => one == other,
-            _ => false,
-        }
-        && match (session_of(a), session_of(b)) {
-            (Some(one), Some(other)) => one == other,
-            _ => true,
-        }
+    agentdocker_core::identity::same_registration(a, b)
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -853,6 +819,12 @@ impl Daemon {
             }
         }
         let mut registry = Registry::new();
+        // Validate every durable route before recovery can write any events,
+        // statuses, leases or questions. A malformed alias is never ignored.
+        for record in &records {
+            registry.insert(record.clone())?;
+        }
+        registry.restore_aliases(&store.identity_aliases()?)?;
         let mut next_seq = store.max_event_seq()? + 1;
         for mut record in records {
             if record.managed
@@ -881,7 +853,8 @@ impl Daemon {
                 store.agent_transition(&record, &event)?;
                 next_seq += 1;
             }
-            registry.insert(record)?;
+            let stored = registry.get_mut(&record.id).expect("record was validated");
+            *stored = record;
         }
         let channels: HashMap<ChannelId, Channel> = store
             .documents::<Channel>("channel", None)
@@ -2813,11 +2786,17 @@ impl Daemon {
                 Err(response) => return *response,
             },
         };
-        Response::Agents {
-            agents: lock(&self.state)
-                .registry
-                .matching(all, project.as_ref(), &labels),
-        }
+        let state = lock(&self.state);
+        let agents = state.registry.matching(all, project.as_ref(), &labels);
+        let ids: HashSet<_> = agents.iter().map(|agent| &agent.id).collect();
+        let aliases = state
+            .registry
+            .aliases()
+            .iter()
+            .filter(|(_, canonical)| ids.contains(canonical))
+            .map(|(old, canonical)| (old.clone(), canonical.clone()))
+            .collect();
+        Response::Agents { agents, aliases }
     }
 
     async fn send(
@@ -9499,7 +9478,7 @@ deny = ["send:all"]
 
     fn names(response: Response) -> Vec<String> {
         match response {
-            Response::Agents { agents } => agents.into_iter().map(|a| a.spec.name).collect(),
+            Response::Agents { agents, .. } => agents.into_iter().map(|a| a.spec.name).collect(),
             other => panic!("unexpected {other:?}"),
         }
     }

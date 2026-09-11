@@ -1079,7 +1079,7 @@ fn render(response: Response, verbose: bool) -> Value {
             false,
         ),
         Response::Agent { agent } => text_result(&brief_agent(&agent), false),
-        Response::Agents { agents } => text_result(
+        Response::Agents { agents, .. } => text_result(
             &json!({ "agents": agents.iter().map(brief_agent).collect::<Vec<_>>() }),
             false,
         ),
@@ -1108,7 +1108,7 @@ fn render_whole(response: Response) -> Value {
             true,
         ),
         Response::Agent { agent } => text_result(&json!(agent), false),
-        Response::Agents { agents } => text_result(&json!({ "agents": agents }), false),
+        Response::Agents { agents, .. } => text_result(&json!({ "agents": agents }), false),
         Response::Sent {
             message,
             subscribers,
@@ -1616,6 +1616,7 @@ mod tests {
         });
 
         let s = server(vec![Response::Agents {
+            aliases: Default::default(),
             agents: vec![record.clone()],
         }]);
         let brief = body(
@@ -1640,6 +1641,7 @@ mod tests {
 
         // Asking for everything gets everything, and costs more.
         let s = server(vec![Response::Agents {
+            aliases: Default::default(),
             agents: vec![record],
         }]);
         let whole = body(
@@ -1668,7 +1670,10 @@ mod tests {
             false,
             Utc::now(),
         );
-        let s = server(vec![Response::Agents { agents: vec![bare] }]);
+        let s = server(vec![Response::Agents {
+            aliases: Default::default(),
+            agents: vec![bare],
+        }]);
         let text = body(
             &s.handle(rpc(3, "tools/call", json!({ "name": "list_agents" })))
                 .await

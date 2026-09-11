@@ -14,8 +14,8 @@ use serde_json::Value;
 use crate::handoff::HandoffBundle;
 use crate::journal::{Digest, SummarySource};
 use crate::{
-    AgentRecord, Change, ContestId, DiscoveredProcess, Envelope, Event, JournalEntry, Lease,
-    LeaseId, LeaseMode, MessageId, VcsState,
+    AgentId, AgentRecord, Change, ContestId, DiscoveredProcess, Envelope, Event, JournalEntry,
+    Lease, LeaseId, LeaseMode, MessageId, VcsState,
 };
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
@@ -757,6 +757,10 @@ pub enum Response {
     },
     Agents {
         agents: Vec<AgentRecord>,
+        /// Exact former IDs for the returned records. Historical attribution
+        /// remains unchanged; clients use these only for current navigation.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        aliases: BTreeMap<AgentId, AgentId>,
     },
     Processes {
         processes: Vec<DiscoveredProcess>,
