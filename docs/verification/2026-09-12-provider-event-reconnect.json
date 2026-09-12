@@ -1,0 +1,417 @@
+{
+  "date": "2026-09-12",
+  "status": "Local implementation and actual Codex event-only reconnect acceptance passed at 687e57f. Parent PR #109 and this provider follow-up still require final CI/source review.",
+  "build": {
+    "format": 1,
+    "source_commit": "687e57f9717898cd419bccc471f0d5c1203aa23d",
+    "source_tree": "8738ae53e41ec2ceafe72dea9081f853ee8cc4cd",
+    "source_input_sha256": "c9c31bed63e3ac2c0d5468f67300c6881e381a834042cf59157f1c3381ad2ed3",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 14,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "c72a3ab9836844454dcdd2f7928f6c5aac622df9c717d255141f5951b1e36a3f",
+      "agentd": "a063043d102851e444ba9421e1bc128221b5eaba59612bec88cac9e16b0ed548",
+      "agentdocker-ui": "d41574eccaeaaf400db633c1a48dc2785a4bcd7c2d6b0871de519fc56a2a396a"
+    }
+  },
+  "scope": "Owned Codex question-event transport recovery using checked durable cursors. Other failed RPCs and uncertain writes continue to pause; no daemon/process replacement is claimed.",
+  "local_check": {
+    "rust_passed": 839,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "fmt": true,
+    "strict_clippy": true,
+    "doctests": true,
+    "installer_packaging_release": true,
+    "log": "/private/tmp/agentdocker-provider-event-reconnect-check-2026-09-12.log"
+  },
+  "targeted": {
+    "count": 8,
+    "log": "/private/tmp/agentdocker-provider-event-reconnect-targeted-2026-09-12.log",
+    "contracts": [
+      "Readiness waits for checked replay completion.",
+      "A replay cut after a closure but before completion retains the previous cursor and publishes no premature approval.",
+      "Missing history is not retried as a fresh subscription.",
+      "Repeated transport failure is bounded; legacy readiness is refused.",
+      "Question replay beyond 128 entries pauses before a partial batch is published.",
+      "Existing client frame/sequence/deadline checks remain enforced."
+    ]
+  },
+  "actual_codex": {
+    "report": "/private/tmp/agentdocker-codex-event-reconnect-rule-live-2026-09-12/result.json",
+    "sha256": "684c8a0fdb37eb8cc7f6d0c7a6b7ef800923c08ac8373859c3ba50a02413fd02",
+    "driver": "/private/tmp/agentdocker-codex-event-reconnect-trial-2026-09-12.py",
+    "driver_sha256": "09ed77455974392220fc80130283f4ca6c926bea072d12b96301fab76e5b3dc7",
+    "proxy_driver": "/private/tmp/agentdocker-owned-event-proxy-2026-09-12.py",
+    "proxy_sha256": "d472510f6727ccb7c3df4a9e9da04e3f9985798dba6dc904cb9f3c38066292c7",
+    "result": {
+      "result": "passed",
+      "provider_version": "codex-cli 0.153.4",
+      "event_reconnect": {
+        "cuts": 1,
+        "requests": [
+          null,
+          {
+            "log": "d71c898c6ac562567b14da06dd1d11fd",
+            "seq": 31,
+            "digest": "f3abe0bdbc4f7f56a52cfeb946be2f7fc2d02cc7be61b1f436a889734af93533"
+          }
+        ],
+        "closure": {
+          "seq": 33,
+          "kind": "question_closed",
+          "question": "cfa54f7b9627416f",
+          "replayed": true
+        },
+        "controller_preserved": true,
+        "completed_provider_thread": "01a0972f-8bee-74d1-8ef2-cd220418dfce"
+      },
+      "controller_before_cut": {
+        "pid": 38428,
+        "process_started_at": "2026-09-12T19:54:30.369348Z"
+      },
+      "question_resolution": {
+        "request": {
+          "id": 0,
+          "thread": "01a0972f-8bee-74d1-8ef2-cd220418dfce",
+          "turn": "01a0972f-8e4a-71e3-848f-b06986ac8855",
+          "human": "b7e567e7fb9e47e8a8d6eae39b3fa7a3",
+          "kind": "command",
+          "expires_at": "2026-09-12T19:59:36.720132Z",
+          "questions": [
+            {
+              "field": "command",
+              "text": "Allow Codex to run this command once?\n\nDirectory: /private/tmp/ad-cb-flpwdk0u/repo\nCommand:\n/bin/zsh -lc \"python3 -c 'print(\\\"APPROVAL_72CE\\\")'\"\n\nReason: `/bin/zsh -lc \"python3 -c 'print(\\\"APPROVAL_72CE\\\")'\"` requires approval by policy\n\nReply Allow or Deny.",
+              "message": "cfa54f7b9627416f",
+              "presentation": {
+                "kind": "codex_command",
+                "command": "/bin/zsh -lc \"python3 -c 'print(\\\"APPROVAL_72CE\\\")'\"",
+                "cwd": "/private/tmp/ad-cb-flpwdk0u/repo",
+                "reason": "`/bin/zsh -lc \"python3 -c 'print(\\\"APPROVAL_72CE\\\")'\"` requires approval by policy"
+              },
+              "answer": {
+                "id": "d22311413bda4a97",
+                "from": "b7e567e7fb9e47e8a8d6eae39b3fa7a3",
+                "to": {
+                  "kind": "agent",
+                  "value": "6eed7bcbc2b44ebab5762a036ca08a18"
+                },
+                "kind": "answer",
+                "payload": {
+                  "text": "Allow"
+                },
+                "reply_to": "cfa54f7b9627416f",
+                "sent_at": "2026-09-12T19:54:37.047219Z"
+              },
+              "closure": {
+                "state": "answered",
+                "message": "d22311413bda4a97"
+              }
+            }
+          ],
+          "response": {
+            "id": 0,
+            "result": {
+              "decision": "accept"
+            }
+          },
+          "extra_answers": []
+        },
+        "outcome": "resolved",
+        "acknowledged": true
+      },
+      "completed": [
+        {
+          "message": "04c1e7848ce24223",
+          "receipt": {
+            "thread": "01a0972f-8bee-74d1-8ef2-cd220418dfce",
+            "turn": "01a0972f-8e4a-71e3-848f-b06986ac8855",
+            "item": "01a0972f-93b8-73e3-bbeb-c1ab1554e685"
+          }
+        },
+        {
+          "message": "59e50b5e28064d7b",
+          "receipt": {
+            "thread": "01a0972f-8bee-74d1-8ef2-cd220418dfce",
+            "turn": "01a0972f-bb36-7472-8bdc-8b5cf687f213",
+            "item": "01a0972f-bb4a-7511-8a3c-2dac31c0c6b9"
+          }
+        },
+        {
+          "message": "5242c24090044e9b",
+          "receipt": {
+            "thread": "01a0972f-8bee-74d1-8ef2-cd220418dfce",
+            "turn": "01a0972f-d49a-7ee3-aef3-a666d240ec15",
+            "item": "01a0972f-d4a8-7fe1-85fa-6b43e7247a88"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "message": "04c1e7848ce24223",
+          "sender": "2e0874ca73e743c8b3599101f36321cd",
+          "token": "BRIDGE_1_83ED",
+          "sent_monotonic": 84645.474976583
+        },
+        {
+          "message": "59e50b5e28064d7b",
+          "sender": "b7e567e7fb9e47e8a8d6eae39b3fa7a3",
+          "token": "BRIDGE_2_83ED",
+          "sent_monotonic": 84645.971195333
+        },
+        {
+          "message": "5242c24090044e9b",
+          "sender": "2e0874ca73e743c8b3599101f36321cd",
+          "token": "BRIDGE_3_83ED",
+          "sent_monotonic": 84645.971638791
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "proxy": {
+        "cuts": 1,
+        "requests": [
+          null,
+          {
+            "log": "d71c898c6ac562567b14da06dd1d11fd",
+            "seq": 31,
+            "digest": "f3abe0bdbc4f7f56a52cfeb946be2f7fc2d02cc7be61b1f436a889734af93533"
+          }
+        ],
+        "frames": [
+          {
+            "seq": 17,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 18,
+            "kind": "input_delivery_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 19,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 20,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 21,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 22,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 23,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 24,
+            "kind": "input_delivery_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 25,
+            "kind": "inbox_acknowledged",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 26,
+            "kind": "agent_discovered",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 27,
+            "kind": "agent_discovered",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 28,
+            "kind": "agent_discovered",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 29,
+            "kind": "agent_discovered",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 30,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 31,
+            "kind": "question_opened",
+            "question": "cfa54f7b9627416f",
+            "replayed": false
+          },
+          {
+            "seq": 32,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": true
+          },
+          {
+            "seq": 33,
+            "kind": "question_closed",
+            "question": "cfa54f7b9627416f",
+            "replayed": true
+          },
+          {
+            "seq": 34,
+            "kind": "inbox_acknowledged",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 35,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 36,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 37,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 38,
+            "kind": "input_delivery_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 39,
+            "kind": "inbox_acknowledged",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 40,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 41,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 42,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 43,
+            "kind": "input_delivery_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 44,
+            "kind": "inbox_acknowledged",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 45,
+            "kind": "message_sent",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 46,
+            "kind": "agent_activity_reported",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 47,
+            "kind": "daemon_stopping",
+            "question": null,
+            "replayed": false
+          },
+          {
+            "seq": 48,
+            "kind": "agent_stopping",
+            "question": null,
+            "replayed": false
+          }
+        ],
+        "errors": [],
+        "remaining_threads": 0
+      }
+    }
+  },
+  "retained_failure": {
+    "path": "/private/tmp/agentdocker-codex-event-reconnect-live-2026-09-12/result.json",
+    "driver": "/private/tmp/agentdocker-codex-event-reconnect-untrusted-trial-2026-09-12.py",
+    "reason": "The installed Codex 0.153.4 rejects approval_policy=untrusted before starting a conversation. The fixture was corrected to on-request plus a private prefix_rule decision=prompt for the exact benign python3 -c command. The original failure remains; no runtime change was needed.",
+    "cleanup": "normal; no proxy cut or remaining fixture processes/threads; original provider profile unchanged"
+  },
+  "rule_validation": {
+    "path": "/private/tmp/agentdocker-event-reconnect-rule-probe-2026-09-12/result.json",
+    "method": "Installed codex execpolicy check --rules on the private exact-command fixture",
+    "decision": "prompt"
+  },
+  "limitations": [
+    "Only the question-event socket was cut; the daemon, other RPC paths and provider process stayed live.",
+    "The trial validates exact approval resolution and input receipts; resolution alone does not prove command execution.",
+    "Unknown/missing history, malformed frames and buffer overflow still pause immediately; transient reconnects are bounded.",
+    "A dropped publication/receipt/mutation response can remain uncertain. No generic mutation retry was introduced.",
+    "Full process/PTY/log ownership transfer, broader interruption cases, other platforms and sustained sessions remain open.",
+    "The installed launcher, default daemon and user provider profiles were not changed."
+  ]
+}

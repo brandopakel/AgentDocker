@@ -24,8 +24,8 @@ until each existing process exits, including descendant cleanup and exact exit
 reporting. The coordinator may retire while that owner finishes its sessions;
 the old installation must remain pinned while any such process still uses it.
 
-The Codex question-event worker now has bounded checked reconnect code under
-local test. Other daemon RPC failures still pause delivery and shut its provider
+The Codex question-event worker now has bounded checked reconnect with
+[actual event-only cut evidence](verification/2026-09-12-provider-event-reconnect.json). Other daemon RPC failures still pause delivery and shut its provider
 down; a reconnecting event stream cannot reconcile an uncertain accepted write. Child/descriptor transfer alone therefore
 cannot preserve a connected conversation. Reconnection needs verifiable durable
 event continuity, not just a new socket or a readiness marker.

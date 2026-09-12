@@ -102,7 +102,12 @@ apply to each attempt, and shutdown cancels the worker and its socket.
 
 This recovery covers question-event transport only. Queue polling, question
 publication, activity/receipt writes and other failed RPCs still pause delivery;
-a lost write response cannot prove whether the daemon accepted that operation. A restarted controller cancels its known pending human routes and
+a lost write response cannot prove whether the daemon accepted that operation.
+The [687e57f reconnect trial](verification/2026-09-12-provider-event-reconnect.json)
+passed 839 Rust tests, 65 Python checks and an actual Codex event-connection cut
+while command approval was pending. Checked replay resolved that answer once,
+kept the same controller/conversation and completed three ordered peer/human
+inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
 version-5 record preserves version-3/4 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
