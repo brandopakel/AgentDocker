@@ -3,6 +3,7 @@ mod config;
 mod ledger;
 mod recovery;
 mod requests;
+mod review;
 mod terminal;
 mod transport;
 
@@ -17,7 +18,6 @@ use serde_json::{Value, json};
 use std::{io::Write, path::PathBuf, time::Duration};
 use tokio::{
     io::BufReader,
-    task::JoinSet,
     time::{interval, timeout},
 };
 use transport::Provider;
@@ -97,6 +97,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
             provider_home,
         },
     )?;
+    requests::recover(&client, &mut ledger).await?;
     let arguments = provider_input::codex_arguments(&args.command[1..])?;
     let mut provider = Provider::start(std::path::Path::new(&args.command[0]), &arguments, &cwd)?;
     let result = session(&client, &agent, &mut provider, &mut ledger).await;
@@ -106,6 +107,11 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         );
     }
     let shutdown = provider.shutdown().await;
+    if result.is_err() || shutdown.is_err() {
+        if let Err(error) = requests::cancel_pending(&client, &ledger).await {
+            eprintln!("Could not close retained Codex questions: {error:#}");
+        }
+    }
     result.and(shutdown)
 }
 
@@ -269,7 +275,6 @@ async fn session(
     let mut input = terminal::Input::default();
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
-    let mut answers = JoinSet::new();
     let mut request_ids = std::collections::HashSet::new();
     loop {
         tokio::select! {
@@ -281,17 +286,17 @@ async fn session(
             event = provider.next() => {
                 let event = event?;
                 if event.get("method").is_some() && event.get("id").is_some() {
-                    ensure!(answers.len() < 8, "too many outstanding Codex requests");
                     let key = event["id"].to_string();
-                    ensure!(request_ids.insert(key.clone()), "Codex repeated an outstanding request ID");
-                    let client = client.clone(); let human = human.clone(); let agent_id = agent.id.to_string();
-                    let thread = thread.clone(); let turn = turn.clone();
-                    answers.spawn(async move { (key, requests::answer(client, agent_id, human, thread, turn, event).await) });
+                    ensure!(request_ids.len() < 10_000 && request_ids.insert(key), "Codex repeated a request ID or exceeded the request history bound");
+                    if let Some(response) = requests::open(client, ledger, &human, &thread, turn.as_deref(), event).await? {
+                        provider.send(&response).await?;
+                    }
                     continue;
                 }
                 let params = &event["params"];
                 if params.get("threadId").and_then(Value::as_str) != Some(&thread) { continue; }
                 match event["method"].as_str() {
+                    Some("serverRequest/resolved") => requests::resolved(client, ledger, params).await?,
                     Some("item/started" | "item/completed") if params["item"]["type"] == "userMessage" => {
                         let expected = turn.as_deref().context("Codex supplied an unexpected input receipt")?;
                         let attempt = ledger.record().attempt.as_ref().context("Codex input receipt has no pending message")?;
@@ -313,23 +318,14 @@ async fn session(
                         acknowledge(client, ledger).await?;
                         let status = params["turn"]["status"].as_str().context("Codex completed turn has no status")?;
                         ensure!(recovery::terminal(status), "Codex completed notification is not terminal");
+                        requests::turn_ended(client, ledger).await?;
                         ledger.finish(id)?; turn = None;
-                        // A provider may finish after cancelling an approval.
-                        // A late human answer must not grant that stale callback.
-                        answers.abort_all(); request_ids.clear();
                         println!("\nCodex turn {status}.");
                         activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
                     }
                     Some("error") => eprintln!("Codex reported an error; waiting for the turn outcome."),
                     _ => (),
                 }
-            }
-            answer = answers.join_next(), if !answers.is_empty() => {
-                let answer = answer.context("Codex request worker disappeared")?;
-                if answer.as_ref().is_err_and(|error| error.is_cancelled()) { continue; }
-                let (key, response) = answer?;
-                request_ids.remove(&key);
-                provider.send(&response).await?;
             }
             line = input.read(&mut stdin), if input_open => {
                 match line {
@@ -341,14 +337,17 @@ async fn session(
                     Err(error) => { input_open = false; eprintln!("Terminal input closed: {error}"); }
                 }
             }
-            _ = poll.tick(), if turn.is_none() && answers.is_empty() => {
-                if let Some(message) = queue(client, ledger, Vec::new()).await?.first() {
+            _ = poll.tick() => {
+                let messages = requests::poll(client, provider, ledger).await?;
+                if turn.is_none() && ledger.record().reviews.is_empty() {
+                if let Some(message) = messages.first() {
                     preflight(provider, &ledger.record().binding.cwd).await?;
                     let input = ledger.prepare(message)?;
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
                     let result = provider.request("turn/start", json!({"threadId":thread,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await?;
                     turn = Some(result["turn"]["id"].as_str().context("Codex accepted no identifiable turn")?.to_owned());
+                }
                 }
             }
         }
