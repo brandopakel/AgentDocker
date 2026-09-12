@@ -56,6 +56,59 @@ pub async fn report<B: Backend>(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn report_propagates_transport_errors_and_cancels_a_timed_out_call() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct FailingBackend {
+            stall: bool,
+            dropped: Arc<AtomicBool>,
+        }
+        impl Backend for FailingBackend {
+            async fn call(&self, _: Request) -> Result<Response> {
+                if self.stall {
+                    let _guard = Dropped(self.dropped.clone());
+                    std::future::pending().await
+                } else {
+                    anyhow::bail!("fixture transport disconnected")
+                }
+            }
+        }
+        for stall in [false, true] {
+            let dropped = Arc::new(AtomicBool::new(false));
+            let backend = FailingBackend {
+                stall,
+                dropped: dropped.clone(),
+            };
+            let error = report(
+                &backend,
+                "owned-agent",
+                Some(Utc::now()),
+                InputReport::Ready,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains(if stall {
+                "input status report timed out"
+            } else {
+                "fixture transport disconnected"
+            }));
+            assert_eq!(
+                dropped.load(Ordering::SeqCst),
+                stall,
+                "timing out must drop the pending backend call"
+            );
+        }
+    }
+
     #[test]
     fn pause_summary_keeps_outer_context_and_bounds_multibyte_and_control_text() {
         for message in [

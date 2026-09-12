@@ -490,10 +490,13 @@ enum Command {
     #[command(hide = true)]
     ReportInput {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
         agent: String,
         #[arg(long)]
+        /// Exact process birth timestamp for this report, in RFC 3339 format.
         process_started_at: chrono::DateTime<chrono::Utc>,
         #[arg(long)]
+        /// InputReport serialized as JSON (ready, paused or received evidence).
         json: String,
     },
     /// Stream messages without consuming them; acknowledge received IDs with inbox --ack.

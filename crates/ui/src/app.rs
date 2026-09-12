@@ -2527,7 +2527,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn delivery_review_preserves_drafts_and_ignores_another_sessions_log() {
         let (commands, requests) = queue::channel();
@@ -2558,7 +2557,9 @@ mod tests {
         let _ = app.update(Message::ReviewDelivery);
         assert!(app.shell.review_delivery);
         assert!(!app.shell.session_details);
-        assert!(matches!(requests.recv(), Ok(Cmd::SessionLog(target)) if target == id));
+        assert!(
+            matches!(requests.try_iter().next(), Some(Cmd::SessionLog(target)) if target == id)
+        );
         messages
             .send(Msg::Activity(vec![AgentActivity {
                 agent: agent.id.clone(),

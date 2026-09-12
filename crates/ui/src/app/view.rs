@@ -1114,12 +1114,23 @@ impl App {
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
                     {
-                        let log = match result {
-                            Ok(log) if log.is_empty() => "No retained log output.",
-                            Ok(log) => log.as_str(),
-                            Err(error) => error.as_str(),
-                        };
-                        body = body.push(scrollable(text(log).size(12)).height(120));
+                        match result {
+                            Err(error) => {
+                                body = body.push(
+                                    text(format!("Could not read the session log: {error}"))
+                                        .size(13)
+                                        .color(c.amber),
+                                );
+                            }
+                            Ok(log) => {
+                                let log = if log.is_empty() {
+                                    "No retained log output."
+                                } else {
+                                    log.as_str()
+                                };
+                                body = body.push(scrollable(text(log).size(12)).height(120));
+                            }
+                        }
                     } else {
                         body = body.push(small("Loading session log…", c));
                     }

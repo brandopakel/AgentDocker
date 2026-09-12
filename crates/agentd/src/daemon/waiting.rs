@@ -200,6 +200,16 @@ impl State {
         if record.input_delivery.as_ref() == Some(&delivery) {
             return Response::Ok;
         }
+        if record
+            .input_delivery
+            .as_ref()
+            .is_some_and(|previous| observed_at == previous.reported_at)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "input report conflicts with another observation at the same time",
+            );
+        }
         record.input_delivery = Some(delivery.clone());
         let mut event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::InputDeliveryReported {

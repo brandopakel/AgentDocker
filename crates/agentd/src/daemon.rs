@@ -6756,7 +6756,7 @@ mod tests {
         let request = |report| Request::ReportInput {
             agent: receiver.id.to_string(),
             process_started_at: generation,
-            observed_at: generation,
+            observed_at: Utc::now(),
             report,
         };
         let mut events = daemon.subscribe_events();
@@ -6807,6 +6807,18 @@ mod tests {
                 .await,
             Response::Ok
         ));
+        // A retry of an already-ACKed old receipt is not evidence that the
+        // later pause was recovered. Keep that attention state and its reason.
+        let before_retry = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon
+                .handle(request(InputReport::Received {
+                    input: input.clone(),
+                }))
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, before_retry);
         for observed_at in [
             generation - Duration::seconds(1),
             Utc::now() + Duration::minutes(1),
@@ -6877,6 +6889,132 @@ mod tests {
                 .unwrap()
                 .paused
         );
+    }
+
+    #[tokio::test]
+    async fn equal_input_observations_allow_exact_retries_but_reject_conflicting_state() {
+        use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut receiver = register(&daemon, "equal-receipts", None).await;
+        let generation = Utc::now();
+        receiver.spec.runtime = "claude-code".into();
+        receiver.process_started_at = Some(generation);
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let Response::Sent { message, .. } = send(&daemon, "user", "equal-receipts").await
+            else {
+                panic!("not queued")
+            };
+            ids.push(message);
+        }
+        let reports = vec![
+            InputReport::Ready,
+            InputReport::Paused {
+                reason: "First pause".into(),
+            },
+            InputReport::Paused {
+                reason: "Different pause".into(),
+            },
+            InputReport::Received {
+                input: ReceivedInput {
+                    messages: vec![ids[0].clone()],
+                    receipt: InputReceipt::ClaudeChannel,
+                },
+            },
+            InputReport::Received {
+                input: ReceivedInput {
+                    messages: vec![ids[1].clone()],
+                    receipt: InputReceipt::ClaudeChannel,
+                },
+            },
+        ];
+        let mut state = lock(&daemon.state);
+        for initial in &reports {
+            state.store.upsert_agent(&receiver).unwrap();
+            *state.registry.get_mut(&receiver.id).unwrap() = receiver.clone();
+            assert!(matches!(
+                state.report_input(
+                    receiver.id.as_str(),
+                    generation,
+                    generation,
+                    initial.clone(),
+                    generation + Duration::seconds(1)
+                ),
+                Response::Ok
+            ));
+            let saved = state
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .input_delivery
+                .clone();
+            let next_seq = state.next_seq;
+            // A later retry of the same observation must preserve received_at
+            // and emit nothing, even while its exact IDs are still queued.
+            assert!(matches!(
+                state.report_input(
+                    receiver.id.as_str(),
+                    generation,
+                    generation,
+                    initial.clone(),
+                    generation + Duration::seconds(2)
+                ),
+                Response::Ok
+            ));
+            assert_eq!(state.next_seq, next_seq);
+            for conflicting in reports.iter().filter(|report| *report != initial) {
+                let response = state.report_input(
+                    receiver.id.as_str(),
+                    generation,
+                    generation,
+                    conflicting.clone(),
+                    generation + Duration::seconds(2),
+                );
+                // Ready after an unpaused receipt preserves every saved field.
+                // Equal timestamps constrain resulting state, not report tags.
+                let unchanged = matches!(initial, InputReport::Received { .. })
+                    && matches!(conflicting, InputReport::Ready);
+                assert!(
+                    if unchanged {
+                        matches!(response, Response::Ok)
+                    } else {
+                        matches!(
+                            response,
+                            Response::Error {
+                                code: ErrorCode::Invalid,
+                                ..
+                            }
+                        )
+                    },
+                    "unexpected equal observation: {initial:?} to {conflicting:?}: {response:?}"
+                );
+                assert_eq!(state.next_seq, next_seq);
+                assert_eq!(
+                    state.registry.get(&receiver.id).unwrap().input_delivery,
+                    saved
+                );
+                let persisted = state
+                    .store
+                    .load_agents()
+                    .unwrap()
+                    .into_iter()
+                    .find(|record| record.id == receiver.id)
+                    .unwrap();
+                assert_eq!(persisted.input_delivery, saved);
+                assert_eq!(state.inboxes[&receiver.id].len(), 2);
+            }
+            assert!(matches!(
+                state.report_input(
+                    receiver.id.as_str(),
+                    generation,
+                    generation + Duration::seconds(1),
+                    InputReport::Ready,
+                    generation + Duration::seconds(2)
+                ),
+                Response::Ok
+            ));
+        }
     }
 
     #[tokio::test]
