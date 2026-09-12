@@ -2371,7 +2371,11 @@ impl App {
             body = body.push(text(error.clone()).size(13).color(c.amber));
         }
         let mut screen = column![card(body, c)].spacing(14);
-        if let Some(update) = p.report.as_ref().and_then(|r| r.get("update")) {
+        if let Some(update) = p
+            .update
+            .as_ref()
+            .or_else(|| p.report.as_ref().and_then(|r| r.get("update")))
+        {
             let available = update["available"]["version"].as_str().unwrap_or("unknown");
             let installed = update["installed_version"]
                 .as_str()

@@ -94,6 +94,19 @@ overrides the feed URL. `scripts/desktop_update_smoke.py --source <package dir>
 release. Publication of `updates.json` beside the release archives is part of
 the release workflow.
 
+Settings also offers **Daily update checks**, off by default. When enabled, the
+open app checks at most once per 24 hours and checks on its next launch if due.
+The timestamp is saved before the request, so restarting after an offline or
+failed check does not retry immediately. A full worker queue waits for capacity.
+The check has a separate worker and a 45-second deadline; it preserves any
+installation preview and its Apply pin. A clickable footer opens the available
+release in Installation. Downloads and activation still require explicit actions.
+The scheduler does not run while the app is closed or an alternate installation
+prefix is selected. Disabling it stops future checks; an in-flight read-only
+request may finish. `scripts/daily_update_smoke.py` exercises these controls and
+restart behavior with a controlled CLI reply; the update-consumer driver above
+provides separate feed/archive validation.
+
 Updates affect the next app/CLI launch. They do not stop a live daemon or its agents. Daemon replacement remains an explicit lifecycle operation. Rollback verifies the retained payload and requires equal daemon state schemas; it does not restore or downgrade the database. Keep a matching state backup for any manual downgrade. Retained versions are not automatically pruned.
 
 `scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/install-smoke` tests this flow under a disposable prefix, including stale-preview rejection, tampered executables, private activation metadata, retained versions and a responsive daemon across activation/rollback. CI uses two package generations of the same binaries and labels that limitation. `--previous-source` accepts a separately built older package for a trial between source revisions. Graphical acceptance and real-provider round trips are separate checks.
@@ -153,7 +166,8 @@ for macOS. A preview feed cannot establish public signing or download availabili
 Generation does not publish the feed, fetch updates or schedule checks. The feed
 records the intended policy: at most one daily check, manual download, explicit
 activation and deferred daemon replacement until sessions finish. The consumer
-and scheduler still need implementation and acceptance.
+and opt-in native scheduler are implemented with local fixture acceptance.
+Hosted-release download and signed-distribution acceptance remain required.
 
 Native desktop CI now includes Linux x86-64/ARM64 and macOS ARM64/Intel runners,
 each building and graphically exercising its packaged binaries. Adding the jobs

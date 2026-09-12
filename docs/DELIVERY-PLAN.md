@@ -51,7 +51,8 @@ CodeRabbit reviewed `d630d9f` and reported three findings: schema downgrade chec
 The update consumer is implemented in CLI and Settings with local preview/apply
 evidence. [Release automation](RELEASE-AUTOMATION.md) now prepares the installable
 archives and complete feed. Signed protected-tag publication, hosted update
-verification and scheduled checks remain release work.
+verification remain release work. Opt-in daily checks now have local native
+acceptance; their final PR gate is tracked in the checkpoint below.
 
 The [reviewed update checkpoint](verification/2026-09-11-desktop-release.json)
 at `a910d81` passed 727 Rust tests, 54 Python checks, 114 packaged native steps and
