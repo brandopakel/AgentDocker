@@ -35,6 +35,22 @@ steps and 23 additional notification-navigation steps passed. Final CI and actua
 source inspection passed at `f677af1`; PR #113 merged as `b257bcb`. Physical
 Notification Center acceptance remains separate.
 
+The [30-minute Codex queue trial](verification/2026-09-12-thirty-minute-codex-queue.json)
+passed at immutable `3ceaa4a`: 60 exact ordered inputs/replies, seven read-only
+response cuts, one controller/conversation/provider record and normal cleanup.
+Original profile and binary hashes stayed unchanged. Its CLI/daemon are identical
+to the queue recovery candidate's tested binaries. This does not establish
+overnight, sleep/reboot or live-replacement acceptance.
+
+The [bounded permission review](verification/2026-09-12-permission-review.json)
+at `7051471` passes 856 Rust tests, 65 Python checks, actual Codex Allow/Deny,
+three ordered mixed inputs each and
+18 native review/draft/schema-upgrade/restart steps. It shows concrete paths and
+network access, grants only the current turn, and preserves exact human/provider
+receipts. Local environment IDs and matching legacy/typed permission mirrors
+are accepted; conflicting/unknown selectors remain refused. Final CI/source
+review and broader permission forms are still open.
+
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |

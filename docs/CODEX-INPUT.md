@@ -103,7 +103,7 @@ as `dd0665a`; review corrected schema history and confirmed the intentional
 retention of uncertain approval records.
 
 Schema 16 adds concrete permission requests to the same Inbox review. The card
-shows the directory, reason, each read/write/block path and requested network
+shows the directory, reason, each read/write/excluded path and requested network
 access. **Allow for this turn** sends exactly the reviewed permission profile with
 `scope: "turn"`; **Deny** sends an empty profile with the same scope. Only exact
 human `Allow` grants access. Neither choice requests session scope or overrides
@@ -111,16 +111,24 @@ Codex's configured automatic review policy.
 
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown
-fields, conflicting or repeated selectors within one representation, relative paths, control characters, empty/no-op
+fields, conflicting or repeated selectors within one representation, relative
+paths, control characters, empty/no-op
 grants, more than 16 distinct paths and questions exceeding 16,000 bytes. Matching
 legacy/typed mirrors emitted by Codex are retained in the grant and shown once.
-Glob/special
-selectors, scan-depth settings and remote environments require a richer review
+Glob/special selectors, scan-depth settings and remote environments require a richer review
 and remain unsupported. The omitted/null environment ID and Codex's reserved
-`local` ID select this local flow; other IDs are refused. Permission receipts require delivery-record version 7;
+`local` ID select this local flow; other IDs are refused. Permission receipts
+require delivery-record version 7;
 older records cannot claim this review meaning. Installed Codex 0.153.4 exposes
-the request-permissions tool as a disabled feature under development. Actual
-provider and native acceptance are still required for this implementation.
+the request-permissions tool as a disabled feature under development. The
+[permission trial](verification/2026-09-12-permission-review.json) at `7051471`
+passed 856 Rust tests, 65 Python checks and actual Codex Allow/Deny with three
+ordered peer/human/peer inputs each,
+one exact human/provider resolution and one controller/conversation. Allow
+created the expected private fixture file; Deny left it absent. The corresponding
+native trial passed 18 review/draft/schema-upgrade/restart steps, including
+matching permission mirrors shown once. Initial environment/mirror failures and
+diagnostic setup failures are retained. Final CI/source review remain required.
 
 Command/file/permission approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
