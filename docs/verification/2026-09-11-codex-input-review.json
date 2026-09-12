@@ -134,5 +134,30 @@
     "The existing provider profile, installed launcher and running user daemon were not replaced.",
     "Broader question/approval delivery, durable status, guided recovery, sustained use and platform/release gates remain open.",
     "Final-head CI and follow-up CodeRabbit review remain pending."
-  ]
+  ],
+  "coverage_test_correction": {
+    "source_commit": "0586acf66d4101d9119eb04cf8d3f11808b31062",
+    "scope": "test-only; production implementation and earlier actual-provider/native evidence remain pinned to 743c6d7",
+    "failed_ci_run": 34672480421,
+    "failed_ci_job": 103496346314,
+    "cause": "Random agent ID df94c3a161294321b7f982e8837c81c7 contained the hidden PID value 4321. A substring assertion mistook the public ID for a leaked pid field.",
+    "fix": "Retain the failing ID; parse compact and verbose JSON and check the actual pid field and preserved ID.",
+    "deterministic_failed_baseline": {
+      "path": "/private/tmp/agentdocker-pr103-compact-pid-baseline-2026-09-11.log",
+      "sha256": "f90e0a633f64d1f96b8cd344a4f909fe5725bd1b32ee3930812fc66675f4e6fe"
+    },
+    "corrected_targeted_test": {
+      "path": "/private/tmp/agentdocker-pr103-compact-pid-fixed-2026-09-11.log",
+      "sha256": "d6e7a9a0db75b713a346cfb4233933d4f06ac289f37b6658213bae066c1a7c83"
+    },
+    "standard_gate": {
+      "path": "/private/tmp/agentdocker-pr103-compact-pid-check-2026-09-11.log",
+      "sha256": "9b9778772e245de2d2f8ed972e958c5cddf58da03eeaea0562300220b82f8388"
+    },
+    "rust_tests_passed": 788,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 65,
+    "fmt_clippy_doctests_packaging_release": "passed",
+    "final_head_ci_and_review": "pending"
+  }
 }
