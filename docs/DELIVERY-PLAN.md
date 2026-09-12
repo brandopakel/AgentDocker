@@ -712,3 +712,21 @@ External editors/provider CLIs do not participate in these advisory locks. The
 passed the full gate (765 Rust tests, 58 Python checks), 114 native workflow
 steps and six actual CLI contention/recovery scenarios. The regression now runs
 in all four Mac/Linux native CI jobs; final-head CI and review remain pending.
+
+### September 11: completed 100-agent hour
+
+The [immutable daemon trial](verification/2026-09-11-hour-sustained-use.json)
+completed 3,600 seconds at 100 supervised fixture agents and 10,000 checkout
+files: 1,392,836 message/lease cycles, unchanged binary/driver hashes and graceful
+cleanup with no remaining children. Daemon RSS ranged from 20,560 to 31,024 KiB.
+The retained final 100,000 request samples had p95 2.48 ms and p99 5.16 ms.
+This closes the bounded one-hour fixture run; actual-provider conversations,
+overnight, sleep/reboot and other-platform acceptance remain separate.
+
+Review also found a late-interruption reporting gap. The corrected driver records
+the first signal without taking locks and checks interruption during final report
+writes, while preserving an existing failure. Injected SIGINT/SIGTERM tests and
+actual normal/interrupted private trials retained the right outcomes and clean
+owned-process cleanup. The full standard gate passed 762 Rust tests and 60
+Python checks, including the two new signal regressions. Final CI and review
+remain required.
