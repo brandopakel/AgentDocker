@@ -13,9 +13,9 @@ the list. Opening a session takes you to its project and selects that session.
 
 **Needs you** shows unanswered questions (**Answer**), unviewed completions
 (**Open**) and paused message delivery (**Review**). Question previews use at
-most 160 characters from the first line. Answer opens and reveals the exact
+most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
-Inbox. The first six items are shown; **Show more** expands the same list and
+Inbox. The first three items are shown; **Show more** expands the same list and
 **Show fewer** collapses it. Optional setup stays in Tools, and discovered
 processes appear once under Running here, not connected.
 
@@ -45,7 +45,9 @@ checkout, commit and last-seen time.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. **Connect** under **Running here, not connected** adopts a discovered process for
 coordination. Known Codex Node launchers with a native Codex child are omitted
-from discovery. A discovery row overlapping a live registration is hidden only
+from discovery. Claude Chrome native-host helpers are also omitted, for native
+and interpreter entry points; enabling Chrome in a real session keeps the agent
+visible. A discovery row overlapping a live registration is hidden only
 when its PID and process birth time both match. Separate registrations are never
 merged by display name.
 Installation or configuration alone does not prove that an agent is working.

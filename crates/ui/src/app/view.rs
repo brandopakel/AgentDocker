@@ -404,22 +404,13 @@ impl App {
         let mut header_left = column![heading_row].spacing(6).width(Fill);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
             header_left = header_left.push(mono(entry.project.root.display().to_string(), c));
-        } else if in_project {
-            header_left = header_left.push(note(
-                if self.shell.catalog.unassigned {
-                    "Sessions whose project is not known. Add their folder as a project to file them."
-                } else {
-                    "Every agent on this computer. Choose a project on the left to work in one."
-                },
-                c,
-            ));
-        } else {
+        } else if in_project && self.shell.catalog.unassigned {
+            header_left = header_left.push(note("Sessions without a known project", c));
+        } else if !in_project {
             header_left = header_left.push(note(
                 match self.screen {
                     Screen::Questions => "Questions and messages waiting for you",
-                    Screen::Runtimes => {
-                        "The agent tools on this computer and whether they are connected"
-                    }
+                    Screen::Runtimes => "Connect and configure your agent tools",
                     _ => "Appearance, terminal, installation and diagnostics",
                 },
                 c,
@@ -902,7 +893,7 @@ impl App {
     /// screens hold, brought to the first screen so nobody has to know
     /// where to look. Empty when nothing is waiting.
     fn needs_you(&self, c: Colors) -> Option<Element<'_, Message>> {
-        const SHOWN: usize = 6;
+        const SHOWN: usize = 3;
         let now = Utc::now();
         let mut items: Vec<(Element<'_, Message>, String, Element<'_, Message>)> = Vec::new();
         for question in self
@@ -1147,12 +1138,7 @@ impl App {
                 // in the meta line; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
-            content = content
-                .push(small(
-                    format!("started {}", ago(Utc::now(), agent.created_at)),
-                    c,
-                ))
-                .push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
             rows = rows.push(custom(
                 format!("session-{id}"),
                 spoken,
@@ -3017,8 +3003,8 @@ impl App {
 /// Keep full question bodies in the review screen, with a bounded first line here.
 fn compact_question(value: &str) -> String {
     let first = value.lines().next().unwrap_or_default();
-    let mut preview: String = first.chars().take(160).collect();
-    if first.chars().count() > 160 || value.lines().count() > 1 {
+    let mut preview: String = first.chars().take(80).collect();
+    if first.chars().count() > 80 || value.lines().count() > 1 {
         preview.push('…');
     }
     preview
