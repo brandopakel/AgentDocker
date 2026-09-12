@@ -91,6 +91,7 @@ enum Cmd {
     Stop(String),
     Setup(Vec<String>),
     Desktop(Vec<String>),
+    UpdateCheck,
     /// Any `agentdocker` command, so the window is not limited to the
     /// few actions that have buttons.
     Console(String, Option<std::path::PathBuf>),
@@ -119,6 +120,7 @@ enum Msg {
     Status(String),
     Setup(Result<serde_json::Value, String>),
     Desktop(Result<serde_json::Value, String>),
+    UpdateChecked(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
@@ -529,6 +531,13 @@ impl App {
                 Msg::Disconnected(reason) => self.connected = Err(reason),
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
+                Msg::UpdateChecked(result) => {
+                    if self.desktop.prefix.trim().is_empty() {
+                        self.desktop.receive_update(result);
+                    } else {
+                        self.desktop.checking_updates = false;
+                    }
+                }
                 Msg::Setup(result) => {
                     self.setup_busy = false;
                     match result {
@@ -1004,6 +1013,10 @@ fn spawn_worker(
             cancelled.clone(),
             |args: Vec<String>| Msg::Desktop(desktop(&args)),
         );
+        let (updates, update_worker) =
+            lane(tx.clone(), ctx.clone(), cancelled.clone(), |(): ()| {
+                Msg::UpdateChecked(check_update())
+            });
         while let Ok(cmd) = rx.recv() {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 break;
@@ -1014,6 +1027,7 @@ fn spawn_worker(
                 Cmd::Console(line, cwd) => submit(&consoles, (line, cwd), Msg::Console),
                 Cmd::Setup(args) => submit(&setups, args, |error| Msg::Setup(Err(error))),
                 Cmd::Desktop(args) => submit(&desktops, args, |error| Msg::Desktop(Err(error))),
+                Cmd::UpdateCheck => submit(&updates, (), |error| Msg::UpdateChecked(Err(error))),
                 daemon => {
                     let answer = match &daemon {
                         Cmd::Answer(id, _) => Some(id.clone()),
@@ -1084,8 +1098,8 @@ fn spawn_worker(
         // In-flight subprocesses keep their existing deadlines; joining happens
         // on this background worker, never on the UI thread.
         cancelled.store(true, std::sync::atomic::Ordering::Release);
-        drop((consoles, setups, desktops));
-        for worker in [console_worker, setup_worker, desktop_worker] {
+        drop((consoles, setups, desktops, updates));
+        for worker in [console_worker, setup_worker, desktop_worker, update_worker] {
             let _ = worker.join();
         }
     })
@@ -1272,6 +1286,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         }
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
+        Cmd::UpdateCheck => Some(Msg::UpdateChecked(check_update())),
         Cmd::Console(line, cwd) => Some(Msg::Console(console(&line, cwd.as_deref()))),
     })
 }
@@ -1389,6 +1404,17 @@ fn setup(args: &[String]) -> Result<serde_json::Value, String> {
 
 /// Copying and OS signature verification run separately from socket refreshes.
 fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
+    desktop_with_timeout(args, Duration::from_secs(600))
+}
+
+fn check_update() -> Result<serde_json::Value, String> {
+    desktop_with_timeout(
+        &["update".into(), "--check".into()],
+        Duration::from_secs(45),
+    )
+}
+
+fn desktop_with_timeout(args: &[String], timeout: Duration) -> Result<serde_json::Value, String> {
     let cli = beside("agentdocker");
     let mut argv = vec![
         cli.to_str().ok_or("CLI path is not UTF-8")?.to_owned(),
@@ -1396,8 +1422,8 @@ fn desktop(args: &[String]) -> Result<serde_json::Value, String> {
     ];
     argv.extend_from_slice(args);
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(600))
-        .map_err(|error| error.to_string())?;
+    let output =
+        agentdocker_host::command::run(&cwd, &argv, timeout).map_err(|error| error.to_string())?;
     if !output.success {
         return Err(format!("Installation failed: {}", output.text.trim()));
     }

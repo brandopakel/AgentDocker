@@ -1,6 +1,23 @@
 //! Native installation controls backed by the sibling CLI's checked operations.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UpdateSchedule {
+    pub enabled: bool,
+    pub last_attempt: Option<i64>,
+}
+
+impl UpdateSchedule {
+    pub fn due(&self, now: i64) -> bool {
+        self.enabled
+            && self
+                .last_attempt
+                .is_none_or(|last| now.saturating_sub(last) >= 24 * 60 * 60)
+    }
+}
 
 #[derive(Default)]
 pub struct Panel {
@@ -10,6 +27,9 @@ pub struct Panel {
     pub busy: bool,
     pub report: Option<Value>,
     pub error: Option<String>,
+    pub checking_updates: bool,
+    pub update_check_error: bool,
+    pub update: Option<Value>,
     /// What the last `status` said was installed here, so the screen can
     /// offer a rollback only when there is a version to roll back to.
     /// `None` means nobody has asked yet.
@@ -26,6 +46,7 @@ pub struct Installed {
 impl Panel {
     pub fn preview(&self, operation: &str) -> Option<Vec<String>> {
         if self.busy
+            || (operation == "update-check" && self.checking_updates)
             || !matches!(
                 operation,
                 "status"
@@ -100,6 +121,12 @@ impl Panel {
         self.busy = false;
         match result {
             Ok(report) => {
+                if let Some(update) = report.get("update") {
+                    self.update = Some(update.clone());
+                    self.update_check_error = false;
+                } else if report["preview"] == false && report.get("candidate").is_some() {
+                    self.update = None;
+                }
                 if let Some(installation) = report.get("installation") {
                     self.installed = Some(Installed {
                         current: !installation["current"].is_null(),
@@ -113,6 +140,19 @@ impl Panel {
                 self.report = None;
                 self.error = Some(error);
             }
+        }
+    }
+
+    /// Background checks have their own result; an installation preview and
+    /// its Apply pin remain exactly the operation the user reviewed.
+    pub fn receive_update(&mut self, result: Result<Value, String>) {
+        self.checking_updates = false;
+        match result.ok().and_then(|report| report.get("update").cloned()) {
+            Some(update) => {
+                self.update = Some(update);
+                self.update_check_error = false;
+            }
+            None => self.update_check_error = true,
         }
     }
 
@@ -130,7 +170,10 @@ impl Panel {
 
     /// The newer version the last check or preview found, if any.
     pub fn update_available(&self) -> Option<&str> {
-        let update = self.report.as_ref()?.get("update")?;
+        let update = self
+            .update
+            .as_ref()
+            .or_else(|| self.report.as_ref()?.get("update"))?;
         (update["update_available"] == true)
             .then(|| update["available"]["version"].as_str())
             .flatten()
@@ -158,6 +201,41 @@ pub fn pinned_maintenance(report: &Value) -> Option<(&str, &str)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn daily_checks_require_opt_in_and_survive_clock_rollback_and_restart() {
+        let mut schedule = UpdateSchedule::default();
+        assert!(!schedule.due(100_000));
+        schedule.enabled = true;
+        assert!(schedule.due(100_000));
+        schedule.last_attempt = Some(100_000);
+        let restored: UpdateSchedule =
+            serde_json::from_str(&serde_json::to_string(&schedule).unwrap()).unwrap();
+        assert!(!restored.due(99_999));
+        assert!(!restored.due(186_399));
+        assert!(restored.due(186_400));
+    }
+
+    #[test]
+    fn background_results_preserve_installation_preview_pin_and_busy_state() {
+        let report = json!({"preview":true,"source":"/fixture","candidate":{"id":"reviewed"}});
+        let mut panel = Panel {
+            report: Some(report.clone()),
+            ..Default::default()
+        };
+        let apply = panel.apply();
+        panel.checking_updates = true;
+        panel.receive_update(Ok(
+            json!({"update":{"update_available":true,"available":{"version":"0.2.0"}}}),
+        ));
+        assert_eq!(panel.update_available(), Some("0.2.0"));
+        assert_eq!(panel.apply(), apply);
+        panel.busy = true;
+        panel.receive_update(Err("fixture network failure".into()));
+        assert!(panel.busy && panel.update_check_error);
+        assert_eq!(panel.report, Some(report));
+        assert!(!panel.checking_updates);
+    }
 
     #[test]
     fn update_check_needs_no_source_and_update_needs_a_found_version() {

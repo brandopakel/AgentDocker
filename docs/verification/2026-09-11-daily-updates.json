@@ -1,0 +1,84 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source": {
+    "format": 1,
+    "source_commit": "63ee56d80dec359f31928e3751897861eeffca0f",
+    "source_tree": "949d89f0571b0472453144a5dcdfbc99e54f9bde",
+    "source_input_sha256": "d894a6492d0f204f73265dfcd0976bc10f32fbc8f01a39851d7b604c0888566f",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "a17da45fda9e1981385231ca2e24c2181d6113ad45a7d3097fd483d01aefdb84"
+    }
+  },
+  "standard_gate": {
+    "rust_passed": 768,
+    "rust_skipped": 6,
+    "python_passed": 58,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "workflow_lint": "passed",
+    "private_log": "/private/tmp/agentdocker-daily-update-final-check-2026-09-11.log"
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 114,
+    "private_result": "/private/tmp/agentdocker-daily-update-final-iced-2026-09-11/result.json"
+  },
+  "scheduled_check_trial": {
+    "result": "passed",
+    "checks": [
+      "new_preferences_default_to_no_automatic_requests",
+      "opt_in_persists_before_first_check_and_opens_available_release",
+      "restart_does_not_repeat_the_daily_check",
+      "due_check_failure_is_visible_and_reserved",
+      "failed_check_is_throttled_across_restart_and_can_be_disabled",
+      "disabled_reopen_never_checks_even_when_due"
+    ],
+    "scope": "Native rendered controls with a controlled sibling CLI reply; no real network/download/install or physical input acceptance",
+    "binary_sha256": {
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "a17da45fda9e1981385231ca2e24c2181d6113ad45a7d3097fd483d01aefdb84"
+    },
+    "native_steps": 33,
+    "requests": [
+      {
+        "args": [
+          "desktop",
+          "update",
+          "--check"
+        ],
+        "saved_attempt": 1789173906
+      },
+      {
+        "args": [
+          "desktop",
+          "update",
+          "--check"
+        ],
+        "saved_attempt": 1789173913
+      }
+    ],
+    "owned_cleanup": true
+  },
+  "trial_driver": "scripts/daily_update_smoke.py",
+  "driver_sha256": "ce7aacdffbd9e4a8dedc2017d2048904520293f6e62f1d800f958bd55998c976",
+  "private_trial_result": "/private/tmp/agentdocker-daily-update-final-ci-2026-09-11/result.json",
+  "ci": "The six native scheduling/restart cases run on all four Mac/Linux desktop jobs. Final-head CI and review remain required.",
+  "limits": [
+    "The scheduler runs only while the native app is open, using the default installation prefix. It is off by default and saves each attempt before a fixed read-only check.",
+    "The CLI reply is a controlled fixture. This verifies UI scheduling, persistence, navigation and failure throttling; feed/archive integrity and hosted downloads require their separate acceptance.",
+    "Automatic results preserve the reviewed installation report and Apply pin. Download and activation remain explicit. No installed app, daemon, launcher or provider profile was updated."
+  ]
+}

@@ -68,6 +68,12 @@ jobs:
       - name: Mac Iced actions, native accessibility and project restoration
         if: runner.os == 'macOS'
         run: python3 scripts/iced_workflow_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/iced-workflows
+      - name: Linux daily update opt-in and restart behavior
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- python3 scripts/daily_update_smoke.py --binary-dir artifacts/desktop/agentdocker-desktop/bin --output artifacts/daily-update-smoke
+      - name: Mac daily update opt-in and restart behavior
+        if: runner.os == 'macOS'
+        run: python3 scripts/daily_update_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/daily-update-smoke
       - name: Disposable installation, activation and rollback
         run: python3 scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/desktop-install-smoke
       - name: Verified update feed, rejection paths and installation
@@ -106,6 +112,7 @@ jobs:
             artifacts/desktop/updates-preview-*.json
             artifacts/desktop-smoke
             artifacts/iced-workflows
+            artifacts/daily-update-smoke
             artifacts/desktop-install-smoke
             artifacts/desktop-update-smoke
             artifacts/terminal-smoke
