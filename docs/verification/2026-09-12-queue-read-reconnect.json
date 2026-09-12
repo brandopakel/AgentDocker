@@ -271,7 +271,7 @@
     "Socket tests cover a lost read response, four-attempt exhaustion, immediate malformed-response failure and no retry of an uncertain nonempty acknowledgement. The actual trial drops one complete read response while file approval is pending.",
     "The actual corrected trial retains the controller PID/start identity, one provider conversation/record, one event connection, exact human approval closure and three ordered peer/human inputs. It creates only the reviewed private fixture file.",
     "Queue acknowledgement, question publication, activity/input-receipt reports and other mutations still pause on failure; no generic write retries or full daemon handover are introduced.",
-    "The daemon and UI binaries are unchanged from the compact file-review build. The separate Inbox history PR is outside this branch; no native visual changes are made here.",
+    "The daemon and UI binaries are unchanged from the compact file-review build. This trial checkpoint predates integration of the independently accepted Inbox history PR; the queue-retry change itself makes no native visual changes.",
     "Private state, immutable binaries and owned fixture processes only; existing provider profiles and active user sessions are unchanged. Final CI and actual source inspection remain required before integration."
   ]
 }

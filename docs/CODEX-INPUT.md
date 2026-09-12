@@ -98,7 +98,9 @@ passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps
 Actual Codex Allow created exactly the reviewed fixture file; Deny left it absent.
 Each completed three ordered peer/human/peer inputs and retained one provider
 identity. The final compact UI rebuild has byte-identical CLI/daemon binaries to
-those provider trials. Final CI and actual source review remain required.
+those provider trials. PR #112 passed final CI and actual source review and merged
+as `dd0665a`; review corrected schema history and confirmed the intentional
+retention of uncertain approval records.
 
 Command/file approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
