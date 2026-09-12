@@ -82,15 +82,24 @@ tool call; broader ordering, approval, cancellation and starvation cases remain.
 
 The adapter waits for MCP initialization, then offers one queued envelope with
 its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
-`sent_at` and `destination` metadata. The model must acknowledge received IDs
+`sent_at`, `destination` and optional `reply_to` metadata. The model must acknowledge received IDs
 using `acknowledge_messages`. That receipt frees the queue head; it confirms
 receipt, not task completion. A reply remains a separate `send_message` call.
 
 A stdout write never removes an inbox message. Until an explicit receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
 enabled; after 30 seconds without a receipt the adapter reports a diagnostic.
-The message remains recoverable through a non-draining inbox read. Reconnects
-offer the same unacknowledged ID again, so consumers must deduplicate IDs.
+The message remains recoverable through a non-draining CLI inbox read.
+The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
+model receives input through the channel queue. Reconnects offer the same
+unacknowledged ID again, so consumers must deduplicate IDs.
+
+In channel mode, `ask_human` posts the question and immediately returns
+`posted: true` with its `question_id`. It does not return the answer a second
+time through its tool response. Finish the current turn while waiting; the
+human answer arrives through the normal channel queue with `reply_to` naming
+that question. Acknowledge its message ID after receiving its complete content.
+Other providers and ordinary MCP mode retain their blocking question tool.
 
 The parent input-mode variable suppresses hook inbox injection even while the
 channel reconnects. Hooks also detect a held channel ownership lock for their
