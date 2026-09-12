@@ -1,0 +1,138 @@
+{
+  "recorded_on": "2026-09-11 America/Los_Angeles",
+  "source": {
+    "format": 1,
+    "source_commit": "743c6d7b53d37dc608f1d1547c92a2c5d3e30fc5",
+    "source_tree": "2bf378d2050b67a527b7f98a728bc1ea88863178",
+    "source_input_sha256": "b8ab1507f9e27b8528a7ca0213b87d62590674235832c31322b889302093b90f",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 12,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "c9c221dd8dddfd45dd9d74df4c82d3d090497bce539bb15f72bf46d5d1674d77",
+      "agentd": "241cac4ebf01a5af2e75425f48c48db0c6babb54f5809af151ec0739f1e4109a",
+      "agentdocker-ui": "6a864e2fd98872ad2cacd30ad5092028c62416220740d9c7c035d253e2dba417"
+    }
+  },
+  "pr": "https://github.com/brandopakel/AgentDocker/pull/103",
+  "changes": [
+    "Native identity-repair acceptance compares migrated schema to the same daemon fresh database, instead of stale schema 11.",
+    "Non-UTF-8 executable/state/socket/checkout paths are refused before JSON interpolation.",
+    "Unix symlink assertions are conditionally compiled.",
+    "Cancellation-safe bounded terminal reads discard invalid UTF-8 or oversized complete lines; later input remains usable."
+  ],
+  "validation": {
+    "rust_tests_passed": 788,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 65,
+    "fmt_clippy_doctests_packaging_release": "passed",
+    "standard_gate": {
+      "path": "/private/tmp/agentdocker-pr103-review-fixes-check-2026-09-11.log",
+      "sha256": "4034bb0538dcd5b3f191dc63eb0fee7b58ca9fcf2df01a2188fe4621b2116438"
+    },
+    "native_steps": 123,
+    "native_elapsed_seconds": 50.154342000001634,
+    "native_report": {
+      "path": "/private/tmp/agentdocker-pr103-review-fixes-iced-2026-09-11/result.json",
+      "sha256": "2e8092471dd870fe1d681f704dd76e45e26efa260f5226808ecb8bf81882c090"
+    }
+  },
+  "terminal_trial": {
+    "provider": "codex-cli 0.153.4",
+    "driver": {
+      "path": "/private/tmp/agentdocker-codex-terminal-rejection-trial.py",
+      "sha256": "c733ae995334f2268c7fd0a5b9d6b036772afbb6f8eedf4d2f5519c30d938361"
+    },
+    "failed_baseline": {
+      "path": "/private/tmp/agentdocker-codex-terminal-rejection-baseline-2026-09-11/result.json",
+      "sha256": "be44a7764b735a5a4edf6296d29d75f9eb96297bb0c65373824058ecb0bda5cf",
+      "source_commit": "b1ce9d01568ff86ede20d47e69a16164b20b7f27",
+      "error": "controller terminal closed after malformed input",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    "corrected": {
+      "path": "/private/tmp/agentdocker-codex-terminal-rejection-fixed-2026-09-11/result.json",
+      "sha256": "038e81d623804c3663ddd4998eebfa7c4db10da92359e8b0869d903e099da00e",
+      "terminal_rejection": {
+        "invalid_utf8_reported": true,
+        "oversized_reported": true,
+        "same_controller": true,
+        "no_bad_input_queued": true,
+        "fixture_pty_raw": true
+      },
+      "completed": [
+        {
+          "message": "6ae4e97bb8374b26",
+          "receipt": {
+            "thread": "01a093d0-8cf0-70f3-a93f-970471b6cd59",
+            "turn": "01a093d0-8f50-7451-8555-9a5e66c956fe",
+            "item": "01a093d0-9b46-7621-a385-353df3f6ce68"
+          }
+        },
+        {
+          "message": "c643ba36ab954b5f",
+          "receipt": {
+            "thread": "01a093d0-8cf0-70f3-a93f-970471b6cd59",
+            "turn": "01a093d0-becc-7a71-8932-984777ef57cf",
+            "item": "01a093d0-bede-7383-ac0f-414f014a82e1"
+          }
+        },
+        {
+          "message": "5e4e557028804e8b",
+          "receipt": {
+            "thread": "01a093d0-8cf0-70f3-a93f-970471b6cd59",
+            "turn": "01a093d0-ddfb-7140-b19f-234945ebd235",
+            "item": "01a093d0-de07-7c90-b798-2bc653289bc6"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    "source_profile_unchanged": true
+  },
+  "native_ci_schema_regression": {
+    "run": 34671285800,
+    "macos_job": 103492985193,
+    "linux_job": 103492985086,
+    "failure": "identity_repair_smoke expected schema 11 after storage advanced to schema 12",
+    "corrected_trial": {
+      "path": "/private/tmp/agentdocker-pr103-identity-schema-fixed-2026-09-11/result.json",
+      "sha256": "8ad6792d0cabedda3eedeab48e271f5bd3ce2d7ebaa23271f354039f5dd89398"
+    },
+    "expected_schema": "12",
+    "repaired_schema": "12",
+    "steps": 6,
+    "owned_processes_running": 0
+  },
+  "limits": [
+    "The owned terminal fixture switches only its own PTY to raw mode after checking controller process identity. This is protocol/PTY evidence, not physical GUI input, IME or accessibility acceptance.",
+    "Private profiles retain only file-backed authentication and model choice and explicitly authorize one correlated send_message reply; this does not establish general provider approval support.",
+    "The existing provider profile, installed launcher and running user daemon were not replaced.",
+    "Broader question/approval delivery, durable status, guided recovery, sustained use and platform/release gates remain open.",
+    "Final-head CI and follow-up CodeRabbit review remain pending."
+  ]
+}

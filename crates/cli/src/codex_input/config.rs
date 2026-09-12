@@ -2,7 +2,7 @@
 //! Codex filters the environment passed to stdio MCP servers; inheritance alone
 //! otherwise sends their tools to the user's default daemon as a new agent.
 use super::ledger::Binding;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -12,6 +12,16 @@ pub(super) fn overrides(
     home: &Path,
     cli: &Path,
 ) -> Result<Value> {
+    let cli = cli
+        .to_str()
+        .context("AgentDocker executable path is not UTF-8")?;
+    let home = home
+        .to_str()
+        .context("AgentDocker state path is not UTF-8")?;
+    let socket = binding
+        .socket
+        .to_str()
+        .context("AgentDocker socket path is not UTF-8")?;
     let servers = config.get("mcp_servers").and_then(Value::as_object);
     let mut names = Vec::new();
     if let Some(servers) = servers {
@@ -68,7 +78,7 @@ pub(super) fn overrides(
         );
         for (name, value) in [
             ("AGENTDOCKER_HOME", json!(home)),
-            ("AGENTDOCKER_SOCKET", json!(binding.socket)),
+            ("AGENTDOCKER_SOCKET", json!(socket)),
             ("AGENTDOCKER_AGENT_ID", json!(binding.agent)),
             ("AGENTDOCKER_NO_AUTOSTART", json!("1")),
             (
@@ -85,6 +95,44 @@ pub(super) fn overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(unix)]
+    fn non_utf8_binding_paths_return_errors_without_panicking_or_changing_configuration() {
+        use std::os::unix::ffi::OsStringExt;
+        let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b"/private/non-utf8-\xff".to_vec(),
+        ));
+        let config = json!({});
+        let binding = Binding {
+            agent: "owned".into(),
+            socket: "/private/socket".into(),
+            cwd: "/checkout".into(),
+            provider_home: "/provider".into(),
+        };
+        for (home, cli, socket) in [
+            (
+                invalid.as_path(),
+                Path::new("/cli"),
+                binding.socket.as_path(),
+            ),
+            (
+                Path::new("/state"),
+                invalid.as_path(),
+                binding.socket.as_path(),
+            ),
+            (Path::new("/state"), Path::new("/cli"), invalid.as_path()),
+        ] {
+            let mut binding = binding.clone();
+            binding.socket = socket.to_owned();
+            assert!(
+                overrides(&config, &binding, home, cli)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not UTF-8")
+            );
+        }
+        assert_eq!(config, json!({}));
+    }
     #[test]
     fn explicit_mcp_binding_preserves_policy_and_other_servers() {
         let binding = Binding {
