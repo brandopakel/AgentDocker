@@ -1,0 +1,662 @@
+{
+  "date": "2026-09-12",
+  "scope": "Bounded Codex file-change approval through the shared human answer queue and compact native full-diff review.",
+  "source": {
+    "format": 1,
+    "source_commit": "b296f3c8cc0ffcae8057077357a5c18b6b400635",
+    "source_tree": "2bd20de46ac2bafd2be789f854242eabb377108a",
+    "source_input_sha256": "ff333ce6cb3eee37afe46e9dd888496b0c086a225b3a35bdacbc56140f98cb03",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 15,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+      "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+      "agentdocker-ui": "36ecea4426d04805a1751c4c48724fed793bcc6017ff78601e46c1291a2b52d8"
+    }
+  },
+  "validation": {
+    "rust_tests": 848,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "gate": "passed: formatting, strict Clippy, nextest, doctests, installer/package checks and release build",
+    "full_log": "/private/tmp/agentdocker-file-review-compact-check-fixed-2026-09-12.log",
+    "native_workflow_steps": 19
+  },
+  "actual_previous_binary": {
+    "local_report": "/private/tmp/agentdocker-codex-file-review-baseline-live-2026-09-12/result.json",
+    "report_sha256": "b2fd5fda1458214111c0ed70a3bd94752a5ac1634778731553d73c50c732addb",
+    "result": "failed",
+    "build": {
+      "format": 1,
+      "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+      "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+      "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+        "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+        "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+      }
+    },
+    "driver_sha256": "594d616e848a8cc5f485847387c3732ede10961df11658bdc60816e9e794d867",
+    "error": "Codex completed the input without requesting the expected file approval",
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "source_profile_unchanged": true,
+    "binary_hashes_unchanged": true,
+    "cause": "The actual provider requested item/fileChange/requestApproval; the previous controller returned its explicit unsupported-callback error. No human approval was sent."
+  },
+  "actual_allow": {
+    "local_report": "/private/tmp/agentdocker-codex-file-review-live-2026-09-12/result.json",
+    "report_sha256": "b54cfd1e7745c71c78c83ace4616790ac9512078c9610d8aaa7454bcf887edc5",
+    "result": "passed",
+    "build": {
+      "format": 1,
+      "source_commit": "f50e4c3e170e6d7254d1bfafadf5eab55c4a36c8",
+      "source_tree": "44d779f6fb7b668c4cf8fb2ced6f99f6bdc7b591",
+      "source_input_sha256": "5b33da1f2766a0ebbbc3b16873e9ccdf2298f6e33767866cacb9115bc964116d",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "b7a2a3fd049d6fbf6e57eb162eacf53bf899553d0a2f2747456bc5f0f736544a"
+      }
+    },
+    "driver_sha256": "a0b9f0b2dc8cc07f2762c0857efb27843b70ed0fcab8b6c55c6a28c08c29808a",
+    "provider_version": "codex-cli 0.153.4",
+    "file_result": {
+      "name": "review-file.txt",
+      "contents": "FILE_72CE\n",
+      "sha256": "de1b8f39b6bf3f55d5a4dba9c44b604bce0bd2f06b2c9ce9a770fefc13e5c51c"
+    },
+    "same_queue": true,
+    "codex_records": 1,
+    "reply_count": 3,
+    "source_profile_unchanged": true,
+    "binary_hashes_unchanged": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "question": {
+      "id": "f5a5a181ee0b4a00",
+      "from": "4d2b9bd29db9490fae3c9ac7e510140a",
+      "to": {
+        "kind": "agent",
+        "value": "efeab412f1154d4cadaa2a6e3c218e86"
+      },
+      "text": "Allow Codex to apply these file changes once?\n\nDirectory: /private/tmp/ad-cb-a3it04pz/repo\nReason: Requested by Codex\n\nCreate /private/tmp/ad-cb-a3it04pz/repo/review-file.txt\nFILE_72CE\n\n\nReply Allow or Deny.",
+      "presentation": {
+        "kind": "codex_files",
+        "cwd": "/private/tmp/ad-cb-a3it04pz/repo",
+        "reason": "Requested by Codex",
+        "changes": [
+          {
+            "path": "/private/tmp/ad-cb-a3it04pz/repo/review-file.txt",
+            "kind": {
+              "type": "add"
+            },
+            "diff": "FILE_72CE\n"
+          }
+        ]
+      },
+      "asked_at": "2026-09-12T20:38:36.663542Z",
+      "expires_at": "2026-09-12T20:43:36.663542Z"
+    },
+    "question_resolution": {
+      "request": {
+        "id": 0,
+        "thread": "01a09757-d236-7171-b5ea-7e43b5ccccfa",
+        "turn": "01a09757-d4c8-7312-bf12-34cd5931afee",
+        "human": "efeab412f1154d4cadaa2a6e3c218e86",
+        "kind": "files",
+        "expires_at": "2026-09-12T20:43:36.653695Z",
+        "questions": [
+          {
+            "field": "files",
+            "text": "Allow Codex to apply these file changes once?\n\nDirectory: /private/tmp/ad-cb-a3it04pz/repo\nReason: Requested by Codex\n\nCreate /private/tmp/ad-cb-a3it04pz/repo/review-file.txt\nFILE_72CE\n\n\nReply Allow or Deny.",
+            "message": "f5a5a181ee0b4a00",
+            "presentation": {
+              "kind": "codex_files",
+              "cwd": "/private/tmp/ad-cb-a3it04pz/repo",
+              "reason": "Requested by Codex",
+              "changes": [
+                {
+                  "path": "/private/tmp/ad-cb-a3it04pz/repo/review-file.txt",
+                  "kind": {
+                    "type": "add"
+                  },
+                  "diff": "FILE_72CE\n"
+                }
+              ]
+            },
+            "answer": {
+              "id": "11a854da57bd4c6e",
+              "from": "efeab412f1154d4cadaa2a6e3c218e86",
+              "to": {
+                "kind": "agent",
+                "value": "4d2b9bd29db9490fae3c9ac7e510140a"
+              },
+              "kind": "answer",
+              "payload": {
+                "text": "Allow"
+              },
+              "reply_to": "f5a5a181ee0b4a00",
+              "sent_at": "2026-09-12T20:38:36.878645Z"
+            },
+            "closure": {
+              "state": "answered",
+              "message": "11a854da57bd4c6e"
+            }
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "accept"
+          }
+        },
+        "extra_answers": []
+      },
+      "outcome": "resolved",
+      "acknowledged": true
+    },
+    "ordinary_input_ids": [
+      "9d1654b34e984875",
+      "c87465739bd44bb4",
+      "663000e6ae0d45b7"
+    ],
+    "completed": [
+      {
+        "message": "9d1654b34e984875",
+        "receipt": {
+          "thread": "01a09757-d236-7171-b5ea-7e43b5ccccfa",
+          "turn": "01a09757-d4c8-7312-bf12-34cd5931afee",
+          "item": "01a09757-d99d-70e3-8b01-9a0dbe06dbf0"
+        }
+      },
+      {
+        "message": "c87465739bd44bb4",
+        "receipt": {
+          "thread": "01a09757-d236-7171-b5ea-7e43b5ccccfa",
+          "turn": "01a09758-05b1-78e3-ba6d-795357e17e2e",
+          "item": "01a09758-05cd-7e13-af62-01faee28b3e3"
+        }
+      },
+      {
+        "message": "663000e6ae0d45b7",
+        "receipt": {
+          "thread": "01a09757-d236-7171-b5ea-7e43b5ccccfa",
+          "turn": "01a09758-1f07-7a80-9a69-6595c67bfa4c",
+          "item": "01a09758-1f26-7610-8082-ee5c06b4050c"
+        }
+      }
+    ],
+    "reply_to_ids": [
+      "9d1654b34e984875",
+      "c87465739bd44bb4",
+      "663000e6ae0d45b7"
+    ],
+    "source_order": [
+      "peer",
+      "human",
+      "peer"
+    ],
+    "answer_is_extra_turn": false
+  },
+  "actual_deny": {
+    "local_report": "/private/tmp/agentdocker-codex-file-review-deny-live-2026-09-12/result.json",
+    "report_sha256": "80ccee799100e7b41c5c9087ddcbdb1ecd4bc3e60516cf3271b96e7212b85ac5",
+    "result": "passed",
+    "build": {
+      "format": 1,
+      "source_commit": "f50e4c3e170e6d7254d1bfafadf5eab55c4a36c8",
+      "source_tree": "44d779f6fb7b668c4cf8fb2ced6f99f6bdc7b591",
+      "source_input_sha256": "5b33da1f2766a0ebbbc3b16873e9ccdf2298f6e33767866cacb9115bc964116d",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "b7a2a3fd049d6fbf6e57eb162eacf53bf899553d0a2f2747456bc5f0f736544a"
+      }
+    },
+    "driver_sha256": "272e0072e64a5a3b7b1f75550e3ac635c7c7c8f683d0e8da8b7e50dbf64c6ec3",
+    "provider_version": "codex-cli 0.153.4",
+    "file_result": {
+      "name": "review-file.txt",
+      "not_created_after_deny": true
+    },
+    "same_queue": true,
+    "codex_records": 1,
+    "reply_count": 3,
+    "source_profile_unchanged": true,
+    "binary_hashes_unchanged": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "question": {
+      "id": "e015a204201645c9",
+      "from": "fce8cadc553d4ada8f01e5cb290cea16",
+      "to": {
+        "kind": "agent",
+        "value": "c70d45bcaa7b41ec815d206cb79f8897"
+      },
+      "text": "Allow Codex to apply these file changes once?\n\nDirectory: /private/tmp/ad-cb-r7k10c0q/repo\nReason: Requested by Codex\n\nCreate /private/tmp/ad-cb-r7k10c0q/repo/review-file.txt\nFILE_72CE\n\n\nReply Allow or Deny.",
+      "presentation": {
+        "kind": "codex_files",
+        "cwd": "/private/tmp/ad-cb-r7k10c0q/repo",
+        "reason": "Requested by Codex",
+        "changes": [
+          {
+            "path": "/private/tmp/ad-cb-r7k10c0q/repo/review-file.txt",
+            "kind": {
+              "type": "add"
+            },
+            "diff": "FILE_72CE\n"
+          }
+        ]
+      },
+      "asked_at": "2026-09-12T20:39:47.935912Z",
+      "expires_at": "2026-09-12T20:44:47.935912Z"
+    },
+    "question_resolution": {
+      "request": {
+        "id": 0,
+        "thread": "01a09758-e8b6-7d53-8ca7-5b8227719e2a",
+        "turn": "01a09758-eb19-71c0-adb3-344624b70417",
+        "human": "c70d45bcaa7b41ec815d206cb79f8897",
+        "kind": "files",
+        "expires_at": "2026-09-12T20:44:47.926138Z",
+        "questions": [
+          {
+            "field": "files",
+            "text": "Allow Codex to apply these file changes once?\n\nDirectory: /private/tmp/ad-cb-r7k10c0q/repo\nReason: Requested by Codex\n\nCreate /private/tmp/ad-cb-r7k10c0q/repo/review-file.txt\nFILE_72CE\n\n\nReply Allow or Deny.",
+            "message": "e015a204201645c9",
+            "presentation": {
+              "kind": "codex_files",
+              "cwd": "/private/tmp/ad-cb-r7k10c0q/repo",
+              "reason": "Requested by Codex",
+              "changes": [
+                {
+                  "path": "/private/tmp/ad-cb-r7k10c0q/repo/review-file.txt",
+                  "kind": {
+                    "type": "add"
+                  },
+                  "diff": "FILE_72CE\n"
+                }
+              ]
+            },
+            "answer": {
+              "id": "930a7cb749d24c0a",
+              "from": "c70d45bcaa7b41ec815d206cb79f8897",
+              "to": {
+                "kind": "agent",
+                "value": "fce8cadc553d4ada8f01e5cb290cea16"
+              },
+              "kind": "answer",
+              "payload": {
+                "text": "Deny"
+              },
+              "reply_to": "e015a204201645c9",
+              "sent_at": "2026-09-12T20:39:48.139706Z"
+            },
+            "closure": {
+              "state": "answered",
+              "message": "930a7cb749d24c0a"
+            }
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "decline"
+          }
+        },
+        "extra_answers": []
+      },
+      "outcome": "resolved",
+      "acknowledged": true
+    },
+    "ordinary_input_ids": [
+      "bf17000d348a4491",
+      "b648b726cb1049f4",
+      "1e7ff25bac654d2e"
+    ],
+    "completed": [
+      {
+        "message": "bf17000d348a4491",
+        "receipt": {
+          "thread": "01a09758-e8b6-7d53-8ca7-5b8227719e2a",
+          "turn": "01a09758-eb19-71c0-adb3-344624b70417",
+          "item": "01a09758-f149-73b0-8bc4-d3cd6c9035c2"
+        }
+      },
+      {
+        "message": "b648b726cb1049f4",
+        "receipt": {
+          "thread": "01a09758-e8b6-7d53-8ca7-5b8227719e2a",
+          "turn": "01a09759-2f79-7a11-bd76-8b1fae241d2b",
+          "item": "01a09759-2f94-7e80-8ed4-dd5a22094892"
+        }
+      },
+      {
+        "message": "1e7ff25bac654d2e",
+        "receipt": {
+          "thread": "01a09758-e8b6-7d53-8ca7-5b8227719e2a",
+          "turn": "01a09759-4acf-7132-9008-4dbc9670f34b",
+          "item": "01a09759-4ae6-7243-97d8-e8be0628ffbe"
+        }
+      }
+    ],
+    "reply_to_ids": [
+      "bf17000d348a4491",
+      "b648b726cb1049f4",
+      "1e7ff25bac654d2e"
+    ],
+    "source_order": [
+      "peer",
+      "human",
+      "peer"
+    ],
+    "answer_is_extra_turn": false
+  },
+  "provider_binary_equivalence": "The final compact UI rebuild has byte-identical CLI and daemon executables to both actual-provider trials; only the UI executable changed.",
+  "initial_native": {
+    "local_report": "/private/tmp/agentdocker-file-review-ui-live-2026-09-12/result.json",
+    "report_sha256": "a0f2c2e49f9eb5713227c52b087672c0bd0a8a3404da0b3b90935d03f86251d7",
+    "result": "passed",
+    "build": {
+      "format": 1,
+      "source_commit": "f50e4c3e170e6d7254d1bfafadf5eab55c4a36c8",
+      "source_tree": "44d779f6fb7b668c4cf8fb2ced6f99f6bdc7b591",
+      "source_input_sha256": "5b33da1f2766a0ebbbc3b16873e9ccdf2298f6e33767866cacb9115bc964116d",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "b7a2a3fd049d6fbf6e57eb162eacf53bf899553d0a2f2747456bc5f0f736544a"
+      }
+    },
+    "prior_build": {
+      "format": 1,
+      "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+      "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+      "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+        "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+        "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+      }
+    },
+    "driver_sha256": "08050cc17f995799c244b87a003013330e2d7b991991061e5f109611b66d660e",
+    "cleanups": [
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "native": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 5.611768958,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 19,
+      "scenario_steps_total": 19,
+      "screenshot_requested": true,
+      "ticks": 116
+    },
+    "question_presentations_survived_restart": true,
+    "legacy_question_survived_schema_upgrade": true,
+    "native_answer_receipts": [
+      {
+        "question": "90b6b37965674261",
+        "decision": "Allow",
+        "count": 1,
+        "human": "4d784dba9c7746f6a29a7b69c461f1fe"
+      },
+      {
+        "question": "ce59b07e5dc94190",
+        "decision": "Deny",
+        "count": 1,
+        "human": "4d784dba9c7746f6a29a7b69c461f1fe"
+      }
+    ],
+    "old_schema_refused_without_database_changes": true,
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true,
+    "screenshots": {
+      "files-collapsed.png": "a15b1730e50e3ffb64c12c5c99d361c2c2cfb8a1e9e1de9273adc99c801265f2",
+      "files-full-diff.png": "8bc0717d0c8b2c13d74c4daf1d681e33b42cb140ff3b205568b21c45b0de9aaf",
+      "files-resolved-draft-retained.png": "af1125d53ff1c7cb3f5e4dc2705302d037ccb8d152ba4de007f5f22ea2265084",
+      "window.png": "5880307ef96bd02a11e694d6275c31fdaeb853f1a9f20ae9407e915a0c7e4c04"
+    }
+  },
+  "final_native": {
+    "local_report": "/private/tmp/agentdocker-file-review-compact-ui-live-2026-09-12/result.json",
+    "report_sha256": "fc32d833641da259283bc08faab31036470b098e85b7f126fb0951a2f65cf268",
+    "result": "passed",
+    "build": {
+      "format": 1,
+      "source_commit": "b296f3c8cc0ffcae8057077357a5c18b6b400635",
+      "source_tree": "2bd20de46ac2bafd2be789f854242eabb377108a",
+      "source_input_sha256": "ff333ce6cb3eee37afe46e9dd888496b0c086a225b3a35bdacbc56140f98cb03",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "36ecea4426d04805a1751c4c48724fed793bcc6017ff78601e46c1291a2b52d8"
+      }
+    },
+    "prior_build": {
+      "format": 1,
+      "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+      "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+      "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+        "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+        "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+      }
+    },
+    "driver_sha256": "87e6849f1a0f27969e04df8d496e48db326a22ad760dfec90f825cd76fee89b7",
+    "cleanups": [
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "native": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 5.822355334,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 19,
+      "scenario_steps_total": 19,
+      "screenshot_requested": true,
+      "ticks": 119
+    },
+    "question_presentations_survived_restart": true,
+    "legacy_question_survived_schema_upgrade": true,
+    "native_answer_receipts": [
+      {
+        "question": "8ca2a6dd500f4e4c",
+        "decision": "Deny",
+        "count": 1,
+        "human": "007abaf8d22041898074e421538a68cc"
+      },
+      {
+        "question": "a3f9745a215d4237",
+        "decision": "Allow",
+        "count": 1,
+        "human": "007abaf8d22041898074e421538a68cc"
+      }
+    ],
+    "old_schema_refused_without_database_changes": true,
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true,
+    "screenshots": {
+      "files-collapsed.png": "54fdd052cba866c32240fa304267ae8c44a31d7ea4cb80c0fc93e5930691577c",
+      "files-full-diff.png": "e842987aeafbdc04112d111d1a8b027b88177ed5056837c13eadac66b1e57a31",
+      "files-resolved-draft-retained.png": "85d78229dbd30625a97f37e1b5faa046d6abd2cb3a9d6b9c893dfba5d63b6cae",
+      "window.png": "217d45c051acdf87f9965a80a74daeea8af8ff32cc5747cdd9f01bb7ba5c411a"
+    }
+  },
+  "visual_inspection": {
+    "initial": "All 19 callbacks passed, but a short diff occupied a fixed 320-pixel area and repeated the operation/path.",
+    "correction": "Short reviews shrink to their content, long reviews retain a 320-pixel scrolling bound, each operation/path appears once, and the generic Requested by Codex reason is omitted.",
+    "final": "Viewed collapsed, full-diff and resolved screenshots: Allow once is disabled before review, enabled with the complete fixture diff visible, and the separate question draft survives both answers. The final fixture seeds Allow last so that review is at the top of the window."
+  },
+  "retained_setup_failures": [
+    {
+      "log": "/private/tmp/agentdocker-file-review-check-2026-09-12.log",
+      "reason": "The new ledger regression fixture omitted its active prepared input. Added the required fixture preparation; targeted ledger validation and subsequent full gates passed."
+    },
+    {
+      "log": "/private/tmp/agentdocker-file-review-compact-check-2026-09-12.log",
+      "reason": "The first compact layout compilation referred to unimported Length. Used iced::Shrink; the full corrected gate passed."
+    }
+  ],
+  "limits": [
+    "Private state and owned fixtures on this Apple Silicon Mac; no installed launcher, default daemon, existing provider profile or user session changed.",
+    "At most 64 file items per turn, 32000 bytes per item, 16 files and a 16000-byte full question. Empty, incomplete, reused, changed-after-publication, unknown or oversized details and session-wide grantRoot requests are refused.",
+    "Real provider tests cover one new text file for Allow and Deny, plus three ordered ordinary inputs under one provider identity; unit/native tests also cover update/delete/rename metadata, ambiguous details, human receipt matching, old-record refusal and draft preservation.",
+    "The 19 native steps dispatch registered rendered controls and capture the actual Iced window; they do not establish human VoiceOver/IME acceptance or physical Notification Center clicks.",
+    "Permission grants, MCP elicitation, secret inputs, general RPC recovery and full live daemon replacement remain open.",
+    "Final CI and actual source review are required before integration."
+  ]
+}

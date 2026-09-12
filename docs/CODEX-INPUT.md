@@ -90,8 +90,12 @@ pending routes. Turn completion discards old item snapshots. Non-null `grantRoot
 is refused because it can describe session-wide write authority. Allow sends
 only `accept`; it never sends `acceptForSession`. Empty diffs are currently
 refused. File presentations and their receipts require delivery-record version
-6; an older record cannot claim to contain them. Actual-provider and native
-window acceptance for this new surface remain pending.
+6; an older record cannot claim to contain them. The [file-review trial](verification/2026-09-12-file-change-review.json)
+passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps.
+Actual Codex Allow created exactly the reviewed fixture file; Deny left it absent.
+Each completed three ordered peer/human/peer inputs and retained one provider
+identity. The final compact UI rebuild has byte-identical CLI/daemon binaries to
+those provider trials. Final CI and actual source review remain required.
 
 Command/file approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
