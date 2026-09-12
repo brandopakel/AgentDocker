@@ -713,3 +713,16 @@ External editors/provider CLIs do not participate in these advisory locks. The
 passed the full gate (765 Rust tests, 58 Python checks), 114 native workflow
 steps and six actual CLI contention/recovery scenarios. The regression now runs
 in all four Mac/Linux native CI jobs; final-head CI and review remain pending.
+
+### September 11: opt-in daily update checks
+
+Settings now offers daily checks, off by default. The app saves its attempt
+before a bounded background request, waits for queue capacity, and preserves
+installation previews and their Apply pins. A known update opens Installation
+from the footer; restarting after failure cannot trigger an immediate retry.
+The [clean checkpoint](verification/2026-09-11-daily-updates.json) passed 768 Rust
+tests, 58 Python checks, the complete standard gate, 114 existing native workflow
+steps and 33 new native steps across six scheduling/restart cases. The new driver
+uses controlled CLI replies and rejects unexpected desktop operations; it runs
+in all four Mac/Linux desktop jobs. Final-head CI and review remain pending.
+Hosted-release downloads, signing and safe daemon replacement remain open.
