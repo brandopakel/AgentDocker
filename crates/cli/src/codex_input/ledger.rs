@@ -1,7 +1,7 @@
 //! One durable provider input attempt. Queue acknowledgement follows an exact
 //! provider receipt; a prepared attempt can never be submitted automatically again.
 use super::review::{self, Closed, Pending};
-use agentdocker_core::Envelope;
+use agentdocker_core::{Envelope, MessageId};
 use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -12,10 +12,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
+const MAX_RETIRED_QUESTIONS: usize = 10_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -225,7 +226,14 @@ mod tests {
         ledger
             .update_reviews(|reviews, _| {
                 reviews[0].questions[0].message = Some("question".to_owned().into());
-                reviews[0].capture(std::slice::from_ref(&answer), "owned-agent")?;
+                reviews[0].observe(
+                    &agentdocker_core::EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(answer.id.clone()),
+                    },
+                    "owned-agent",
+                )?;
+                reviews[0].capture(std::slice::from_ref(&answer), "owned-agent", false)?;
                 reviews[0].response = reviews[0].reply(chrono::Utc::now())?;
                 Ok(true)
             })
@@ -254,7 +262,7 @@ mod tests {
             })
             .unwrap();
         drop(ledger);
-        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         assert!(ledger.record().reviews.is_empty());
         assert!(!ledger.record().closed_reviews[0].acknowledged);
         assert_eq!(
@@ -272,6 +280,27 @@ mod tests {
             1,
             "only the original input is a model turn"
         );
+        ledger
+            .update_reviews(|_, closed| {
+                closed.front_mut().unwrap().acknowledged = true;
+                Ok(true)
+            })
+            .unwrap();
+        ledger
+            .update_reviews(|_, closed| {
+                closed.pop_front();
+                Ok(true)
+            })
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        let before = std::fs::read(&ledger.path).unwrap();
+        assert!(
+            ledger.prepare(&answer).is_err(),
+            "retired question replies cannot become new input"
+        );
+        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        assert!(ledger.prepare(&message()).is_ok());
     }
 }
 
@@ -311,6 +340,8 @@ pub(super) struct Record {
     pub reviews: Vec<Pending>,
     #[serde(default)]
     pub closed_reviews: VecDeque<Closed>,
+    #[serde(default)]
+    retired_questions: Vec<MessageId>,
 }
 
 pub(super) struct Ledger {
@@ -327,7 +358,11 @@ impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
             self.version == VERSION
-                || (self.version == 1 && self.reviews.is_empty() && self.closed_reviews.is_empty()),
+                || self.version == 2
+                || (self.version == 1
+                    && self.reviews.is_empty()
+                    && self.closed_reviews.is_empty()
+                    && self.retired_questions.is_empty()),
             "unsupported Codex delivery record version"
         );
         ensure!(
@@ -376,6 +411,16 @@ impl Record {
             }
         }
         let mut routes = std::collections::HashSet::new();
+        ensure!(
+            self.retired_questions.len() <= MAX_RETIRED_QUESTIONS,
+            "provider question route history is full; delivery must pause"
+        );
+        for id in &self.retired_questions {
+            ensure!(
+                valid_id(id.as_str()) && routes.insert(id),
+                "invalid or repeated retired provider question"
+            );
+        }
         for request in self
             .reviews
             .iter()
@@ -483,6 +528,7 @@ impl Ledger {
                 completed: VecDeque::new(),
                 reviews: Vec::new(),
                 closed_reviews: VecDeque::new(),
+                retired_questions: Vec::new(),
             },
             Err(error) => return Err(error.into()),
         };
@@ -505,6 +551,29 @@ impl Ledger {
     ) -> Result<()> {
         let mut next = self.record.clone();
         if edit(&mut next.reviews, &mut next.closed_reviews)? {
+            // Detailed receipts rotate, but forgetting their routing identity
+            // would turn a later answer into a new ordinary model prompt.
+            for old in &self.record.closed_reviews {
+                for id in old
+                    .request
+                    .questions
+                    .iter()
+                    .filter_map(|q| q.message.as_ref())
+                {
+                    if !next.closed_reviews.iter().any(|r| {
+                        r.request
+                            .questions
+                            .iter()
+                            .any(|q| q.message.as_ref() == Some(id))
+                    }) {
+                        ensure!(
+                            old.acknowledged,
+                            "cannot retire unacknowledged provider answers"
+                        );
+                        next.retired_questions.push(id.clone());
+                    }
+                }
+            }
             self.save(next)?;
         }
         Ok(())
@@ -566,6 +635,13 @@ impl Ledger {
     }
 
     pub fn prepare(&mut self, envelope: &Envelope) -> Result<String> {
+        ensure!(
+            envelope
+                .reply_to
+                .as_ref()
+                .is_none_or(|id| !self.record.retired_questions.contains(id)),
+            "this reply names a retired provider question; it remains queued for review and cannot become new input"
+        );
         ensure!(
             self.record.thread.is_some(),
             "Codex conversation is not ready"

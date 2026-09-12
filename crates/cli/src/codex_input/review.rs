@@ -1,6 +1,6 @@
 //! Typed review routes share the ordinary inbox. A response is retained before
 //! writing it to Codex and is acknowledged only after that request resolves.
-use agentdocker_core::{Destination, Envelope, MessageId};
+use agentdocker_core::{Destination, Envelope, EventKind, MessageId};
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,17 @@ enum Kind {
     UserInput,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum Closure {
+    #[default]
+    Open,
+    Answered {
+        message: MessageId,
+    },
+    Cancelled,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Question {
@@ -25,6 +36,8 @@ pub(super) struct Question {
     pub text: String,
     pub message: Option<MessageId>,
     answer: Option<Envelope>,
+    #[serde(default)]
+    closure: Closure,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -129,6 +142,7 @@ impl Pending {
                     text: prompt,
                     message: None,
                     answer: None,
+                    closure: Closure::Open,
                 });
                 Kind::Command
             }
@@ -170,6 +184,7 @@ impl Pending {
                         text: prompt,
                         message: None,
                         answer: None,
+                        closure: Closure::Open,
                     });
                 }
                 Kind::UserInput
@@ -210,9 +225,41 @@ impl Pending {
             .chain(self.extra_answers.iter())
     }
 
+    pub fn observe(&mut self, event: &EventKind, owner: &str) -> Result<bool> {
+        let (id, next) = match event {
+            EventKind::QuestionClosed { question, answer } => (
+                question,
+                match answer {
+                    Some(message) => Closure::Answered {
+                        message: message.clone(),
+                    },
+                    None => Closure::Cancelled,
+                },
+            ),
+            EventKind::QuestionCancelled { question, agent } if agent.as_str() == owner => {
+                (question, Closure::Cancelled)
+            }
+            _ => return Ok(false),
+        };
+        let Some(question) = self
+            .questions
+            .iter_mut()
+            .find(|q| q.message.as_ref() == Some(id))
+        else {
+            return Ok(false);
+        };
+        ensure!(
+            question.closure == Closure::Open || question.closure == next,
+            "conflicting daemon question closure"
+        );
+        let changed = question.closure != next;
+        question.closure = next;
+        Ok(changed)
+    }
+
     // The daemon accepts one addressed Answer. A generic human Send can also
     // carry reply_to; retain later copies as unapplied responses, never turns.
-    pub fn capture(&mut self, queue: &[Envelope], agent: &str) -> Result<bool> {
+    pub fn capture(&mut self, queue: &[Envelope], agent: &str, closed: bool) -> Result<bool> {
         let mut changed = false;
         for message in queue {
             if !self.owns(message, agent) || self.answers().any(|a| a.id == message.id) {
@@ -224,7 +271,17 @@ impl Pending {
                 .iter_mut()
                 .find(|q| q.message.as_ref() == message.reply_to.as_ref())
                 .context("question response lost its route")?;
-            if question.answer.is_none() && self.response.is_none() {
+            if !closed && question.closure == Closure::Open {
+                // Its accepted answer may be in the queue before the closure
+                // event reaches this controller. Wait for that exact ID.
+                continue;
+            }
+            if !closed
+                && question.answer.is_none()
+                && self.response.is_none()
+                && matches!(&question.closure, Closure::Answered { message: id } if id == &message.id)
+                && message.sent_at <= self.expires_at
+            {
                 question.answer = Some(message.clone());
             } else {
                 ensure!(
@@ -242,9 +299,19 @@ impl Pending {
         if self.response.is_some() {
             return Ok(None);
         }
+        if self
+            .questions
+            .iter()
+            .any(|q| q.closure == Closure::Cancelled)
+        {
+            return Ok(Some(
+                json!({"id":self.id,"error":{"code":-32000,"message":"The human question was cancelled or expired."}}),
+            ));
+        }
         if self.questions.iter().any(|q| q.answer.is_none()) {
             return Ok((now >= self.expires_at).then(|| json!({"id":self.id,"error":{"code":-32000,"message":"The human question expired before a complete response."}})));
         }
+        ensure!(self.questions.iter().all(|q| matches!(&q.closure, Closure::Answered { message } if q.answer.as_ref().is_some_and(|a| &a.id == message))), "provider response has no exact daemon answer receipt");
         let result = match self.kind {
             Kind::Command => {
                 let answer = answer_text(
@@ -306,6 +373,19 @@ impl Pending {
                     "answer has another review route"
                 );
             }
+            if let Closure::Answered { message } = &question.closure {
+                ensure!(
+                    question.message.is_some() && valid_id(message.as_str()),
+                    "invalid daemon question receipt"
+                );
+                ensure!(
+                    question
+                        .answer
+                        .as_ref()
+                        .is_none_or(|answer| &answer.id == message),
+                    "stored response differs from the daemon answer receipt"
+                );
+            }
         }
         let mut answers = HashSet::new();
         for answer in self.answers() {
@@ -356,15 +436,24 @@ mod tests {
         let mut request = pending();
         assert!(
             !request
-                .capture(&[answer("peer", "Allow")], "owner")
+                .capture(&[answer("peer", "Allow")], "owner", false)
                 .unwrap()
         );
         assert!(request.reply(Utc::now()).unwrap().is_none());
         let first = answer("human", "Deny");
         let later = answer("human", "Allow");
+        request
+            .observe(
+                &EventKind::QuestionClosed {
+                    question: "question".to_owned().into(),
+                    answer: Some(first.id.clone()),
+                },
+                "owner",
+            )
+            .unwrap();
         assert!(
             request
-                .capture(&[first.clone(), later.clone()], "owner")
+                .capture(&[first.clone(), later.clone()], "owner", false)
                 .unwrap()
         );
         assert_eq!(
@@ -375,9 +464,84 @@ mod tests {
             request.answers().map(|a| &a.id).collect::<Vec<_>>(),
             vec![&first.id, &later.id]
         );
-        assert!(!request.capture(&[first, later], "owner").unwrap());
+        assert!(!request.capture(&[first, later], "owner", false).unwrap());
         request.validate(Some("thread"), "owner").unwrap();
     }
+    #[test]
+    fn queued_reply_waits_for_daemon_closure_and_cancellation_never_authorizes_it() {
+        let mut request = pending();
+        let late = answer("human", "Allow");
+        assert!(
+            !request
+                .capture(std::slice::from_ref(&late), "owner", false)
+                .unwrap()
+        );
+        assert!(request.reply(Utc::now()).unwrap().is_none());
+        let cancelled = EventKind::QuestionCancelled {
+            question: "question".to_owned().into(),
+            agent: "owner".into(),
+        };
+        assert!(request.observe(&cancelled, "owner").unwrap());
+        assert!(!request.observe(&cancelled, "owner").unwrap());
+        assert!(
+            request
+                .capture(std::slice::from_ref(&late), "owner", false)
+                .unwrap()
+        );
+        assert!(request.questions[0].answer.is_none());
+        assert_eq!(request.extra_answers[0].id, late.id);
+        assert!(
+            request
+                .reply(Utc::now())
+                .unwrap()
+                .unwrap()
+                .get("error")
+                .is_some()
+        );
+        assert!(
+            request
+                .observe(
+                    &EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(late.id)
+                    },
+                    "owner"
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_late_answer_is_retained_without_granting_an_expired_request() {
+        let mut request = pending();
+        let mut late = answer("human", "Allow");
+        late.sent_at = request.expires_at + Duration::seconds(1);
+        request
+            .observe(
+                &EventKind::QuestionClosed {
+                    question: "question".to_owned().into(),
+                    answer: Some(late.id.clone()),
+                },
+                "owner",
+            )
+            .unwrap();
+        assert!(
+            request
+                .capture(std::slice::from_ref(&late), "owner", false)
+                .unwrap()
+        );
+        assert!(request.questions[0].answer.is_none());
+        assert_eq!(request.extra_answers[0].id, late.id);
+        assert!(
+            request
+                .reply(late.sent_at)
+                .unwrap()
+                .unwrap()
+                .get("error")
+                .is_some()
+        );
+    }
+
     #[test]
     fn every_question_is_validated_before_any_route_is_opened() {
         let mut input = json!({"id":"ask","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","questions":[{"id":"first","question":"Choose?"},{"id":"secret","question":"Password?","isSecret":true}]}});

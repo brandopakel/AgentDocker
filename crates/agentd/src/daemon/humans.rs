@@ -335,6 +335,9 @@ impl Daemon {
         question: String,
         timeout_secs: u64,
     ) -> Response {
+        if question.trim().is_empty() {
+            return Response::error(ErrorCode::Invalid, "a question needs some text");
+        }
         let timeout = StdDuration::from_secs(timeout_secs.clamp(1, 24 * 60 * 60));
         let (from, to) = match self.endpoints(from, &to).await {
             Ok(pair) => pair,
@@ -355,21 +358,36 @@ impl Daemon {
         };
 
         let waited = tokio::time::timeout(timeout, async {
+            let mut candidate: Option<Envelope> = None;
+            let mut accepted: Option<MessageId> = None;
             loop {
+                if let Some(envelope) = &candidate
+                    && accepted.as_ref() == Some(&envelope.id)
+                {
+                    return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: message_text(&envelope.payload) };
+                }
                 tokio::select! {
                 answer = answers.recv() => match answer {
                     Ok(envelope) if envelope.reply_to.as_ref() == Some(&message)
                         && matches!(&envelope.to, Destination::Agent(id) if id.as_str() == from)
                         && match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Broadcast => true, _ => false } => {
-                        return Response::Answer { message: envelope.id, from: envelope.from, text: message_text(&envelope.payload) };
+                        // A reply can arrive after cancellation. Only the
+                        // exact committed question-closure event accepts it.
+                        if candidate.is_none() { candidate = Some(envelope); }
                     }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "answer stream lost messages; the answer remains in the inbox"),
                     Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the message bus closed"),
                 },
                 event = events.recv() => match event {
                     Ok(Event { kind: EventKind::QuestionCancelled { question, .. }, .. }) if question == message =>
                         return Response::error(ErrorCode::Cancelled, "the asker cancelled this question"),
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(Event { kind: EventKind::QuestionClosed { question, answer }, .. }) if question == message => {
+                        if answer.is_none() { return Response::error(ErrorCode::Timeout, "the question expired"); }
+                        accepted = answer;
+                    }
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "question stream lost events; no answer can be confirmed"),
                     Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the event bus closed"),
                 }
                 }
@@ -394,6 +412,9 @@ impl Daemon {
         question: String,
         timeout_secs: u64,
     ) -> Response {
+        if question.trim().is_empty() {
+            return Response::error(ErrorCode::Invalid, "a question needs some text");
+        }
         let (from, to) = match self.endpoints(from, &to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
@@ -575,6 +596,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_empty_question_does_not_register_a_human_or_publish_state() {
+        for wait in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = state(&dir);
+            let response = if wait {
+                daemon
+                    .ask("user".into(), "all".into(), " \n ".into(), 1)
+                    .await
+            } else {
+                daemon
+                    .post_question("user".into(), "all".into(), " \n ".into(), 1)
+                    .await
+            };
+            assert!(matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+            assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+            assert!(daemon.recent_events(10).is_empty());
+            assert!(lock(&state(&dir).state).questions.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn posted_question_answers_use_the_shared_queue_and_only_the_addressed_recipient_closes_it()
      {
         let dir = TempDir::new().unwrap();
@@ -738,6 +786,52 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_wait_never_accepts_a_later_queued_reply() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        for _ in 0..32 {
+            let mut asking =
+                Box::pin(daemon.ask("asker".into(), "recipient".into(), "Continue?".into(), 5));
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(asking.as_mut(), cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let pending = lock(&daemon.state)
+                .questions
+                .values()
+                .next()
+                .unwrap()
+                .id
+                .clone();
+            assert!(matches!(
+                daemon.cancel_question("asker", &pending),
+                Response::Ok
+            ));
+            assert!(matches!(
+                lock(&daemon.state).send(
+                    recipient.id.to_string(),
+                    Destination::Agent(asker.id.clone()),
+                    "answer".into(),
+                    json!({"text":"Allow"}),
+                    Some(pending)
+                ),
+                Response::Sent { .. }
+            ));
+            assert!(matches!(
+                asking.await,
+                Response::Error {
+                    code: ErrorCode::Cancelled,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(lock(&daemon.state).inboxes[&asker.id].len(), 32);
     }
 
     #[tokio::test]

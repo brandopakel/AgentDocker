@@ -82,16 +82,30 @@ fn capture(ledger: &mut Ledger, messages: &[Envelope]) -> Result<()> {
     ledger.update_reviews(|reviews, closed| {
         let mut changed = false;
         for request in reviews {
-            changed |= request.capture(messages, &agent)?;
+            changed |= request.capture(messages, &agent, false)?;
         }
         for completed in closed {
-            if completed.request.capture(messages, &agent)? {
+            if completed.request.capture(messages, &agent, true)? {
                 completed.acknowledged = false;
                 changed = true;
                 eprintln!(
                     "A later answer to a closed Codex question was retained without applying it."
                 );
             }
+        }
+        Ok(changed)
+    })
+}
+
+pub(super) fn observe(ledger: &mut Ledger, event: &agentdocker_core::EventKind) -> Result<()> {
+    let agent = ledger.record().binding.agent.clone();
+    ledger.update_reviews(|reviews, closed| {
+        let mut changed = false;
+        for request in reviews
+            .iter_mut()
+            .chain(closed.iter_mut().map(|r| &mut r.request))
+        {
+            changed |= request.observe(event, &agent)?;
         }
         Ok(changed)
     })
@@ -316,7 +330,16 @@ mod tests {
             chrono::Utc::now(),
         );
         pending
-            .capture(std::slice::from_ref(&answer), "owner")
+            .observe(
+                &agentdocker_core::EventKind::QuestionClosed {
+                    question: "question".to_owned().into(),
+                    answer: Some(answer.id.clone()),
+                },
+                "owner",
+            )
+            .unwrap();
+        pending
+            .capture(std::slice::from_ref(&answer), "owner", false)
             .unwrap();
         pending.response = pending.reply(chrono::Utc::now()).unwrap();
         ledger

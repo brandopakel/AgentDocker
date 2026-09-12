@@ -1,6 +1,7 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
 mod config;
 mod ledger;
+mod question_events;
 mod recovery;
 mod requests;
 mod review;
@@ -265,6 +266,7 @@ async fn session(
         Response::Agent { agent } => agent.id.to_string(),
         _ => bail!("human question routing is unavailable"),
     };
+    let mut question_events = question_events::Events::start(client.clone()).await?;
     activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
     println!("Codex ready. Send a message here or from AgentDocker.");
     let mut poll = interval(Duration::from_millis(500));
@@ -278,6 +280,7 @@ async fn session(
     let mut request_ids = std::collections::HashSet::new();
     loop {
         tokio::select! {
+            event = question_events.next() => { requests::observe(ledger, &event?)?; }
             _ = heartbeat.tick() => {
                 activity(client, agent.id.as_str(), if turn.is_some() {
                     ReportedActivity::Working
