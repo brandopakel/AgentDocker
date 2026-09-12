@@ -744,3 +744,31 @@ Both regressions passed 100 repetitions each with zero retries; the standard
 gate passed 762 Rust tests, 60 Python checks, lint, doctests, packaging and release
 build. Failed baseline/CI evidence is retained. Final-head CI/review and installed
 acceptance remain; the running daemon and user sessions were not replaced.
+
+### September 11: forced-fixture cleanup and restart ownership
+
+[Review recovery evidence](verification/2026-09-11-recovery-fixtures.json) reproduces
+two sleep agents surviving a forced daemon shutdown under the previous driver.
+The corrected harness pins process birth identities, captures private-group
+descendants before shutdown, terminates retained groups with bounded escalation,
+and waits for their removal. A changed PID identity is neither signalled nor
+reaped. The actual frozen-daemon trial leaves no fixture agents; it remains a
+failed trial because shutdown was forced. Normal shutdown remains signal-free.
+
+A separate Docker CI restart exited while the daemon lock was still held. A
+controlled inherited-descriptor probe reproduces that startup result; the
+container fixture now waits at most five seconds for actual lock release before
+launching its successor. A permanent owner remains a failure, and the lock inode
+is preserved. The original CI log does not identify its holder. Full verification
+passed 762 Rust tests and 64 Python checks, including descendant/reused-PID and
+inherited/persistent-lock regressions, with lint, doctests, packaging and release
+build. Fresh engine CI and follow-up review remain required.
+
+Follow-up review found that a timed-out process-table query could skip all
+shutdown. The correction retains query failures and continues cleanup. A stronger
+real-process regression also exposed an undiscovered TERM-ignoring group member
+surviving its leader; failed discovery now kills the verified private group
+before that anchor can disappear. Both timeout and nonzero-query cases pass,
+with their failed baseline retained. The full gate at `8d09453` passed 762 Rust
+tests and 65 Python checks. Docker and Podman passed the preceding lock-barrier
+head `2ff8f93`; final-head CI and review remain required.

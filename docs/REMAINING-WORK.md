@@ -93,6 +93,15 @@ and 54 Python checks. Ambiguous identities and live/managed ownership transfers
 remain refused; applying a repair to installed user state still requires a
 quiescent maintenance window. No production registry repair was performed.
 
+The [fixture-recovery follow-up](verification/2026-09-11-recovery-fixtures.json)
+reproduces and fixes leaked known agent groups after forced soak shutdown, with
+birth-identity guards and bounded descendant cleanup. The forced outcome remains
+a failed trial. Container restart fixtures also wait for actual daemon lock
+release after a crash; permanent contention still fails. The full gate passed
+762 Rust tests and 65 Python checks, including failed process discovery and an
+undiscovered TERM-ignoring group member. Docker and Podman passed the preceding
+lock-barrier head; final-head CI and follow-up review remain.
+
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
