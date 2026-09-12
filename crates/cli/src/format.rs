@@ -152,6 +152,9 @@ pub fn activity_cell(activity: &Activity) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
+        EventKind::QuestionCancelled { question, agent } => {
+            format!("{} cancelled question {question}", agent.short())
+        }
         EventKind::AgentActivityReported { agent, observation } => {
             format!(
                 "activity reported   {} {:?}",

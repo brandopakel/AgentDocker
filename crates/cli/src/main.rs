@@ -511,8 +511,17 @@ enum Command {
         /// How long to wait before giving up.
         #[arg(long, default_value_t = 300)]
         timeout: u64,
+        /// Return the question ID immediately; its answer queues in your inbox.
+        #[arg(long)]
+        no_wait: bool,
         /// The question.
         question: String,
+    },
+    /// Close a question you asked; existing messages and answers are retained.
+    CancelQuestion {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
+        agent: String,
+        message: String,
     },
     /// Answer a question somebody is waiting on, by its message id.
     Answer {
@@ -1789,17 +1798,37 @@ async fn main() -> Result<()> {
             to,
             from,
             timeout,
+            no_wait,
             question,
         } => {
-            let request = Request::Ask {
-                from,
-                to,
-                question,
-                timeout_secs: timeout,
+            let request = if no_wait {
+                Request::PostQuestion {
+                    from,
+                    to,
+                    question,
+                    timeout_secs: timeout,
+                }
+            } else {
+                Request::Ask {
+                    from,
+                    to,
+                    question,
+                    timeout_secs: timeout,
+                }
             };
-            if let Response::Answer { from, text, .. } = client.call(&request).await? {
-                println!("{}: {text}", format::short(&from));
+            match client.call(&request).await? {
+                Response::Answer { from, text, .. } => println!("{}: {text}", format::short(&from)),
+                Response::Sent { message, .. } => println!("{message}"),
+                _ => bail!("unexpected question response"),
             }
+        }
+        Command::CancelQuestion { agent, message } => {
+            client
+                .call(&Request::CancelQuestion {
+                    agent,
+                    message: message.into(),
+                })
+                .await?;
         }
         Command::Answer {
             agent,

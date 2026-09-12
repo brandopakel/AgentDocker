@@ -714,7 +714,9 @@ impl App {
             EventKind::MessageSent { kind, .. } if kind == "question" || kind == "answer" => {
                 self.send(Cmd::Questions);
             }
-            EventKind::QuestionClosed { .. } => self.send(Cmd::Questions),
+            EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
+                self.send(Cmd::Questions)
+            }
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>

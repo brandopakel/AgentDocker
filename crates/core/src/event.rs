@@ -35,6 +35,11 @@ pub enum EventKind {
         question: MessageId,
         answer: Option<MessageId>,
     },
+    /// The asker closed an unanswered question. Inbox messages remain.
+    QuestionCancelled {
+        question: MessageId,
+        agent: AgentId,
+    },
     AgentActivityReported {
         agent: AgentId,
         observation: crate::ActivityObservation,
