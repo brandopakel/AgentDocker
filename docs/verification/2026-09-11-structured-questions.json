@@ -386,5 +386,58 @@
     "merge": "8103a0e87ce23834bf7f23cc105de337880f71d1",
     "merged_at": "2026-09-12T05:41:36Z",
     "followup_review_comment": 5643815724
+  },
+  "review_followup": {
+    "source_commit": "1fdff83437cdb85ed3ae35308c17472db04a1722",
+    "review": 5185645896,
+    "comments": [
+      3995433071,
+      3995433075
+    ],
+    "prior_manual_inspection": 5644265925,
+    "build": {
+      "format": 1,
+      "source_commit": "1fdff83437cdb85ed3ae35308c17472db04a1722",
+      "source_tree": "e31662c9c2cb119092cb49893837f452753548df",
+      "source_input_sha256": "923e0a038b4f0f8e8476df22982870a7a19b549ddf051de9223b5da80698e5dc",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 12,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "951d623a4f22f38dffb82a5016b1dda8e10e95039140063516168a8534ea50ed",
+        "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+        "agentdocker-ui": "13d5c3ab1642b0eb7a6437bd8a77303ee6b2869abf3583c696479c018a3b1a16"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_tests": 809,
+      "skipped_rust_tests": 6,
+      "python_checks": 65,
+      "report": {
+        "path": "/private/tmp/agentdocker-pr105-review-fixes-check-2026-09-11.log",
+        "sha256": "038f4a441c24d2c9e293ae586e163ba1780c67ceae570d812568d308a19cf14c"
+      }
+    },
+    "baseline": {
+      "result": "failed",
+      "reason": "Blue and Blue plus whitespace were accepted as separate visible choices",
+      "report": {
+        "path": "/private/tmp/agentdocker-pr105-label-baseline-2026-09-11.log",
+        "sha256": "8854afac373ffee9f180a2f98f54fed9dd0901eb35c2742964e241b402c12e43"
+      }
+    },
+    "corrections": [
+      "Reject leading/trailing whitespace in choice labels, including nonbreaking spaces.",
+      "Load populated version-3 question history without presentation metadata and preserve routes on the version-4 save."
+    ],
+    "limits": [
+      "Earlier actual provider and native UI reports retain their original sources; they were not relabelled as new trials.",
+      "Final follow-up CI and actual source inspection remain pending."
+    ]
   }
 }

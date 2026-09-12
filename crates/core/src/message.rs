@@ -212,7 +212,8 @@ impl QuestionPresentation {
                     && !options.is_empty()
                     && options.len() <= 16
                     && options.iter().all(|o| {
-                        bounded(&o.label)
+                        o.label == o.label.trim()
+                            && bounded(&o.label)
                             && o.description.len() <= 16_000
                             && labels.insert(&o.label)
                     })
@@ -293,6 +294,25 @@ mod tests {
             options: vec![option.clone(), option],
         };
         assert!(!duplicate.valid_for(&duplicate.text()));
+        for label in [" Blue", "Blue ", "Blue\t", "Blue\n", "Blue\u{00a0}"] {
+            let ambiguous = QuestionPresentation::Choices {
+                question: "Which color?".into(),
+                options: vec![
+                    QuestionOption {
+                        label: "Blue".into(),
+                        description: String::new(),
+                    },
+                    QuestionOption {
+                        label: label.into(),
+                        description: String::new(),
+                    },
+                ],
+            };
+            assert!(
+                !ambiguous.valid_for(&ambiguous.text()),
+                "surrounding whitespace must not create a second visible Blue choice"
+            );
+        }
         let huge = QuestionPresentation::CodexCommand {
             command: "x".repeat(16_001),
             cwd: "/owned".into(),
