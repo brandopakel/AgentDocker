@@ -1424,11 +1424,13 @@ impl App {
                     body = body
                         .push(heading("Apply these file changes?", 18))
                         .push(mono(format!("Folder: {cwd}"), c));
-                    if !reason.trim().is_empty() {
+                    if !reason.trim().is_empty() && reason != "Requested by Codex" {
                         body = body.push(note(reason.clone(), c));
                     }
-                    for change in changes {
-                        body = body.push(mono(change.label(), c));
+                    if !expanded {
+                        for change in changes {
+                            body = body.push(mono(change.label(), c));
+                        }
                     }
                     body = body.push(action(
                         format!("review-files-{id}"),
@@ -1450,7 +1452,9 @@ impl App {
                                     .color(c.text),
                             );
                         }
-                        body = body.push(scrollable(details).height(320));
+                        body = body.push(
+                            container(scrollable(details).height(iced::Shrink)).max_height(320),
+                        );
                     }
                     body = body.push(self.answer_window(question, c)).push(
                         row![

@@ -8,7 +8,7 @@ agentdocker run --runtime codex --codex-input --tty -- codex
 ```
 
 This starts an owned Codex app-server conversation under the native supervisor.
-It needs a matching schema-14 daemon and CLI, and a Codex version supporting
+It needs a matching schema-15 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
 TUI. The option is off by default and applies only to the new session. Codex's
 app-server interface remains experimental.
