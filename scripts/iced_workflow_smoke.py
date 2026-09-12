@@ -154,6 +154,11 @@ def smoke(binary_dir, output):
                          step("capture", name="compact-session"), step("click", id="close-session"),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id=f"session-{agent['id']}"), step("resize", width=1180, height=760),
+                         step("click", id="session-message"), step("fill", id="session-message-text", text="Direct user queue input"),
+                         step("click", id="close-session"), step("click", id=f"session-{agent['id']}"),
+                         step("click", id="session-message"), step("wait_text", text="Direct user queue input"),
+                         step("click", id="send-session-message"), step("wait_text", text="Queued for this agent"),
+                         step("capture", name="direct-message-queued"),
                          step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="terminal"),
                          step("focus", id="detach-terminal"), step("wait_focus", id="detach-terminal"), step("click", id="detach-terminal"),
@@ -201,6 +206,11 @@ def smoke(binary_dir, output):
                 try:
                     report["first_window"] = launch("workflows", steps)
                     assert answer.result(timeout=5).get("text") == "Use API v2", "answer did not reach asking agent"
+                    agent_inbox = rpc(endpoint, {"op": "inbox", "agent": agent["id"], "drain": False})["messages"]
+                    direct = [message for message in agent_inbox if message["payload"] == "Direct user queue input"]
+                    assert len(direct) == 1 and direct[0]["from"] == human["id"], direct
+                    assert direct[0]["to"] == {"kind": "agent", "value": agent["id"]}, direct
+                    checks.append("direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation")
                     remaining = rpc(endpoint, {"op": "inbox", "agent": human["id"], "drain": False})["messages"]
                     retained = {message["id"] for message in remaining}
                     assert set(dismissible[:4]) <= retained, "unshown messages were dismissed"

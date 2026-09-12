@@ -1083,6 +1083,48 @@ impl App {
                 c,
             ));
         }
+        if agent.status.is_live() && agent.spec.runtime != "human" {
+            body = body.push(action(
+                "session-message",
+                if self.shell.session_message {
+                    "Hide message"
+                } else {
+                    "Message"
+                },
+                Some(Message::ComposeSession),
+                self.shell.session_message,
+            ));
+            if self.shell.session_message {
+                let draft_key = self.session_draft_key(&id);
+                let entry = self.shell.session_drafts.get(&draft_key);
+                let draft = entry.map(|entry| &entry.draft);
+                let sending = draft.is_some_and(|draft| draft.sending.is_some());
+                let value = draft.map_or("", |draft| draft.text.as_str());
+                let target = draft_key.clone();
+                body = body
+                    .push(input(
+                        "session-message-text",
+                        "Message this agent…",
+                        value,
+                        move |text| Message::SessionDraft(target.clone(), text),
+                    ))
+                    .push(primary(
+                        "send-session-message",
+                        if sending {
+                            "Queueing…"
+                        } else {
+                            "Send message"
+                        },
+                        (!sending && !value.trim().is_empty() && self.connected.is_ok())
+                            .then_some(Message::SendSession(draft_key)),
+                    ));
+                if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
+                    body = body.push(text(error).size(13).color(c.amber));
+                } else if entry.is_some_and(|entry| entry.queued.is_some()) {
+                    body = body.push(small("Queued for this agent", c));
+                }
+            }
+        }
         body = body.push(action(
             "session-details",
             if self.shell.session_details {

@@ -97,6 +97,7 @@ enum Cmd {
     Console(String, Option<std::path::PathBuf>),
     Launch(Box<agentdocker_core::AgentSpec>),
     ChannelSend(String, String),
+    SessionSend(String, String),
 }
 
 /// What comes back to the window.
@@ -124,6 +125,7 @@ enum Msg {
     Console(String),
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
+    SessionSent(String, Result<MessageId, String>),
 }
 
 pub struct App {
@@ -358,6 +360,18 @@ impl App {
         }
     }
 
+    fn session_draft_key(&self, agent: &str) -> String {
+        if self.shell.session_drafts.contains_key(agent) {
+            return agent.to_owned();
+        }
+        self.shell
+            .session_drafts
+            .keys()
+            .find(|key| self.canonical_agent(key) == agent)
+            .cloned()
+            .unwrap_or_else(|| agent.to_owned())
+    }
+
     fn send(&mut self, cmd: Cmd) {
         if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
             match command {
@@ -380,6 +394,11 @@ impl App {
                         .entry(id)
                         .or_default()
                         .complete(Err(reason.into()));
+                }
+                Cmd::SessionSend(id, _) => {
+                    if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
+                        entry.draft.complete(Err(reason.into()));
+                    }
                 }
                 Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
                 // Full queues may omit refreshes: events and periodic refresh
@@ -588,6 +607,17 @@ impl App {
                             self.say("Agent launched");
                         }
                         Err(error) => self.shell.error = Some(error),
+                    }
+                }
+                Msg::SessionSent(id, result) => {
+                    if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
+                        match result {
+                            Ok(receipt) => {
+                                entry.queued = Some(receipt);
+                                entry.draft.complete(Ok(()));
+                            }
+                            Err(error) => entry.draft.complete(Err(error)),
+                        }
                     }
                 }
                 Msg::ChannelSent(id, result) => {
@@ -1042,6 +1072,10 @@ fn spawn_worker(
                         Cmd::ChannelSend(id, _) => Some(id.clone()),
                         _ => None,
                     };
+                    let session = match &daemon {
+                        Cmd::SessionSend(id, _) => Some(id.clone()),
+                        _ => None,
+                    };
                     let outcome = run(&client, daemon);
                     let disconnected = outcome
                         .as_ref()
@@ -1051,6 +1085,16 @@ fn spawn_worker(
                         Ok(Some(msg)) => msg,
                         Ok(None) => continue,
                         Err(err) => {
+                            if let Some(id) = session
+                                && tx
+                                    .send(Msg::SessionSent(
+                                        id,
+                                        Err(format!("Queue acceptance was not confirmed: {err:#}")),
+                                    ))
+                                    .is_err()
+                            {
+                                break;
+                            }
                             if let Some(id) = dismissal
                                 && tx
                                     .send(Msg::MessagesDismissed(id, Err(format!("{err:#}"))))
@@ -1270,6 +1314,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
         },
+        Cmd::SessionSend(agent, text) => {
+            let response = client.call(&Request::Send {
+                from: agentdocker_core::HUMAN.into(),
+                to: agent.clone(),
+                kind: "message".into(),
+                payload: serde_json::Value::String(text),
+                reply_to: None,
+            })?;
+            let result = match response {
+                Response::Sent { message, .. } => Ok(message),
+                _ => Err("Unexpected message response".into()),
+            };
+            Some(Msg::SessionSent(agent, result))
+        }
         Cmd::ChannelSend(channel, text) => {
             let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),
@@ -2316,6 +2374,28 @@ mod tests {
                     text.contains("adopted 1 process(es); failed at pid 102"),
                 _ => false,
             }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_messages_use_the_common_send_request_and_never_retry_lost_receipts() {
+        use serde_json::json;
+        for reply in [
+            Some(json!({"type":"sent", "message":"queue-receipt", "subscribers":0})),
+            Some(json!({"type":"error", "code":"not_found", "message":"agent exited"})),
+            None,
+        ] {
+            let accepted = reply.as_ref().is_some_and(|value| value["type"] == "sent");
+            let messages = command_with_replies(
+                Cmd::SessionSend("recipient".into(), "input".into()),
+                vec![(
+                    json!({"op":"send", "from":agentdocker_core::HUMAN, "to":"recipient", "kind":"message", "payload":"input"}),
+                    reply,
+                )],
+            );
+            assert!(messages.iter().any(|message| matches!(message,
+                Msg::SessionSent(id, result) if id == "recipient" && result.is_ok() == accepted)));
         }
     }
 

@@ -12,6 +12,8 @@ pub(super) struct State {
     pub session_filter: super::sessions::Filter,
     pub more: bool,
     pub session_details: bool,
+    pub session_message: bool,
+    pub session_drafts: BTreeMap<String, SessionDraft>,
     pub connection_details: Option<String>,
     pub other_tools: bool,
     pub width: f32,
@@ -84,6 +86,12 @@ pub(super) struct ChannelDraft {
     pub sending: Option<String>,
     pub error: Option<String>,
 }
+
+#[derive(Default)]
+pub(super) struct SessionDraft {
+    pub draft: ChannelDraft,
+    pub queued: Option<MessageId>,
+}
 impl ChannelDraft {
     pub fn begin(&mut self) -> Option<String> {
         if self.sending.is_some() || self.text.trim().is_empty() {
@@ -144,6 +152,9 @@ pub enum Message {
     SessionFilter(super::sessions::Filter),
     More,
     SessionDetails,
+    ComposeSession,
+    SessionDraft(String, String),
+    SendSession(String),
     ConnectionDetails(String),
     OtherTools,
     AddPath(String),
@@ -389,6 +400,41 @@ impl App {
                 self.shell.unviewed_done.remove(&id);
                 self.shell.selected = Some(id);
                 self.shell.session_details = false;
+                self.shell.session_message = false;
+            }
+            Message::ComposeSession => {
+                self.shell.session_message = !self.shell.session_message;
+                let selected = self.shell.selected.as_deref();
+                self.shell.session_drafts.retain(|id, entry| {
+                    selected == Some(id.as_str())
+                        || !entry.draft.text.is_empty()
+                        || entry.draft.sending.is_some()
+                });
+            }
+            Message::SessionDraft(id, text) => {
+                if self.shell.session_drafts.contains_key(&id)
+                    || self.shell.session_drafts.len() < 128
+                {
+                    self.shell.session_drafts.entry(id).or_default().draft.text =
+                        text.chars().take(16_000).collect();
+                } else {
+                    self.shell.error =
+                        Some("Finish or clear an earlier message draft first.".into());
+                }
+            }
+            Message::SendSession(id) => {
+                if self.connected.is_ok()
+                    && self.agents.iter().any(|a| {
+                        a.id.as_str() == self.canonical_agent(&id)
+                            && a.status.is_live()
+                            && a.spec.runtime != "human"
+                    })
+                    && let Some(entry) = self.shell.session_drafts.get_mut(&id)
+                    && let Some(text) = entry.draft.begin()
+                {
+                    entry.queued = None;
+                    self.send(Cmd::SessionSend(id, text));
+                }
             }
             Message::CloseSession => self.shell.selected = None,
             Message::SessionFilter(filter) => {
@@ -1222,6 +1268,67 @@ mod tests {
         app.shell.catalog.updates.enabled = false;
         app.schedule_update_check(186_401);
         assert!(app.shell.pending_update.is_none());
+    }
+
+    #[test]
+    fn session_messages_keep_new_and_other_drafts_after_late_receipts_and_rejection() {
+        let (mut app, commands, messages) = app();
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "fixture".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "recipient".into();
+        app.agents.push(agent);
+        let _ = app.update(Message::SessionDraft(
+            "recipient".into(),
+            "first input".into(),
+        ));
+        let _ = app.update(Message::SendSession("recipient".into()));
+        let _ = app.update(Message::SendSession("recipient".into()));
+        assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::SessionSend(id, text)] if id == "recipient" && text == "first input"));
+        let _ = app.update(Message::SessionDraft(
+            "recipient".into(),
+            "next input".into(),
+        ));
+        let _ = app.update(Message::SessionDraft("other".into(), "other draft".into()));
+        let _ = app.update(Message::SelectSession("other".into()));
+        messages
+            .send(Msg::SessionSent(
+                "recipient".into(),
+                Ok("receipt".to_owned().into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.session_drafts["recipient"].draft.text,
+            "next input"
+        );
+        assert_eq!(app.shell.session_drafts["other"].draft.text, "other draft");
+        assert_eq!(
+            app.shell.session_drafts["recipient"]
+                .queued
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "receipt"
+        );
+        for _ in 0..queue::CAPACITY {
+            app.tx.send(Cmd::Stop("fixture".into())).unwrap();
+        }
+        let _ = app.update(Message::SendSession("recipient".into()));
+        let draft = &app.shell.session_drafts["recipient"].draft;
+        assert_eq!(draft.text, "next input");
+        assert!(draft.sending.is_none());
+        assert!(draft.error.as_ref().unwrap().contains("full"));
+        assert_eq!(commands.try_iter().count(), queue::CAPACITY);
+        app.agents.clear();
+        let _ = app.update(Message::SendSession("recipient".into()));
+        assert_eq!(commands.try_iter().count(), 0);
     }
 
     fn notification_app() -> (
