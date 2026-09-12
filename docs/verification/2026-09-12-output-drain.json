@@ -1,0 +1,244 @@
+{
+  "date": "2026-09-12",
+  "scope": "Managed output ownership through pipe/terminal EOF and final log flush before publishing exit, releasing protection or restarting; not cross-process daemon handover.",
+  "source": {
+    "format": 1,
+    "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+    "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+    "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 14,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+      "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+      "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+    }
+  },
+  "validation": {
+    "rust_tests": 842,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "gate": "passed: formatting, strict Clippy, nextest, doctests, installer/package checks and release build",
+    "full_log": "/private/tmp/agentdocker-output-drain-check-2026-09-12.log",
+    "targeted_tests": 6,
+    "targeted_log": "/private/tmp/agentdocker-output-drain-targeted-fixed-2026-09-12.log"
+  },
+  "regression": {
+    "result": "failed on previous source; passed with correction",
+    "baseline_log": "/private/tmp/agentdocker-output-drain-baseline-2026-09-12.log",
+    "failure": "Exit was published before OUT_1969_END was logged, out of 4096 stdout markers. The corrected test checks both streams and a PTY, in order and once, at observed completion without log polling."
+  },
+  "actual_prior_binary": {
+    "result": "reproduced",
+    "scope": "Private actual-daemon pipe/PTY output completion, with immediate shutdown after exit.",
+    "mode": "baseline",
+    "build": {
+      "format": 1,
+      "source_commit": "687e57f9717898cd419bccc471f0d5c1203aa23d",
+      "source_tree": "8738ae53e41ec2ceafe72dea9081f853ee8cc4cd",
+      "source_input_sha256": "c9c31bed63e3ac2c0d5468f67300c6881e381a834042cf59157f1c3381ad2ed3",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "c72a3ab9836844454dcdd2f7928f6c5aac622df9c717d255141f5951b1e36a3f",
+        "agentd": "a063043d102851e444ba9421e1bc128221b5eaba59612bec88cac9e16b0ed548",
+        "agentdocker-ui": "d41574eccaeaaf400db633c1a48dc2785a4bcd7c2d6b0871de519fc56a2a396a"
+      }
+    },
+    "driver_sha256": "c364b276485bb7411de4005d31973b8f4afca0868f5a2cc44665e9879ab71bde",
+    "rounds": [
+      {
+        "tty": false,
+        "agent": "0177c1166a53457c818443232e56a6b6",
+        "pid": 61940,
+        "process_started_at": "2026-09-12T20:13:49.810192Z",
+        "exit_status": {
+          "state": "exited",
+          "code": 17
+        },
+        "elapsed_seconds": 0.023855457999161445,
+        "counts_at_exit": {
+          "OUT": 339,
+          "ERR": 328
+        },
+        "counts_after_shutdown": {
+          "OUT": 363,
+          "ERR": 352
+        },
+        "ordered_complete_once_at_exit": false,
+        "log_unchanged_after_shutdown": false,
+        "capture_errors": [],
+        "log_sha256_at_exit": "bb292f509e8fc5fc40dc246e38673861ee0cc5df51003802053208487adffdd6"
+      },
+      {
+        "tty": true,
+        "agent": "f5d45446a8be4636aa626310b2adcbac",
+        "pid": 61950,
+        "process_started_at": "2026-09-12T20:13:49.893960Z",
+        "exit_status": {
+          "state": "exited",
+          "code": 17
+        },
+        "elapsed_seconds": 0.10408533399458975,
+        "counts_at_exit": {
+          "OUT": 4058,
+          "ERR": 4058
+        },
+        "counts_after_shutdown": {
+          "OUT": 4082,
+          "ERR": 4082
+        },
+        "ordered_complete_once_at_exit": false,
+        "log_unchanged_after_shutdown": false,
+        "capture_errors": [],
+        "log_sha256_at_exit": "7e6136e05023ddccf14644a7c055a977c9c1c90af1ca4f55f32e11501824b2ef"
+      }
+    ],
+    "cleanups": [
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true
+  },
+  "actual_corrected_binary": {
+    "result": "passed",
+    "scope": "Private actual-daemon pipe/PTY output completion, with immediate shutdown after exit.",
+    "mode": "acceptance",
+    "build": {
+      "format": 1,
+      "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+      "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+      "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+        "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+        "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+      }
+    },
+    "driver_sha256": "c364b276485bb7411de4005d31973b8f4afca0868f5a2cc44665e9879ab71bde",
+    "rounds": [
+      {
+        "tty": false,
+        "agent": "09d35c2faa1c4597adc7b9cf36ffdce4",
+        "pid": 62741,
+        "process_started_at": "2026-09-12T20:14:39.814274Z",
+        "exit_status": {
+          "state": "exited",
+          "code": 17
+        },
+        "elapsed_seconds": 0.10486125000170432,
+        "counts_at_exit": {
+          "OUT": 4096,
+          "ERR": 4096
+        },
+        "counts_after_shutdown": {
+          "OUT": 4096,
+          "ERR": 4096
+        },
+        "ordered_complete_once_at_exit": true,
+        "log_unchanged_after_shutdown": true,
+        "capture_errors": [],
+        "log_sha256_at_exit": "3dd9cd1d2ba98c87409232f9f22258f0bd42a378928bf7dcc8211d34639537b2"
+      },
+      {
+        "tty": true,
+        "agent": "03422454578049678133e1bf0e3a1b25",
+        "pid": 62760,
+        "process_started_at": "2026-09-12T20:14:39.976566Z",
+        "exit_status": {
+          "state": "exited",
+          "code": 17
+        },
+        "elapsed_seconds": 0.106440500007011,
+        "counts_at_exit": {
+          "OUT": 4096,
+          "ERR": 4096
+        },
+        "counts_after_shutdown": {
+          "OUT": 4096,
+          "ERR": 4096
+        },
+        "ordered_complete_once_at_exit": true,
+        "log_unchanged_after_shutdown": true,
+        "capture_errors": [],
+        "log_sha256_at_exit": "dcaad5d14bd89ee1313e5a9ed4d5dd9845fd590977c3689f1e6f30f56e276765"
+      }
+    ],
+    "cleanups": [
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true
+  },
+  "retained_setup_failures": [
+    {
+      "log": "/private/tmp/agentdocker-output-drain-targeted-2026-09-12.log",
+      "reason": "Initial targeted compilation needed the existing nix::libc namespace for EIO. Corrected before passing validation."
+    },
+    {
+      "log": "/private/tmp/agentdocker-output-drain-live-2026-09-12.log",
+      "reason": "An immutable-copy preflight used binary_dir instead of manifest binary_directory, so no binaries or manifest had been copied. The first trial invocation failed before launching any process. Corrected the copy key and retained the initial empty output directory; runtime and trial driver unchanged."
+    }
+  ],
+  "limits": [
+    "The actual trial uses private state and identity-owned fixture groups on this Apple Silicon Mac. No installed launcher, default daemon, provider profile or active user session was changed.",
+    "The output barrier owns async tasks inside the current daemon. Stable process ownership outside the coordinator, handover fencing/readiness, uncertain mutation recovery and full live replacement remain open; reload still refuses.",
+    "The trial covers normal code-17 exit, large stdout/stderr and PTY output, immediate shutdown and unchanged log bytes. Unit tests cover a slow log sink, failed sink and a partial final line. It does not establish power-loss/fsync durability, arbitrary binary-output retention, an escaped descendant holding output open, or every disk failure.",
+    "Final CI and actual source review are required before integrating this change."
+  ]
+}
