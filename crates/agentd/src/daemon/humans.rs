@@ -616,6 +616,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn structured_questions_reject_mismatch_and_survive_restart_with_the_same_answer_route() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let presentation = QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Print fixture text".into(),
+        };
+        assert!(matches!(
+            daemon
+                .post_question(
+                    "user".into(),
+                    "all".into(),
+                    "A different command".into(),
+                    Some(presentation.clone()),
+                    300
+                )
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert_eq!(lock(&daemon.state).registry.live().count(), 0);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                presentation.text(),
+                Some(presentation.clone()),
+                300,
+            )
+            .await
+        else {
+            panic!("question was not posted");
+        };
+        drop(daemon);
+        let daemon = state(&dir);
+        assert_eq!(
+            lock(&daemon.state).questions[&message]
+                .presentation
+                .as_ref(),
+            Some(&presentation)
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: "Allow".into(),
+            })
+            .await
+        else {
+            panic!("answer was not queued");
+        };
+        let state = lock(&daemon.state);
+        let queued = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .unwrap();
+        assert_eq!(queued.reply_to.as_ref(), Some(&message));
+        assert_eq!(queued.payload["text"], "Allow");
+        assert!(!state.questions.contains_key(&message));
+    }
+
+    #[tokio::test]
     async fn an_empty_question_does_not_register_a_human_or_publish_state() {
         for wait in [false, true] {
             let dir = TempDir::new().unwrap();

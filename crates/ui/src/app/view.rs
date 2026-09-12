@@ -1329,25 +1329,96 @@ impl App {
                 ]
                 .spacing(8)
                 .align_y(Center),
-                heading(question.text.clone(), 18),
-                self.answer_window(question, c),
-                input_enabled(
-                    format!("answer-{id}"),
-                    "Your answer",
-                    &answer,
-                    move |text| Message::Draft(draft_id.clone(), text),
-                    !busy
-                ),
-                row![primary(
-                    format!("send-answer-{id}"),
-                    if busy { "Sending…" } else { "Send answer" },
-                    (!busy && self.connected.is_ok() && !answer.trim().is_empty() && !expired)
-                        .then_some(Message::Answer(id.clone())),
-                )]
-                .spacing(10)
-                .align_y(Center)
             ]
-            .spacing(12);
+            .spacing(10);
+            let presentation = question
+                .presentation
+                .as_ref()
+                .filter(|p| p.valid_for(&question.text));
+            let enabled = !busy && !expired && self.connected.is_ok();
+            match presentation {
+                Some(agentdocker_core::QuestionPresentation::CodexCommand {
+                    command,
+                    cwd,
+                    reason,
+                }) => {
+                    body = body
+                        .push(heading("Run this command?", 18))
+                        .push(
+                            text(command.clone())
+                                .size(14)
+                                .font(Font::MONOSPACE)
+                                .color(c.text),
+                        )
+                        .push(mono(format!("Folder: {cwd}"), c));
+                    if !reason.trim().is_empty() {
+                        body = body.push(note(reason.clone(), c));
+                    }
+                    body = body.push(self.answer_window(question, c)).push(
+                        row![
+                            primary(
+                                format!("answer-allow-{id}"),
+                                if busy { "Sending…" } else { "Allow once" },
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Allow".into()))
+                            ),
+                            action(
+                                format!("answer-deny-{id}"),
+                                "Deny",
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                                false
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    );
+                }
+                _ => {
+                    if let Some(agentdocker_core::QuestionPresentation::Choices {
+                        question: prompt,
+                        options,
+                    }) = presentation
+                    {
+                        body = body
+                            .push(heading(prompt.clone(), 18))
+                            .push(self.answer_window(question, c));
+                        for (index, option) in options.iter().enumerate() {
+                            body = body.push(block_button(
+                                format!("answer-choice-{id}-{index}"),
+                                option.label.clone(),
+                                enabled.then(|| {
+                                    Message::AnswerChoice(id.clone(), option.label.clone())
+                                }),
+                                false,
+                            ));
+                            if !option.description.trim().is_empty() {
+                                body = body.push(note(option.description.clone(), c));
+                            }
+                        }
+                    } else {
+                        body = body
+                            .push(heading(question.text.clone(), 18))
+                            .push(self.answer_window(question, c));
+                    }
+                    body = body
+                        .push(input_enabled(
+                            format!("answer-{id}"),
+                            if presentation.is_some() {
+                                "Or write an answer"
+                            } else {
+                                "Your answer"
+                            },
+                            &answer,
+                            move |text| Message::Draft(draft_id.clone(), text),
+                            enabled,
+                        ))
+                        .push(primary(
+                            format!("send-answer-{id}"),
+                            if busy { "Sending…" } else { "Send answer" },
+                            (enabled && !answer.trim().is_empty())
+                                .then_some(Message::Answer(id.clone())),
+                        ));
+                }
+            }
             if expired {
                 body = body.push(note("This question has expired.", c));
             }

@@ -67,6 +67,13 @@ other programs running as the same OS user.
 
 ## Questions and command approvals
 
+In Inbox, command requests show the command, folder and reason with **Allow once**
+and **Deny** controls. Multiple-choice questions offer buttons and a text field
+for a different answer. These choices use the existing human answer queue, retain
+other question drafts and become unavailable when the question closes or expires.
+The structured presentation is checked against the complete fallback question
+text, so the native app and CLI describe the same request.
+
 Command approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
 records the provider request before publishing its questions. Only the exact
@@ -86,7 +93,7 @@ restart and are never silently discarded to make room.
 Loss of the question event stream or an uncertain publication/response pauses
 delivery. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-3 record accepts version-1/2 records only without recorded question
+version-4 record preserves version-3 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.

@@ -177,6 +177,7 @@ pub enum Message {
     CatalogSaved(u64, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
+    AnswerChoice(MessageId, String),
     DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
@@ -560,6 +561,21 @@ impl App {
                 if !self.sending.contains(&id) {
                     self.answers
                         .insert(id, value.chars().take(16_000).collect());
+                }
+            }
+            Message::AnswerChoice(id, value) => {
+                if self.connected.is_ok()
+                    && !self.sending.contains(&id)
+                    && self.questions.iter().any(|q| {
+                        q.id == id
+                            && !q.expired(Utc::now())
+                            && q.presentation
+                                .as_ref()
+                                .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
+                    })
+                {
+                    self.answers.insert(id.clone(), value);
+                    return self.update(Message::Answer(id));
                 }
             }
             Message::Answer(id) => {
@@ -1233,6 +1249,50 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    #[test]
+    fn structured_choices_use_one_answer_command_and_reject_stale_or_invalid_clicks() {
+        let (mut app, commands, _) = app();
+        app.connected = Ok(());
+        let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+        };
+        let id = MessageId::from("question".to_owned());
+        let question = Question {
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: presentation.text(),
+            presentation: Some(presentation),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.questions.push(question.clone());
+        app.answers.insert(id.clone(), "earlier draft".into());
+        let _ = app.update(Message::AnswerChoice(
+            id.clone(),
+            "Allow for this session".into(),
+        ));
+        assert_eq!(commands.try_iter().count(), 0);
+        assert_eq!(app.answers[&id], "earlier draft");
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        assert!(
+            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == "Allow")
+        );
+        assert_eq!(app.answers[&id], "Allow");
+        app.sending.clear();
+        app.questions.clear();
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        let mut expired = question;
+        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        app.questions.push(expired);
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        assert_eq!(commands.try_iter().count(), 0);
+        assert_eq!(app.answers[&id], "Allow");
     }
 
     #[test]

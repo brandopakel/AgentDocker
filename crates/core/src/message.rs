@@ -266,6 +266,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn structured_questions_match_fallback_text_and_bound_unambiguous_choices() {
+        let command = QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Print the fixture token".into(),
+        };
+        assert!(command.valid_for(&command.text()));
+        assert!(!command.valid_for("Run a different command"));
+        assert!(command.permits_choice("Allow"));
+        assert!(command.permits_choice("Deny"));
+        assert!(!command.permits_choice("Allow for this session"));
+        let option = QuestionOption {
+            label: "Blue".into(),
+            description: "Use the blue theme".into(),
+        };
+        let choice = QuestionPresentation::Choices {
+            question: "Which color?".into(),
+            options: vec![option.clone()],
+        };
+        assert!(choice.valid_for(&choice.text()));
+        assert!(choice.permits_choice("Blue"));
+        assert!(!choice.permits_choice("Red"));
+        let duplicate = QuestionPresentation::Choices {
+            question: "Which color?".into(),
+            options: vec![option.clone(), option],
+        };
+        assert!(!duplicate.valid_for(&duplicate.text()));
+        let huge = QuestionPresentation::CodexCommand {
+            command: "x".repeat(16_001),
+            cwd: "/owned".into(),
+            reason: String::new(),
+        };
+        assert!(!huge.valid_for(&huge.text()));
+    }
+
+    #[test]
     fn topic_patterns() {
         assert!(topic_matches("a/b/c", "a/b/c"));
         assert!(!topic_matches("a/b/c", "a/b"));
