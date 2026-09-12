@@ -131,12 +131,14 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     } else {
         pump(&server).await
     };
-    if server.claude_channel && outcome.is_err() {
+    if server.claude_channel
+        && let Err(cause) = &outcome
+    {
         if let Err(error) = crate::input_status::report(
             &server.backend,
             &server.identity.id,
             server.identity.host_started_at,
-            agentdocker_core::InputReport::Paused,
+            crate::input_status::paused(cause),
         )
         .await
         {

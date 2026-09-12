@@ -2475,6 +2475,7 @@ mod tests {
         agent.input_delivery = Some(agentdocker_core::InputDelivery {
             process_started_at: now,
             paused: true,
+            pause_reason: Some("Retained input requires review".into()),
             reported_at: now,
             received: None,
             received_at: None,
@@ -2490,7 +2491,8 @@ mod tests {
             .draft
             .text = "unfinished message".into();
         let _ = app.update(Message::ReviewDelivery);
-        assert!(app.shell.session_details);
+        assert!(app.shell.review_delivery);
+        assert!(!app.shell.session_details);
         assert!(matches!(requests.recv(), Ok(Cmd::SessionLog(target)) if target == id));
         messages
             .send(Msg::Activity(vec![AgentActivity {

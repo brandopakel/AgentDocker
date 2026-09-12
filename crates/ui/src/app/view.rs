@@ -1098,10 +1098,32 @@ impl App {
             if paused {
                 body = body.push(action(
                     "review-delivery",
-                    "Review delivery",
+                    if self.shell.review_delivery {
+                        "Hide review"
+                    } else {
+                        "Review delivery"
+                    },
                     self.connected.is_ok().then_some(Message::ReviewDelivery),
                     false,
                 ));
+                if self.shell.review_delivery {
+                    if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
+                        body = body.push(text(reason.to_owned()).size(13).color(c.amber));
+                    }
+                    body = body.push(note("Input is retained. Check the receipt and session log before restarting or sending it again.", c));
+                    if let Some((log_agent, result)) = &self.session_log
+                        && log_agent == &id
+                    {
+                        let log = match result {
+                            Ok(log) if log.is_empty() => "No retained log output.",
+                            Ok(log) => log.as_str(),
+                            Err(error) => error.as_str(),
+                        };
+                        body = body.push(scrollable(text(log).size(12)).height(120));
+                    } else {
+                        body = body.push(small("Loading session log…", c));
+                    }
+                }
             }
         }
         if self.needs_input(&id) {
@@ -1213,22 +1235,6 @@ impl App {
             }
             if let Some(session) = &agent.session {
                 details = details.push(kv("Terminal", format!("{session:?}"), c));
-            }
-            if paused {
-                details = details.push(note("Review the session log before restarting. Uncertain input is retained. Check whether the agent received it before taking further action.", c));
-            }
-            if let Some((log_agent, result)) = &self.session_log
-                && log_agent == &id
-            {
-                details = details.push(heading("Session log", 14));
-                details = details.push(
-                    text(match result {
-                        Ok(log) if log.is_empty() => "No retained log output.",
-                        Ok(log) => log.as_str(),
-                        Err(error) => error.as_str(),
-                    })
-                    .size(12),
-                );
             }
             body = body.push(details);
         }

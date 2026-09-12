@@ -146,6 +146,7 @@ impl State {
         let mut delivery = record.input_delivery.clone().unwrap_or(InputDelivery {
             process_started_at,
             paused: false,
+            pause_reason: None,
             reported_at: observed_at,
             received: None,
             received_at: None,
@@ -174,9 +175,25 @@ impl State {
                     delivery.received = Some(input);
                 }
                 delivery.paused = false;
+                delivery.pause_reason = None;
             }
-            InputReport::Ready => delivery.paused = false,
-            InputReport::Paused => delivery.paused = true,
+            InputReport::Ready => {
+                delivery.paused = false;
+                delivery.pause_reason = None;
+            }
+            InputReport::Paused { reason } => {
+                if reason.trim().is_empty()
+                    || reason.len() > 2048
+                    || reason.chars().any(char::is_control)
+                {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "pause reason must be plain text, 1 to 2048 bytes",
+                    );
+                }
+                delivery.paused = true;
+                delivery.pause_reason = Some(reason);
+            }
         }
         delivery.process_started_at = process_started_at;
         delivery.reported_at = observed_at;

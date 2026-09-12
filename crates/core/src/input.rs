@@ -51,7 +51,7 @@ impl ReceivedInput {
 pub enum InputReport {
     Ready,
     Received { input: ReceivedInput },
-    Paused,
+    Paused { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +59,7 @@ pub struct InputDelivery {
     /// The process generation that made the most recent report.
     pub process_started_at: DateTime<Utc>,
     pub paused: bool,
+    pub pause_reason: Option<String>,
     pub reported_at: DateTime<Utc>,
     /// The latest receipt remains historical evidence across restarts.
     pub received: Option<ReceivedInput>,

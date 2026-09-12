@@ -126,6 +126,7 @@ mod tests {
         paused.input_delivery = Some(agentdocker_core::InputDelivery {
             process_started_at: now,
             paused: true,
+            pause_reason: Some("Retained input requires review".into()),
             reported_at: now,
             received: None,
             received_at: None,

@@ -6800,7 +6800,11 @@ mod tests {
             Response::Ok
         ));
         assert!(matches!(
-            daemon.handle(request(InputReport::Paused)).await,
+            daemon
+                .handle(request(InputReport::Paused {
+                    reason: "Retained input requires review".into()
+                }))
+                .await,
             Response::Ok
         ));
         for observed_at in [
@@ -6832,6 +6836,10 @@ mod tests {
         let delivery = saved.input_delivery.unwrap();
         assert_eq!(delivery.received, Some(input));
         assert!(delivery.paused_for(Some(generation)));
+        assert_eq!(
+            delivery.pause_reason.as_deref(),
+            Some("Retained input requires review")
+        );
         let Response::Activity { activity } = daemon
             .handle(Request::Activity {
                 agent: Some(receiver.id.to_string()),

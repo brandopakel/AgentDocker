@@ -85,12 +85,12 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         std::env::var("AGENTDOCKER_AGENT_ID").context("Codex input has no supervised identity")?;
     let agent = identity(&client, &agent_id, &cwd).await?;
     let result = run_owned(&client, args, home, socket, cwd, &agent).await;
-    if result.is_err() {
+    if let Err(cause) = &result {
         if let Err(error) = crate::input_status::report(
             &client,
             agent.id.as_str(),
             agent.process_started_at,
-            agentdocker_core::InputReport::Paused,
+            crate::input_status::paused(cause),
         )
         .await
         {
