@@ -1674,6 +1674,9 @@ mod tests {
         );
         record.status = AgentStatus::Running;
         record.pid = Some(4321);
+        // Retain the ID that reproduced a false PID-leak assertion in CI.
+        // A hidden value can coincidentally be a substring of a visible ID.
+        record.id = "df94c3a161294321b7f982e8837c81c7".into();
         record.project = Some(ProjectRef::directory("/work/alpha"));
         record.vcs = Some(VcsState {
             branch: Some("feat/x".into()),
@@ -1701,8 +1704,10 @@ mod tests {
             "bookkeeping is dropped: {brief}"
         );
         assert!(!brief.contains("created_at"), "{brief}");
+        let compact: Value = serde_json::from_str(&brief).unwrap();
+        assert_eq!(compact["agents"][0]["id"], record.id.as_str());
         assert!(
-            !brief.contains("4321"),
+            compact["agents"][0].get("pid").is_none(),
             "a pid is not for the model: {brief}"
         );
 
@@ -1721,6 +1726,8 @@ mod tests {
             .unwrap(),
         );
         assert!(whole.contains("last_seen"), "{whole}");
+        let verbose: Value = serde_json::from_str(&whole).unwrap();
+        assert_eq!(verbose["agents"][0]["pid"], 4321);
         assert!(
             whole.len() > brief.len(),
             "the projection is smaller: {} vs {}",
