@@ -744,3 +744,16 @@ actual normal/interrupted private trials retained the right outcomes and clean
 owned-process cleanup. The full standard gate passed 762 Rust tests and 60
 Python checks, including the two new signal regressions. Final CI and review
 remain required.
+
+### September 11: direct human messages and actual native Claude input
+
+A selected session now offers a compact Message composer using the same daemon
+send/inbox route as peers. Drafts are bounded and survive navigation, rejection
+and delayed replies; the UI reports queue acceptance without claiming consumption.
+An actual Claude 2.1.269 session received an idle peer input, then a human message
+submitted through native rendered controls. Both produced explicit acknowledgements
+and correlated replies under one managed identity. A new unsubmitted app draft
+survived the reply and navigation; monitored user configuration remained unchanged
+and all owned fixture processes exited. The [checkpoint](verification/2026-09-11-session-messages.json)
+retains source/driver hashes and the separate native/protocol evidence. The Codex
+managed bridge, durable delivery status and broader provider acceptance remain open.

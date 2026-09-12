@@ -57,6 +57,16 @@ despite the passing lifecycle-hook tests.
 
 ## Audit and implementation sequence
 
+The [direct-message checkpoint](verification/2026-09-11-session-messages.json)
+adds a compact selected-session composer to the native app. Human submissions
+use the same daemon send/inbox path as peers, with queue-pressure feedback and
+draft preservation. An actual managed Claude 2.1.269 session received an idle
+peer message and then an idle human submission from the rendered native controls.
+Both had explicit receipts and correlated replies, one provider identity, and
+no leftover test processes or monitored user-configuration changes. The next
+unsubmitted native draft survived the reply and navigation. This does not add
+a Codex provider bridge or establish sustained/busy/reconnect acceptance.
+
 | Order | Work | Reviewable result |
 | --- | --- | --- |
 | 1 | Trace user submission and peer delivery separately for Claude Code and Codex: desktop terminal input, native provider input, CLI/MCP sends, channels, daemon inbox/live routing, hooks, reads and acknowledgements. | Source-linked sequence diagrams showing exactly where paths join or diverge; runtime/version and managed/external/desktop-host differences. |

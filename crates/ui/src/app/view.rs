@@ -1121,7 +1121,14 @@ impl App {
                 if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
                     body = body.push(text(error).size(13).color(c.amber));
                 } else if entry.is_some_and(|entry| entry.queued.is_some()) {
-                    body = body.push(small("Queued for this agent", c));
+                    body = body.push(small(
+                        if value.is_empty() {
+                            "Queued for this agent"
+                        } else {
+                            "Previous message queued"
+                        },
+                        c,
+                    ));
                 }
             }
         }
