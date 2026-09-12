@@ -825,7 +825,12 @@ impl Daemon {
             registry.insert(record.clone())?;
         }
         registry.restore_aliases(&store.identity_aliases()?)?;
-        let mut next_seq = store.max_event_seq()? + 1;
+        let high_water = store.max_event_seq()?;
+        anyhow::ensure!(
+            high_water < i64::MAX as u64,
+            "durable event sequence exhausted"
+        );
+        let mut next_seq = high_water + 1;
         for mut record in records {
             if record.managed
                 && record.container.is_none()
@@ -1037,6 +1042,29 @@ impl Daemon {
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
         lock(&self.state).events.subscribe()
+    }
+
+    /// Subscribe and validate durable history in the same state snapshot.
+    pub(crate) fn resume_events(
+        &self,
+        after: Option<&agentdocker_core::EventCursor>,
+    ) -> Result<(broadcast::Receiver<Event>, crate::store::EventReplay), Box<Response>> {
+        let state = lock(&self.state);
+        if let Some(error) = state.storage_failure() {
+            return Err(Box::new(error));
+        }
+        let receiver = state.events.subscribe();
+        let replay = state
+            .store
+            .event_replay(after)
+            .map_err(|error| {
+                Box::new(Response::error(
+                    ErrorCode::StorageUnavailable,
+                    format!("cannot read durable event history: {error}"),
+                ))
+            })?
+            .map_err(|error| Box::new(Response::error(ErrorCode::EventHistoryLost, error)))?;
+        Ok((receiver, replay))
     }
 
     /// Resolves once a client has asked the daemon to exit.
@@ -1416,6 +1444,7 @@ impl Daemon {
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
             Request::Subscribe { .. }
             | Request::Events { .. }
+            | Request::ResumeEvents { .. }
             | Request::Logs { .. }
             | Request::Attach { .. }
             | Request::AttachInput { .. }

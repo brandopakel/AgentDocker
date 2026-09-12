@@ -8,6 +8,38 @@ use crate::{
     ProjectRef, ResourceKey, VcsState,
 };
 
+/// An opaque position in one durable event log. Retain the complete cursor:
+/// a sequence alone cannot distinguish another database or rewritten history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventCursor {
+    pub log: String,
+    pub seq: u64,
+    pub digest: String,
+}
+
+impl EventCursor {
+    pub fn is_valid(&self) -> bool {
+        let hex = |value: &str, len: usize| {
+            value.len() == len
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        hex(&self.log, 32)
+            && self.seq <= i64::MAX as u64
+            && if self.seq == 0 {
+                self.digest.is_empty()
+            } else {
+                hex(&self.digest, 64)
+            }
+    }
+}
+
+/// Bounds apply to the checked stream, including the response envelope.
+pub const EVENT_STREAM_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub const EVENT_REPLAY_LIMIT: usize = 4096;
+
 /// How a wait finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

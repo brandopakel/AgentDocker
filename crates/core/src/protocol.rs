@@ -619,6 +619,12 @@ pub enum Request {
         #[serde(default)]
         ready: bool,
     },
+    /// Subscribe at the current durable head, or resume after a complete cursor.
+    /// Missing, changed or excessive history fails explicitly before readiness.
+    ResumeEvents {
+        #[serde(default)]
+        after: Option<crate::EventCursor>,
+    },
     /// Replay the last `tail` log lines of an agent, then keep streaming
     /// while `follow` and the agent is alive.
     Logs {
@@ -687,6 +693,9 @@ pub enum ErrorCode {
     Invalid,
     Internal,
     StorageUnavailable,
+    /// Event continuity cannot be proved. Never substitute a fresh subscription
+    /// when pending work depends on the missing history.
+    EventHistoryLost,
     /// Accepted work already fills a recipient's queue. Nothing was published;
     /// acknowledge existing messages before retrying this submission.
     Backpressure,
@@ -880,6 +889,19 @@ pub enum Response {
     },
     /// The requested events subscription is active; a snapshot can now begin.
     EventsReady,
+    /// Subscription and history validation succeeded. Replay follows this cursor.
+    EventsReadyAt {
+        cursor: crate::EventCursor,
+    },
+    /// A contiguous event and its complete resumable position.
+    EventAt {
+        cursor: crate::EventCursor,
+        event: Event,
+    },
+    /// The validated replay is complete through this cursor. Live events follow.
+    EventsCaughtUp {
+        cursor: crate::EventCursor,
+    },
     Event {
         event: Event,
     },

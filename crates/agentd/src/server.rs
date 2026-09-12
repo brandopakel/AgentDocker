@@ -147,6 +147,9 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             Request::Events { replay, ready } => {
                 return stream_events(&daemon, replay, ready, &mut reader, &mut writer).await;
             }
+            Request::ResumeEvents { after } => {
+                return resume_events(&daemon, after.as_ref(), &mut reader, &mut writer).await;
+            }
             Request::Logs {
                 agent,
                 follow,
@@ -221,6 +224,67 @@ async fn stream_messages(
                     warn!(skipped, "subscriber fell behind the message bus");
                     write(writer, &Response::Lagged { skipped }).await?;
                 }
+                Err(RecvError::Closed) => break,
+            },
+        }
+    }
+    Ok(())
+}
+
+async fn resume_events(
+    daemon: &Arc<Daemon>,
+    after: Option<&agentdocker_core::EventCursor>,
+    reader: &mut Reader,
+    writer: &mut OwnedWriteHalf,
+) -> io::Result<()> {
+    let (mut receiver, replay) = match daemon.resume_events(after) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return write(writer, &error).await,
+    };
+    write(
+        writer,
+        &Response::EventsReadyAt {
+            cursor: replay.start,
+        },
+    )
+    .await?;
+    for frame in replay.frames {
+        write(writer, &frame).await?;
+    }
+    let mut cursor = replay.head;
+    write(
+        writer,
+        &Response::EventsCaughtUp {
+            cursor: cursor.clone(),
+        },
+    )
+    .await?;
+    loop {
+        tokio::select! {
+            () = client_closed(reader) => break,
+            received = receiver.recv() => match received {
+                Ok(event) => {
+                    // These notifications intentionally have no durable event
+                    // row. Their change/read-set APIs provide recovery; this
+                    // stream carries only the retained coordination log.
+                    if event.seq == 0 && matches!(event.kind,
+                        agentdocker_core::EventKind::FileChanged { .. }
+                        | agentdocker_core::EventKind::AgentStale { .. }) {
+                        continue;
+                    }
+                    // The subscription and replay snapshot were taken under
+                    // one lock; every subsequent publication must be next.
+                    if event.seq != cursor.seq + 1 {
+                        return write(writer, &Response::error(ErrorCode::EventHistoryLost, "live event sequence is not contiguous")).await;
+                    }
+                    let frame = match crate::store::event_replay::live_frame(&cursor.log, event) {
+                        Ok(frame) => frame,
+                        Err(error) => return write(writer, &Response::error(ErrorCode::EventHistoryLost, error.to_string())).await,
+                    };
+                    if let Response::EventAt { cursor: next, .. } = &frame { cursor = next.clone(); }
+                    write(writer, &frame).await?;
+                }
+                Err(RecvError::Lagged(_)) => return write(writer, &Response::error(ErrorCode::EventHistoryLost, "live event subscriber fell behind; resume from its last complete cursor")).await,
                 Err(RecvError::Closed) => break,
             },
         }
@@ -632,6 +696,117 @@ async fn restricted_connection(daemon: Arc<Daemon>, stream: Stream) -> io::Resul
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn checked_event_resume_covers_disconnect_replay_and_concurrent_live_tail() {
+        async fn next(client: &mut BufReader<Stream>) -> Response {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_line(&mut line))
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        async fn connect(
+            daemon: Arc<Daemon>,
+            after: Option<agentdocker_core::EventCursor>,
+        ) -> (BufReader<Stream>, tokio::task::JoinHandle<io::Result<()>>) {
+            let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
+            let task = tokio::spawn(handle(daemon, server));
+            let mut client = BufReader::new(client);
+            client
+                .get_mut()
+                .write_all(
+                    (serde_json::to_string(&Request::ResumeEvents { after }).unwrap() + "\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            (client, task)
+        }
+        async fn register(daemon: &Arc<Daemon>, name: &str) {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Register {
+                        spec: AgentSpec {
+                            name: name.into(),
+                            ..AgentSpec::default()
+                        },
+                        pid: None,
+                        session: None,
+                    })
+                    .await,
+                Response::Agent { .. }
+            ));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+        let (mut client, task) = connect(daemon.clone(), None).await;
+        let Response::EventsReadyAt { cursor: start } = next(&mut client).await else {
+            panic!()
+        };
+        assert!(
+            matches!(next(&mut client).await, Response::EventsCaughtUp { cursor } if cursor == start)
+        );
+        drop(client);
+        task.await.unwrap().unwrap();
+        register(&daemon, "during-disconnect").await;
+        let replay_head = daemon.recent_events(1).last().unwrap().seq;
+        let (mut client, task) = connect(daemon.clone(), Some(start.clone())).await;
+        assert!(
+            matches!(next(&mut client).await, Response::EventsReadyAt { cursor } if cursor == start)
+        );
+        // Publication after readiness races with replay on the wire, but must
+        // follow the captured replay head exactly once.
+        daemon
+            .record_fs_changes(
+                vec![crate::daemon::Observed {
+                    checkout: crate::daemon::Checkout {
+                        project: "fixture".into(),
+                        dir: tmp.path().to_path_buf(),
+                        worktree: None,
+                    },
+                    path: "changed.txt".into(),
+                    kind: agentdocker_core::ChangeKind::Modified,
+                }],
+                Vec::new(),
+            )
+            .await;
+        register(&daemon, "during-replay").await;
+        let final_head = daemon.recent_events(1).last().unwrap().seq;
+        let mut previous = start;
+        let mut caught_up = false;
+        while previous.seq < final_head {
+            match next(&mut client).await {
+                Response::EventAt { cursor, event } => {
+                    assert_eq!(cursor.log, previous.log);
+                    assert_eq!(cursor.seq, previous.seq + 1);
+                    assert_eq!(event.seq, cursor.seq);
+                    previous = cursor;
+                }
+                Response::EventsCaughtUp { cursor } => {
+                    assert!(!caught_up);
+                    assert_eq!(cursor, previous);
+                    assert_eq!(cursor.seq, replay_head);
+                    caught_up = true;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(caught_up);
+        drop(client);
+        task.await.unwrap().unwrap();
+        previous.log = "f".repeat(32);
+        let (mut client, task) = connect(daemon, Some(previous)).await;
+        assert!(matches!(
+            next(&mut client).await,
+            Response::Error {
+                code: ErrorCode::EventHistoryLost,
+                ..
+            }
+        ));
+        task.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn host_frames_are_bounded_before_decoding_with_or_without_newline() {

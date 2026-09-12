@@ -17,14 +17,18 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
+pub(crate) mod event_replay;
 pub(crate) mod reconcile;
+pub(crate) use event_replay::EventReplay;
 
 // v9 retains pending questions. v10 retains addressed messages while subscribed
 // and refuses inbox overflow. v11 adds durable identity redirects; older daemons
 // would route former IDs incorrectly and must not open repaired state.
 // v12 reserves managed Codex inbox delivery for its receipt-tracking bridge;
 // older daemons would let legacy hooks consume the same pending input.
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+// v14 preserves event high-water sequences through complete history pruning.
+// Older daemons can reuse sequence numbers and cannot serve checked cursors.
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -564,7 +568,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=12)) => {
+            Some(Ok(1..=13)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
@@ -578,6 +582,10 @@ impl Store {
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
             ),
         }
+        conn.execute(
+            "INSERT OR IGNORE INTO meta(key, value) VALUES ('event_log_id', lower(hex(randomblob(16))))",
+            [],
+        )?;
         let had_fts: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='journal_fts')",
             [],
@@ -1258,7 +1266,7 @@ impl Store {
         self.conn.execute(
             "INSERT INTO events (seq, at, json) VALUES (NULLIF(?1, 0), ?2, ?3)",
             params![
-                i64::try_from(event.seq).unwrap_or(i64::MAX),
+                i64::try_from(event.seq).context("durable event sequence exhausted")?,
                 event.at.to_rfc3339(),
                 serde_json::to_string(event)?
             ],
@@ -1270,10 +1278,12 @@ impl Store {
     pub fn max_event_seq(&self) -> Result<u64> {
         let max: i64 =
             self.conn
-                .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |row| {
-                    row.get(0)
-                })?;
-        Ok(u64::try_from(max).unwrap_or(0))
+                .query_row(
+                    "SELECT MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name='events'), 0), COALESCE((SELECT MAX(seq) FROM events), 0))",
+                    [],
+                    |row| row.get(0),
+                )?;
+        u64::try_from(max).context("negative durable event sequence")
     }
 
     /// The most recent `limit` events, oldest first.
