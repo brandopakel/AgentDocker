@@ -7,6 +7,7 @@ mod codex_input;
 mod desktop;
 mod format;
 mod hooks;
+mod input_status;
 mod mcp;
 mod rtk;
 mod service;
@@ -484,6 +485,19 @@ enum Command {
         /// Current provider activity: working or idle.
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
+    },
+    /// Adapter-only durable input evidence, bound to an exact process birth.
+    #[command(hide = true)]
+    ReportInput {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
+        agent: String,
+        #[arg(long)]
+        /// Exact process birth timestamp for this report, in RFC 3339 format.
+        process_started_at: chrono::DateTime<chrono::Utc>,
+        #[arg(long)]
+        /// InputReport serialized as JSON (ready, paused or received evidence).
+        json: String,
     },
     /// Stream messages without consuming them; acknowledge received IDs with inbox --ack.
     Watch {
@@ -1765,6 +1779,19 @@ async fn main() -> Result<()> {
                     },
                 })
                 .await?;
+        }
+        Command::ReportInput {
+            agent,
+            process_started_at,
+            json,
+        } => {
+            input_status::report(
+                &client,
+                &agent,
+                Some(process_started_at),
+                serde_json::from_str(&json).context("invalid input report JSON")?,
+            )
+            .await?;
         }
         Command::Send(args) => {
             let payload: Value = match (args.json, args.text) {

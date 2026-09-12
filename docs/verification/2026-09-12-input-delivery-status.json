@@ -1,0 +1,715 @@
+{
+  "date": "2026-09-12",
+  "status": "Latest local validation at c116d28 passed 826 Rust tests, 65 Python checks and fresh native/provider acceptance. Final-head CI and follow-up source review remain pending.",
+  "scope": "Durable queue/receipt/pause status for owned Codex input and Claude channel input, concise Iced review controls, and a macOS fast-close log-reader correction.",
+  "previous_merge": {
+    "pr": 107,
+    "commit": "645e1d5cd48c493dfffabdc0100e3544666125d5",
+    "review_comment": 5644394205
+  },
+  "build": {
+    "format": 1,
+    "source_commit": "33d52a374e49ddf10322431498ee8fc836585ca4",
+    "source_tree": "1264cb430c68e1e535bf9769f44dcf0224a0299d",
+    "source_input_sha256": "eec9c9e8bf83bbc99b30abff4e226d869560d020dde1b4be636c8f42fc647094",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 13,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "ac53f8477c62e4e982ac593c97839c70a6dea0b199e852bd9059c37c6765742d",
+      "agentd": "a29312f42a3e90fdb65f7b42ad7701209ce81444db27fea6c019aa7921008a65",
+      "agentdocker-ui": "5a1abf2d3a127cd4c5d6039025b34e136c618a44e88a90117334c0af508e90af"
+    }
+  },
+  "source_checkpoints": [
+    {
+      "source": "1273846a09e3870c9f90d692b8fd6f0ba0c8556c",
+      "source_input_sha256": "c5d3be1565b2c855bbf56b88a0285d7690d3c29ab464a62525bc8b8c5ab02793",
+      "change": "Durable provider status, queue counts and initial recovery UI",
+      "rust_tests": 822,
+      "python_checks": 65,
+      "skipped": 6
+    },
+    {
+      "source": "0e20be0ec8b5d36580a06afca5f817819db0ae26",
+      "source_input_sha256": "9a33fa033190929e1fa2eaea33c5163fed9589d9575e0d2405c5cc41b5d7ffdc",
+      "change": "Durable bounded pause reason and compact review panel",
+      "rust_tests": 823,
+      "python_checks": 65,
+      "skipped": 6
+    },
+    {
+      "source": "33d52a374e49ddf10322431498ee8fc836585ca4",
+      "source_input_sha256": "eec9c9e8bf83bbc99b30abff4e226d869560d020dde1b4be636c8f42fc647094",
+      "change": "Set log read timeout before transmission; preserve partial UTF-8 frames across bounded polling",
+      "rust_tests": 824,
+      "python_checks": 65,
+      "skipped": 6
+    }
+  ],
+  "standard_gate": {
+    "result": "passed",
+    "command": "CARGO_TARGET_DIR=/private/tmp/agentdocker-5e8c3db08e7e bash scripts/verify.sh check",
+    "rust_tests": 824,
+    "python_checks": 65,
+    "skipped": 6,
+    "includes": [
+      "nextest without retries",
+      "doctests",
+      "format",
+      "strict Clippy",
+      "installer",
+      "packaging",
+      "release build"
+    ],
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-log-recovery-check-2026-09-12.log",
+      "sha256": "7a36c16b3fa4ceafe2f6d4b797738a8f54ad3939a370dd7bcf96fcb9f60bfd27"
+    }
+  },
+  "native_workflow": {
+    "result": "passed",
+    "source_commit": "33d52a374e49ddf10322431498ee8fc836585ca4",
+    "steps": 137,
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-log-recovery-iced-2026-09-12/result.json",
+      "sha256": "dcccabb8196f9a933145ca16c0730f7422a8d08fa75d2c1af8c287aca79d2bc0"
+    },
+    "scope": "Production rendered callbacks and reopened native window; not physical input or screen-reader acceptance."
+  },
+  "native_delivery_recovery": {
+    "result": "passed",
+    "driver_sha256": "4460ab8397138993ad485b921275ad8ce57eab43c073cb5e929b2939eefba801",
+    "live_window": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 3.690924334,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 14,
+      "scenario_steps_total": 14,
+      "screenshot_requested": true,
+      "ticks": 77
+    },
+    "restored_window": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 3.093489875,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 11,
+      "scenario_steps_total": 11,
+      "screenshot_requested": true,
+      "ticks": 69
+    },
+    "native_steps": 25,
+    "retained_delivery": {
+      "process_started_at": "2026-09-12T18:20:48.947476Z",
+      "paused": true,
+      "pause_reason": "DELIVERY_PAUSE_REASON_29B4: Receipt is uncertain; input retained for review.",
+      "reported_at": "2026-09-12T18:20:48.951163Z",
+      "received": {
+        "messages": [
+          "d9430a5baf0247c5"
+        ],
+        "receipt": {
+          "provider": "claude_channel"
+        }
+      },
+      "received_at": "2026-09-12T18:20:48.950841Z"
+    },
+    "remaining_owned_processes": 0,
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-log-recovery-fixed-ui-2026-09-12/result.json",
+      "sha256": "206310536145e7a92645d9519d7e971e9e59e5c7255aaa82ef0b8a52888341de"
+    },
+    "checks": [
+      "Retained receipt and one queued input",
+      "Paused exited session remains in Needs input",
+      "Review does not expand technical Details",
+      "Draft survives read-only log review",
+      "Receipt, queue, pause reason and log survive daemon/window restart"
+    ]
+  },
+  "claude_transport": {
+    "result": "passed",
+    "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+    "steps": [
+      "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+      "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+      "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+      "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+      "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+      "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+      "missing parent-session opt-in refused channel startup instead of racing hook delivery"
+    ],
+    "driver_sha256": {
+      "claude_channel_smoke.py": "2070ed6b72ca7cdee5fe2a1bb3453f5f18272683eedf9b478e747cf5299dafa5",
+      "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+      "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+    },
+    "binary_sha256": {
+      "agentd": "a29312f42a3e90fdb65f7b42ad7701209ce81444db27fea6c019aa7921008a65",
+      "agentdocker": "ac53f8477c62e4e982ac593c97839c70a6dea0b199e852bd9059c37c6765742d"
+    },
+    "remaining_owned_processes": 0,
+    "source_commit": "0e20be0ec8b5d36580a06afca5f817819db0ae26",
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-pause-review-channel-2026-09-12/result.json",
+      "sha256": "870750373c5fcb3272ee98075f287b1374e34480778ef75d0173d10076795dc2"
+    }
+  },
+  "actual_codex": {
+    "result": "passed",
+    "scope": "Actual MCP question late-reply trial: preserve a later peer answer to the completed question without creating another input turn.",
+    "driver_sha256": "e7e519c0bda76771a378c0c8d217eb197bc17dcbf9317346e46ce81769d45eed",
+    "agent": "d73a98db2c2b4575943752af853b2690",
+    "durable_delivery_status": {
+      "process_started_at": "2026-09-12T18:10:17.802205Z",
+      "paused": false,
+      "pause_reason": null,
+      "reported_at": "2026-09-12T18:10:38.912886Z",
+      "received": {
+        "messages": [
+          "931aab8bf9b346a6"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a096d0-2446-75f2-88e0-8d61bfe6d541",
+          "turn": "01a096d0-74ad-7170-946b-2af93ce282f0",
+          "item": "01a096d0-74b9-7572-88dd-fd9579ee56fc"
+        }
+      },
+      "received_at": "2026-09-12T18:10:38.912978Z"
+    },
+    "paused_delivery_status": {
+      "process_started_at": "2026-09-12T18:10:17.802205Z",
+      "paused": true,
+      "pause_reason": "this reply names a retired provider question; it remains queued for review and cannot become new input",
+      "reported_at": "2026-09-12T18:10:48.892406Z",
+      "received": {
+        "messages": [
+          "931aab8bf9b346a6"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a096d0-2446-75f2-88e0-8d61bfe6d541",
+          "turn": "01a096d0-74ad-7170-946b-2af93ce282f0",
+          "item": "01a096d0-74b9-7572-88dd-fd9579ee56fc"
+        }
+      },
+      "received_at": "2026-09-12T18:10:38.912978Z"
+    },
+    "queued_inputs_after_receipts": 0,
+    "late_reply": {
+      "message": "6ddffd06adf34db0",
+      "retained": true,
+      "ordinary_turns": 3,
+      "paused": true
+    },
+    "codex_records": 1,
+    "source_profile_unchanged": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "source_commit": "0e20be0ec8b5d36580a06afca5f817819db0ae26",
+    "binary_sha256": {
+      "agentdocker": "ac53f8477c62e4e982ac593c97839c70a6dea0b199e852bd9059c37c6765742d",
+      "agentd": "a29312f42a3e90fdb65f7b42ad7701209ce81444db27fea6c019aa7921008a65",
+      "agentdocker-ui": "caeb0dd569c1551378055367ab4af6dd96c19ebebb1b5da1e6b50a3a12d993d1"
+    },
+    "ordinary_inputs": 3,
+    "correlated_replies": 3,
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-pause-review-codex-2026-09-12/result.json",
+      "sha256": "eda2f9bef877cc11131ae5fa8d5d5c9b329f7ba6e06fa8c69c14bfc607942be6"
+    }
+  },
+  "actual_claude": {
+    "result": "passed",
+    "scope": "Read-only retained evidence audit of the completed actual Claude trial; no new provider run. The original live-controller failure remains unchanged.",
+    "failure_cause": "Controller treated events_ready as the end of replay. The protocol sends it once subscribed, before replay. See crates/core/src/protocol.rs Events.ready and crates/agentd/src/server.rs stream_events.",
+    "source_commit": "0e20be0ec8b5d36580a06afca5f817819db0ae26",
+    "binary_sha256": {
+      "agentdocker": "ac53f8477c62e4e982ac593c97839c70a6dea0b199e852bd9059c37c6765742d",
+      "agentd": "a29312f42a3e90fdb65f7b42ad7701209ce81444db27fea6c019aa7921008a65",
+      "agentdocker-ui": "caeb0dd569c1551378055367ab4af6dd96c19ebebb1b5da1e6b50a3a12d993d1"
+    },
+    "provider_version": "2.1.269 (Claude Code)",
+    "initial_typed_setup_turns": 1,
+    "queued_input_count": 3,
+    "provider_records": 1,
+    "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+    "receipt_events": [
+      {
+        "seq": 24,
+        "at": "2026-09-12T18:19:39.517679Z",
+        "kind": {
+          "event": "input_delivery_reported",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "delivery": {
+            "process_started_at": "2026-09-12T18:17:36.518755Z",
+            "paused": false,
+            "pause_reason": null,
+            "reported_at": "2026-09-12T18:19:39.517562Z",
+            "received": {
+              "messages": [
+                "6d8226a238a14456"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "received_at": "2026-09-12T18:19:39.517679Z"
+          }
+        }
+      },
+      {
+        "seq": 29,
+        "at": "2026-09-12T18:19:43.780602Z",
+        "kind": {
+          "event": "input_delivery_reported",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "delivery": {
+            "process_started_at": "2026-09-12T18:17:36.518755Z",
+            "paused": false,
+            "pause_reason": null,
+            "reported_at": "2026-09-12T18:19:43.780482Z",
+            "received": {
+              "messages": [
+                "08402f6d2e4c4e86"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "received_at": "2026-09-12T18:19:43.780602Z"
+          }
+        }
+      },
+      {
+        "seq": 32,
+        "at": "2026-09-12T18:19:48.075061Z",
+        "kind": {
+          "event": "input_delivery_reported",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "delivery": {
+            "process_started_at": "2026-09-12T18:17:36.518755Z",
+            "paused": false,
+            "pause_reason": null,
+            "reported_at": "2026-09-12T18:19:48.074934Z",
+            "received": {
+              "messages": [
+                "d203e0c7d93f496b"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "received_at": "2026-09-12T18:19:48.075061Z"
+          }
+        }
+      }
+    ],
+    "ack_events": [
+      {
+        "seq": 25,
+        "at": "2026-09-12T18:19:39.517904Z",
+        "kind": {
+          "event": "inbox_acknowledged",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "messages": [
+            "6d8226a238a14456"
+          ]
+        }
+      },
+      {
+        "seq": 30,
+        "at": "2026-09-12T18:19:43.780856Z",
+        "kind": {
+          "event": "inbox_acknowledged",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "messages": [
+            "08402f6d2e4c4e86"
+          ]
+        }
+      },
+      {
+        "seq": 33,
+        "at": "2026-09-12T18:19:48.075288Z",
+        "kind": {
+          "event": "inbox_acknowledged",
+          "agent": "e9743bf29ca64af7bf6c72a7c1af40ad",
+          "messages": [
+            "d203e0c7d93f496b"
+          ]
+        }
+      }
+    ],
+    "reply_ids": [
+      "f1ce8add3e8d4193",
+      "9275ec32f7ca42f3",
+      "5e77264dd4834605"
+    ],
+    "queued_inputs": 0,
+    "original_artifacts_unchanged": true,
+    "user_configuration_unchanged": true,
+    "remaining_owned_processes": 0,
+    "driver_sha256": "01d63c7d1461591c94c0947528626ff9a21eb8e72e33c22dfd8bddce91e46f14",
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-status-authorized-claude-2026-09-12/retained-status-audit.json",
+      "sha256": "195d59f696005eeadb2770fc3907f22ad5e8bd512587b4694fb0de56e6d07d92"
+    }
+  },
+  "provider_binary_reuse": "The final 33d52a3 change is UI-only. Its CLI and daemon SHA-256 values exactly match those exercised by actual Codex, actual Claude and the seven channel transport scenarios at 0e20be0. No additional provider run is claimed for 33d52a3.",
+  "failures_and_corrections": [
+    {
+      "failure": "Initial full gate rejected existing schema 12 after the schema-13 bump (820 passed, one failed).",
+      "correction": "Extend the migration match through schema 12; final suite covers every supported older schema.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-status-check-2026-09-12.log",
+        "sha256": "021d31d230d8cb587e07c9b2187130f154a612036356edaed3ea8934a89147ec"
+      }
+    },
+    {
+      "failure": "First native review expanded technical Details and failed to display the retained log. Initial inference of restart log loss was wrong.",
+      "correction": "Use a dedicated compact panel and retain a plain bounded pause reason; diagnose the actual socket error separately.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-status-ui-2026-09-12/result.json",
+        "sha256": "7fc89887f8678c266d5102d815368bb0524df3076777e96eb3904fdea04788c2"
+      }
+    },
+    {
+      "failure": "macOS EINVAL when changing SO_RCVTIMEO after a fast log peer wrote and closed, even with reply bytes still readable.",
+      "correction": "Set the fixed poll timeout before request transmission; never change socket options after sending. Real-socket regression covers empty and populated fast-close snapshots and a UTF-8 frame split across a timeout. This is not evidence for the older sustained benchmark timeout.",
+      "baseline": {
+        "path": "/private/tmp/agentdocker-log-socket-targeted-2026-09-12.log",
+        "sha256": "6eed396be026d32479846ae5cf079ca52285ef0d9262386f4465b4c2f0ff8893"
+      },
+      "fixed": {
+        "path": "/private/tmp/agentdocker-log-socket-fixed-targeted-2026-09-12.log",
+        "sha256": "b98e6b73d33ab220ea42fff0c66a0a93dccc08d7ee1f3324cb52175bb146e43a"
+      },
+      "reproducer": {
+        "path": "/private/tmp/agentdocker-closed-socket-timeout-probe.rs",
+        "sha256": "3b78f025c605441dffcf6afbb9c22c18d2622529a0df2583d6eb7604e53b0555"
+      },
+      "native_diagnostic": {
+        "path": "/private/tmp/agentdocker-input-pause-review-debug-ui-2026-09-12/result.json",
+        "sha256": "2e0b36750d9c5cfc99c16a62ca3a18f1be707b71f0527edbdc624ec52948cc7e"
+      }
+    },
+    {
+      "failure": "After the socket fix, the first restart driver still expected an empty log and failed while retained logs were present.",
+      "correction": "Correct the driver to require the persisted log and pause reason; 25 steps passed.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-log-recovery-ui-2026-09-12/result.json",
+        "sha256": "c63c244ff42ace0d77ee6550ccf48b5336d72b117fe5f2b5a6672120b69d6f4f"
+      }
+    },
+    {
+      "failure": "Actual managed Claude fixture aborted before input because process ownership capture could not inspect a short-lived protected process.",
+      "correction": "Do not weaken identity safeguards. Owned cleanup completed with a forced signal and zero remaining processes; later actual channel trial used an isolated external provider. This failed managed trial is not acceptance.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-status-claude-2026-09-12/result.json",
+        "sha256": "cd0cb766b7a4e4e7280790436a6b00241af8844fd712543bc30797de33f5960f"
+      }
+    },
+    {
+      "failure": "Actual external Claude acknowledged and replied to the first peer input, then requested user authorization rather than completing all three within the trial deadline.",
+      "correction": "Preserve this model-behavior failure. A separate bounded trial used one explicit initial typed authorization turn for three fixture messages; it does not establish universal prompt-free authorization.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-pause-review-claude-2026-09-12/result.json",
+        "sha256": "0198178766d6fb55c5c64a36aee594df6283376138184643f5c03ec0ba4c4a14"
+      }
+    },
+    {
+      "failure": "The authorized Claude trial produced all three ordered receipts/replies, but its controller stopped at events_ready before replay and reported missing receipt events.",
+      "correction": "Keep the original failed reports unchanged. A read-only SQLite and provider tool-call audit verifies exact receipt-before-ACK ordering, correlated replies, zero queued inputs, one identity and unchanged artifact hashes. No extra provider run or live event replay success is claimed.",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-status-authorized-claude-2026-09-12/result.json",
+        "sha256": "a4256358811c4a34f5635da85c2cfdf05a12813289f017eb0eaffa8b83f2d4f2"
+      },
+      "acceptance": {
+        "path": "/private/tmp/agentdocker-input-status-authorized-claude-2026-09-12/model-status-acceptance.json",
+        "sha256": "14da60f7ea17b1a7d2010a73ff4677a6a61de099178ec2db0695a950222cbb50"
+      }
+    }
+  ],
+  "limits": [
+    "Receipt confirms provider input receipt, not task completion or permission to act.",
+    "Latest UI receipt covers ordinary Codex input and Claude channel acknowledgements; native/MCP question-result receipts retain their existing ledger paths.",
+    "Schema 13 requires a rebuilt daemon; installed launcher and the daemon hosting active user sessions were not replaced.",
+    "Guided review is read-only; it does not automatically replay ambiguous input or restart a provider.",
+    "Further review types, actual-provider reconnect/crash cuts, sustained/sleep/reboot, signed notification clicks, distribution and platform acceptance remain open."
+  ],
+  "review_follow_up": {
+    "build": {
+      "format": 1,
+      "source_commit": "c116d287126fe742da7a85dc753765c332e79cc7",
+      "source_tree": "e379c8611c371b2ad3d1a5a0c34a0891d5606445",
+      "source_input_sha256": "e4efafd1d257561c0e0b6b9d37d418277b19477cd60a20983627df70add12eb9",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 13,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "0863452ec5b73fa39910b2518bdd8f91a1c9217a9d209e0d79054220dc883a6d",
+        "agentd": "f6e377c1ee2260213a605ef95c51bdcce99f775ecf388dfd5d37a935121f0d3d",
+        "agentdocker-ui": "f64b3760aae7d78139b2ebb99c4fecdeb7b4d0f40df03d4aecf0ec585dabe3a8"
+      }
+    },
+    "initial_review_id": 5187604015,
+    "initial_source_inspection_comment": 5647979700,
+    "addressed": [
+      "Reject conflicting equal-timestamp state while preserving unchanged retries",
+      "Report helper propagates transport failures and drops a pending backend call on timeout",
+      "Document hidden report-input flags",
+      "Run the delivery review test on every platform without blocking its assertion",
+      "Label log read errors distinctly and show them in amber"
+    ],
+    "declined": {
+      "suggestion": "Let an already-ACKed known receipt clear a later pause.",
+      "reason": "Receipt A does not establish recovery of a later uncertain input B. Only Ready or a receipt for still-queued input clears pause. A regression now retries known A after ACK and a later pause and verifies unchanged durable state, reason and event sequence."
+    },
+    "equal_timestamp_regression": {
+      "baseline": {
+        "path": "/private/tmp/agentdocker-equal-input-observation-baseline-2026-09-12.log",
+        "sha256": "292690a97475b4c1c2389adaf009eddf66abcb56e96309f8e757e9e111c9ac3f"
+      },
+      "final": {
+        "path": "/private/tmp/agentdocker-equal-input-observation-final-2026-09-12.log",
+        "sha256": "7c989a5c9fef2f786937f26154486f227e491c96c29745ace06d23e6cecbdeac"
+      },
+      "targeted_five_tests": {
+        "path": "/private/tmp/agentdocker-input-review-targeted-2026-09-12.log",
+        "sha256": "1c9757cc5bdf83920c8f6bbce3bdd4b73f689b4be88a0b462ab1f718b6737946"
+      },
+      "test_expectation_correction": {
+        "artifact": {
+          "path": "/private/tmp/agentdocker-equal-input-observation-fixed-2026-09-12.log",
+          "sha256": "c4766ee03f3983d6e13f4ff7c8e6b6e1dacfc81dcc4c5fe945f99774276e394f"
+        },
+        "reason": "The first test matrix expected Ready after an unpaused receipt to conflict. It leaves saved state unchanged, so that expectation was corrected; the production guard was already correct for that case."
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_tests": 826,
+      "python_checks": 65,
+      "skipped": 6,
+      "includes": [
+        "nextest without retries",
+        "doctests",
+        "format",
+        "strict Clippy",
+        "installer",
+        "package",
+        "release build"
+      ],
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-review-check-2026-09-12.log",
+        "sha256": "42f5abc1d70a15fbff7d79f48f66f6ef27c42607eda8877900a59bb33c8d6875"
+      }
+    },
+    "native_workflow": {
+      "result": "passed",
+      "steps": 137,
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-review-iced-2026-09-12/result.json",
+        "sha256": "abd010e8a6849041bedb9683a31bef03948cc39cbe8eb0ef9014daf752a2222c"
+      }
+    },
+    "native_delivery_recovery": {
+      "result": "passed",
+      "steps": 25,
+      "remaining_owned_processes": 0,
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-review-recovery-ui-2026-09-12/result.json",
+        "sha256": "a76920b88dd07cc0e140227e98c9edb22fb0a173fa97f05875b4520d94410fb2"
+      }
+    },
+    "actual_codex": {
+      "result": "passed",
+      "ordinary_inputs": 3,
+      "correlated_replies": 3,
+      "provider_records": 1,
+      "late_reply": {
+        "message": "645c8f26be364590",
+        "retained": true,
+        "ordinary_turns": 3,
+        "paused": true
+      },
+      "paused_delivery_status": {
+        "process_started_at": "2026-09-12T18:58:32.588536Z",
+        "paused": true,
+        "pause_reason": "this reply names a retired provider question; it remains queued for review and cannot become new input",
+        "reported_at": "2026-09-12T18:59:06.722870Z",
+        "received": {
+          "messages": [
+            "4ed2fa55cd524719"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a096fc-502e-77c0-9f82-16cfec917e15",
+            "turn": "01a096fc-ae47-7161-9d77-25d246874f75",
+            "item": "01a096fc-ae53-7d12-bbc5-785971e4f153"
+          }
+        },
+        "received_at": "2026-09-12T18:58:57.242075Z"
+      },
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-review-codex-2026-09-12/result.json",
+        "sha256": "d167c7c7530dcbe8892b502bb2e70569d911e2361ba3448755fbf56e70abef83"
+      }
+    },
+    "claude_transport": {
+      "result": "passed",
+      "scenarios": 7,
+      "remaining_owned_processes": 0,
+      "artifact": {
+        "path": "/private/tmp/agentdocker-input-review-channel-2026-09-12/result.json",
+        "sha256": "cf878b1e7236b687a47e854c88ccb024b3bd9df3e02b520431460df305357bf6"
+      }
+    },
+    "actual_claude_scope": "The earlier actual Claude model evidence remains bound to 0e20be0. This correction adds fresh seven-scenario real-daemon channel transport evidence and state-ordering regressions; it does not claim a new Claude model run."
+  },
+  "prior_source_codex_sustained_trial": {
+    "result": "passed",
+    "scope": "Ten-minute actual Codex queue/status trial: six idle wakeups, mixed human/peer batches, eighteen exact receipts and correlated replies under one provider identity.",
+    "source_commit": "33d52a374e49ddf10322431498ee8fc836585ca4",
+    "source_input_sha256": "eec9c9e8bf83bbc99b30abff4e226d869560d020dde1b4be636c8f42fc647094",
+    "binary_sha256": {
+      "agentdocker": "ac53f8477c62e4e982ac593c97839c70a6dea0b199e852bd9059c37c6765742d",
+      "agentd": "a29312f42a3e90fdb65f7b42ad7701209ce81444db27fea6c019aa7921008a65",
+      "agentdocker-ui": "5a1abf2d3a127cd4c5d6039025b34e136c618a44e88a90117334c0af508e90af"
+    },
+    "immutable_hashes_verified_after_trial": true,
+    "driver_sha256": "828cd1be1da7a67e1174800b838b5442b60243a4f474887947aeb861c2432063",
+    "elapsed_seconds": 620.9884735829983,
+    "provider_version": "codex-cli 0.153.4",
+    "provider_records": 1,
+    "receipt_count": 18,
+    "correlated_replies": 18,
+    "idle_wakeups": 6,
+    "ordered_message_ids": [
+      "904ccfd59c834652",
+      "9ba53f0f70ae49da",
+      "665ae3aebb2b46ca",
+      "1cd842e9670e4b7c",
+      "1eb5c58c1d8f4652",
+      "cf0c6771aca0478b",
+      "663431d74bc143f2",
+      "0e9a95683ca34d31",
+      "fb1ca98d44f544c8",
+      "5365ced710ad41c0",
+      "4a0f40df29174b48",
+      "5da94d0baf224c0a",
+      "c792158f49ec4eb9",
+      "6ab55ab77b9e49c5",
+      "4c53f20bdbab4ccb",
+      "766890feb793481a",
+      "6903a7fc1f0b466f",
+      "7ccb5113c9c04897"
+    ],
+    "rounds": [
+      {
+        "round": 1,
+        "elapsed_seconds": 27.36199674999807,
+        "completed_inputs": 3,
+        "correlated_replies": 3,
+        "queued_inputs": 0,
+        "provider_records": 1
+      },
+      {
+        "round": 2,
+        "elapsed_seconds": 142.6236327499937,
+        "completed_inputs": 6,
+        "correlated_replies": 6,
+        "queued_inputs": 0,
+        "provider_records": 1
+      },
+      {
+        "round": 3,
+        "elapsed_seconds": 263.1144665419997,
+        "completed_inputs": 9,
+        "correlated_replies": 9,
+        "queued_inputs": 0,
+        "provider_records": 1
+      },
+      {
+        "round": 4,
+        "elapsed_seconds": 383.67428887500137,
+        "completed_inputs": 12,
+        "correlated_replies": 12,
+        "queued_inputs": 0,
+        "provider_records": 1
+      },
+      {
+        "round": 5,
+        "elapsed_seconds": 503.57602308300557,
+        "completed_inputs": 15,
+        "correlated_replies": 15,
+        "queued_inputs": 0,
+        "provider_records": 1
+      },
+      {
+        "round": 6,
+        "elapsed_seconds": 620.9879596669925,
+        "completed_inputs": 18,
+        "correlated_replies": 18,
+        "queued_inputs": 0,
+        "provider_records": 1
+      }
+    ],
+    "source_profile_unchanged": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "artifact": {
+      "path": "/private/tmp/agentdocker-input-status-codex-soak-2026-09-12/result.json",
+      "sha256": "be027071c2cddd1c4b7a75a5d8eee4f6aa3f739cce74212595da7a4c1d6c9758"
+    },
+    "limits": "This ten-minute, one-provider, eighteen-input trial used 33d52a3 before the review correction. It does not establish overnight, sleep/reboot, multiple-provider or c116d28 sustained acceptance."
+  }
+}

@@ -84,6 +84,30 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     let agent_id =
         std::env::var("AGENTDOCKER_AGENT_ID").context("Codex input has no supervised identity")?;
     let agent = identity(&client, &agent_id, &cwd).await?;
+    let result = run_owned(&client, args, home, socket, cwd, &agent).await;
+    if let Err(cause) = &result {
+        if let Err(error) = crate::input_status::report(
+            &client,
+            agent.id.as_str(),
+            agent.process_started_at,
+            crate::input_status::paused(cause),
+        )
+        .await
+        {
+            eprintln!("Could not persist paused input status: {error:#}");
+        }
+    }
+    result
+}
+
+async fn run_owned(
+    client: &Client,
+    args: Args,
+    home: PathBuf,
+    socket: PathBuf,
+    cwd: PathBuf,
+    agent: &AgentRecord,
+) -> Result<()> {
     let provider_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
@@ -99,11 +123,11 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
             provider_home,
         },
     )?;
-    requests::recover(&client, &mut ledger).await?;
-    mcp_answers::acknowledge(&client, &mut ledger).await?;
+    requests::recover(client, &mut ledger).await?;
+    mcp_answers::acknowledge(client, &mut ledger).await?;
     let arguments = provider_input::codex_arguments(&args.command[1..])?;
     let mut provider = Provider::start(std::path::Path::new(&args.command[0]), &arguments, &cwd)?;
-    let result = session(&client, &agent, &mut provider, &mut ledger).await;
+    let result = session(client, agent, &mut provider, &mut ledger).await;
     if let Err(error) = &result {
         eprintln!(
             "Codex input paused: {error:#}. Retained input will not be automatically submitted again."
@@ -111,7 +135,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     }
     let shutdown = provider.shutdown().await;
     if result.is_err() || shutdown.is_err() {
-        if let Err(error) = requests::cancel_pending(&client, &ledger).await {
+        if let Err(error) = requests::cancel_pending(client, &ledger).await {
             eprintln!("Could not close retained Codex questions: {error:#}");
         }
     }
@@ -139,7 +163,7 @@ async fn queue(
     }
 }
 
-async fn acknowledge(client: &Client, ledger: &mut Ledger) -> Result<()> {
+async fn acknowledge(client: &Client, ledger: &mut Ledger, agent: &AgentRecord) -> Result<()> {
     let attempt = ledger
         .record()
         .attempt
@@ -150,6 +174,23 @@ async fn acknowledge(client: &Client, ledger: &mut Ledger) -> Result<()> {
         "Codex has not confirmed the complete input"
     );
     let message = attempt.message.clone();
+    let receipt = attempt.receipt.as_ref().expect("checked receipt");
+    crate::input_status::report(
+        client,
+        agent.id.as_str(),
+        agent.process_started_at,
+        agentdocker_core::InputReport::Received {
+            input: agentdocker_core::ReceivedInput {
+                messages: vec![message.clone().into()],
+                receipt: agentdocker_core::InputReceipt::Codex {
+                    thread: receipt.thread.clone(),
+                    turn: receipt.turn.clone(),
+                    item: receipt.item.clone(),
+                },
+            },
+        },
+    )
+    .await?;
     queue(client, ledger, vec![message.clone().into()]).await?;
     ledger.acknowledge(&message)
 }
@@ -255,7 +296,7 @@ async fn session(
     );
     ledger.bind_thread(thread.clone())?;
     if resumed {
-        recovery::recover(provider, client, ledger).await?;
+        recovery::recover(provider, client, ledger, agent).await?;
     }
     let human = match call(
         client,
@@ -271,6 +312,13 @@ async fn session(
     let mcp_origin = mcp_answers::Origin::from_overrides(human.clone(), &overrides)?;
     let mut question_events = question_events::Events::start(client.clone()).await?;
     activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
+    crate::input_status::report(
+        client,
+        agent.id.as_str(),
+        agent.process_started_at,
+        agentdocker_core::InputReport::Ready,
+    )
+    .await?;
     println!("Codex ready. Send a message here or from AgentDocker.");
     let mut poll = interval(Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -312,7 +360,7 @@ async fn session(
                         if let Some(receipt) = recovery::receipt(&thread, params["turnId"].as_str().unwrap_or_default(), &params["item"], &attempt.input)? {
                             ensure!(receipt.turn == expected, "Codex input receipt has another turn");
                             let input = attempt.input.clone(); ledger.accept(&input, receipt)?;
-                            acknowledge(client, ledger).await?;
+                            acknowledge(client, ledger, agent).await?;
                         } else { bail!("Codex supplied a different input while this controller owned the turn"); }
                     }
                     Some("item/agentMessage/delta") => {
@@ -324,7 +372,7 @@ async fn session(
                         if ledger.record().attempt.as_ref().is_some_and(|a| a.receipt.is_none()) {
                             recovery::find_receipt(provider, ledger).await?;
                         }
-                        acknowledge(client, ledger).await?;
+                        acknowledge(client, ledger, agent).await?;
                         let status = params["turn"]["status"].as_str().context("Codex completed turn has no status")?;
                         ensure!(recovery::terminal(status), "Codex completed notification is not terminal");
                         requests::turn_ended(client, ledger).await?;

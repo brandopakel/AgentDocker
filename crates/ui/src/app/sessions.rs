@@ -24,6 +24,17 @@ impl App {
             .any(|q| q.from == id && !q.expired(Utc::now()))
     }
 
+    pub(super) fn delivery_paused(&self, agent: &AgentRecord) -> bool {
+        agent
+            .input_delivery
+            .as_ref()
+            .is_some_and(|d| d.paused_for(agent.process_started_at))
+    }
+
+    fn needs_attention(&self, agent: &AgentRecord) -> bool {
+        self.needs_input(agent.id.as_str()) || self.delivery_paused(agent)
+    }
+
     pub(super) fn session_records(&self, filter: Filter) -> Vec<&AgentRecord> {
         let needle = self.shell.search.to_lowercase();
         let mut records: Vec<_> = self
@@ -34,7 +45,7 @@ impl App {
                     && self.has_project(a.project.as_ref())
                     && match filter {
                         Filter::Current => a.status.is_live(),
-                        Filter::NeedsInput => self.needs_input(a.id.as_str()),
+                        Filter::NeedsInput => self.needs_attention(a),
                         Filter::History => !a.status.is_live(),
                     }
                     && format!(
@@ -49,8 +60,8 @@ impl App {
             })
             .collect();
         records.sort_by(|a, b| {
-            (!self.needs_input(a.id.as_str()))
-                .cmp(&!self.needs_input(b.id.as_str()))
+            (!self.needs_attention(a))
+                .cmp(&!self.needs_attention(b))
                 .then_with(|| b.created_at.cmp(&a.created_at))
                 .then_with(|| a.id.cmp(&b.id))
         });
@@ -103,6 +114,35 @@ mod tests {
         );
         record.status = AgentStatus::Running;
         record
+    }
+
+    #[test]
+    fn paused_delivery_remains_visible_after_exit_but_does_not_open_the_question_inbox() {
+        let mut app = app();
+        let mut paused = record("paused");
+        let now = Utc::now();
+        paused.status = AgentStatus::Exited { code: Some(1) };
+        paused.process_started_at = Some(now);
+        paused.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            pause_reason: Some("Retained input requires review".into()),
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        app.agents.push(paused.clone());
+        assert!(app.session_records(Filter::Current).is_empty());
+        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, paused.id);
+        assert!(
+            !app.needs_input(paused.id.as_str()),
+            "delivery recovery is not a human question"
+        );
+        app.agents[0].process_started_at = Some(now + chrono::Duration::seconds(1));
+        assert!(
+            app.session_records(Filter::NeedsInput).is_empty(),
+            "an old pause cannot describe a successor process"
+        );
     }
 
     #[test]

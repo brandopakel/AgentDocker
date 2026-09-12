@@ -147,9 +147,16 @@ authorized `send_message` tool in its private profile; it does not establish
 general approval acceptance. Actual cuts also covered a completed provider turn
 before controller completion, an uncertain input before provider submission,
 and an unused conversation. Both queue recovery and refusal to replay passed.
-Broader crash cuts and sustained use remain gates. Delivery and
-paused state are visible in the terminal; a compact durable status and
-guided recovery surface remain part of the [delivery audit](MESSAGE-DELIVERY-AUDIT.md).
+Broader crash cuts and sustained use remain gates. Schema 13 also persists
+ordinary-input receipts and bounded pause reasons for the desktop. The selected
+session shows queue count and the latest receipt; **Review delivery** opens the
+reason and recent saved logs without resending input, restarting a provider or
+changing the draft. Paused exited sessions remain in **Needs input**. The latest
+UI receipt covers ordinary inputs; native question and MCP answer receipts keep
+their existing ledger paths. The [status checkpoint](verification/2026-09-12-input-delivery-status.json)
+records actual Codex receipt/late-answer acceptance and native restart checks.
+Final CI/source review of this follow-up remain pending. The [delivery audit](MESSAGE-DELIVERY-AUDIT.md)
+retains the other open review surfaces and acceptance cases.
 The existing installation and active sessions have not been switched.
 
 The provider transport and MCP policy reference are documented by OpenAI in

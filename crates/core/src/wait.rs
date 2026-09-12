@@ -300,6 +300,9 @@ pub struct AgentActivity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<crate::ProjectId>,
     pub activity: Activity,
+    /// Durable queue size. None when talking to a daemon predating this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_inputs: Option<usize>,
 }
 
 #[cfg(test)]

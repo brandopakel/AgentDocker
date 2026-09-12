@@ -184,7 +184,7 @@ def smoke(binary_dir, output):
                          step("click", id="session-message"), step("fill", id="session-message-text", text="Direct user queue input"),
                          step("click", id="close-session"), step("click", id=f"session-{agent['id']}"),
                          step("click", id="session-message"), step("wait_text", text="Direct user queue input"),
-                         step("click", id="send-session-message"), step("wait_text", text="Queued for this agent"),
+                         step("click", id="send-session-message"), step("wait_text", text="Message saved to queue"),
                          step("capture", name="direct-message-queued"),
                          step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="terminal"),
