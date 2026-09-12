@@ -1,0 +1,495 @@
+{
+  "format": 1,
+  "date": "2026-09-11",
+  "scope": "Codex MCP ask_human answer receipts and restart recovery",
+  "build": {
+    "format": 1,
+    "source_commit": "f42a8b03c8c03da890b33ce250c65ceb21dce532",
+    "source_tree": "f6809d50a11348dc9ef107b0229a81cec2872786",
+    "source_input_sha256": "b3bc466b347106465ba1b27e751edadbff23fbf8bc6c822a276da64c63778e92",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 12,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "2c23e9e2de52b0d7245ba48c7ee4ef5da50d132215d4c12c06a522a0e6dd1702",
+      "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+      "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+    }
+  },
+  "manifest": {
+    "path": "/private/tmp/agentdocker-mcp-answers-native-2026-09-11.json",
+    "sha256": "4689cd3d5c55b44c8b51589fc15186d24c3be1a286e1bd91cc7917eb45487355"
+  },
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests": 813,
+    "skipped_rust_tests": 6,
+    "python_checks": 65,
+    "includes": [
+      "format",
+      "strict Clippy",
+      "doctests",
+      "installer tests",
+      "packaging",
+      "release build"
+    ],
+    "report": {
+      "path": "/private/tmp/agentdocker-mcp-answers-check-2026-09-11.log",
+      "sha256": "b0ab16057bfb4cd684d85cef5307430cfd86504abd35e9ac796d0bc1a20d1b25"
+    }
+  },
+  "native": {
+    "result": "passed",
+    "steps": 137,
+    "checks": [
+      "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "report": {
+      "path": "/private/tmp/agentdocker-mcp-answers-iced-2026-09-11/result.json",
+      "sha256": "f6dfcb201d0d8d774a95a33cd0576d903af44ce58cd00aadcd07ec150c657c78"
+    },
+    "elapsed_seconds": 54.28774062500452
+  },
+  "actual_provider_trials": [
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-mcp-question-baseline-2026-09-11/result.json",
+        "sha256": "6cb4a8624cb5e2143171afc906537189750d0c90c0743f6bc3f2e071f488973f"
+      },
+      "result": "failed",
+      "build": {
+        "format": 1,
+        "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+        "source_tree": "5dc8889d199ca8018335ab45935d218fce90ab88",
+        "source_input_sha256": "c1376b2903d55a5e22ed8262c9fd634e342c053ed8ca47b7d193dbf08e76d817",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "a8e4f2e33820b3145ca1f113a36fba9abf51b15e3177ced382655f5687072e94",
+          "agentd": "51afe8461cbed43bbba87ed3cacaad053e980b7a38fe11094efe2175dc2595d0",
+          "agentdocker-ui": "dd728066b0db5761911abd6dc2f3edb781828a0dd348828bcc59b1b59e3cc118"
+        }
+      },
+      "driver_sha256": "75d2edf060c3a498f3fcd7f5bbc11d534798ae323c9e8d78156dd04c3a059753",
+      "error": "MCP-returned human answer was submitted as an extra ordinary input turn",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-mcp-question-history-2026-09-11/result.json",
+        "sha256": "5ccd9eecbb851c9c58952f399eda9e0707ae57d682b935534576c2a058469751"
+      },
+      "result": "failed",
+      "build": {
+        "format": 1,
+        "source_commit": "d3fc7840af8530525bc77f509d03947af3c434cf",
+        "source_tree": "419150aa0c1e733f74e4a6b163b724c7eb3c7120",
+        "source_input_sha256": "131ee7353caf35b17dfad5927f8b26f8448f71f8f9cce15acd40f4495c14e07b",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "3c582f581e4cf9d1eaa821d33a07cb2a666c4b1a5424849fc63b47543b3adf24",
+          "agentd": "51afe8461cbed43bbba87ed3cacaad053e980b7a38fe11094efe2175dc2595d0",
+          "agentdocker-ui": "dd728066b0db5761911abd6dc2f3edb781828a0dd348828bcc59b1b59e3cc118"
+        }
+      },
+      "driver_sha256": "524f4a5e8f99c4b28b4eefc5ce62f43e43f425a919244249f32dc75ba2d3e715",
+      "error": "MCP-returned human answer was submitted as an extra ordinary input turn",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-mcp-question-receipt-2026-09-11/result.json",
+        "sha256": "3afb0b9c6662aacab57c13187136112faa29699dba3ea5064a6502581976df58"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "f42a8b03c8c03da890b33ce250c65ceb21dce532",
+        "source_tree": "f6809d50a11348dc9ef107b0229a81cec2872786",
+        "source_input_sha256": "b3bc466b347106465ba1b27e751edadbff23fbf8bc6c822a276da64c63778e92",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "2c23e9e2de52b0d7245ba48c7ee4ef5da50d132215d4c12c06a522a0e6dd1702",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+        }
+      },
+      "driver_sha256": "bd38c71def4891f795b2df8f3f0b2ce0916ed2dcb11fe1e7dfd8b1f113ab599a",
+      "completed": [
+        {
+          "message": "2fbb19a170934825",
+          "receipt": {
+            "thread": "01a09457-7449-72f0-a544-6e7a347d0657",
+            "turn": "01a09457-769a-7391-8c8b-62aa524b6fd2",
+            "item": "01a09457-7db3-7b82-a962-ae55a3b3a5c5"
+          }
+        },
+        {
+          "message": "b700932e80214a70",
+          "receipt": {
+            "thread": "01a09457-7449-72f0-a544-6e7a347d0657",
+            "turn": "01a09457-b327-77f1-b7dd-ce95fb21345d",
+            "item": "01a09457-b339-7df0-8185-6fefef8aaa01"
+          }
+        },
+        {
+          "message": "05c8722d9081495a",
+          "receipt": {
+            "thread": "01a09457-7449-72f0-a544-6e7a347d0657",
+            "turn": "01a09457-d843-7f80-a636-9b82abf10c84",
+            "item": "01a09457-d850-7350-a5d0-7030c9880279"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "provider_version": "codex-cli 0.153.4",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "mcp_answer_receipt": {
+        "receipt": {
+          "thread": "01a09457-7449-72f0-a544-6e7a347d0657",
+          "turn": "01a09457-769a-7391-8c8b-62aa524b6fd2",
+          "item": "exec-32d2f575-6ea8-4858-b404-006435a2e22a"
+        },
+        "server": "agentdocker",
+        "answer": {
+          "id": "b19f73de0e344c96",
+          "from": "eddf1329341642339101489db0643cce",
+          "to": {
+            "kind": "agent",
+            "value": "11fa4f45b56848279cc44bc9767ca7b4"
+          },
+          "kind": "answer",
+          "payload": {
+            "text": "Blue"
+          },
+          "reply_to": "4bd6cdd17c5244ba",
+          "sent_at": "2026-09-12T06:39:23.886275Z"
+        },
+        "acknowledged": true
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-mcp-question-crash-2026-09-11/result.json",
+        "sha256": "667709000f3f4b351d4c70d84815303d27d198dc7ea574cf99ab108166715017"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "f42a8b03c8c03da890b33ce250c65ceb21dce532",
+        "source_tree": "f6809d50a11348dc9ef107b0229a81cec2872786",
+        "source_input_sha256": "b3bc466b347106465ba1b27e751edadbff23fbf8bc6c822a276da64c63778e92",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "2c23e9e2de52b0d7245ba48c7ee4ef5da50d132215d4c12c06a522a0e6dd1702",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+        }
+      },
+      "driver_sha256": "19233b212880e8bfff9ecf186792662b9b391d3511d7e5bfaf4b4b778494c2fa",
+      "completed": [
+        {
+          "message": "ecb4c97482b54ced",
+          "receipt": {
+            "thread": "01a09457-78a6-78a3-b5ea-ac325a26fb0d",
+            "turn": "01a09457-7af7-7ff2-91bd-691f7af51c35",
+            "item": "01a09457-831d-7600-a265-452e864a8556"
+          }
+        },
+        {
+          "message": "ba9204b631db4efb",
+          "receipt": {
+            "thread": "01a09457-78a6-78a3-b5ea-ac325a26fb0d",
+            "turn": "01a09457-c4e1-7f00-b217-03783a2c4395",
+            "item": "01a09457-c96f-7570-a0b5-5e2668991ddb"
+          }
+        },
+        {
+          "message": "f85ee9b23ab34987",
+          "receipt": {
+            "thread": "01a09457-78a6-78a3-b5ea-ac325a26fb0d",
+            "turn": "01a09457-e616-7032-b529-3dc02d5fc9c4",
+            "item": "01a09457-e624-7111-9965-f8975309f063"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "provider_version": "codex-cli 0.153.4",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "mcp_answer_receipt": {
+        "receipt": {
+          "thread": "01a09457-78a6-78a3-b5ea-ac325a26fb0d",
+          "turn": "01a09457-7af7-7ff2-91bd-691f7af51c35",
+          "item": "exec-5637cfbf-069a-4325-b731-98fc905ef513"
+        },
+        "server": "agentdocker",
+        "answer": {
+          "id": "d2eaaa1f13404af9",
+          "from": "40f31dee202641599e64856de84d2b72",
+          "to": {
+            "kind": "agent",
+            "value": "1b5c48f65d2049d58d462157343cc655"
+          },
+          "kind": "answer",
+          "payload": {
+            "text": "Blue"
+          },
+          "reply_to": "f90ac628834d4850",
+          "sent_at": "2026-09-12T06:39:26.406659Z"
+        },
+        "acknowledged": true
+      },
+      "retained_before_crash": [
+        "ba9204b631db4efb",
+        "f85ee9b23ab34987",
+        "d2eaaa1f13404af9"
+      ],
+      "provider_before_crash": {
+        "items": [
+          {
+            "thread": "01a09457-78a6-78a3-b5ea-ac325a26fb0d",
+            "turn": "01a09457-7af7-7ff2-91bd-691f7af51c35",
+            "item": {
+              "type": "mcpToolCall",
+              "id": "exec-5637cfbf-069a-4325-b731-98fc905ef513",
+              "server": "agentdocker",
+              "tool": "ask_human",
+              "status": "completed",
+              "arguments": {
+                "question": "MCP_QUESTION_9A52: Which color?"
+              },
+              "appContext": null,
+              "pluginId": null,
+              "readOnlyHint": null,
+              "result": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "{\"answered\":true,\"from\":\"40f31dee202641599e64856de84d2b72\",\"message_id\":\"d2eaaa1f13404af9\",\"text\":\"Blue\"}"
+                  }
+                ],
+                "structuredContent": null,
+                "_meta": null
+              },
+              "error": null,
+              "durationMs": 206
+            }
+          }
+        ],
+        "turns": [
+          {
+            "id": "01a09457-7af7-7ff2-91bd-691f7af51c35",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-mcp-question-late-reply-2026-09-11/result.json",
+        "sha256": "e9d43993b4d8004914805c24e983d8422f73da99b72f743af673350be160730c"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "f42a8b03c8c03da890b33ce250c65ceb21dce532",
+        "source_tree": "f6809d50a11348dc9ef107b0229a81cec2872786",
+        "source_input_sha256": "b3bc466b347106465ba1b27e751edadbff23fbf8bc6c822a276da64c63778e92",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "2c23e9e2de52b0d7245ba48c7ee4ef5da50d132215d4c12c06a522a0e6dd1702",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+        }
+      },
+      "driver_sha256": "70ae3ebebb3e9638d2abe4931b7a357fc15ecac40a280d79cc0a105aa126e186",
+      "completed": [
+        {
+          "message": "163d1bd52a53474f",
+          "receipt": {
+            "thread": "01a09459-c991-73e0-9b43-c1253d9bef70",
+            "turn": "01a09459-cbd9-7a63-b873-fd36144b678b",
+            "item": "01a09459-d1e5-79c0-bf98-d01423fb940a"
+          }
+        },
+        {
+          "message": "8a70fa4dee834338",
+          "receipt": {
+            "thread": "01a09459-c991-73e0-9b43-c1253d9bef70",
+            "turn": "01a0945a-1bf0-70b1-9106-c9f280506333",
+            "item": "01a0945a-1c05-7560-b21b-904e7a432c36"
+          }
+        },
+        {
+          "message": "cb78f74d7abc4548",
+          "receipt": {
+            "thread": "01a09459-c991-73e0-9b43-c1253d9bef70",
+            "turn": "01a0945a-3f16-7f21-b72a-a11bb4b86248",
+            "item": "01a0945a-3f25-7d80-85c7-71d5aad35d3b"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "provider_version": "codex-cli 0.153.4",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "mcp_answer_receipt": {
+        "receipt": {
+          "thread": "01a09459-c991-73e0-9b43-c1253d9bef70",
+          "turn": "01a09459-cbd9-7a63-b873-fd36144b678b",
+          "item": "exec-0abfa27f-d122-408b-8e66-763026879dba"
+        },
+        "server": "agentdocker",
+        "answer": {
+          "id": "dbafcd69cb6b4b80",
+          "from": "a3a1a48ddbb94feba1eef013431a9130",
+          "to": {
+            "kind": "agent",
+            "value": "a4f8b3fd723f4349beb68309dbeb23cd"
+          },
+          "kind": "answer",
+          "payload": {
+            "text": "Blue"
+          },
+          "reply_to": "cc5b03c2ced640d0",
+          "sent_at": "2026-09-12T06:42:02.410719Z"
+        },
+        "acknowledged": true
+      },
+      "late_reply": {
+        "message": "15c69a4a8e4647d8",
+        "retained": true,
+        "ordinary_turns": 3,
+        "paused": true
+      }
+    }
+  ],
+  "implementation": [
+    "Each ordinary input saves the exact bound AgentDocker MCP server names and canonical human identity before provider submission.",
+    "A completed MCP ask_human result must match the input turn and queued answer ID, human sender, recipient, complete text and question route. The durable receipt is saved before queue acknowledgement.",
+    "Provider history reconciliation runs before turn completion and during restart. Current MCP configuration is not treated as proof for legacy input.",
+    "Up to 128 detailed MCP receipts rotate only after acknowledgement and a later turn. Persistent question routes share the 10,000-ID bound and 8 MiB record limit.",
+    "Unmatched human answers and retired-question replies stay queued with input paused instead of being submitted as ordinary input."
+  ],
+  "meaningful_tests": [
+    "wrong provider server/tool/status, missing/mismatched sender/text/recipient/question and malformed results",
+    "exact receipt restart, idempotent replay, conflicting receipt and ordinary human submission",
+    "legacy input migration without invented MCP binding",
+    "lost acknowledgement response followed by exact durable recovery",
+    "receipt pressure within a turn and retired-question routing after rotation/restart"
+  ],
+  "limits": [
+    "Final CI and actual source review remain pending.",
+    "These are owned Codex 0.153.4 fixtures; they do not certify Claude MCP/channel recovery, sustained use or other provider review surfaces.",
+    "Pending or failed MCP questions without a completed answer receipt can require inspection; the controller does not invent a successful tool result.",
+    "Native callbacks do not establish physical accessibility, input method or notification-center acceptance.",
+    "Installed launcher and active user sessions were not switched."
+  ]
+}

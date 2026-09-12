@@ -31,11 +31,14 @@ checks. Its failed baseline proves version-2 records may lack older question
 routes; those records are now refused without rewriting them. Clean legacy
 ordinary-input records still upgrade with their prepared input intact.
 
-A separate actual Codex trial then found that MCP `ask_human` returns its human
-answer to the tool while the same message is also accepted as a fourth ordinary
-provider input. The [retained failure](verification/2026-09-11-provider-question-receipts.json)
-is an open follow-up for MCP tool-result receipts. The native app-server question
-callback fixes above do not cover that path. The [structured Iced controls](verification/2026-09-11-structured-questions.json)
+The separate MCP `ask_human` extra-input bug now has an
+[exact receipt correction](verification/2026-09-11-mcp-answer-receipts.json).
+Actual Codex normal delivery and a controller crash after tool acceptance both
+passed with three ordered inputs/replies and one provider identity. The local
+gate at `f42a8b0` passed 813 Rust tests, 65 Python checks and 137 native steps.
+Final CI and source review remain required. The failing baseline is retained.
+
+The [structured Iced controls](verification/2026-09-11-structured-questions.json)
 now provide Allow once, Deny and visible choices through the same answer queue.
 The final local gate passed 808 Rust tests, 65 Python checks and 137 native steps.
 Actual Codex Allow and Deny trials each passed six native control steps, three
