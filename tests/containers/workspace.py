@@ -12,7 +12,7 @@ import socket
 import shutil
 import subprocess
 import time
-from evidence import reject_launch, retain_container_logs
+from evidence import reject_launch, retain_container_logs, wait_for_daemon_lock
 
 os.umask(0o077)
 
@@ -64,6 +64,7 @@ def wait(action, predicate, seconds=40):
 
 def start():
     global daemon
+    wait_for_daemon_lock(host.with_suffix('.lock'))
     daemon=subprocess.Popen([str(Path(a.daemon).resolve()),'--home',str(home),'--socket',str(host)],stdout=log,stderr=subprocess.STDOUT)
     wait(lambda:rpc({'op':'ping'}),lambda r:r['type']=='pong')
 
