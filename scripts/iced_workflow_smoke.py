@@ -214,6 +214,7 @@ def smoke(binary_dir, output):
                          step("resize", width=720, height=540), step("click", id="larger-ui"), step("click", id="larger-ui"),
                          step("focus", id="installation"), step("wait_focus", id="installation"), step("capture", name="compact-zoom-focus"),
                          step("click", id="installation"), step("capture", name="installation"), step("click", id="projects"),
+                         step("wait_text", text="All projects"), step("click", id=f"project-{pinned}"),
                          step("pause", millis=400)]
                 def launch(name, scenario):
                     nonlocal window

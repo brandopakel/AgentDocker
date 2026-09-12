@@ -499,6 +499,16 @@ impl App {
                 let root = project.as_ref().map(|p| p.root.clone());
                 if let Some(project) = project {
                     self.shell.catalog.remember(project, false);
+                    if !self
+                        .shell
+                        .catalog
+                        .projects
+                        .iter()
+                        .any(|entry| Some(&entry.project.root) == root.as_ref())
+                    {
+                        self.say("The project list is full. Forget an old project before opening this session.");
+                        return Task::none();
+                    }
                 }
                 match root {
                     Some(root) => {
