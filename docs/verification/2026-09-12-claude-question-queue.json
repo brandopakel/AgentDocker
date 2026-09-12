@@ -1,0 +1,369 @@
+{
+  "format": 1,
+  "date": "2026-09-12",
+  "scope": "One Claude channel question-answer path with durable shared-queue receipts and reply metadata",
+  "build": {
+    "format": 1,
+    "source_commit": "5819975631fdfb959cc510e5d92ee6cf7d673b86",
+    "source_tree": "bf027779ad509a89e0e302c4b747030bc8ce53e2",
+    "source_input_sha256": "bd3cec2a1f85bebc1c1ad07b49c8349ec62d67a00c428c8faeca8eb01c2a33f7",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 12,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "e896b1d3399079d55d8d6116efa494821a57c1f4cb018d3eaf7db4968d2a2965",
+      "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+      "agentdocker-ui": "13d5c3ab1642b0eb7a6437bd8a77303ee6b2869abf3583c696479c018a3b1a16"
+    }
+  },
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests": 815,
+    "python_checks": 65,
+    "skipped_rust_tests": 6,
+    "includes": [
+      "format",
+      "strict Clippy",
+      "doctests",
+      "installer tests",
+      "packaging",
+      "release build"
+    ],
+    "report": {
+      "path": "/private/tmp/agentdocker-claude-question-check-2026-09-11.log",
+      "sha256": "b4c681d3500633e096ef0fa693be49650f734eb31b93024261d34e0ba3e86c12"
+    }
+  },
+  "transport_trials": [
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-claude-question-route-baseline-2026-09-11/result.json",
+        "sha256": "b2af7f1ebc1d85a0e1ffc881c499ec6f868721ce37c984070b0f5fa48d4aed43"
+      },
+      "result": "failed",
+      "scope": "Actual daemon and Claude-channel MCP transport: one answer route with reply relationship. Simulated provider, not a Claude model trial.",
+      "build": {
+        "format": 1,
+        "source_commit": "f42a8b03c8c03da890b33ce250c65ceb21dce532",
+        "source_tree": "f6809d50a11348dc9ef107b0229a81cec2872786",
+        "source_input_sha256": "b3bc466b347106465ba1b27e751edadbff23fbf8bc6c822a276da64c63778e92",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "2c23e9e2de52b0d7245ba48c7ee4ef5da50d132215d4c12c06a522a0e6dd1702",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+        }
+      },
+      "driver_sha256": "470c7c23403d5780679b5125f8c58ae4becc3a03a5c25bd8d99472ebbcdd8d80",
+      "error": "human answer was returned through both blocking MCP result and ordinary channel input",
+      "returned_twice": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-claude-question-route-fixed-2026-09-11/result.json",
+        "sha256": "7cbcb25fc27c0463e99ecb6235b7f09d8d3c6d84c84acea796c0b6c6994d3507"
+      },
+      "result": "passed",
+      "scope": "Actual daemon and Claude-channel MCP transport: one answer route with reply relationship. Simulated provider, not a Claude model trial.",
+      "build": {
+        "format": 1,
+        "source_commit": "5819975631fdfb959cc510e5d92ee6cf7d673b86",
+        "source_tree": "bf027779ad509a89e0e302c4b747030bc8ce53e2",
+        "source_input_sha256": "bd3cec2a1f85bebc1c1ad07b49c8349ec62d67a00c428c8faeca8eb01c2a33f7",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "e896b1d3399079d55d8d6116efa494821a57c1f4cb018d3eaf7db4968d2a2965",
+          "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+          "agentdocker-ui": "13d5c3ab1642b0eb7a6437bd8a77303ee6b2869abf3583c696479c018a3b1a16"
+        }
+      },
+      "driver_sha256": "470c7c23403d5780679b5125f8c58ae4becc3a03a5c25bd8d99472ebbcdd8d80",
+      "returned_twice": false,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-claude-question-channel-2026-09-11/result.json",
+        "sha256": "ada88677fce9256ac6b5d70fd260a16ed68fca33ecd2cab1ffb98f23574389ba"
+      },
+      "result": "failed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "binary_sha256": {
+        "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+        "agentdocker": "e896b1d3399079d55d8d6116efa494821a57c1f4cb018d3eaf7db4968d2a2965"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "f15272af78d6820f2c2e3506dbed3e483d790273b2df42e801ae9f49c3a0eeba",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "error": "KeyError: 'claimed'",
+      "steps": [
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner"
+      ],
+      "remaining_owned_processes": 0,
+      "failed_driver_line": 156
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-claude-question-channel-driver-fixed-2026-09-11/result.json",
+        "sha256": "f1cbb19259c9aced8dd372bb5d70837185239c389c6200c2e6ccd6d66d3ef79c"
+      },
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "binary_sha256": {
+        "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+        "agentdocker": "e896b1d3399079d55d8d6116efa494821a57c1f4cb018d3eaf7db4968d2a2965"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "71232d00a78c08120e4bdcca9daa20f5a121569f698461749d14057dae7b43f7",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "steps": [
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "missing parent-session opt-in refused channel startup instead of racing hook delivery"
+      ],
+      "remaining_owned_processes": 0
+    }
+  ],
+  "actual_claude": {
+    "report": {
+      "path": "/private/tmp/agentdocker-claude-question-model-2026-09-11/result.json",
+      "sha256": "769a91cee182393e0eb28caae493cf16e0f8a54ccb7a58f594fdcdcf7b1625d0"
+    },
+    "result": "passed",
+    "scope": "Actual interactive Claude using AgentDocker channel adapter and an isolated profile/daemon",
+    "source_commit": "5819975631fdfb959cc510e5d92ee6cf7d673b86",
+    "binary_sha256": {
+      "agentdocker": "e896b1d3399079d55d8d6116efa494821a57c1f4cb018d3eaf7db4968d2a2965",
+      "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+      "agentdocker-ui": "13d5c3ab1642b0eb7a6437bd8a77303ee6b2869abf3583c696479c018a3b1a16"
+    },
+    "driver_sha256": "2ad467b686ee9ccdb29d5e0903468e24692318f405c1986512535351f1f72c40",
+    "provider_version": "2.1.269 (Claude Code)",
+    "profile_isolated": true,
+    "authentication_scope": "Existing login access token in child environment only; no login or refresh requested",
+    "acceptance": {
+      "result": "passed",
+      "source_commit": "5819975631fdfb959cc510e5d92ee6cf7d673b86",
+      "expected": [
+        [
+          "1d6ab134119747bd",
+          "QUESTION_POSTED_7B31"
+        ],
+        [
+          "ffb00424f107475b",
+          "HUMAN_INPUT_ACK_7B31"
+        ],
+        [
+          "91121e29effb4b6f",
+          "ANSWER_RECEIVED_7B31"
+        ],
+        [
+          "a56b5fa7bb4846ba",
+          "PEER_INPUT_ACK_7B31"
+        ]
+      ],
+      "question": "b0e56983f73d4a27",
+      "replies": [
+        {
+          "id": "a3e2742961a549ed",
+          "from": "0694bc19496746f7bedb811131a85357",
+          "to": {
+            "kind": "agent",
+            "value": "0f9577c106e94a9d9a46aed61a94bdbf"
+          },
+          "kind": "chat",
+          "payload": {
+            "text": "QUESTION_POSTED_7B31 b0e56983f73d4a27"
+          },
+          "reply_to": "1d6ab134119747bd",
+          "sent_at": "2026-09-12T07:01:14.802587Z"
+        },
+        {
+          "id": "76dc04cc56df4eb5",
+          "from": "0694bc19496746f7bedb811131a85357",
+          "to": {
+            "kind": "agent",
+            "value": "0f9577c106e94a9d9a46aed61a94bdbf"
+          },
+          "kind": "chat",
+          "payload": {
+            "text": "HUMAN_INPUT_ACK_7B31"
+          },
+          "reply_to": "ffb00424f107475b",
+          "sent_at": "2026-09-12T07:02:06.782668Z"
+        },
+        {
+          "id": "3f649959c3b34534",
+          "from": "0694bc19496746f7bedb811131a85357",
+          "to": {
+            "kind": "agent",
+            "value": "0f9577c106e94a9d9a46aed61a94bdbf"
+          },
+          "kind": "chat",
+          "payload": {
+            "text": "ANSWER_RECEIVED_7B31 Blue"
+          },
+          "reply_to": "91121e29effb4b6f",
+          "sent_at": "2026-09-12T07:02:11.059241Z"
+        },
+        {
+          "id": "2c1b73c703884e33",
+          "from": "0694bc19496746f7bedb811131a85357",
+          "to": {
+            "kind": "agent",
+            "value": "0f9577c106e94a9d9a46aed61a94bdbf"
+          },
+          "kind": "chat",
+          "payload": {
+            "text": "PEER_INPUT_ACK_7B31"
+          },
+          "reply_to": "a56b5fa7bb4846ba",
+          "sent_at": "2026-09-12T07:02:14.081043Z"
+        }
+      ],
+      "provider_records": 1,
+      "queue_empty": true,
+      "question_closed": true,
+      "provider_history": {
+        "path": "/private/tmp/agentdocker-claude-question-model-2026-09-11/profile/projects/-private-tmp-agentdocker-claude-question-model-2026-09-11-workspace/35952048-8401-4f7a-87b7-18b72c0b5a8c.jsonl",
+        "sha256_at_read": "3724187806964fe539469156541c8f4760c5cd24d85d82a40ae7499db35b4b18",
+        "audit_driver_sha256": "81b9bba24c96ed18b53e1bba5174bd36fa989d53ea1fbfd207782578145007a9",
+        "ask_calls": 1,
+        "answer_channel_inputs": 1,
+        "answer_input_form": "busy_attachment",
+        "answer_queue_operations": [
+          "enqueue",
+          "remove"
+        ],
+        "answer_reply_to_preserved": true,
+        "acknowledged_ids": [
+          "1d6ab134119747bd",
+          "ffb00424f107475b",
+          "91121e29effb4b6f",
+          "a56b5fa7bb4846ba"
+        ],
+        "posted_tool_result": {
+          "answer_delivery": "channel",
+          "posted": true,
+          "question_id": "b0e56983f73d4a27"
+        },
+        "channel_input_count": 4,
+        "inspection_correction": "The first ad hoc parser counted only standalone user rows and missed the busy queued_command attachment. The actual model replies had already passed; this parser includes that provider-native busy input form once and excludes queue bookkeeping/rendered copies."
+      }
+    },
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "user_configuration_unchanged": true,
+    "remaining_owned_processes": 0
+  },
+  "native": {
+    "report": {
+      "path": "/private/tmp/agentdocker-claude-question-iced-2026-09-11/result.json",
+      "sha256": "019fa3521540e52aa7d9130367712fdab955179fe0734166f5b38f28ed77a6d4"
+    },
+    "result": "passed",
+    "steps": 137,
+    "checks": [
+      "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "elapsed_seconds": 54.257223624998005
+  },
+  "findings": [
+    "The actual old-source transport returned one human answer through both the blocking MCP tool result and a channel input, and omitted reply_to from that channel metadata. This was a simulated-provider transport baseline, not an old-source Claude model trial.",
+    "Channel ask_human now posts and returns its question ID immediately. Its answer arrives once through the normal channel queue with reply_to, and remains queued until the model explicitly acknowledges it.",
+    "Channel MCP hides/refuses read_inbox and wait_for_messages to keep the model on the channel input path. Other provider/ordinary MCP question behavior remains blocking.",
+    "Actual Claude 2.1.269 acknowledged four peer/human/answer/peer inputs in order and produced four correlated replies under one provider record. History shows one ask_human tool result with only the posted ID, and one answer in a busy queued_command attachment with preserved reply_to.",
+    "The first new transport capacity check used a compact MCP claimed field against the raw daemon Lease response. That driver failure and the corrected seven-scenario pass are both retained.",
+    "The initial ad hoc provider-history parser missed busy input attachments. The corrected parser counts the provider-native attachment once and excludes enqueue/remove bookkeeping and rendered copies."
+  ],
+  "integration": {
+    "pr105": {
+      "head": "3f193d0eb933c95d377127f09ac31c5b68388aa8",
+      "actual_followup_inspection": 5644296341,
+      "merge": "7110670c2067b29596f7ea53bc601865961640cd",
+      "merged_at": "2026-09-12T07:01:09Z"
+    },
+    "pr106": {
+      "head": "1d76a882ef23cbe125761a73e9cbb6dafbefa695",
+      "actual_source_inspection": 5644312817,
+      "merge": "90c9e243d51233d20974d08dd1136b85df733429",
+      "merged_at": "2026-09-12T07:06:01Z"
+    }
+  },
+  "limits": [
+    "Final CI and actual source review of this Claude follow-up remain pending.",
+    "Explicit model receipt establishes input consumption, not completion of arbitrary user work. This bounded trial does not replace sustained, interruption or recovery acceptance.",
+    "Rendered native callbacks do not establish physical accessibility, IME, signed notification posting or notification-center click acceptance.",
+    "Installed launcher and active user sessions were not switched."
+  ]
+}

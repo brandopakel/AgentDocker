@@ -153,7 +153,7 @@ def run(args):
             for identifier in range(10, 18):
                 resource = f"task:channel-wait-{identifier}"
                 held = rpc(endpoint, {"op": "claim", "agent": peer, "resource": resource, "ttl_secs": 120})
-                assert held["claimed"]
+                assert held["type"] == "lease" and held["lease"]["holder"] == peer
                 connection.send({"jsonrpc": "2.0", "id": identifier, "method": "tools/call",
                                  "params": {"name": "claim", "arguments": {"resource": resource, "wait_secs": 120}}})
             connection.send({"jsonrpc": "2.0", "id": 100, "method": "ping"})

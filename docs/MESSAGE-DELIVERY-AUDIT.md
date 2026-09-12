@@ -342,3 +342,23 @@ user profiles were unchanged and all owned processes were cleaned up. The full
 local gate passed 813 Rust tests, 65 Python checks and 137 native steps. Final
 CI and actual source review remain pending; sustained conversations, visible
 durable status and the other review surfaces still need completion.
+
+
+### September 12: Claude questions use the normal channel queue
+
+PR #105 merged as `7110670` and PR #106 as `90c9e24` after final CI and actual
+source inspections. The [Claude question checkpoint](verification/2026-09-12-claude-question-queue.json)
+then reproduced a human answer appearing both in the blocking MCP result and
+a channel input without its reply ID. Channel questions now return the posted
+question ID immediately; their answers arrive once through the normal queue
+with `reply_to`. Explicit model acknowledgements still release accepted input.
+The channel MCP also hides/refuses competing inbox-read tools.
+
+At `5819975`, actual Claude 2.1.269 processed peer, human, answer and peer inputs
+with four ordered receipts/replies and one provider record. Provider history
+shows one answer in the native busy-input attachment and a posted-ID-only tool
+result. The local gate passed 815 Rust tests, 65 Python checks, 137 native steps
+and seven transport scenarios. The raw-response driver failure and provider
+history parser correction remain recorded. User configuration hashes were
+unchanged, and all owned fixture processes exited. Final CI and source review
+remain pending; broader sustained/recovery and durable UI status work remain.
