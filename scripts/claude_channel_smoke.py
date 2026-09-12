@@ -151,8 +151,11 @@ def run(args):
             report["steps"].append("channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner")
 
             for identifier in range(10, 18):
+                resource = f"task:channel-wait-{identifier}"
+                held = rpc(endpoint, {"op": "claim", "agent": peer, "resource": resource, "ttl_secs": 120})
+                assert held["type"] == "lease" and held["lease"]["holder"] == peer
                 connection.send({"jsonrpc": "2.0", "id": identifier, "method": "tools/call",
-                                 "params": {"name": "ask_human", "arguments": {"question": "Fixture wait", "timeout_secs": 120}}})
+                                 "params": {"name": "claim", "arguments": {"resource": resource, "wait_secs": 120}}})
             connection.send({"jsonrpc": "2.0", "id": 100, "method": "ping"})
             assert connection.response(100)["result"] == {}
             connection.send({"jsonrpc": "2.0", "id": 101, "method": "tools/call", "params": {"name": "read_inbox"}})
@@ -175,6 +178,21 @@ def run(args):
             connection.ack(104, accepted[2:])
             assert queued() == []
             report["steps"].append("MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages")
+
+            connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
+                "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})
+            posted = json.loads(connection.response(200)["result"]["content"][0]["text"])
+            assert posted["posted"] is True and posted["answer_delivery"] == "channel"
+            assert queued() == []
+            answered = rpc(endpoint, {"op": "answer", "from": human, "message": posted["question_id"], "text": "Blue"})["message"]
+            offered = connection.offer()
+            assert offered["meta"]["message_id"] == answered
+            assert offered["meta"]["reply_to"] == posted["question_id"]
+            assert offered["meta"]["from_agent"] == human and json.loads(offered["content"]) == {"text": "Blue"}
+            assert queued() == [answered]
+            connection.ack(201, [answered])
+            assert queued() == [] and connection.read(0.35) is None
+            report["steps"].append("a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt")
 
             idle = send(peer, "IDLE-TRANSPORT-OFFER")
             assert connection.offer()["meta"]["message_id"] == idle

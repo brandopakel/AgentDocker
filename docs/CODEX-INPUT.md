@@ -116,7 +116,9 @@ cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
 controller was stopped, then recovered the receipt from provider history after
 one controller restart. Both cases kept three ordered ordinary inputs and one
 provider record. The local gate passed 813 Rust tests, 65 Python checks and
-137 native workflow steps. Final CI and source review remain required.
+137 native workflow steps. PR #106 merged as `90c9e24` after final CI and
+actual source inspection of `1d76a88`; its parent integration gate passed
+814 Rust tests and 65 Python checks.
 
 Unknown callbacks,
 file/permission approvals without a complete review presentation, secret inputs
@@ -133,7 +135,8 @@ a later reply. PR #104 merged as `8103a0e` after final CI and source inspection.
 The [structured Iced controls](verification/2026-09-11-structured-questions.json)
 passed 808 Rust tests, 65 Python checks and 137 native workflow steps; actual
 Codex Allow and Deny each passed six rendered control steps at the earlier
-`cb17213` checkpoint. Final PR #105 review and CI remain pending.
+`cb17213` checkpoint. PR #105 merged as `7110670` after its 809-test review
+correction, final CI and actual source inspection.
 
 The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
@@ -144,7 +147,7 @@ authorized `send_message` tool in its private profile; it does not establish
 general approval acceptance. Actual cuts also covered a completed provider turn
 before controller completion, an uncertain input before provider submission,
 and an unused conversation. Both queue recovery and refusal to replay passed.
-Broader crash cuts, sustained use and source review remain gates. Delivery and
+Broader crash cuts and sustained use remain gates. Delivery and
 paused state are visible in the terminal; a compact durable status and
 guided recovery surface remain part of the [delivery audit](MESSAGE-DELIVERY-AUDIT.md).
 The existing installation and active sessions have not been switched.

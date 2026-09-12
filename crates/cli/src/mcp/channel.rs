@@ -157,7 +157,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     offered = None;
                 }
                 if let Some(message) = messages.first() {
-                    let notification = json!({
+                    let mut notification = json!({
                         "jsonrpc": "2.0", "method": "notifications/claude/channel",
                         "params": {"content": serde_json::to_string(&message.payload)?, "meta": {
                             "message_id": message.id.as_str(), "from_agent": message.from,
@@ -165,6 +165,9 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             "destination": serde_json::to_string(&message.to)?,
                         }}
                     });
+                    if let Some(question) = &message.reply_to {
+                        notification["params"]["meta"]["reply_to"] = json!(question.as_str());
+                    }
                     write(&mut output, &notification).await?;
                     offered = Some((message.id.clone(), tokio::time::Instant::now(), false));
                 }
@@ -282,7 +285,7 @@ mod tests {
                         .retain(|message| !messages.contains(&message.id));
                     Ok(Response::Ok)
                 }
-                Request::Ask { .. } => std::future::pending().await,
+                Request::Claim { .. } => std::future::pending().await,
                 other => panic!("unexpected channel request {other:?}"),
             }
         }
@@ -375,7 +378,7 @@ mod tests {
                 write_line(
                     &mut writer,
                     &json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
-                    "params":{"name":"ask_human","arguments":{"question":"waiting"}}}),
+                    "params":{"name":"claim","arguments":{"resource":format!("task:waiting-{id}"),"wait_secs":120}}}),
                 )
                 .await
                 .unwrap();
