@@ -1,7 +1,7 @@
 //! The project watcher: file changes in every checkout a live agent works
 //! in, turned into ledger entries and branch refreshes.
 //!
-//! One `notify` watcher (FSEvents on macOS, inotify on Linux) watches each
+//! `notify` (FSEvents on macOS, inotify on Linux) watches each
 //! distinct checkout — the main root or a linked worktree — of every live
 //! agent whose project is a repository or an `Agentfile.toml` root; plain
 //! directories are not watched, because a recursive watch on a home
@@ -41,6 +41,90 @@ struct Watched {
     gitdir: Option<PathBuf>,
 }
 
+/// FSEvents restarts its stream whenever a path is added or removed. Keep
+/// checkouts on independent streams so reconciling one cannot discard another's
+/// pending edits. Inotify can change watches without restarting its shared queue.
+struct CheckoutWatchers {
+    #[cfg(target_os = "macos")]
+    roots: BTreeMap<PathBuf, notify::RecommendedWatcher>,
+    #[cfg(target_os = "macos")]
+    tx: mpsc::Sender<notify::Event>,
+    #[cfg(target_os = "macos")]
+    gap: Arc<AtomicBool>,
+    #[cfg(not(target_os = "macos"))]
+    shared: notify::RecommendedWatcher,
+}
+
+impl CheckoutWatchers {
+    fn new(tx: mpsc::Sender<notify::Event>, gap: Arc<AtomicBool>) -> notify::Result<Self> {
+        Ok(Self {
+            #[cfg(target_os = "macos")]
+            roots: BTreeMap::new(),
+            #[cfg(target_os = "macos")]
+            tx,
+            #[cfg(target_os = "macos")]
+            gap,
+            #[cfg(not(target_os = "macos"))]
+            shared: event_watcher(tx, gap)?,
+        })
+    }
+
+    fn watch(&mut self, dir: &Path, gitdir: Option<&Path>) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        let mut owned = event_watcher(self.tx.clone(), self.gap.clone())
+            .map_err(|err| format!("cannot start watcher for {}: {err}", dir.display()))?;
+        #[cfg(target_os = "macos")]
+        let watcher = &mut owned;
+        #[cfg(not(target_os = "macos"))]
+        let watcher = &mut self.shared;
+
+        watcher
+            .watch(dir, RecursiveMode::Recursive)
+            .map_err(|err| format!("cannot watch {}: {err}", dir.display()))?;
+        if let Some(gitdir) = gitdir {
+            if let Err(err) = watcher.watch(gitdir, RecursiveMode::NonRecursive) {
+                let _ = watcher.unwatch(dir);
+                return Err(format!(
+                    "cannot watch Git metadata {}: {err}",
+                    gitdir.display()
+                ));
+            }
+        }
+        #[cfg(target_os = "macos")]
+        self.roots.insert(dir.to_path_buf(), owned);
+        Ok(())
+    }
+
+    fn unwatch(&mut self, dir: &Path, _gitdir: Option<&Path>) {
+        #[cfg(target_os = "macos")]
+        self.roots.remove(dir);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = self.shared.unwatch(dir);
+            if let Some(gitdir) = _gitdir {
+                let _ = self.shared.unwatch(gitdir);
+            }
+        }
+    }
+}
+
+fn event_watcher(
+    tx: mpsc::Sender<notify::Event>,
+    gap: Arc<AtomicBool>,
+) -> notify::Result<notify::RecommendedWatcher> {
+    notify::recommended_watcher(move |result: notify::Result<notify::Event>| match result {
+        Ok(event) => {
+            if kind_of(&event.kind).is_some() && tx.try_send(event).is_err() {
+                gap.store(true, Ordering::Relaxed);
+            }
+        }
+        Err(err) => {
+            gap.store(true, Ordering::Relaxed);
+            warn!(%err, "watcher error");
+        }
+    })
+}
+
 pub fn spawn(daemon: Arc<Daemon>) {
     tokio::spawn(run(daemon, RECONCILE_EVERY, FLUSH_EVERY));
 }
@@ -49,20 +133,7 @@ pub fn spawn(daemon: Arc<Daemon>) {
 pub async fn run(daemon: Arc<Daemon>, reconcile_every: Duration, flush_every: Duration) {
     let (tx, mut rx) = mpsc::channel::<notify::Event>(4096);
     let gap = Arc::new(AtomicBool::new(false));
-    let callback_gap = gap.clone();
-    let mut watcher = match notify::recommended_watcher(
-        move |result: notify::Result<notify::Event>| match result {
-            Ok(event) => {
-                if kind_of(&event.kind).is_some() && tx.try_send(event).is_err() {
-                    callback_gap.store(true, Ordering::Relaxed);
-                }
-            }
-            Err(err) => {
-                callback_gap.store(true, Ordering::Relaxed);
-                warn!(%err, "watcher error");
-            }
-        },
-    ) {
+    let mut watcher = match CheckoutWatchers::new(tx, gap.clone()) {
         Ok(watcher) => watcher,
         Err(err) => {
             error!(%err, "cannot start the project watcher; the ledger and branch tracking are off");
@@ -145,7 +216,7 @@ async fn drain(
 
 fn reconcile_watches(
     daemon: &Daemon,
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut CheckoutWatchers,
     watched: &mut BTreeMap<PathBuf, Watched>,
     retries: &mut HashMap<PathBuf, std::time::Instant>,
 ) {
@@ -166,10 +237,7 @@ fn reconcile_watches(
                     ),
                 });
             }
-            let _ = watcher.unwatch(&dir);
-            if let Some(gitdir) = &entry.gitdir {
-                let _ = watcher.unwatch(gitdir);
-            }
+            watcher.unwatch(&dir, entry.gitdir.as_deref());
             info!(checkout = %dir.display(), "stopped watching");
         }
     }
@@ -183,34 +251,18 @@ fn reconcile_watches(
         if watched.contains_key(&checkout.dir) {
             continue;
         }
-        if let Err(err) = watcher.watch(&checkout.dir, RecursiveMode::Recursive) {
-            warn!(checkout = %checkout.dir.display(), %err, "cannot watch checkout");
-            retries.insert(checkout.dir.clone(), std::time::Instant::now());
-            daemon.emit(agentdocker_core::EventKind::WatcherGap {
-                reason: format!(
-                    "cannot watch {}: {err}; retrying in 30 seconds",
-                    checkout.dir.display()
-                ),
-            });
-            continue;
-        }
         // A linked worktree keeps HEAD in its own git directory, elsewhere.
         let own_git = checkout.dir.join(".git");
         let gitdir = vcs::git_dirs(&checkout.dir)
             .map(|(gitdir, _)| gitdir)
             .filter(|gitdir| *gitdir != own_git);
-        if let Some(gitdir) = &gitdir {
-            if let Err(err) = watcher.watch(gitdir, RecursiveMode::NonRecursive) {
-                let _ = watcher.unwatch(&checkout.dir);
-                retries.insert(checkout.dir.clone(), std::time::Instant::now());
-                daemon.emit(agentdocker_core::EventKind::WatcherGap {
-                    reason: format!(
-                        "cannot watch Git metadata {}: {err}; retrying in 30 seconds",
-                        gitdir.display()
-                    ),
-                });
-                continue;
-            }
+        if let Err(err) = watcher.watch(&checkout.dir, gitdir.as_deref()) {
+            warn!(checkout = %checkout.dir.display(), %err, "cannot watch checkout");
+            retries.insert(checkout.dir.clone(), std::time::Instant::now());
+            daemon.emit(agentdocker_core::EventKind::WatcherGap {
+                reason: format!("{err}; retrying in 30 seconds"),
+            });
+            continue;
         }
         info!(checkout = %checkout.dir.display(), project = %checkout.project.short(), "watching");
         watched.insert(checkout.dir.clone(), Watched { checkout, gitdir });

@@ -10848,17 +10848,30 @@ deny = ["send:all"]
         );
         std::fs::remove_dir_all(&worktree).unwrap();
         std::fs::remove_file(repo.join("src/a.rs")).unwrap();
-        eventually(async || {
+        // Reconcile before the OS necessarily delivers the surviving root's
+        // deletion. Removing another watch must not discard that pending edit.
+        daemon.ensure_watched(&home).await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
             let entries = ledger(&daemon, &repo, Some("src/a.rs")).await;
-            entries
+            let removed = entries
                 .iter()
-                .any(|entry| entry.kind == ChangeKind::Removed)
-                .then_some(())
-        })
-        .await;
-        eventually(async || daemon.recent_events(200).iter().any(|event| {
-            matches!(&event.kind, EventKind::WatcherGap { reason } if reason.contains("removed or became unavailable"))
-        }).then_some(())).await;
+                .any(|entry| entry.kind == ChangeKind::Removed);
+            let events = daemon.recent_events(200);
+            let gap = events.iter().any(|event| {
+                matches!(&event.kind, EventKind::WatcherGap { reason } if reason.contains("removed or became unavailable"))
+            });
+            if removed && gap {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "missing deletion={}; missing unavailable-checkout gap={}; ledger={entries:?}; events={events:?}",
+                !removed,
+                !gap,
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         // Drain callbacks already queued by the OS before checking absence.
         let flush = lock(&daemon.watcher_flush).clone().unwrap();
         let (ack, done) = oneshot::channel();
