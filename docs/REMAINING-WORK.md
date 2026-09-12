@@ -16,11 +16,13 @@ The [delivery-status follow-up](verification/2026-09-12-input-delivery-status.js
 adds durable receipts, queue counts, pause reasons and a compact read-only review
 panel. Paused sessions remain visible after exit, and drafts survive review.
 It also fixes a reproduced macOS socket error that hid saved session logs.
-Local validation passed 824 Rust tests, 65 Python checks, 137 native workflow
+Local validation at `c116d28` passed 826 Rust tests, 65 Python checks, 137 native workflow
 steps and 25 delivery/restart steps. Actual Codex and Claude trials verify
 ordered receipts and replies with one provider identity; the report retains
-failures, corrected test assumptions and each trial's scope. Final CI and actual
-source review of this follow-up remain pending.
+failures, corrected test assumptions and each trial's scope. A prior-source
+ten-minute Codex trial also passed 18 ordered inputs/replies and six idle wakeups.
+Review corrections reject conflicting equal-timestamp reports and distinguish
+log-read failures. Final CI and follow-up source review remain pending.
 
 ## Engineering still open
 

@@ -391,3 +391,15 @@ survive restart. The report retains the failed regression, corrected driver
 expectation and fresh native evidence. This does not explain the older benchmark
 timeout. Final CI/source review remain pending; other provider review surfaces,
 sustained/reconnect acceptance, live upgrade and platform/release gates remain.
+
+
+The review correction at `c116d28` rejects conflicting equal-timestamp reports,
+keeps exact retries unchanged, and labels log-read errors distinctly. All five
+inline findings are addressed; an already-ACKed old receipt deliberately cannot
+clear a later pause. Its regression and the clarified contract are in the
+[report](verification/2026-09-12-input-delivery-status.json). The full gate passed
+826 Rust tests and 65 Python checks, followed by 137 native workflow steps,
+25 recovery steps, seven channel scenarios and a fresh actual Codex trial.
+A separate ten-minute trial at earlier source `33d52a3` passed 18 ordered
+inputs/replies and six idle wakeups under one identity. Broader sustained
+acceptance remains open. Final CI and follow-up source review remain pending.
