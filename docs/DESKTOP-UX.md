@@ -6,6 +6,16 @@ account is required to organize local agent work.
 
 ## Projects
 
+The app opens on **All projects**: every agent on this Mac in one list, each row
+carrying its project's mark, with a **Needs you** strip above it. The strip holds
+whoever is waiting on you, one action each: an unanswered question (**Answer**),
+a session that finished while you were not looking (**Open**), an agent running
+here that nobody connected (**Connect**), and an installed tool that is not yet
+connected to AgentDocker (**Set up**). It shows at most six items and points to
+Inbox for the rest; it disappears when nothing is waiting. Choosing a project on
+the left narrows the list and the strip to that project; **Projects** in the rail
+returns to all of them.
+
 The sidebar remembers projects found through agents and folders you add yourself.
 **Add project…** lets you browse or enter an existing folder. It pins the project
 without starting an agent, changing integrations or creating files. Later sessions
@@ -16,7 +26,7 @@ Quiet projects remain available. An unavailable folder stays selected and offers
 **Check folder again**. **More → Unpin project** keeps it in recent projects; **More → Forget
 project** removes its workspace entry. Neither deletes files nor stops sessions.
 A project with active agents can be discovered again. Sessions whose project is
-unknown appear under **Unassigned sessions**.
+unknown appear under **Other sessions**.
 
 **Current** shows live sessions; **History** holds finished sessions, including
 previous runs with the same name. **Needs input** shows this project's unanswered,
@@ -30,7 +40,7 @@ window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
-in the header. **Connect** under **Available to connect** adopts a discovered process for
+in the header. **Connect** under **Running here, not connected** adopts a discovered process for
 coordination. Known Codex Node launchers with a native Codex child are omitted
 from discovery. A discovery row overlapping a live registration is hidden only
 when its PID and process birth time both match. Separate registrations are never
@@ -52,11 +62,12 @@ you have typed, and uncertain requests are never retried automatically.
 Project tabs provide:
 
 - **Activity:** the recent durable journal, updated from daemon events.
-- **Channels:** project rooms, membership, reviews, resolution and messages still
-  queued for you. This view does not drain your inbox or fabricate chat history.
+- **Channels** (under More, the Advanced door): project rooms, membership,
+  reviews, resolution and messages still queued for you. This view does not drain your inbox or fabricate chat history.
   Each room retains its own draft across navigation and failed delivery.
-- **More → Coordination:** current leases and their holders.
-- **More → Commands:** the real bundled `agentdocker` CLI in the selected project folder.
+- **More → Channels:** as above; the More label counts messages waiting for you.
+- **More → Files in use:** current leases and their holders.
+- **More → Command line:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
 
 ## Inbox and connections
@@ -66,7 +77,7 @@ a failed request and disconnection preserve drafts. A pending answer cannot be
 sent twice. Delivery does not establish that the recipient consumed it. Direct
 messages remain queued until a consumer explicitly takes them.
 
-Connections starts with installed tools. **Details** reveals versions, executable
+Tools (the rail entry keeps the `connections` id) starts with installed tools. **Details** reveals versions, executable
 paths and MCP/hooks configuration. **Other supported tools** expands the inventory
 of tools that are not installed. **Review
 setup** prepares a specific plan; **Apply reviewed changes** and **Undo this setup**
@@ -91,7 +102,7 @@ and notarization; locally signed builds are explicit previews.
 ## Keyboard and terminal
 
 - Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
-- Command/Ctrl+1–4 switch Projects, Inbox, Connections and Settings.
+- Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.
 - Drag across terminal cells to select text. Command+C on macOS, or Ctrl+Shift+C

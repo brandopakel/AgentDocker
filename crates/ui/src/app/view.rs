@@ -309,11 +309,19 @@ impl App {
     pub(super) fn selected_root(&self) -> Option<&std::path::Path> {
         self.shell.catalog.selected.as_deref()
     }
+    /// Whether a record belongs on the current sessions view: the selected
+    /// project's, the projectless ones under Other sessions, or every one
+    /// of them on the home view when nothing is selected.
     pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
         match self.selected_root() {
             Some(root) => project.is_some_and(|p| p.root == root),
-            None => project.is_none(),
+            None if self.shell.catalog.unassigned => project.is_none(),
+            None => true,
         }
+    }
+    /// The home view: no project chosen, everything shown.
+    pub(super) fn all_projects(&self) -> bool {
+        self.selected_root().is_none() && !self.shell.catalog.unassigned
     }
     fn narrow(&self) -> bool {
         self.shell.width / self.scale_factor() < 900.0
@@ -363,16 +371,16 @@ impl App {
                 .map(|e| e.project.name())
                 .unwrap_or_else(|| {
                     if self.shell.catalog.unassigned {
-                        "Unassigned sessions"
+                        "Other sessions"
                     } else {
-                        "Projects"
+                        "All projects"
                     }
                     .into()
                 })
         } else {
             match self.screen {
                 Screen::Questions => "Inbox",
-                Screen::Runtimes => "Connections",
+                Screen::Runtimes => "Tools",
                 _ => "Settings",
             }
             .into()
@@ -396,11 +404,22 @@ impl App {
         let mut header_left = column![heading_row].spacing(6).width(Fill);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
             header_left = header_left.push(mono(entry.project.root.display().to_string(), c));
-        } else if !in_project {
+        } else if in_project {
+            header_left = header_left.push(note(
+                if self.shell.catalog.unassigned {
+                    "Sessions whose project is not known. Add their folder as a project to file them."
+                } else {
+                    "Every agent on this Mac. Choose a project on the left to work in one."
+                },
+                c,
+            ));
+        } else {
             header_left = header_left.push(note(
                 match self.screen {
-                    Screen::Questions => "Questions and messages addressed to you",
-                    Screen::Runtimes => "Installed agent tools and how they connect",
+                    Screen::Questions => "Questions and messages waiting for you",
+                    Screen::Runtimes => {
+                        "The agent tools on this Mac and whether they are connected"
+                    }
                     _ => "Appearance, terminal, installation and diagnostics",
                 },
                 c,
@@ -459,12 +478,11 @@ impl App {
                 .align_y(Center),
             );
         }
-        if in_project {
+        if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
                 (Screen::Agents, "Sessions", Icon::Sessions),
                 (Screen::Journal, "Activity", Icon::Activity),
-                (Screen::Channels, "Channels", Icon::Channels),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -480,8 +498,11 @@ impl App {
                     selected,
                 ));
             }
-            let more_selected =
-                self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console);
+            let more_selected = self.shell.more
+                || matches!(
+                    self.screen,
+                    Screen::Channels | Screen::Leases | Screen::Console
+                );
             tabs = tabs.push(tab(
                 "project-more",
                 "More",
@@ -506,16 +527,32 @@ impl App {
             content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if in_project && self.shell.more {
+            let queued = self.queued_channel_messages();
             let mut more = row![
+                row![
+                    icon(Icon::Channels, c.muted, 14.0),
+                    action(
+                        "project-tab-Channels",
+                        if queued > 0 {
+                            format!("Channels ({queued} waiting)")
+                        } else {
+                            "Channels".to_owned()
+                        },
+                        Some(Message::Navigate(Screen::Channels)),
+                        self.screen == Screen::Channels
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
                 action(
                     "project-tab-Leases",
-                    "Coordination",
+                    "Files in use",
                     Some(Message::Navigate(Screen::Leases)),
                     self.screen == Screen::Leases
                 ),
                 action(
                     "project-tab-Console",
-                    "Commands",
+                    "Command line",
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
                 ),
@@ -541,7 +578,7 @@ impl App {
                     ));
             }
             content = content.push(card(
-                column![eyebrow("More in this project", c), more.wrap()].spacing(10),
+                column![eyebrow("Advanced", c), more.wrap()].spacing(10),
                 c,
             ));
         }
@@ -705,7 +742,7 @@ impl App {
             "Projects",
             Icon::Projects,
             (unviewed > 0).then(|| unviewed.to_string()),
-            Message::Navigate(Screen::Agents),
+            Message::AllProjects,
             project_page,
         ));
         nav = nav.push(self.nav_item(
@@ -718,7 +755,7 @@ impl App {
         ));
         nav = nav.push(self.nav_item(
             "connections",
-            "Connections",
+            "Tools",
             Icon::Connections,
             None,
             Message::Navigate(Screen::Runtimes),
@@ -788,7 +825,7 @@ impl App {
         {
             projects = projects.push(block_button(
                 "unassigned",
-                "Unassigned sessions",
+                "Other sessions",
                 Some(Message::Unassigned),
                 self.shell.catalog.unassigned && project_page,
             ));
@@ -824,6 +861,137 @@ impl App {
             .height(Fill)
             .style(move |_| c.surface(c.sidebar, false))
             .into()
+    }
+
+    /// Channel messages still queued for this person, in the projects on view.
+    fn queued_channel_messages(&self) -> usize {
+        let rooms: BTreeSet<_> = self
+            .channels
+            .iter()
+            .filter(|ch| {
+                self.selected_root().is_none()
+                    || self
+                        .shell
+                        .catalog
+                        .selected()
+                        .is_some_and(|e| e.project.id() == ch.project)
+            })
+            .map(|ch| ch.id.clone())
+            .collect();
+        self.inbox
+            .iter()
+            .filter(|m| match &m.to {
+                agentdocker_core::Destination::Channel(ch) => rooms.contains(ch),
+                _ => false,
+            })
+            .count()
+    }
+
+    /// Whether an agent id belongs to the projects on view.
+    fn agent_on_view(&self, id: &str) -> bool {
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .is_some_and(|a| self.has_project(a.project.as_ref()))
+    }
+
+    /// Who is waiting on the person, in one strip with one action each:
+    /// unanswered questions, sessions that finished unseen, tools that are
+    /// not connected yet, and agents running here that nobody registered.
+    /// Nothing here is new information; it is the same facts the deeper
+    /// screens hold, brought to the first screen so nobody has to know
+    /// where to look. Empty when nothing is waiting.
+    fn needs_you(&self, c: Colors) -> Option<Element<'_, Message>> {
+        const SHOWN: usize = 6;
+        let now = Utc::now();
+        let mut items: Vec<(Element<'_, Message>, String, Element<'_, Message>)> = Vec::new();
+        for question in self
+            .questions
+            .iter()
+            .filter(|q| !q.expired(now) && self.agent_on_view(&q.from))
+        {
+            items.push((
+                dot(c.amber, 8.0, c),
+                format!("{} asks: {}", self.name_of(&question.from), question.text),
+                action(
+                    format!("needs-you-answer-{}", question.id),
+                    "Answer",
+                    Some(Message::Navigate(Screen::Questions)),
+                    false,
+                ),
+            ));
+        }
+        for agent in self.agents.iter().filter(|a| {
+            self.shell.unviewed_done.contains(a.id.as_str()) && self.has_project(a.project.as_ref())
+        }) {
+            items.push((
+                dot(c.accent, 8.0, c),
+                format!("{} finished", agent.spec.name),
+                action(
+                    format!("needs-you-open-{}", agent.id),
+                    "Open",
+                    Some(Message::OpenSession(agent.id.to_string())),
+                    false,
+                ),
+            ));
+        }
+        for process in self.available_processes() {
+            items.push((
+                dot(c.cyan, 8.0, c),
+                format!(
+                    "{} is running here but not connected",
+                    process.default_name()
+                ),
+                action(
+                    format!("needs-you-connect-{}", process.pid),
+                    "Connect",
+                    self.connected
+                        .is_ok()
+                        .then_some(Message::Adopt(process.pid)),
+                    false,
+                ),
+            ));
+        }
+        if self.all_projects() {
+            for runtime in self
+                .runtimes
+                .iter()
+                .filter(|r| r.installed() && (r.mcp.needs_review() || r.hooks.needs_review()))
+            {
+                items.push((
+                    dot(c.faint, 8.0, c),
+                    format!(
+                        "{} is installed but not connected to AgentDocker",
+                        runtime.label
+                    ),
+                    action(
+                        format!("needs-you-tool-{}", runtime.name),
+                        "Set up",
+                        Some(Message::Navigate(Screen::Runtimes)),
+                        false,
+                    ),
+                ));
+            }
+        }
+        if items.is_empty() {
+            return None;
+        }
+        let total = items.len();
+        let mut list =
+            column![row![eyebrow(format!("Needs you ({total})"), c).width(Fill),]].spacing(8);
+        for (mark, words, act) in items.into_iter().take(SHOWN) {
+            list = list.push(
+                row![mark, text(words).size(14).width(Fill), act]
+                    .spacing(12)
+                    .align_y(Center),
+            );
+        }
+        if total > SHOWN {
+            // The rest are in the list below and in Inbox and Tools; a
+            // button that only reached one of those would mislead.
+            list = list.push(small(format!("and {} more below", total - SHOWN), c));
+        }
+        Some(attention(list, c.amber, c))
     }
 
     /// The project's one primary action, when there is a project to act in.
@@ -898,6 +1066,9 @@ impl App {
                     .align_y(Center),
             );
         }
+        if let Some(strip) = self.needs_you(c) {
+            panel_col = panel_col.push(strip);
+        }
         if self.shell.project_available == Some(false) {
             panel_col = panel_col.push(attention(
                 column![
@@ -955,9 +1126,20 @@ impl App {
                         .padding([3, 0]),
                 );
             }
-            let mut content = row![dot(self.activity_color(agent, c), 8.0, c), lines]
+            let mut content = row![dot(self.activity_color(agent, c), 8.0, c)]
                 .spacing(12)
                 .align_y(Center);
+            if self.all_projects()
+                && let Some(project) = &agent.project
+            {
+                // On the home view the row says which project it belongs to.
+                content = content.push(hint(
+                    monogram(&project.name(), &project.id().to_string(), 18.0, c),
+                    project.name(),
+                    c,
+                ));
+            }
+            content = content.push(lines);
             if self.shell.unviewed_done.contains(&id) {
                 // Finished since you last looked. The observed state stays
                 // in the meta line; this says only that it is new to you.
@@ -984,8 +1166,11 @@ impl App {
         }
         if filter == Filter::Current && !available.is_empty() {
             let mut discovered = column![
-                eyebrow("Available to connect", c),
-                note("Running in this folder outside AgentDocker", c)
+                eyebrow("Running here, not connected", c),
+                note(
+                    "Started outside AgentDocker. Connect one to see what it is doing and message it.",
+                    c
+                )
             ]
             .spacing(6);
             for process in available {
@@ -1018,13 +1203,19 @@ impl App {
                 ("No matching sessions", "Try another name, tool, or branch.")
             } else {
                 match filter {
+                    Filter::Current if self.all_projects() => (
+                        "No agents running",
+                        "Start Claude Code or Codex in any folder and it appears here, \
+                         or choose a project on the left and launch one.",
+                    ),
                     Filter::Current => (
-                        "No current sessions",
-                        "Launch an agent here, or start one in this folder.",
+                        "No agents in this project",
+                        "Press Launch agent, or start Claude Code or Codex in this folder \
+                         and it appears here.",
                     ),
                     Filter::NeedsInput => (
                         "Nothing needs your input",
-                        "Questions from this project will appear here.",
+                        "When an agent asks you something, it appears here and in Inbox.",
                     ),
                     Filter::History => (
                         "No finished sessions",
