@@ -79,12 +79,13 @@ impl State {
     }
 }
 
-/// Each room keeps its own draft; a late acknowledgement only clears the text sent.
+/// Each room keeps its own draft; receipts clear only an untouched submission.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChannelDraft {
     pub text: String,
     pub sending: Option<String>,
     pub error: Option<String>,
+    edited_since_send: bool,
 }
 
 #[derive(Default)]
@@ -93,18 +94,27 @@ pub(super) struct SessionDraft {
     pub queued: Option<MessageId>,
 }
 impl ChannelDraft {
+    pub fn edit(&mut self, text: String) {
+        self.text = text.chars().take(16_000).collect();
+        // Only one send can be pending. Remember any edit during that send,
+        // including changing back to identical text, without a wrapping counter.
+        self.edited_since_send = true;
+    }
     pub fn begin(&mut self) -> Option<String> {
         if self.sending.is_some() || self.text.trim().is_empty() {
             return None;
         }
         self.error = None;
+        self.edited_since_send = false;
         self.sending = Some(self.text.clone());
         self.sending.clone()
     }
     pub fn complete(&mut self, result: Result<(), String>) {
         let sent = self.sending.take();
         match result {
-            Ok(()) if sent.as_ref() == Some(&self.text) => self.text.clear(),
+            Ok(()) if !self.edited_since_send && sent.as_ref() == Some(&self.text) => {
+                self.text.clear();
+            }
             Ok(()) => {}
             Err(error) => self.error = Some(error),
         }
@@ -415,8 +425,12 @@ impl App {
                 if self.shell.session_drafts.contains_key(&id)
                     || self.shell.session_drafts.len() < 128
                 {
-                    self.shell.session_drafts.entry(id).or_default().draft.text =
-                        text.chars().take(16_000).collect();
+                    self.shell
+                        .session_drafts
+                        .entry(id)
+                        .or_default()
+                        .draft
+                        .edit(text);
                 } else {
                     self.shell.error =
                         Some("Finish or clear an earlier message draft first.".into());
@@ -716,8 +730,7 @@ impl App {
                     if self.shell.channel_drafts.len() < 128
                         || self.shell.channel_drafts.contains_key(&id)
                     {
-                        self.shell.channel_drafts.entry(id).or_default().text =
-                            text.chars().take(16_000).collect();
+                        self.shell.channel_drafts.entry(id).or_default().edit(text);
                     } else {
                         self.shell.error = Some(
                             "Finish or clear an earlier channel draft before writing another."
@@ -1268,6 +1281,53 @@ mod tests {
         app.shell.catalog.updates.enabled = false;
         app.schedule_update_check(186_401);
         assert!(app.shell.pending_update.is_none());
+    }
+
+    #[test]
+    fn retyped_channel_and_session_drafts_survive_late_receipts() {
+        fn draft(app: &mut App, session: bool) -> &mut ChannelDraft {
+            if session {
+                &mut app.shell.session_drafts.get_mut("recipient").unwrap().draft
+            } else {
+                app.shell.channel_drafts.get_mut("recipient").unwrap()
+            }
+        }
+        fn edit(session: bool, text: &str) -> Message {
+            if session {
+                Message::SessionDraft("recipient".into(), text.into())
+            } else {
+                Message::ChannelDraft(text.into())
+            }
+        }
+        for session in [false, true] {
+            let (mut app, _, messages) = app();
+            app.shell.channel_target = Some("recipient".into());
+            let _ = app.update(edit(session, "sent text"));
+            assert_eq!(
+                draft(&mut app, session).begin().as_deref(),
+                Some("sent text")
+            );
+            let _ = app.update(edit(session, "changed text"));
+            let _ = app.update(edit(session, "sent text"));
+            let receipt = Ok(MessageId::from("receipt".to_owned()));
+            messages
+                .send(if session {
+                    Msg::SessionSent("recipient".into(), receipt)
+                } else {
+                    Msg::ChannelSent("recipient".into(), receipt)
+                })
+                .unwrap();
+            app.drain();
+            let current = draft(&mut app, session);
+            assert_eq!(
+                current.text, "sent text",
+                "new draft lost; session={session}"
+            );
+            // A subsequent untouched send still clears only its own draft.
+            assert_eq!(current.begin().as_deref(), Some("sent text"));
+            current.complete(Ok(()));
+            assert!(current.text.is_empty());
+        }
     }
 
     #[test]
