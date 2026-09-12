@@ -1,0 +1,213 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source": {
+    "format": 1,
+    "source_commit": "3d1c7053e90d19e3604b02fecd986bae51e4129e",
+    "source_tree": "e35cf5d0d8193b5f7f0396f0410dc0c70e91d30b",
+    "source_input_sha256": "0956d7757e7761912e011fd48a004370d7908714ed4d90b54919ea5fc735d259",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "5503bc2dd4b2b71a58bf81f0c597fb325b297ae97e6c19b0c5f2af86504fc0db"
+    }
+  },
+  "standard_gate": {
+    "rust_passed": 770,
+    "rust_skipped": 6,
+    "python_passed": 60,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "private_log": "/private/tmp/agentdocker-session-message-final-check-2026-09-11.log"
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 123,
+    "checks": [
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "driver_sha256": "7bb4f7376ee2aceba470336e19b38fc5dd88f7748dfae2256d03c6a94dc2d76b",
+    "private_result": "/private/tmp/agentdocker-session-message-final-iced-2026-09-11/result.json"
+  },
+  "actual_claude": {
+    "result": "passed",
+    "provider": {
+      "result": "provider_exited_requires_receipt_audit",
+      "scope": "Actual interactive Claude using AgentDocker channel adapter and an isolated profile/daemon",
+      "driver_sha256": "7f267bed41bb384e6c5a70abd1f2f39c8e21aa1ec46d288a557926f63fb40ecf",
+      "binary_sha256": {
+        "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+        "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+        "agentdocker-ui": "8fdff0981fe40c3d92b918991d7e6a9a24a8250d5ab619b617577c6b5e85f2b2"
+      },
+      "source_commit": "0c7bd7ab7699dc09b6265f2c5b257f3892edea46",
+      "provider_version": "2.1.269 (Claude Code)",
+      "profile_isolated": true,
+      "authentication_scope": "Existing login access token in child environment only; no login or refresh requested",
+      "managed_agent": "dcde23cb4436408596f3db01b2a6d422",
+      "provider_pid": 46678,
+      "provider_exit_code": 0,
+      "user_configuration_unchanged": true,
+      "remaining_owned_processes": 0
+    },
+    "native_input": {
+      "result": "passed",
+      "native_steps": 15,
+      "reply": {
+        "id": "ec1247125afe4d15",
+        "from": "dcde23cb4436408596f3db01b2a6d422",
+        "to": {
+          "kind": "agent",
+          "value": "c0a39081fad7425881eca310e2f10d16"
+        },
+        "kind": "chat",
+        "payload": {
+          "text": "HUMAN_UI_ACK_B713"
+        },
+        "reply_to": "715e9c5135d04a23",
+        "sent_at": "2026-09-12T01:00:36.405047Z"
+      },
+      "queued_after_receipt": 0,
+      "provider_records": 1,
+      "unsubmitted_draft": "UNSUBMITTED_DRAFT_92FD",
+      "scope": "Actual native rendered-control callbacks, actual managed Claude channel and daemon; no physical OS input claim"
+    },
+    "message_events": [
+      {
+        "seq": 20,
+        "at": "2026-09-12T00:59:15.336181Z",
+        "kind": {
+          "event": "message_sent",
+          "message": "f258fa5eabf94968",
+          "from": "97d1e31ac41f4ca98af1aa2fc32f6850",
+          "to": {
+            "kind": "agent",
+            "value": "dcde23cb4436408596f3db01b2a6d422"
+          },
+          "kind": "chat"
+        }
+      },
+      {
+        "seq": 21,
+        "at": "2026-09-12T00:59:24.564761Z",
+        "kind": {
+          "event": "inbox_acknowledged",
+          "agent": "dcde23cb4436408596f3db01b2a6d422",
+          "messages": [
+            "f258fa5eabf94968"
+          ]
+        }
+      },
+      {
+        "seq": 22,
+        "at": "2026-09-12T00:59:24.709099Z",
+        "kind": {
+          "event": "message_sent",
+          "message": "08a30113c39a47e6",
+          "from": "dcde23cb4436408596f3db01b2a6d422",
+          "to": {
+            "kind": "agent",
+            "value": "97d1e31ac41f4ca98af1aa2fc32f6850"
+          },
+          "kind": "chat"
+        }
+      },
+      {
+        "seq": 23,
+        "at": "2026-09-12T01:00:32.986458Z",
+        "kind": {
+          "event": "message_sent",
+          "message": "715e9c5135d04a23",
+          "from": "c0a39081fad7425881eca310e2f10d16",
+          "to": {
+            "kind": "agent",
+            "value": "dcde23cb4436408596f3db01b2a6d422"
+          },
+          "kind": "message"
+        }
+      },
+      {
+        "seq": 24,
+        "at": "2026-09-12T01:00:35.764028Z",
+        "kind": {
+          "event": "inbox_acknowledged",
+          "agent": "dcde23cb4436408596f3db01b2a6d422",
+          "messages": [
+            "715e9c5135d04a23"
+          ]
+        }
+      },
+      {
+        "seq": 25,
+        "at": "2026-09-12T01:00:36.405047Z",
+        "kind": {
+          "event": "message_sent",
+          "message": "ec1247125afe4d15",
+          "from": "dcde23cb4436408596f3db01b2a6d422",
+          "to": {
+            "kind": "agent",
+            "value": "c0a39081fad7425881eca310e2f10d16"
+          },
+          "kind": "chat"
+        }
+      }
+    ],
+    "remaining_owned_processes": [],
+    "launch_driver_sha256": "7f267bed41bb384e6c5a70abd1f2f39c8e21aa1ec46d288a557926f63fb40ecf",
+    "ui_driver_sha256": "e8af32af6201a5881b8de59cd309bd2cfc205a2cfd0f0ea62ce443646bde1d85"
+  },
+  "provider_trial_source": {
+    "format": 1,
+    "source_commit": "0c7bd7ab7699dc09b6265f2c5b257f3892edea46",
+    "source_tree": "e9d54f0c93f67ac018f1bfea1744a72635699e9b",
+    "source_input_sha256": "c26a8fb608c0ccd6a334ba186f16ff3294ad8ccc1e04e43fedd03327f0f418ea",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "8fdff0981fe40c3d92b918991d7e6a9a24a8250d5ab619b617577c6b5e85f2b2"
+    }
+  },
+  "private_provider_result": "/private/tmp/agentdocker-session-message-claude-2026-09-11/accepted.json",
+  "limits": [
+    "The actual-provider trial used clean source 0c7bd7a. The final source adds the independently tested sustained-use finalization correction and clarifies the prior queued receipt label when a new draft is present; the 123-step native regression was repeated on the final build.",
+    "Native scenarios invoke rendered production control callbacks. They do not establish physical keyboard, VoiceOver or IME acceptance.",
+    "Queue acceptance is not provider consumption. The enabled Claude channel provided explicit model receipts/replies in this trial; Codex managed idle-wake remains unimplemented.",
+    "Drafts and the last queued receipt are bounded window-local state. No automatic retry occurs after an uncertain send; a manual retry may duplicate a request whose response was lost.",
+    "The trial exercised separate idle peer and human inputs, not sustained conversations, busy steering or ambiguous provider reconnection. No installed launcher or live user daemon was changed."
+  ]
+}
