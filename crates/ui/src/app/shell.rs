@@ -34,6 +34,7 @@ pub(super) struct State {
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
+    pub message_detail: Option<MessageId>,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
@@ -170,6 +171,7 @@ pub enum Message {
     SendSession(String),
     ConnectionDetails(String),
     ReviewFiles(MessageId),
+    QuestionDetails(MessageId),
     OtherTools,
     AddPath(String),
     ShowAdd,
@@ -297,6 +299,7 @@ impl App {
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
                 | Message::ReviewFiles(_)
+                | Message::QuestionDetails(_)
                 | Message::Notification(_)
                 | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
                 | Message::Event(iced::Event::Mouse(iced::mouse::Event::WheelScrolled { .. }))
@@ -517,6 +520,12 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::QuestionDetails(id) => {
+                if self.inbox.iter().any(|message| message.id == id) {
+                    self.shell.message_detail =
+                        (self.shell.message_detail.as_ref() != Some(&id)).then_some(id);
+                }
+            }
             Message::ReviewFiles(id) => {
                 if self.questions.iter().any(|q| {
                     q.id == id
@@ -1216,6 +1225,7 @@ impl App {
         }
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
+        self.shell.message_detail = Some(target.message.clone());
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
@@ -1227,7 +1237,7 @@ impl App {
         if let Some(channel) = channel {
             self.shell.channel_target = Some(channel.to_string());
         }
-        // Revealing the card changes only scrolling. Existing answer/channel
+        // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
         // drafts and their keyboard focus are not submitted or rewritten.
         crate::controls::reveal(format!(
             "notification-{}-{}",

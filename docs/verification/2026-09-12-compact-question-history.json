@@ -1,0 +1,216 @@
+{
+  "date": "2026-09-12",
+  "scope": "Compact retained Inbox questions, explicit complete-text details, and notification navigation without draft submission or message dismissal.",
+  "source": {
+    "format": 1,
+    "source_commit": "9525145c160e12d990d44f2529895d99d4171bbf",
+    "source_tree": "cb09baf12fc9c905c4b97046a3ae8a4457a9f216",
+    "source_input_sha256": "f3998368cf68ab986d2b11913b0d1e4d5d6d83ffe442460a7826af851e700294",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 15,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+      "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+      "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+    }
+  },
+  "validation": {
+    "rust_tests": 848,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "gate": "passed: formatting, strict Clippy, nextest, doctests, installer/package checks and release build",
+    "log": "/private/tmp/agentdocker-compact-question-history-check-final-2026-09-12.log",
+    "history_file_review_and_cold_question_steps": 29,
+    "additional_notification_steps": 23
+  },
+  "native": {
+    "local_report": "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/result.json",
+    "report_sha256": "d55dfdca4d23bfe24fe2d38558f2e05797a0023bfb27906c3f32884c51b77897",
+    "result": "passed",
+    "scope": "Actual Iced earlier-question collapse/expansion, draft preservation and cold notification routing, with file-review and schema migration regression coverage.",
+    "build": {
+      "format": 1,
+      "source_commit": "9525145c160e12d990d44f2529895d99d4171bbf",
+      "source_tree": "cb09baf12fc9c905c4b97046a3ae8a4457a9f216",
+      "source_input_sha256": "f3998368cf68ab986d2b11913b0d1e4d5d6d83ffe442460a7826af851e700294",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+      }
+    },
+    "prior_build": {
+      "format": 1,
+      "source_commit": "296478c1eb70ed84172e0133e3910d9f613b829e",
+      "source_tree": "e29e6c389c5fe80578e065a655b75c3a4802cd71",
+      "source_input_sha256": "1ed662711a2eafb34dce910940c902c53e39b3a2e15d09e7f2236c24caf8cc58",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "1aee7ab885a2ca48ce8eee17561b441819210c6ade66ddd5f9135bae48bc8284",
+        "agentd": "5c481c621338ca9639b3b8fc29f501401bf2927e4d88de1ca4032a52fcdc3453",
+        "agentdocker-ui": "87f33e818f80a866861566e8721334b289158ddc9bc2b48a777bae97eacd3404"
+      }
+    },
+    "driver_sha256": "8cb7488f41128bd0a83ed14de51a35bc3513cd38d72cd873feff2854ee7d52b8",
+    "cleanups": [
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "native": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 7.786529,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 26,
+      "scenario_steps_total": 26,
+      "screenshot_requested": true,
+      "ticks": 143
+    },
+    "notification_cold": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 1.523308041,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 3,
+      "scenario_steps_total": 3,
+      "screenshot_requested": true,
+      "ticks": 52
+    },
+    "question_presentations_survived_restart": true,
+    "legacy_question_survived_schema_upgrade": true,
+    "native_answer_receipts": [
+      {
+        "question": "f1330adb6fdc4395",
+        "decision": "Deny",
+        "count": 1,
+        "human": "5e6b8c498080424e8e6b928fdbed170b"
+      },
+      {
+        "question": "246867d4d3284d3a",
+        "decision": "Allow",
+        "count": 1,
+        "human": "5e6b8c498080424e8e6b928fdbed170b"
+      }
+    ],
+    "old_schema_refused_without_database_changes": true,
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true
+  },
+  "notifications": {
+    "local_report": "/private/tmp/agentdocker-compact-question-history-notification-live-2026-09-12/result.json",
+    "report_sha256": "1b10d7f0e2e6c01663e7b4f4d57a7a38bdaf8bb067ff87680b3d67e40c4a9d81",
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+      "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "accepted_activations": [
+      "885d0b50c44e406d",
+      "94ba2b7a2d584292",
+      "d1d9aad9e08a4eea"
+    ],
+    "driver_sha256": "63488d0c597166c1392032fa3ae9e25730d139f40fd891dc37e4a536053de0d9",
+    "existing_window_steps": 21,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 8.279869958001655
+  },
+  "screenshots": {
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/earlier-question-expanded.png": "692414376e0ab196153d6132f11e16533738758390ddbd5e2a34219cae2ffc29",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/earlier-questions-compact.png": "1d6cfe2c7fd4c533b6b7b69cb825efc0ce2858a2aaf88a8a6bdf5fd696c9030f",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/files-collapsed.png": "9ea6854974659ae2e3785b880521df7b452a09fc2e978275eefe7e717d62667b",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/files-full-diff.png": "edf5fe5a82726cdc08ec88713d82ee9d25e7393350fc2b0d1c3bb42f3c41cec9",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/files-resolved-draft-retained.png": "602d4c40f3a0f32c5a5f7acb21cb761dda9dab5e2ecba760a1d78f5d02b2fc0c",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/native/window.png": "32bebbfc0e1c084249416b7f71fb30c8193fa55d96a77da2d3dc4054ad16e2e8",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/notification-cold/earlier-question-notification.png": "4d3feda7f4f312019c9e256c3a56cd25b34d09446db6da90f8b50d83f945df69",
+    "/private/tmp/agentdocker-compact-question-history-ui-live-2026-09-12/notification-cold/window.png": "431cfb16206a5084e7c4e184c6d787ed5d93a137d0ef587a3fb7ba4b7456e2d6"
+  },
+  "visual_inspection": "Viewed compact earlier-question history, expanded text with retained separate draft, and cold notification destination. Full question text remains accessible; earlier request instructions are hidden in the initial history view.",
+  "retained_initial_failures": [
+    {
+      "log": "/private/tmp/agentdocker-compact-question-history-check-2026-09-12.log",
+      "reason": "Initial compilation found that the dismissible ID vector had been moved into the bulk action before use by history rendering; the bounded vector is now cloned for that action."
+    },
+    {
+      "log": "/private/tmp/agentdocker-compact-question-history-check-fixed-2026-09-12.log",
+      "reason": "Strict Clippy rejected the MessageDetail variant for starting with its enum name; renamed it QuestionDetails and the full gate passed."
+    }
+  ],
+  "limits": [
+    "Only direct question messages already retained in this window inbox and absent from its pending-question snapshot are collapsed. Earlier question does not infer an answered, expired or cancelled outcome.",
+    "One expanded history entry is retained in window memory. It is cleared on inbox removal/dismissal; review does not consume the message.",
+    "The private actual-window trial dispatches rendered callbacks. Existing-window notification activation preserves answer/channel drafts; cold launch reveals the retained original question, without claiming persistence of unsent drafts across window closure.",
+    "Notification Center posting authorization, physical clicks, signing/notarization and the installed launcher switch remain separate gates. No default daemon, installed app or active user session was replaced.",
+    "The CLI and daemon binaries remain byte-identical to the file-review provider trials; this follow-up changes native presentation only.",
+    "Final CI and actual source inspection remain required before integration."
+  ]
+}

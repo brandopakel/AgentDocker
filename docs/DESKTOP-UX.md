@@ -66,6 +66,12 @@ a failed request and disconnection preserve drafts. A pending answer cannot be
 sent twice. Delivery does not establish that the recipient consumed it. Direct
 messages remain queued until a consumer explicitly takes them.
 
+Once a direct question leaves the pending list, its retained message appears as
+an **Earlier question** with a short preview. **Show question** opens the complete
+original text; **Hide question** collapses it again. This does not dismiss the
+message or submit an answer. Notification navigation opens the requested text
+automatically, including an older question outside the usual recent-message view.
+
 Connections starts with installed tools. **Details** reveals versions, executable
 paths and MCP/hooks configuration. **Other supported tools** expands the inventory
 of tools that are not installed. **Review

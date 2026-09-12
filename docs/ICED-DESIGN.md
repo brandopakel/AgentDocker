@@ -127,6 +127,10 @@ system, which is drawn from the mark:
   container ids `notification-question-<id>`, `notification-message-<id>` and
   `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
   without moving keyboard focus, for notification routing.
+  Direct questions retained in Inbox after leaving the pending list use a
+  160-character first-line preview and explicit Show/Hide question controls.
+  Their full text remains intact. Notification routing expands its target before
+  revealing it; details and navigation never submit or rewrite another draft.
 - **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
   by an accent bar, then a workspace that leads with the project name, its
   path and the project's one primary action, then the section tabs over a
