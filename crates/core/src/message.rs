@@ -5,7 +5,7 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, ChannelId, ProjectId};
+use crate::{AgentId, ChannelId, ProjectId, QuestionPermissions};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -170,6 +170,11 @@ pub enum QuestionPresentation {
         reason: String,
         changes: Vec<QuestionFileChange>,
     },
+    CodexPermissions {
+        cwd: String,
+        reason: String,
+        permissions: QuestionPermissions,
+    },
     Choices {
         question: String,
         options: Vec<QuestionOption>,
@@ -218,6 +223,14 @@ impl QuestionFileChange {
 impl QuestionPresentation {
     pub fn text(&self) -> String {
         match self {
+            Self::CodexPermissions {
+                cwd,
+                reason,
+                permissions,
+            } => format!(
+                "Allow Codex this access for the current turn?\n\nDirectory: {cwd}\nReason: {reason}\n\n{}\n\nReply Allow or Deny.",
+                permissions.lines().join("\n")
+            ),
             Self::CodexCommand {
                 command,
                 cwd,
@@ -252,6 +265,16 @@ impl QuestionPresentation {
     pub fn valid_for(&self, text: &str) -> bool {
         let bounded = |s: &str| !s.trim().is_empty() && s.len() <= 16_000;
         let valid = match self {
+            Self::CodexPermissions {
+                cwd,
+                reason,
+                permissions,
+            } => {
+                bounded(cwd)
+                    && !cwd.chars().any(char::is_control)
+                    && reason.len() <= 16_000
+                    && permissions.valid()
+            }
             Self::CodexCommand {
                 command,
                 cwd,
@@ -298,7 +321,7 @@ impl QuestionPresentation {
 
     pub fn permits_choice(&self, value: &str) -> bool {
         match self {
-            Self::CodexCommand { .. } | Self::CodexFiles { .. } => {
+            Self::CodexCommand { .. } | Self::CodexFiles { .. } | Self::CodexPermissions { .. } => {
                 matches!(value, "Allow" | "Deny")
             }
             Self::Choices { options, .. } => options.iter().any(|o| o.label == value),

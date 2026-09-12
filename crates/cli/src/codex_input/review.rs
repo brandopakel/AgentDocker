@@ -18,6 +18,7 @@ const MAX_TEXT: usize = 16_000;
 enum Kind {
     Command,
     Files,
+    Permissions,
     UserInput,
 }
 
@@ -138,6 +139,38 @@ impl Pending {
             .context("Codex request has no method")?;
         let mut questions = Vec::new();
         let kind = match method {
+            "item/permissions/requestApproval" => {
+                ensure!(
+                    params["environmentId"].is_null(),
+                    "remote permission requests need a separate review flow"
+                );
+                ensure!(
+                    params["itemId"].as_str().is_some_and(valid_id),
+                    "permission request has no valid item ID"
+                );
+                let presentation = QuestionPresentation::CodexPermissions {
+                    cwd: text(&params["cwd"])?.into(),
+                    reason: params["reason"]
+                        .as_str()
+                        .unwrap_or("Requested by Codex")
+                        .into(),
+                    permissions: serde_json::from_value(params["permissions"].clone())
+                        .context("unsupported permission selectors")?,
+                };
+                ensure!(
+                    presentation.valid_for(&presentation.text()),
+                    "permission request cannot be completely reviewed"
+                );
+                questions.push(Question {
+                    field: "permissions".into(),
+                    text: presentation.text(),
+                    presentation: Some(presentation),
+                    message: None,
+                    answer: None,
+                    closure: Closure::Open,
+                });
+                Kind::Permissions
+            }
             "item/fileChange/requestApproval" => {
                 ensure!(
                     params["grantRoot"].is_null(),
@@ -276,6 +309,16 @@ impl Pending {
             })
     }
 
+    pub fn is_permission_review(&self) -> bool {
+        matches!(self.kind, Kind::Permissions)
+            || self.questions.iter().any(|q| {
+                matches!(
+                    q.presentation,
+                    Some(QuestionPresentation::CodexPermissions { .. })
+                )
+            })
+    }
+
     pub fn owns(&self, message: &Envelope, agent: &str) -> bool {
         message.from == self.human
             && matches!(&message.to, Destination::Agent(id) if id.as_str() == agent)
@@ -381,6 +424,28 @@ impl Pending {
         }
         ensure!(self.questions.iter().all(|q| matches!(&q.closure, Closure::Answered { message } if q.answer.as_ref().is_some_and(|a| &a.id == message))), "provider response has no exact daemon answer receipt");
         let result = match self.kind {
+            Kind::Permissions => {
+                let question = &self.questions[0];
+                let Some(QuestionPresentation::CodexPermissions { permissions, .. }) =
+                    &question.presentation
+                else {
+                    bail!("permission approval has no complete presentation");
+                };
+                let answer = answer_text(
+                    question
+                        .answer
+                        .as_ref()
+                        .context("permission approval has no answer")?,
+                )?;
+                // An exact human decision grants only the reviewed subset for
+                // this turn. Do not override the provider's auto-review policy.
+                let granted = if answer == "Allow" {
+                    serde_json::to_value(permissions)?
+                } else {
+                    json!({})
+                };
+                json!({"permissions":granted,"scope":"turn"})
+            }
             Kind::Command | Kind::Files => {
                 let answer = answer_text(
                     self.questions[0]
@@ -416,12 +481,21 @@ impl Pending {
             "invalid retained provider question count"
         );
         ensure!(
-            !matches!(self.kind, Kind::Command | Kind::Files) || self.questions.len() == 1,
+            !matches!(self.kind, Kind::Command | Kind::Files | Kind::Permissions)
+                || self.questions.len() == 1,
             "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                matches!(self.kind, Kind::Permissions)
+                    == matches!(
+                        question.presentation,
+                        Some(QuestionPresentation::CodexPermissions { .. })
+                    ),
+                "permission review kind and presentation disagree"
+            );
             ensure!(
                 matches!(self.kind, Kind::Files)
                     == matches!(
@@ -495,6 +569,96 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn permission_event() -> Value {
+        json!({"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"permissions","cwd":"/owned","permissions":{"network":{"enabled":true},"fileSystem":{"write":["/owned/output"]}}}})
+    }
+
+    #[test]
+    fn permission_grants_require_exact_human_receipts_and_are_limited_to_the_current_turn() {
+        let event = permission_event();
+        for decision in ["Allow", "Deny", "Allow for session", "allow"] {
+            let mut request =
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+            request.questions[0].message = Some("question".to_owned().into());
+            assert!(
+                !request
+                    .capture(&[answer("peer", "Allow")], "owner", false)
+                    .unwrap()
+            );
+            let response = answer("human", decision);
+            assert!(
+                !request
+                    .capture(std::slice::from_ref(&response), "owner", false)
+                    .unwrap()
+            );
+            assert!(request.reply(Utc::now()).unwrap().is_none());
+            request
+                .observe(
+                    &EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(response.id.clone()),
+                    },
+                    "owner",
+                )
+                .unwrap();
+            request.capture(&[response], "owner", false).unwrap();
+            let granted = if decision == "Allow" {
+                event["params"]["permissions"].clone()
+            } else {
+                json!({})
+            };
+            let expected = json!({"id":11,"result":{"permissions":granted,"scope":"turn"}});
+            assert_eq!(request.reply(Utc::now()).unwrap(), Some(expected.clone()));
+            let bytes = serde_json::to_vec(&request).unwrap();
+            let decoded: Pending = serde_json::from_slice(&bytes).unwrap();
+            decoded.validate(Some("thread"), "owner").unwrap();
+            assert_eq!(decoded.reply(Utc::now()).unwrap(), Some(expected));
+            let mut mismatched = serde_json::to_value(&decoded).unwrap();
+            mismatched["kind"] = json!("command");
+            assert!(
+                serde_json::from_value::<Pending>(mismatched)
+                    .unwrap()
+                    .validate(Some("thread"), "owner")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn permission_requests_refuse_wrong_turns_remote_environments_and_incomplete_presentations() {
+        for (key, value) in [
+            ("turnId", json!("other")),
+            ("threadId", json!("other")),
+            ("itemId", json!("")),
+            ("environmentId", json!("remote")),
+            ("permissions", json!({"fileSystem":{"read":["relative"]}})),
+            (
+                "permissions",
+                json!({"network":{"enabled":true,"unknown":true}}),
+            ),
+            ("reason", json!("x".repeat(16_000))),
+        ] {
+            let mut event = permission_event();
+            event["params"][key] = value;
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "accepted {key}"
+            );
+        }
+        let request = Pending::plan(
+            &permission_event(),
+            "thread",
+            Some("turn"),
+            "human",
+            Utc::now(),
+        )
+        .unwrap();
+        let presentation = request.questions[0].presentation.as_ref().unwrap();
+        assert!(!presentation.valid_for("Allow something else?"));
+        assert!(presentation.permits_choice("Allow"));
+        assert!(!presentation.permits_choice("Allow for session"));
+    }
+
     fn event() -> Value {
         json!({"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","cwd":"/owned","command":"echo trial","kind":"command"}})
     }

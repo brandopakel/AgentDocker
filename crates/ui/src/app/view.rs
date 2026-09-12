@@ -1415,6 +1415,42 @@ impl App {
                 .filter(|p| p.valid_for(&question.text));
             let enabled = !busy && !expired && self.connected.is_ok();
             match presentation {
+                Some(agentdocker_core::QuestionPresentation::CodexPermissions {
+                    cwd,
+                    reason,
+                    permissions,
+                }) => {
+                    body = body
+                        .push(heading("Allow additional access?", 18))
+                        .push(mono(format!("Folder: {cwd}"), c));
+                    if !reason.trim().is_empty() && reason != "Requested by Codex" {
+                        body = body.push(note(reason.clone(), c));
+                    }
+                    for line in permissions.lines() {
+                        body = body.push(mono(line, c));
+                    }
+                    body = body.push(self.answer_window(question, c)).push(
+                        row![
+                            primary(
+                                format!("answer-allow-{id}"),
+                                if busy {
+                                    "Sending…"
+                                } else {
+                                    "Allow for this turn"
+                                },
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Allow".into()))
+                            ),
+                            action(
+                                format!("answer-deny-{id}"),
+                                "Deny",
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                                false
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    );
+                }
                 Some(agentdocker_core::QuestionPresentation::CodexFiles {
                     cwd,
                     reason,

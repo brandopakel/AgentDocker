@@ -15,6 +15,7 @@ pub mod lease;
 pub mod message;
 pub mod notification;
 pub mod paths;
+pub mod permissions;
 pub mod project;
 pub mod protocol;
 pub mod registry;
@@ -31,6 +32,10 @@ pub use message::{
     QuestionFileChangeKind, QuestionOption, QuestionPresentation, topic_matches,
 };
 pub use notification::NotificationTarget;
+pub use permissions::{
+    QuestionFileSystemPermissions, QuestionNetworkPermissions, QuestionPermissionAccess,
+    QuestionPermissionEntry, QuestionPermissionPath, QuestionPermissions,
+};
 pub use project::{ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
