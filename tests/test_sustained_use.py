@@ -19,6 +19,34 @@ SPEC.loader.exec_module(SOAK)
 
 
 class Cleanup(unittest.TestCase):
+    def test_failed_descendant_query_still_reaps_daemon_and_known_fixture(self):
+        errors = [subprocess.TimeoutExpired("ps", 5), subprocess.CalledProcessError(1, "ps")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                daemon = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                          start_new_session=True)
+                fixture = None
+                try:
+                    fixture = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                               start_new_session=True)
+                    fixtures = SOAK.FixtureProcesses()
+                    fixtures.remember(fixture.pid)
+                    with patch.object(SOAK.subprocess, "check_output", side_effect=error), \
+                            patch.object(SOAK, "rpc", side_effect=TimeoutError("shutdown timed out")):
+                        result = SOAK.stop_daemon(daemon, Path("absent.sock"),
+                                                  fixtures, grace_seconds=0.01)
+                    self.assertEqual(result["exit"], -signal.SIGKILL)
+                    self.assertTrue(result["forced"])
+                    self.assertEqual(result["fixtures"]["remaining"], [])
+                    self.assertEqual(result["fixtures"]["errors"], [f"capture: {error}"])
+                    self.assertIsNone(SOAK.process_identity(fixture.pid))
+                finally:
+                    for child in [daemon, fixture]:
+                        if child is not None:
+                            if child.poll() is None:
+                                os.killpg(child.pid, signal.SIGKILL)
+                            child.wait(timeout=5)
+
     def test_forced_daemon_exit_cleans_separate_fixture_group_and_descendant(self):
         with tempfile.TemporaryDirectory() as scratch:
             ready = Path(scratch) / "fixture-pids.json"

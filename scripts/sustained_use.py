@@ -160,7 +160,7 @@ def stop_daemon(daemon, endpoint, fixtures=None, grace_seconds=30):
     if fixtures is not None:
         try:
             fixtures.capture()
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             fixtures.errors.add(f"capture: {error}")
     try:
         cleanup = stop_daemon_process(daemon, endpoint, grace_seconds)
