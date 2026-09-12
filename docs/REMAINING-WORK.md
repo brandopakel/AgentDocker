@@ -27,6 +27,13 @@ PR #108 merged as `1e29142`. One restored-window capture omitted labels; a later
 28-step diagnostic and both physical-window captures displayed them correctly.
 The original incomplete capture is retained and its cause remains unresolved.
 
+The [Inbox history cleanup](verification/2026-09-12-compact-question-history.json)
+collapses earlier direct questions to a short preview with explicit full-text
+details. Notification navigation expands its target and preserves other drafts.
+At `9525145`, 848 Rust tests, 65 Python checks, 29 native history/review/restart
+steps and 23 additional notification-navigation steps passed. Final CI and source
+review remain required; this is not physical Notification Center acceptance.
+
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
