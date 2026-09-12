@@ -836,6 +836,11 @@ impl App {
     }
 
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
+        let selected = self.shell.selected.as_ref().and_then(|id| {
+            self.agents
+                .iter()
+                .find(|a| a.id.as_str() == self.canonical_agent(id))
+        });
         let mut panel_col = column![]
             .spacing(if self.settings.roomy { 20 } else { 14 })
             .width(Fill);
@@ -880,6 +885,10 @@ impl App {
                 top = top.push(launch);
             }
             panel_col = panel_col.push(column![top, filters].spacing(10));
+        } else if selected.is_some() {
+            // The inspector takes 340 px from this column. Keep the filter
+            // labels and counts together instead of squeezing them beside search.
+            panel_col = panel_col.push(column![filters, search].spacing(10));
         } else {
             panel_col = panel_col.push(
                 row![container(filters).width(Fill), container(search).width(260)]
@@ -1023,11 +1032,7 @@ impl App {
             };
             panel_col = panel_col.push(empty(title_text, hint, None, c));
         }
-        if let Some(agent) = self.shell.selected.as_ref().and_then(|id| {
-            self.agents
-                .iter()
-                .find(|a| a.id.as_str() == self.canonical_agent(id))
-        }) {
+        if let Some(agent) = selected {
             let inspector = self.inspector(agent, c);
             if self.shell.width / self.scale_factor() >= 1120.0 {
                 return row![panel_col, container(inspector).width(320)]
@@ -1082,6 +1087,55 @@ impl App {
                 "Continue in the app or terminal where this agent started.",
                 c,
             ));
+        }
+        if agent.status.is_live() && agent.spec.runtime != "human" {
+            body = body.push(action(
+                "session-message",
+                if self.shell.session_message {
+                    "Hide message"
+                } else {
+                    "Message"
+                },
+                Some(Message::ComposeSession),
+                self.shell.session_message,
+            ));
+            if self.shell.session_message {
+                let draft_key = self.session_draft_key(&id);
+                let entry = self.shell.session_drafts.get(&draft_key);
+                let draft = entry.map(|entry| &entry.draft);
+                let sending = draft.is_some_and(|draft| draft.sending.is_some());
+                let value = draft.map_or("", |draft| draft.text.as_str());
+                let target = draft_key.clone();
+                body = body
+                    .push(input(
+                        "session-message-text",
+                        "Message this agent…",
+                        value,
+                        move |text| Message::SessionDraft(target.clone(), text),
+                    ))
+                    .push(primary(
+                        "send-session-message",
+                        if sending {
+                            "Queueing…"
+                        } else {
+                            "Send message"
+                        },
+                        (!sending && !value.trim().is_empty() && self.connected.is_ok())
+                            .then_some(Message::SendSession(draft_key)),
+                    ));
+                if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
+                    body = body.push(text(error).size(13).color(c.amber));
+                } else if entry.is_some_and(|entry| entry.queued.is_some()) {
+                    body = body.push(small(
+                        if value.is_empty() {
+                            "Queued for this agent"
+                        } else {
+                            "Previous message queued"
+                        },
+                        c,
+                    ));
+                }
+            }
         }
         body = body.push(action(
             "session-details",

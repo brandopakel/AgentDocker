@@ -745,6 +745,19 @@ owned-process cleanup. The full standard gate passed 762 Rust tests and 60
 Python checks, including the two new signal regressions. Final CI and review
 remain required.
 
+### September 11: direct human messages and actual native Claude input
+
+A selected session now offers a compact Message composer using the same daemon
+send/inbox route as peers. Drafts are bounded and survive navigation, rejection
+and delayed replies; the UI reports queue acceptance without claiming consumption.
+An actual Claude 2.1.269 session received an idle peer input, then a human message
+submitted through native rendered controls. Both produced explicit acknowledgements
+and correlated replies under one managed identity. A new unsubmitted app draft
+survived the reply and navigation; monitored user configuration remained unchanged
+and all owned fixture processes exited. The [checkpoint](verification/2026-09-11-session-messages.json)
+retains source/driver hashes and the separate native/protocol evidence. The Codex
+managed bridge, durable delivery status and broader provider acceptance remain open.
+
 ### September 11: macOS watcher loss reproduced and corrected
 
 Final-stack CI exposed a surviving-file deletion that never reached the ledger
@@ -758,6 +771,14 @@ Both regressions passed 100 repetitions each with zero retries; the standard
 gate passed 762 Rust tests, 60 Python checks, lint, doctests, packaging and release
 build. Failed baseline/CI evidence is retained. Final-head CI/review and installed
 acceptance remain; the running daemon and user sessions were not replaced.
+
+The integrated session-message follow-up passed 770 Rust tests, 60 Python checks
+and 123 native steps on immutable copies. A visual audit caught wrapped filter
+counts beside the selected agent panel; search now uses the following row and
+the corrected capture keeps each count with its label. The session report retains
+separate source records for the earlier actual Claude trial and this UI follow-up.
+The [Codex configuration probe](verification/2026-09-11-codex-hook-discovery.json)
+confirms read-only discovery for the bridge preflight; it does not implement delivery.
 
 ### September 11: forced-fixture cleanup and restart ownership
 
@@ -786,3 +807,24 @@ before that anchor can disappear. Both timeout and nonzero-query cases pass,
 with their failed baseline retained. The full gate at `8d09453` passed 762 Rust
 tests and 65 Python checks. Docker and Podman passed the preceding lock-barrier
 head `2ff8f93`; final-head CI and review remain required.
+
+### September 11: integrated follow-up verification
+
+The [follow-up integration report](verification/2026-09-11-followup-integration.json)
+records all four local gates with the recovery fixes included: 762/765/768/770
+Rust tests and 65 Python checks each, plus lint, doctests, packaging and release
+build. CodeRabbit inspected final heads `e9cdabf`, `fc41522` and `7830a65`,
+resolved the cleanup findings and reported no remaining actionable issues in
+the reviewed scopes. Final CI and direct-message review remain integration gates.
+The native and actual-provider trials retain their earlier source records.
+
+### September 11: merged recovery/configuration and preserved retyped drafts
+
+PR #99 merged as `e5579cf` and PR #100 as `e290c7f` after final CI and actual
+source review. A subsequent #102 review reproduced a send receipt clearing a
+newer draft after its text was edited back to the submitted words. Each pending
+send now records whether any edit occurred; both channel and session callbacks
+preserve that draft, while untouched submissions still clear normally. The
+[clean correction](verification/2026-09-11-retyped-drafts.json) passed 771 Rust
+tests, 65 Python checks, the full gate and 123 fresh native workflow steps.
+The failed baseline remains recorded. Final CI and follow-up review remain.

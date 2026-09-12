@@ -41,6 +41,14 @@ Installation or configuration alone does not prove that an agent is working.
 stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
 view while the process continues. Finished sessions remain available in History.
 
+**Message** opens a small composer for the selected agent. **Send message** uses
+the same inbox queue as messages from other agents. Its queued receipt confirms
+local acceptance; it does not mean the agent has read or completed the request.
+The enabled Claude channel can wake an idle session. Codex and other connections
+still require their supported input integration. Drafts survive navigation and
+failed sends while this window remains open. A late receipt keeps any new text
+you have typed, and uncertain requests are never retried automatically.
+
 Project tabs provide:
 
 - **Activity:** the recent durable journal, updated from daemon events.
@@ -70,6 +78,9 @@ A connection failure retains the last snapshot and clearly pauses daemon actions
 Settings controls light/dark appearance, text size, terminal palette and row
 spacing. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
+**Daily update checks** is off by default. Enable it to check once per day while
+the app is open; a known update appears in the footer. Download and installation
+remain explicit actions.
 
 **Manage installation and retained versions** previews installation, rollback,
 cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup
@@ -83,9 +94,10 @@ and notarization; locally signed builds are explicit previews.
 - Command/Ctrl+1–4 switch Projects, Inbox, Connections and Settings.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.
-- Command+C/V on macOS, or Ctrl+Shift+C/V elsewhere, copy the visible terminal
-  screen and paste clipboard text. Paste respects the agent's bracketed-paste
-  mode. Arbitrary cell-range selection is not currently supported.
+- Drag across terminal cells to select text. Command+C on macOS, or Ctrl+Shift+C
+  elsewhere, copies the selection (the visible screen when no range is selected).
+  Selected text stays stable while new output drains; copy or resumed input
+  releases it. Command+V/Ctrl+Shift+V pastes using the agent's bracketed-paste mode.
 
 Text inputs and the terminal support native input methods. Focus indicators and
 status words complement color. Native accessibility adapters expose control

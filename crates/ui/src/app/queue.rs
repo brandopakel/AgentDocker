@@ -22,7 +22,9 @@ fn bytes(command: &Cmd) -> usize {
                 .saturating_mul(size_of::<agentdocker_core::MessageId>()),
             |total, id| total.saturating_add(id.as_str().len()),
         ),
-        Cmd::ChannelSend(id, text) => id.capacity().saturating_add(text.capacity()),
+        Cmd::ChannelSend(id, text) | Cmd::SessionSend(id, text) => {
+            id.capacity().saturating_add(text.capacity())
+        }
         Cmd::Launch(spec) => {
             serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
         }
