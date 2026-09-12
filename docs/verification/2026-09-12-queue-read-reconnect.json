@@ -273,5 +273,30 @@
     "Queue acknowledgement, question publication, activity/input-receipt reports and other mutations still pause on failure; no generic write retries or full daemon handover are introduced.",
     "The daemon and UI binaries are unchanged from the compact file-review build. This trial checkpoint predates integration of the independently accepted Inbox history PR; the queue-retry change itself makes no native visual changes.",
     "Private state, immutable binaries and owned fixture processes only; existing provider profiles and active user sessions are unchanged. Final CI and actual source inspection remain required before integration."
-  ]
+  ],
+  "integrated_checkpoint": {
+    "source": {
+      "format": 1,
+      "source_commit": "3ceaa4a34962a08ec8559dd88448db2d947b2155",
+      "source_tree": "eaea0b33b91aba63370b43aa1f0e90f285620662",
+      "source_input_sha256": "7331edeaaa0975edb953db0d4fb7626c398806eb96a4cd60d30ea9039392e6a3",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+      }
+    },
+    "full_gate": "passed: 850 Rust tests (6 skipped), 65 Python checks, formatting, strict Clippy, packaging and release build",
+    "full_log": "/private/tmp/agentdocker-queue-read-integrated-check-2026-09-12.log",
+    "provider_binary_equivalence": "CLI and daemon match the actual 80fe790 provider trial byte-for-byte.",
+    "native_binary_equivalence": "UI matches the accepted 9525145 Inbox history trial byte-for-byte.",
+    "integrated_main": "b257bcb48f0af29417d38e08a5b8c73d34f14c05"
+  }
 }
