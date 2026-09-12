@@ -15,8 +15,25 @@ pub(super) async fn open(
     thread: &str,
     turn: Option<&str>,
     event: Value,
+    files: &mut super::file_changes::Reviews,
 ) -> Result<Option<Value>> {
-    let pending = match Pending::plan(&event, thread, turn, human, chrono::Utc::now()) {
+    let planned = if event["method"] == "item/fileChange/requestApproval" {
+        files
+            .presentation(&event, &ledger.record().binding.cwd)
+            .and_then(|files| {
+                Pending::plan_with_files(
+                    &event,
+                    thread,
+                    turn,
+                    human,
+                    chrono::Utc::now(),
+                    Some(files),
+                )
+            })
+    } else {
+        Pending::plan(&event, thread, turn, human, chrono::Utc::now())
+    };
+    let pending = match planned {
         Ok(pending) => pending,
         Err(error) => {
             eprintln!("Codex request could not be completed: {error:#}");

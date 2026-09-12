@@ -585,6 +585,14 @@ impl App {
                     self.activity = fresh;
                 }
                 Msg::Questions(questions) => {
+                    if self
+                        .shell
+                        .file_review
+                        .as_ref()
+                        .is_some_and(|id| !questions.iter().any(|q| &q.id == id))
+                    {
+                        self.shell.file_review = None;
+                    }
                     // Forget drafts for questions nobody is waiting on any
                     // more, so the map does not grow with the session — but
                     // not one still in flight, whose question the daemon
@@ -599,6 +607,9 @@ impl App {
                     match result {
                         Ok(()) => {
                             self.answers.remove(&id);
+                            if self.shell.file_review.as_ref() == Some(&id) {
+                                self.shell.file_review = None;
+                            }
                             self.questions.retain(|q| q.id != id);
                             if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
                                 self.shell.pending_answer_reveal = None;

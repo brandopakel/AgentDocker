@@ -28,7 +28,8 @@ pub(crate) use event_replay::EventReplay;
 // older daemons would let legacy hooks consume the same pending input.
 // v14 preserves event high-water sequences through complete history pruning.
 // Older daemons can reuse sequence numbers and cannot serve checked cursors.
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+// v15 stores complete file-change review presentations in pending questions.
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -568,7 +569,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=13)) => {
+            Some(Ok(1..=14)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.

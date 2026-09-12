@@ -17,6 +17,7 @@ const MAX_TEXT: usize = 16_000;
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Command,
+    Files,
     UserInput,
 }
 
@@ -111,6 +112,17 @@ impl Pending {
         human: &str,
         now: DateTime<Utc>,
     ) -> Result<Self> {
+        Self::plan_with_files(event, thread, turn, human, now, None)
+    }
+
+    pub fn plan_with_files(
+        event: &Value,
+        thread: &str,
+        turn: Option<&str>,
+        human: &str,
+        now: DateTime<Utc>,
+        files: Option<QuestionPresentation>,
+    ) -> Result<Self> {
         ensure!(
             valid_request_id(&event["id"]),
             "Codex request has no valid ID"
@@ -126,6 +138,28 @@ impl Pending {
             .context("Codex request has no method")?;
         let mut questions = Vec::new();
         let kind = match method {
+            "item/fileChange/requestApproval" => {
+                ensure!(
+                    params["grantRoot"].is_null(),
+                    "session-wide file access needs a separate review flow"
+                );
+                let presentation =
+                    files.context("file approval requires a complete correlated review")?;
+                ensure!(
+                    matches!(presentation, QuestionPresentation::CodexFiles { .. })
+                        && presentation.valid_for(&presentation.text()),
+                    "file approval has no complete file presentation"
+                );
+                questions.push(Question {
+                    field: "files".into(),
+                    text: presentation.text(),
+                    presentation: Some(presentation),
+                    message: None,
+                    answer: None,
+                    closure: Closure::Open,
+                });
+                Kind::Files
+            }
             "item/commandExecution/requestApproval" => {
                 ensure!(
                     params["kind"].as_str().unwrap_or("command") == "command",
@@ -230,6 +264,16 @@ impl Pending {
 
     pub fn key(&self) -> String {
         self.id.to_string()
+    }
+
+    pub fn is_file_review(&self) -> bool {
+        matches!(self.kind, Kind::Files)
+            || self.questions.iter().any(|q| {
+                matches!(
+                    q.presentation,
+                    Some(QuestionPresentation::CodexFiles { .. })
+                )
+            })
     }
 
     pub fn owns(&self, message: &Envelope, agent: &str) -> bool {
@@ -337,12 +381,12 @@ impl Pending {
         }
         ensure!(self.questions.iter().all(|q| matches!(&q.closure, Closure::Answered { message } if q.answer.as_ref().is_some_and(|a| &a.id == message))), "provider response has no exact daemon answer receipt");
         let result = match self.kind {
-            Kind::Command => {
+            Kind::Command | Kind::Files => {
                 let answer = answer_text(
                     self.questions[0]
                         .answer
                         .as_ref()
-                        .context("command has no answer")?,
+                        .context("approval has no answer")?,
                 )?;
                 json!({"decision":if answer.trim().eq_ignore_ascii_case("allow") { "accept" } else { "decline" }})
             }
@@ -372,12 +416,20 @@ impl Pending {
             "invalid retained provider question count"
         );
         ensure!(
-            !matches!(self.kind, Kind::Command) || self.questions.len() == 1,
-            "command review has multiple questions"
+            !matches!(self.kind, Kind::Command | Kind::Files) || self.questions.len() == 1,
+            "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                matches!(self.kind, Kind::Files)
+                    == matches!(
+                        question.presentation,
+                        Some(QuestionPresentation::CodexFiles { .. })
+                    ),
+                "file review kind and presentation disagree"
+            );
             ensure!(
                 question
                     .presentation
@@ -462,6 +514,71 @@ mod tests {
             Utc::now(),
         )
     }
+    #[test]
+    fn file_change_decisions_require_the_exact_human_closure_and_never_grant_a_session() {
+        use agentdocker_core::{QuestionFileChange, QuestionFileChangeKind};
+        let presentation = QuestionPresentation::CodexFiles {
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+            changes: vec![QuestionFileChange {
+                path: "/owned/a".into(),
+                kind: QuestionFileChangeKind::Add,
+                diff: "+new\n".into(),
+            }],
+        };
+        let event = json!({"id":8,"method":"item/fileChange/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"patch"}});
+        assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err());
+        for (answer_text, expected) in [
+            ("Allow", "accept"),
+            ("Deny", "decline"),
+            ("Allow for session", "decline"),
+        ] {
+            let mut request = Pending::plan_with_files(
+                &event,
+                "thread",
+                Some("turn"),
+                "human",
+                Utc::now(),
+                Some(presentation.clone()),
+            )
+            .unwrap();
+            request.questions[0].message = Some("question".to_owned().into());
+            assert!(
+                !request
+                    .capture(&[answer("peer", "Allow")], "owner", false)
+                    .unwrap()
+            );
+            let response = answer("human", answer_text);
+            assert!(
+                !request
+                    .capture(std::slice::from_ref(&response), "owner", false)
+                    .unwrap()
+            );
+            assert!(request.reply(Utc::now()).unwrap().is_none());
+            request
+                .observe(
+                    &EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(response.id.clone()),
+                    },
+                    "owner",
+                )
+                .unwrap();
+            request.capture(&[response], "owner", false).unwrap();
+            assert_eq!(
+                request.reply(Utc::now()).unwrap().unwrap()["result"],
+                json!({"decision":expected})
+            );
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let decoded: Pending = serde_json::from_slice(&encoded).unwrap();
+            decoded.validate(Some("thread"), "owner").unwrap();
+            assert_eq!(
+                decoded.questions[0].presentation,
+                Some(presentation.clone())
+            );
+        }
+    }
+
     #[test]
     fn only_the_addressed_human_can_answer_and_later_copies_do_not_change_the_decision() {
         let mut request = pending();

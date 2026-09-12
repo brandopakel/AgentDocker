@@ -33,6 +33,7 @@ pub(super) struct State {
     pub error: Option<String>,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
+    pub file_review: Option<MessageId>,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
@@ -168,6 +169,7 @@ pub enum Message {
     SessionDraft(String, String),
     SendSession(String),
     ConnectionDetails(String),
+    ReviewFiles(MessageId),
     OtherTools,
     AddPath(String),
     ShowAdd,
@@ -294,6 +296,7 @@ impl App {
                 | Message::Unassigned
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
+                | Message::ReviewFiles(_)
                 | Message::Notification(_)
                 | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
                 | Message::Event(iced::Event::Mouse(iced::mouse::Event::WheelScrolled { .. }))
@@ -514,6 +517,18 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::ReviewFiles(id) => {
+                if self.questions.iter().any(|q| {
+                    q.id == id
+                        && matches!(
+                            q.presentation,
+                            Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
+                        )
+                }) {
+                    self.shell.file_review =
+                        (self.shell.file_review.as_ref() != Some(&id)).then_some(id);
+                }
+            }
             Message::ConnectionDetails(name) => {
                 self.shell.connection_details =
                     (self.shell.connection_details.as_ref() != Some(&name)).then_some(name);
@@ -626,6 +641,11 @@ impl App {
                     && self.questions.iter().any(|q| {
                         q.id == id
                             && !q.expired(Utc::now())
+                            && (!matches!(
+                                q.presentation,
+                                Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
+                            ) || !value.trim().eq_ignore_ascii_case("allow")
+                                || self.shell.file_review.as_ref() == Some(&id))
                             && q.presentation
                                 .as_ref()
                                 .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
@@ -638,10 +658,18 @@ impl App {
             Message::Answer(id) => {
                 if self.connected.is_ok()
                     && !self.sending.contains(&id)
-                    && self
-                        .questions
-                        .iter()
-                        .any(|q| q.id == id && !q.expired(Utc::now()))
+                    && self.questions.iter().any(|q| {
+                        q.id == id
+                            && !q.expired(Utc::now())
+                            && (!matches!(
+                                q.presentation,
+                                Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
+                            ) || self
+                                .answers
+                                .get(&id)
+                                .is_none_or(|answer| !answer.trim().eq_ignore_ascii_case("allow"))
+                                || self.shell.file_review.as_ref() == Some(&id))
+                    })
                     && let Some(answer) = self
                         .answers
                         .get(&id)
@@ -1307,6 +1335,56 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    #[test]
+    fn file_approval_requires_open_review_and_preserves_drafts_on_stale_clicks() {
+        use agentdocker_core::{QuestionFileChange, QuestionFileChangeKind, QuestionPresentation};
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let presentation = QuestionPresentation::CodexFiles {
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+            changes: vec![QuestionFileChange {
+                path: "/owned/a".into(),
+                kind: QuestionFileChangeKind::Delete,
+                diff: "-old\n".into(),
+            }],
+        };
+        let id = MessageId::from("file-question".to_owned());
+        app.questions.push(Question {
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: presentation.text(),
+            presentation: Some(presentation),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        });
+        app.answers.insert(id.clone(), "original draft".into());
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+        assert_eq!(app.answers[&id], "original draft");
+        assert_eq!(commands.try_iter().count(), 0);
+        app.answers.insert(id.clone(), " Allow ".into());
+        let _ = app.update(Message::Answer(id.clone()));
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "keyboard submit also requires reviewing the diff"
+        );
+        let _ = app.update(Message::ReviewFiles(id.clone()));
+        assert_eq!(app.shell.file_review, Some(id.clone()));
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+        assert!(
+            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),[Cmd::Answer(answer,text)] if answer == &id && text == "Allow")
+        );
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.file_review.is_none());
+        assert_eq!(
+            app.answers[&id], "Allow",
+            "an in-flight answer stays retained"
+        );
     }
 
     #[test]

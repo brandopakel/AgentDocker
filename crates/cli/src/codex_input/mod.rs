@@ -1,5 +1,6 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
 mod config;
+mod file_changes;
 mod ledger;
 mod mcp_answers;
 mod question_events;
@@ -329,6 +330,7 @@ async fn session(
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
     let mut request_ids = std::collections::HashSet::new();
+    let mut file_reviews = file_changes::Reviews::default();
     loop {
         tokio::select! {
             event = question_events.next() => { requests::observe(ledger, &event?)?; }
@@ -342,13 +344,15 @@ async fn session(
                 if event.get("method").is_some() && event.get("id").is_some() {
                     let key = event["id"].to_string();
                     ensure!(request_ids.len() < 10_000 && request_ids.insert(key), "Codex repeated a request ID or exceeded the request history bound");
-                    if let Some(response) = requests::open(client, ledger, &human, &thread, turn.as_deref(), event).await? {
+                    if let Some(response) = requests::open(client, ledger, &human, &thread, turn.as_deref(), event, &mut file_reviews).await? {
                         provider.send(&response).await?;
                     }
                     continue;
                 }
                 let params = &event["params"];
                 if params.get("threadId").and_then(Value::as_str) != Some(&thread) { continue; }
+                file_reviews.observe(&event, &thread, turn.as_deref());
+                file_reviews.check_current()?;
                 match event["method"].as_str() {
                     Some("item/completed") if params["item"]["type"] == "mcpToolCall" => {
                         mcp_answers::observe(client, ledger, &thread, params["turnId"].as_str().unwrap_or_default(), &params["item"]).await?;
@@ -378,6 +382,7 @@ async fn session(
                         requests::turn_ended(client, ledger).await?;
                         mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
+                        file_reviews = file_changes::Reviews::default();
                         println!("\nCodex turn {status}.");
                         activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
                     }
