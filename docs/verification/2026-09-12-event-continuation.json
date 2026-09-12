@@ -1,6 +1,6 @@
 {
   "date": "2026-09-12",
-  "status": "Local acceptance passed at 463f5ae; final CI and actual source review remain pending. This is an event-continuation prerequisite, not completed live daemon replacement.",
+  "status": "Local review correction acceptance passed at 9dda825: 837 Rust tests, 65 Python checks and fresh real CLI/daemon restart/schema/exhaustion checks. Final-head CI and follow-up source inspection remain pending. This prerequisite does not complete live replacement.",
   "scope": "A complete durable database/sequence/anchor cursor, checked bounded replay, separate subscription and replay-complete boundaries, and explicit CLI continuation. Existing provider workers still pause on event-stream loss.",
   "build": {
     "format": 1,
@@ -208,5 +208,179 @@
     "A cursor anchor must remain retained, even if every subsequent event is available. Missing or excessive history fails closed.",
     "The actual trial restarts private daemons with external fixture records and no managed child transfer; it proves event/question persistence and CLI continuation only.",
     "No production launcher, daemon, user provider process or global provider configuration was changed."
-  ]
+  ],
+  "review_follow_up": {
+    "initial_review_comment": 5648192925,
+    "response_comment": 5648204747,
+    "finding": "At SQLite sequence exhaustion, startup must refuse and event writes must not saturate. The counter is u64, so u64 checked_add alone would not enforce the SQLite i64 limit.",
+    "correction": "Check the durable high-water mark against i64::MAX before recovery events and require fallible signed conversion before append SQL.",
+    "build": {
+      "format": 1,
+      "source_commit": "9dda8250b7c0459ba8310cb9dab99906a9da9d71",
+      "source_tree": "c39e5e5cbcbbebbd90f60fbeabff75efe52b0fe0",
+      "source_input_sha256": "43bb383e8ee017ad2ab75035ad6af2a82ba72e511aa6c3cc8d456b0c471b489e",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 14,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "02c0edb2fc1247c7e2d9fa120b6cb7460625b2b7d8a7ae3ca44ac7eeb3c3583d",
+        "agentd": "a063043d102851e444ba9421e1bc128221b5eaba59612bec88cac9e16b0ed548",
+        "agentdocker-ui": "d41574eccaeaaf400db633c1a48dc2785a4bcd7c2d6b0871de519fc56a2a396a"
+      }
+    },
+    "local_check": {
+      "rust_passed": 837,
+      "python_passed": 65,
+      "rust_skipped": 6,
+      "fmt": true,
+      "strict_clippy": true,
+      "doctests": true,
+      "installer_packaging_release": true,
+      "log": "/private/tmp/agentdocker-event-exhaustion-check-2026-09-12.log"
+    },
+    "targeted_log": "/private/tmp/agentdocker-event-exhaustion-targeted-2026-09-12.log",
+    "actual_process_trial": {
+      "path": "/private/tmp/agentdocker-event-continuation-review-live-2026-09-12/result.json",
+      "sha256": "2a62dbce6b6cfa14a38094bf1d98536ee4d74f20c46b833147542d3e333e032b",
+      "result": {
+        "result": "passed",
+        "scope": "Actual immutable CLI/daemon event continuation, schema migration and fail-closed replay trial; no provider process transfer is claimed.",
+        "build": {
+          "format": 1,
+          "source_commit": "9dda8250b7c0459ba8310cb9dab99906a9da9d71",
+          "source_tree": "c39e5e5cbcbbebbd90f60fbeabff75efe52b0fe0",
+          "source_input_sha256": "43bb383e8ee017ad2ab75035ad6af2a82ba72e511aa6c3cc8d456b0c471b489e",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 14,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "02c0edb2fc1247c7e2d9fa120b6cb7460625b2b7d8a7ae3ca44ac7eeb3c3583d",
+            "agentd": "a063043d102851e444ba9421e1bc128221b5eaba59612bec88cac9e16b0ed548",
+            "agentdocker-ui": "d41574eccaeaaf400db633c1a48dc2785a4bcd7c2d6b0871de519fc56a2a396a"
+          }
+        },
+        "prior_build": {
+          "format": 1,
+          "source_commit": "c116d287126fe742da7a85dc753765c332e79cc7",
+          "source_tree": "e379c8611c371b2ad3d1a5a0c34a0891d5606445",
+          "source_input_sha256": "e4efafd1d257561c0e0b6b9d37d418277b19477cd60a20983627df70add12eb9",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 13,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "0863452ec5b73fa39910b2518bdd8f91a1c9217a9d209e0d79054220dc883a6d",
+            "agentd": "f6e377c1ee2260213a605ef95c51bdcce99f775ecf388dfd5d37a935121f0d3d",
+            "agentdocker-ui": "f64b3760aae7d78139b2ebb99c4fecdeb7b4d0f40df03d4aecf0ec585dabe3a8"
+          }
+        },
+        "driver_sha256": "0043b06ed186ae44b8ca6a2655a89acde6244f46e456194ab04b9fe20fa16bf2",
+        "cleanups": [
+          {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          }
+        ],
+        "cli_exits": [
+          {
+            "code": 1,
+            "error": "Error: checked event stream closed; resume from the last processed cursor\n"
+          },
+          {
+            "code": 1,
+            "error": "Error: checked event stream closed; resume from the last processed cursor\n"
+          },
+          {
+            "code": 1,
+            "error": "Error: checked event stream closed; resume from the last processed cursor\n"
+          }
+        ],
+        "question": "4578965e611a4877",
+        "answer": "6a60cead166247c3",
+        "replayed_event_count": 6,
+        "replayed_sequences": [
+          19,
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "question_closures": 1,
+        "answer_retained": true,
+        "first_cursor": {
+          "log": "795d6af8565a953284c3505f2c7edf0f",
+          "seq": 18,
+          "digest": "7383b315bd78ffbccd0297975e1fe138c93467fc34b98646ac9acc1d35ff973f"
+        },
+        "last_cursor": {
+          "log": "795d6af8565a953284c3505f2c7edf0f",
+          "seq": 24,
+          "digest": "a5f5b7d50435f45b0087d58a5975a0402b1c0695190e722e5fc0dac37db268d3"
+        },
+        "wrong_log_refused": true,
+        "pruned_events": 25,
+        "prior_high_water": 25,
+        "after_prune_cursor": {
+          "log": "795d6af8565a953284c3505f2c7edf0f",
+          "seq": 28,
+          "digest": "34ae4a8c6eb79006fd8de7795673e2f936d0b1f75c2678d1824ef1a909e352ed"
+        },
+        "missing_anchor_refused": true,
+        "sequence_not_reused": true,
+        "older_schema_refused_without_database_change": true,
+        "exhausted_sequence_refused_without_database_change": true,
+        "remaining_owned_processes": {},
+        "binary_hashes_unchanged": true
+      }
+    },
+    "trial_improvement": "The correction trial closes the offline SQLite connection before restart and checks the database plus WAL bytes before/after refusal. It also verifies actual exhausted-sequence startup refusal. Earlier reports remain retained."
+  }
 }
