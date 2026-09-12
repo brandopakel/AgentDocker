@@ -1,0 +1,67 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source": {
+    "format": 1,
+    "source_commit": "723c254240448b69fa4e6b834e6490391723ba72",
+    "source_tree": "ec0e7eaab0fc4272eab96f0a4b566b459b2ca252",
+    "source_input_sha256": "a9c02948f571b7d546c478b469f7ed77754d2c8371ce5181ca94dbcdc1bafdef",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "3e7dae4ee818133c12db6c11bc5103d603e6f5c06d2f993f2fa623b3adb9a640"
+    }
+  },
+  "standard_gate": {
+    "rust_passed": 765,
+    "rust_skipped": 6,
+    "python_passed": 58,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "private_log": "/private/tmp/agentdocker-provider-setup-final-check-2026-09-11.log"
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 114,
+    "private_result": "/private/tmp/agentdocker-provider-reliability-iced-2026-09-11/result.json"
+  },
+  "configuration_process_trial": {
+    "result": "passed",
+    "checks": [
+      "different_homes_and_symlink_alias_contend_before_receipt_or_file_writes",
+      "standalone_hook_install_contends_with_guided_apply",
+      "legacy_setup_contends_with_guided_provider_registration",
+      "undo_contention_preserves_applied_receipt_and_provider_entry",
+      "both_saved_plans_apply_and_undo_after_lock_release",
+      "standalone_hook_install_remains_idempotent_after_contention"
+    ],
+    "driver_sha256": "fcf78670022cfb6ce242aaa4e3eee6d419c63d592bed582ac0e86dbe66745431",
+    "binary_sha256": {
+      "agentdocker": "ab5e0da8f9297d491a572f299ef7c6c87fef0b8e3aa60b2616e938257bfbe3ed",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12"
+    },
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0
+    }
+  },
+  "trial_driver": "scripts/provider_setup_smoke.py",
+  "private_trial_result": "/private/tmp/agentdocker-provider-setup-ci-script-2026-09-11/result.json",
+  "ci": "The packaged CLI regression is added to all four Mac/Linux native desktop jobs. Remote final-head checks and review remain required.",
+  "limits": [
+    "Locks coordinate participating AgentDocker setup/apply/undo/hook installers across state directories. Independent editors or provider CLIs do not acquire these locks; exact ownership checks and provider postconditions remain necessary.",
+    "Actual provider registration was simulated by an owned blocking fixture. No live user provider profile was changed.",
+    "This change does not replace an installed daemon or launcher, implement Codex managed input, or complete platform/release acceptance."
+  ]
+}

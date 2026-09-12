@@ -1102,6 +1102,12 @@ impl<I: Iterator> PartitionMapBy for I {}
 // ----- install --------------------------------------------------------------
 
 pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
+    let (_, path) = hook_install_target(args);
+    let guard = crate::setup::mutation::Guard::acquire([path])?;
+    install_hooks_with_guard(args, &guard)
+}
+
+fn hook_install_target(args: &InstallArgs) -> (&'static str, PathBuf) {
     let runtime = match args.host {
         Host::ClaudeCode => "claude-code",
         Host::Codex => "codex",
@@ -1116,6 +1122,15 @@ pub(crate) fn install_hooks(args: &InstallArgs) -> Result<()> {
     } else {
         PathBuf::from(".claude").join("settings.json")
     };
+    (runtime, path)
+}
+
+pub(crate) fn install_hooks_with_guard(
+    args: &InstallArgs,
+    guard: &crate::setup::mutation::Guard,
+) -> Result<()> {
+    let (runtime, path) = hook_install_target(args);
+    guard.covers(&path)?;
     let existing = crate::setup::guided::read_config(&path)?;
     let mut settings: Value = match existing.as_deref() {
         Some(raw) => serde_json::from_str(raw)

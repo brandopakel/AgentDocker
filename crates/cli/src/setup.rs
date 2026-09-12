@@ -4,6 +4,7 @@
 //! every file it changes.
 
 pub mod guided;
+pub(crate) mod mutation;
 
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -15,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::client::Client;
-use crate::hooks::{Host, InstallArgs, install_hooks};
+use crate::hooks::{Host, InstallArgs, install_hooks_with_guard};
 
 /// What one step of setup did, or would do.
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +49,22 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
     }
     let exe = crate::desktop::setup_executable().context("cannot locate the agentdocker binary")?;
     let roots = agentdocker_host::runtimes::Roots::from_env();
+    let mutation = if dry_run {
+        None
+    } else {
+        let mut paths = Vec::new();
+        for runtime in &targets {
+            if let Some(spec) = spec(&runtime.name) {
+                if let Some(path) = agentdocker_host::runtimes::mcp_config_path(spec, &roots) {
+                    paths.push(path);
+                }
+                if spec.hooks {
+                    paths.push(agentdocker_host::runtimes::hook_config_path(spec, &roots));
+                }
+            }
+        }
+        Some(mutation::Guard::acquire(paths)?)
+    };
     for runtime in targets {
         let Some(spec) = spec(&runtime.name) else {
             continue;
@@ -66,6 +83,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             (McpWiring::JsonServers { .. }, _) => {
                 let path =
                     agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("JSON path");
+                if let Some(mutation) = &mutation {
+                    mutation.covers(&path)?;
+                }
                 let outcome = if runtime.name == "claude-code" && runtime.cli.is_some() {
                     // Claude Code keeps its own state in that file; let it
                     // write the entry itself rather than rewrite the file.
@@ -78,6 +98,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             (McpWiring::TomlServers { .. }, _) => {
                 let path =
                     agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("TOML path");
+                if let Some(mutation) = &mutation {
+                    mutation.covers(&path)?;
+                }
                 let outcome = register_toml(&path, &exe, &runtime.name, dry_run)?;
                 report(&runtime.name, "MCP server", &path, outcome);
             }
@@ -91,14 +114,19 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                     agentdocker_host::runtimes::hook_config_path(spec, &roots).display()
                 ),
                 _ => {
-                    install_hooks(&InstallArgs {
-                        host: if spec.name == "codex" {
-                            Host::Codex
-                        } else {
-                            Host::ClaudeCode
+                    install_hooks_with_guard(
+                        &InstallArgs {
+                            host: if spec.name == "codex" {
+                                Host::Codex
+                            } else {
+                                Host::ClaudeCode
+                            },
+                            user: true,
                         },
-                        user: true,
-                    })?;
+                        mutation
+                            .as_ref()
+                            .expect("non-preview setup owns mutation locks"),
+                    )?;
                 }
             }
         }

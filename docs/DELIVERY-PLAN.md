@@ -694,6 +694,25 @@ interruption and waits for an already-exiting daemon before considering a signal
 A normal short run and intentional interruption both completed cleanup; the latter
 retained 21 cycles and two samples, reported interrupted, and left no children.
 
+### September 11: queue recovery and provider configuration coordination
+
+The [Codex queue/recovery prototype](verification/2026-09-11-codex-queue-recovery.json)
+used the actual daemon inbox for peer and human sends. It preserved FIFO, matched
+a previously accepted input to one stored provider item after process restart,
+and acknowledged without starting another turn. An attempt without a matching
+receipt remained queued and refused automatic replay. The native managed bridge,
+its delivery UI and broader active-failure/draft acceptance remain open.
+
+Provider configuration writers now lock canonical targets independently of the
+AgentDocker state directory. Guided apply/undo, legacy setup and hook installation
+share these locks; aliases contend, separate profiles remain independent, and a
+busy delegated target refuses the operation before hook or receipt writes.
+External editors/provider CLIs do not participate in these advisory locks. The
+[configuration checkpoint](verification/2026-09-11-provider-configuration.json)
+passed the full gate (765 Rust tests, 58 Python checks), 114 native workflow
+steps and six actual CLI contention/recovery scenarios. The regression now runs
+in all four Mac/Linux native CI jobs; final-head CI and review remain pending.
+
 ### September 11: completed 100-agent hour
 
 The [immutable daemon trial](verification/2026-09-11-hour-sustained-use.json)
