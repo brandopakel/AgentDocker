@@ -9,6 +9,25 @@ import time
 import threading
 
 
+def wait_for_daemon_lock(path, timeout=5):
+    """A killed daemon's CLOEXEC lock can outlive it in a child before exec."""
+    import fcntl
+    if timeout <= 0:
+        raise ValueError("positive lock deadline required")
+    deadline = time.monotonic() + timeout
+    # Never unlink or bypass a held lock. A persistent owner remains a failure.
+    with Path(path).open("a+b") as lock:
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("fixture daemon lock did not release after exit") from None
+                time.sleep(0.01)
+
+
 def reject_launch(response, inspect_record, remember_record):
     """Retain the primary launch failure even if no agent was registered."""
     evidence = {"launch_response": response}

@@ -1,0 +1,217 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source_commit": "3616bba10c671e068853927ce7e72329da5be3f4",
+  "soak_fix_commit": "fbd1ca64ad78c02f23d93e66c6d0d579e2dd7675",
+  "scope": "Owned test fixture recovery; no production launcher/daemon replacement",
+  "forced_cleanup": {
+    "result": "passed",
+    "driver_sha256": "12eb02e1acb0be28982eda211428497d2464eb116593e43dc985d1ad2635430f",
+    "fixed_soak_sha256": "97a85146c12243e78d3f23e125cfc7f36fe349c61f3313c3d1cb93f7a65f7654",
+    "binary_sha256": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+    "cases": [
+      {
+        "name": "baseline",
+        "outcome": "expected forced failure retained",
+        "remaining_before_independent_cleanup": 2,
+        "cleanup": {
+          "forced": true,
+          "errors": [
+            "shutdown: TimeoutError: owned fault injection: daemon is stopped"
+          ],
+          "exit": -9
+        },
+        "independent_cleanup": {
+          "signals": [
+            {
+              "group": 56913,
+              "signal": "SIGTERM"
+            },
+            {
+              "group": 56914,
+              "signal": "SIGTERM"
+            }
+          ],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      {
+        "name": "fixed",
+        "outcome": "expected forced failure retained",
+        "remaining_before_independent_cleanup": 0,
+        "cleanup": {
+          "forced": true,
+          "errors": [
+            "shutdown: TimeoutError: owned fault injection: daemon is stopped"
+          ],
+          "exit": -9,
+          "fixtures": {
+            "signals": [
+              {
+                "group": 56920,
+                "signal": "SIGTERM"
+              },
+              {
+                "group": 56921,
+                "signal": "SIGTERM"
+              }
+            ],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "independent_cleanup": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    ],
+    "normal": {
+      "result": "passed",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining": []
+    },
+    "binary_unchanged": true,
+    "driver_unchanged": true
+  },
+  "restart_lock": {
+    "result": "passed",
+    "binary_sha256": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+    "driver_sha256": "23e07e0a00abbbff9c05fce00e85f58a542e06391d762371bb7ee64ff916be75",
+    "helper_sha256": "5ca924cdf1ccfd2acc37b8c173798e79168fd22a11848d7704c70d695cc225e8",
+    "scope": "Actual daemon startup with a controlled inherited ownership lock; no container engine",
+    "before": {
+      "daemon_exit": 0,
+      "database_created": false,
+      "listening": false
+    },
+    "after": {
+      "listening": true,
+      "database_created": true,
+      "same_lock_inode": true
+    },
+    "remaining_owned_processes": 0,
+    "binary_unchanged": true,
+    "helper_unchanged": true
+  },
+  "tested_binary_manifest": {
+    "format": 1,
+    "source_commit": "7c6f43d68be6d92afd24f96193aa4e2d23dddcf7",
+    "source_tree": "41fece4ff92b2c0eb49f1af21bb04e4d286bba65",
+    "source_input_sha256": "1f0ec7f5707d993255d9cf6b2c1b5902e5773c20285f8058f595f87d2b3373f1",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "4a2115fb4e47ae6a6d7c0d09227d4f3e7184c2f01f76eff9e9cadf5a593672b9",
+      "agentd": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+      "agentdocker-ui": "bf2caa0d19eb1bedf5a49243ceee504871ef9a9a91f6c9628fd25c520b5812bc"
+    }
+  },
+  "standard_gate": {
+    "rust_passed": 762,
+    "rust_skipped": 6,
+    "python_passed": 64,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "retries": 0,
+    "private_log": "/private/tmp/agentdocker-recovery-final-check-2026-09-11.log",
+    "log_sha256": "1bf5a6dbd6e491bd8843505bdc69a2b488b9b2c20de764233007425918a178c4"
+  },
+  "private_evidence": {
+    "forced_cleanup": {
+      "path": "/private/tmp/agentdocker-soak-forced-cleanup-2026-09-11/result.json",
+      "sha256": "4c3b317612623cfb8633cc6451e2051787b62ff11bd34cc19a79574ef92cdc25"
+    },
+    "restart_lock": {
+      "path": "/private/tmp/agentdocker-restart-lock-2026-09-11/result.json",
+      "sha256": "d9f0e6d1f70dd0edd52f31dff7d0489c7f4496b83ebc79155414e031c9106e84"
+    },
+    "soak_tests": {
+      "path": "/private/tmp/agentdocker-soak-forced-cleanup-tests-2026-09-11.log",
+      "sha256": "44bda0a9534cccd1b8426b40c079eb5eedfee315c46c00f0ff63205fe62ac8c5"
+    },
+    "container_tests": {
+      "path": "/private/tmp/agentdocker-container-lock-tests-2026-09-11.log",
+      "sha256": "ab660c0d947355dfa7f4c5668f81f96800187a26356ec55b16c0216094c96756"
+    }
+  },
+  "prior_ci_failure": {
+    "run": "https://github.com/brandopakel/AgentDocker/actions/runs/34665160500",
+    "source_commit": "c0e0b1f90a25c27ac0f60bf04dc700214818d28a",
+    "phase": "Docker engine-volume relay daemon crash/restart",
+    "diagnostic": "Replacement exited because host.lock was still held after the old daemon was killed and waited. The retained log does not identify the holder.",
+    "private_artifacts": "/private/tmp/agentdocker-daily-docker-failure-artifacts-2026-09-11"
+  },
+  "limits": [
+    "The actual daemon binary is pinned separately from the Python driver; no source-equivalence between different full checkouts is claimed.",
+    "The forced-daemon probe freezes only its owned daemon, shortens the cleanup wait, and retains the expected failed-trial outcome. The old driver leaves two known fixture agents; an independent guard cleans those baseline leftovers.",
+    "The regression also covers a separate fixture process group with a TERM-ignoring descendant and a reused PID that must not be signalled or reaped.",
+    "The controlled inherited-lock probe establishes a compatible failure mode, not the identity of the lock holder in the original CI run. The restart fixture waits on the real lock and fails after five seconds without unlinking or bypassing it.",
+    "Docker and Podman engines were stopped locally. Fresh real engine acceptance remains a CI gate.",
+    "Earlier one-hour and provider results retain their original source and driver hashes; no new overnight or provider-soak acceptance is claimed.",
+    "Final-head CI and follow-up review remain required."
+  ],
+  "process_discovery_followup": {
+    "source_commit": "8d094531357d60018585d33f3ae3cea2f24c0b43",
+    "result": "passed",
+    "review": "https://github.com/brandopakel/AgentDocker/pull/99#issuecomment-5642720286",
+    "change": "Retain failed process discovery, stop verified private fixture groups before their known leader can disappear, then continue daemon shutdown and final fixture cleanup.",
+    "cases": [
+      "Process-table timeout still cleans the owned daemon and fixture group.",
+      "Nonzero process-table exit still cleans the owned daemon and fixture group.",
+      "An undiscovered group member ignores TERM while its leader does not; both are killed before losing the verified group anchor. The strengthened baseline fails both query-error cases.",
+      "Capture errors and forced shutdown remain a failed trial; no live user process or daemon is involved."
+    ],
+    "baseline": {
+      "path": "/private/tmp/agentdocker-capture-unseen-member-baseline-2026-09-11.log",
+      "sha256": "6bd5f1a96c6ed2e02c6b2a70b08dfa50c55fe952c9f0dff27e66ebeb883b853d"
+    },
+    "regressions": {
+      "path": "/private/tmp/agentdocker-capture-unseen-member-fixed-2026-09-11.log",
+      "sha256": "3d5942fc9e27d57833b31e71d7014e68f9b6eddaea82a10f94ddf25a6089da0e"
+    },
+    "standard_gate": {
+      "rust_passed": 762,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "retries": 0,
+      "private_log": "/private/tmp/agentdocker-capture-group-recovery-check-2026-09-11.log",
+      "log_sha256": "44a1844d42e4d69ee3c96dabf7ce3428bd7ded4f8b45292dc0a3448346343a80"
+    },
+    "limits": [
+      "These are real private child process groups with injected discovery/RPC failures, not a new actual-provider or overnight run.",
+      "Fresh final-head CI and follow-up review remain required."
+    ]
+  },
+  "engine_followup": {
+    "source_commit": "2ff8f935a5bbf3754385e16f4b9313ec93cd1bd7",
+    "run": "https://github.com/brandopakel/AgentDocker/actions/runs/34666403880",
+    "docker": "passed",
+    "podman": "passed",
+    "scope": "Real-engine CI after the restart lock barrier; predates the process-discovery follow-up."
+  }
+}
