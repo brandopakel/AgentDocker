@@ -117,7 +117,11 @@ The [provider-question trial](verification/2026-09-11-provider-question-receipts
 at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
 actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
 answers did not become extra ordinary turns, and cancellation did not authorize
-a later reply. Source review and CI for that follow-up remain pending.
+a later reply. PR #104 merged as `8103a0e` after final CI and source inspection.
+The [structured Iced controls](verification/2026-09-11-structured-questions.json)
+passed 808 Rust tests, 65 Python checks and 137 native workflow steps; actual
+Codex Allow and Deny each passed six rendered control steps at the earlier
+`cb17213` checkpoint. Final PR #105 review and CI remain pending.
 
 The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
