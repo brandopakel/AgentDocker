@@ -171,7 +171,7 @@ pub enum Message {
     SendSession(String),
     ConnectionDetails(String),
     ReviewFiles(MessageId),
-    MessageDetail(MessageId),
+    QuestionDetails(MessageId),
     OtherTools,
     AddPath(String),
     ShowAdd,
@@ -299,7 +299,7 @@ impl App {
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
                 | Message::ReviewFiles(_)
-                | Message::MessageDetail(_)
+                | Message::QuestionDetails(_)
                 | Message::Notification(_)
                 | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
                 | Message::Event(iced::Event::Mouse(iced::mouse::Event::WheelScrolled { .. }))
@@ -520,7 +520,7 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
-            Message::MessageDetail(id) => {
+            Message::QuestionDetails(id) => {
                 if self.inbox.iter().any(|message| message.id == id) {
                     self.shell.message_detail =
                         (self.shell.message_detail.as_ref() != Some(&id)).then_some(id);

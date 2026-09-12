@@ -1739,7 +1739,7 @@ impl App {
                     } else {
                         "Show question"
                     },
-                    Some(Message::MessageDetail(message.id.clone())),
+                    Some(Message::QuestionDetails(message.id.clone())),
                     false,
                 ));
             } else {
