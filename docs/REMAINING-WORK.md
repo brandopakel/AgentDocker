@@ -1,103 +1,69 @@
 # Remaining engineering and release work
 
 Updated September 12, 2026. This is the current backlog. Dated audits and
-[verification reports](verification/) preserve the source-specific history;
-older statements that an implemented feature is still missing are superseded here.
+[verification reports](verification/) retain the implementation history,
+source-specific results and failed trials.
 
-PRs #98–#114 have merged after final CI and actual source review (latest merge
-`71f2b31`). Delivered work includes the simpler Current/Needs input/History
-session view, compact rows and Details, identity-safe discovery and offline
-legacy duplicate repair, native notification routing, durable queues, opt-in
-Claude and Codex idle input, shared human/peer submission, question/answer
-receipts, structured approval controls, and the update consumer and scheduler.
-These source changes do not replace the installed launcher or running daemon.
+## Delivered and awaiting integration
 
-The [delivery-status follow-up](verification/2026-09-12-input-delivery-status.json)
-adds durable receipts, queue counts, pause reasons and a compact read-only review
-panel. Paused sessions remain visible after exit, and drafts survive review.
-It also fixes a reproduced macOS socket error that hid saved session logs.
-Local validation at `c116d28` passed 826 Rust tests, 65 Python checks, 137 native workflow
-steps and 25 delivery/restart steps. Actual Codex and Claude trials verify
-ordered receipts and replies with one provider identity; the report retains
-failures, corrected test assumptions and each trial's scope. A prior-source
-ten-minute Codex trial also passed 18 ordered inputs/replies and six idle wakeups.
-Review corrections reject conflicting equal-timestamp reports and distinguish
-log-read failures. Final CI and actual follow-up source review passed at `5778212`;
-PR #108 merged as `1e29142`. One restored-window capture omitted labels; a later
-28-step diagnostic and both physical-window captures displayed them correctly.
-The original incomplete capture is retained and its cause remains unresolved.
+PRs #98–#114 have merged after final CI and actual source review; the latest
+merge is `71f2b31`. Delivered source includes compact Current/Needs input/History
+views, identity-safe discovery and offline duplicate repair, native notification
+routing, durable queues, opt-in Claude/Codex idle input, shared human/peer
+submission, structured questions and receipts, and update checking/downloads.
+The installed launcher and running daemon have not been replaced.
 
-The [Inbox history cleanup](verification/2026-09-12-compact-question-history.json)
-collapses earlier direct questions to a short preview with explicit full-text
-details. Notification navigation expands its target and preserves other drafts.
-At `9525145`, 848 Rust tests, 65 Python checks, 29 native history/review/restart
-steps and 23 additional notification-navigation steps passed. Final CI and actual
-source inspection passed at `f677af1`; PR #113 merged as `b257bcb`. Physical
-Notification Center acceptance remains separate.
+| Candidate | Verified locally | Integration still required |
+| --- | --- | --- |
+| [Turn-scoped Codex permission review](verification/2026-09-12-permission-review.json), PR #115 | 856 Rust tests, 65 Python checks, actual Allow/Deny with three ordered mixed inputs each, and 18 native review/draft/migration steps. Concrete paths and network access are shown; unknown/conflicting grants are refused. | Final CI passed at `70408ab`; actual source review remains. Broader permission forms are separate below. |
+| [Correct CLI sender identity](verification/2026-09-12-cli-sender-identity.json), PR #116 | 859 Rust tests, 65 Python checks, six prior/corrected process scenarios and actual Claude Code 2.1.270 Bash trials. Omitted send/ask/answer/cancel identities use the exact registered provider, preserving the human's question route. | Final CI passed at `359c0b6`; actual source review and integration remain. This does not add idle wake to an existing hook-only session. |
+| [Simpler home and helper filtering](verification/2026-09-12-ux-home.json) | 863 Rust tests and 65 Python checks. Home groups sessions by project, limits attention to three short previews, opens exact questions and preserves drafts/selection. The known Claude Chrome native host is excluded from discovery. Native and actual-provider reports are linked in the evidence. | Final CI, source review and integration remain. The 100-agent comparison measured higher UI CPU (about 6–7% versus 4–5%); profiling is in progress. The installed build still needs the safe switch. |
 
-The [30-minute Codex queue trial](verification/2026-09-12-thirty-minute-codex-queue.json)
-passed at immutable `3ceaa4a`: 60 exact ordered inputs/replies, seven read-only
-response cuts, one controller/conversation/provider record and normal cleanup.
-Original profile and binary hashes stayed unchanged. Its CLI/daemon are identical
-to the queue recovery candidate's tested binaries. This does not establish
-overnight, sleep/reboot or live-replacement acceptance.
+The [30-minute actual Codex trial](verification/2026-09-12-thirty-minute-codex-queue.json)
+passed 60 ordered human/peer inputs and exact replies, seven read-response cuts,
+one retained controller/conversation and normal cleanup. Profile and binary
+hashes were unchanged. It does not establish overnight, sleep/reboot or live
+replacement acceptance.
 
-The [bounded permission review](verification/2026-09-12-permission-review.json)
-at `7051471` passes 856 Rust tests, 65 Python checks, actual Codex Allow/Deny,
-three ordered mixed inputs each and
-18 native review/draft/schema-upgrade/restart steps. It shows concrete paths and
-network access, grants only the current turn, and preserves exact human/provider
-receipts. Local environment IDs and matching legacy/typed permission mirrors
-are accepted; conflicting/unknown selectors remain refused. Final CI/source
-review and broader permission forms are still open.
+## Engineering and acceptance still open
 
-## Engineering still open
-
-The [CLI sender follow-up](verification/2026-09-12-cli-sender-identity.json) fixes
-a reproduced path where commands issued inside an agent defaulted to the human
-sender, sending replies to the wrong queue. Exact registered provider ancestry
-now supplies omitted sender identities, including questions, answers and
-cancellations. At `fc97f8b`, 859 Rust tests, 65 Python checks and six prior/corrected
-CLI process scenarios passed. Actual Claude Code 2.1.270 Bash trials also
-reproduce the old human attribution and verify the corrected provider identity
-and reply destination, with unchanged monitored user profiles. Final CI/source
-review remain; this does not retrofit idle wake into an existing hook-only session.
-
-| Priority | Work | Completion condition | Supporting documents |
-| --- | --- | --- | --- |
-| Top priority; Claude and Codex bounded acceptance | Unified user/agent input queue and idle wake | Managed Claude channels and the owned Codex bridge now have actual idle, busy/mixed-input, question-answer and correlated-receipt evidence under one provider identity. Codex also passes controlled receipt/crash recovery. Compact durable delivery status and read-only guided review are merged with local acceptance and final CI/source review. [Bounded file-change review](verification/2026-09-12-file-change-review.json) now passes 848 Rust tests, 65 Python checks, 19 native review/draft/restart steps and actual Codex Allow/Deny with three ordered peer/human inputs each. PR #112 passed final CI and source review, corrected schema-history documentation and retained intentional uncertainty protection; it merged as `dd0665a`. Complete permission/MCP elicitation/secret-input presentation, broader actual-provider interruptions/reconnect and sustained conversations. Hooks alone remain insufficient for idle wake. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md), [Claude question evidence](verification/2026-09-12-claude-question-queue.json) |
-| High priority; routing implemented, physical acceptance open | Notification clicks open blank Script Editor | Native posting, destination metadata and existing/cold-window navigation are implemented; the AppleScript fallback is removed in source. Complete actual Notification Center click trials, signed posting and installed-launcher acceptance while preserving drafts and handling expired targets. The running old installation still needs the safe switch. | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
-| Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Checked, bounded event continuation now has [local 837-test and actual CLI/daemon restart/schema-upgrade evidence](verification/2026-09-12-event-continuation.json); PR #109 passed final CI/source review and merged as `ebaba5be`. A [Codex event-only reconnect follow-up](verification/2026-09-12-provider-event-reconnect.json) also passes 839 Rust tests and an actual pending-approval socket cut; PR #110 passed final CI/source inspection and merged as `d89a85c`. Supervision now retains output tasks through final log flush before publishing exit; a [reproduced premature-exit log race](verification/2026-09-12-output-drain.json) is corrected with 842-test and actual pipe/PTY shutdown acceptance; PR #111 passed final CI/source review and merged as `c47b2ce`. A [read-only queue recovery follow-up](verification/2026-09-12-queue-read-reconnect.json) passes 850 Rust tests and an actual Codex read-response cut during file approval; PR #114 passed final CI and source inspection at `d22fdba`, with the sole finding withdrawn after caller inspection, and merged as `71f2b31`. Uncertain write interruptions and full replacement remain open. See the [replacement design](LIVE-DAEMON-UPGRADES.md). Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
-| Partial acceptance | Sustained-use bounds and unresolved performance failures | A stable schema-9 checkpoint passed ten minutes each at 1/10/100 agents (255,891 cycles); the final package passed actual crash/schema-upgrade and distinct-source installation/rollback trials. The [immutable schema-11 daemon](verification/2026-09-11-hour-sustained-use.json) also passed one hour at 100 agents and 10,000 files: 1,392,836 cycles, unchanged hashes and clean child cleanup. Overnight, actual-provider queues, reboot/sleep, broader growth/retention and checkout workloads remain. Diagnose the retained incomplete Iced capture; a later correct physical-window/capture trial does not explain it. Diagnose the retained socket timeout; a fresh passing diagnostic campaign does not explain it. | [Current verification](verification/2026-09-10-desktop-delivery.json), [testing standard](TESTING-AND-BENCHMARKS.md), [local trial](LOCAL-TRIAL.md) |
-| Release; consumer, producer and scheduler implemented | Download/update distribution | CLI and Settings update check/download/preview/apply exist with local fixture evidence. The opt-in daily scheduler persists its attempt before checking, preserves install previews and throttles failures across restart. Release automation prepares package.py archives and verified stable/preview feeds. Complete protected-tag signing, hosted archive/feed downloads, formula/cask publication and target Linux acceptance. Registry Cargo publication is not an established supported route. | [Daily checks](verification/2026-09-11-daily-updates.json), [desktop distribution](DESKTOP-DISTRIBUTION.md), [release automation](RELEASE-AUTOMATION.md), [distribution setup](DISTRIBUTION-SETUP.md) |
-| Platform | Linux delivery acceptance | ARM64/x86-64 Linux and Mac graphical/package CI, including update-consumer scenarios, passed checkpoint `d630d9f`. Target-distribution desktop/service/package trials and independent hardware acceptance remain gates. | [Current verification](verification/2026-09-10-desktop-delivery.json), [product direction](PRODUCT-DIRECTION.md), [local trial](LOCAL-TRIAL.md) |
-| Platform | Full native Windows product | Integrate the daemon and clients with named pipes; finish supervised lifecycle, ConPTY, identity-safe stopping/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Core/host/desktop adapter coverage is only a foundation. | [Windows port](WINDOWS-PORT.md), [architecture](ARCHITECTURE.md) |
-| Range selection accepted on this Mac; broader input trials open | Terminal selection and richer interaction | Range selection/copy retains a bounded visible-grid snapshot, preserves Unicode and wrapped text, and releases it after copy or resumed input. The [selection checkpoint](verification/2026-09-11-terminal-selection.json) passed 762 Rust tests, 58 Python checks, 114 native workflow steps and an actual macOS drag/copy/changed-output trial with clipboard restoration. Complete human accessibility/IME and other-platform input trials, and repair observed defects. | [Iced contracts](ICED-DESIGN.md), [desktop guide](DESKTOP-UX.md) |
-| Acceptance | Removed-checkout conflict fix in installed app | Source ignores events for vanished checkout roots and reports lost coverage. The [macOS follow-up](verification/2026-09-11-macos-watcher-recovery.json) reproduces a separate surviving-file event loss during watch reconciliation and fixes it with independent checkout streams; both macOS regressions passed 100 repetitions without retries. Verify after the safe launcher/daemon switch; historical conflict channels remain. | [Bulk receipts and watcher evidence](verification/2026-09-10-bulk-receipts.json) |
-| Later | Optional expansion | Authenticated federation/host namespaces and cross-host lease/routing semantics; additional provider/desktop adapters and engine capabilities such as image-declared volumes. Keep these behind a dependable single-host desktop. | [Product direction](PRODUCT-DIRECTION.md), [architecture](ARCHITECTURE.md), [containers](CONTAINER-ENGINES.md) |
+| Priority | Work remaining | Completion condition and evidence |
+| --- | --- | --- |
+| Top | Complete provider input and review handling | Finish broader permission forms, MCP elicitation and secret-input presentation; test further actual-provider interruptions, uncertain writes and sustained conversations. Preserve one queue/order and exact receipts for human and peer input. Managed Claude channels and the owned Codex bridge have bounded idle/busy/question acceptance; hooks alone cannot wake an idle model. See [message audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md) and [Claude question evidence](verification/2026-09-12-claude-question-queue.json). |
+| High | Verify notification clicks in the installed app | Source removes the AppleScript fallback and implements destinations plus native existing/cold-window routing. Complete actual Notification Center clicks, signed posting and installed-launcher acceptance, including expired targets and retained drafts. See [notification audit](NOTIFICATION-ROUTING-AUDIT.md). |
+| Next | Safe live daemon replacement | Retain child/process-group ownership, exact exit status, PTY/pipe I/O, logs, identity and leases; fence all writers/autostart; establish actual successor readiness and recover from failed transfer. Reconcile uncertain writes without blind replay. `daemon reload` remains unavailable. Event continuation, provider event reconnect, output drain and read-only queue retry are merged prerequisites, not completed replacement. See [replacement design](LIVE-DAEMON-UPGRADES.md). |
+| Next | Apply legacy reconciliation to production state | Offline proof-based repair exists. Complete an actual production inventory/preview and apply verified pairs with backup/recovery after the old daemon can be stopped safely. Do not merge records by display name or stop a live process to tidy the list. Current/History separation and helper filtering improve presentation independently. |
+| Acceptance | Sustained use and unresolved failures | Complete overnight, sleep/reboot, broader queue/retention and checkout workloads. A [one-hour 100-agent/10,000-file daemon trial](verification/2026-09-11-hour-sustained-use.json) passed 1,392,836 cycles; it does not cover the remaining cases. Diagnose the retained incomplete Iced capture and historical socket timeout: later passing trials do not explain them. See [testing standard](TESTING-AND-BENCHMARKS.md) and [local trial](LOCAL-TRIAL.md). |
+| Release | Publish verified downloads and updates | Consumer, opt-in daily scheduler and release archive/feed automation exist. Complete protected-tag signing, hosted archive/feed downloads, formula/cask publication and actual update/rollback acceptance. Cargo registry publication is not an established supported route. See [distribution](DESKTOP-DISTRIBUTION.md), [release automation](RELEASE-AUTOMATION.md) and [setup](DISTRIBUTION-SETUP.md). |
+| Platform | Linux and independent Mac acceptance | Complete target-distribution desktop/service/package trials, a second Mac and physical Intel acceptance. ARM64/x86-64 graphical/package CI and Rosetta execution do not establish those hardware results. See [local trial](LOCAL-TRIAL.md). |
+| Platform | Full native Windows product | Integrate daemon/clients with named pipes; finish supervision, ConPTY, identity-safe stop/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Existing core/host/desktop adapters are foundations. See [Windows port](WINDOWS-PORT.md). |
+| Input | Hands-on accessibility and input methods | Exercise VoiceOver and supported-platform screen readers, keyboard navigation/activation, visible focus, zoom, IME, Unicode and terminal copy/paste. Range selection has [actual macOS acceptance](verification/2026-09-11-terminal-selection.json); broader human trials remain. Repair observed defects. See [Iced contracts](ICED-DESIGN.md). |
+| Installed acceptance | Removed-checkout watcher recovery | Source ignores vanished checkout roots and reports lost coverage; independent macOS checkout streams fix a reproduced surviving-file event loss. Both regressions passed 100 repetitions. Verify after the launcher/daemon switch; historical conflict channels remain. See [watcher evidence](verification/2026-09-11-macos-watcher-recovery.json). |
+| Later | Optional expansion | Authenticated federation/host namespaces, cross-host leases/routing, additional adapters and container capabilities remain behind a dependable single-host desktop. See [product direction](PRODUCT-DIRECTION.md) and [containers](CONTAINER-ENGINES.md). |
 
 ## Manual and operational steps
 
-| Step | What remains | Engineering dependency |
-| --- | --- | --- |
-| Apple signing/notarization | Supply a Developer ID Application identity and private notary profile; run the existing signing, notarization, stapling and Gatekeeper flow on the final app/DMG, then publish verified artifacts. | Packaging automation exists. Credentials, actual service acceptance and release publication remain; local ad-hoc signing is only preview evidence. |
-| Hands-on accessibility/input methods | Trial VoiceOver on macOS and the corresponding screen reader on supported Linux/Windows builds; exercise Tab/Shift-Tab, activation, visible focus, zoom, IME composition, Unicode and terminal copy/paste. | Native accessibility adapters and automated control tests exist. Human findings can create further engineering work. |
-| Switch the old launcher after sessions finish | Verify the built package and installation preview, account for provider/service paths, then activate it and verify the app/CLI/daemon versions. End active work normally before any daemon replacement; keep rollback available. | Updating a launcher affects future launches. It does not upgrade a running daemon. Safe live replacement remains the separate engineering item above. |
-| Independent release acceptance | Run a second-Mac trial, Intel hardware acceptance, target Linux trials and sustained actual-provider sessions against the final candidate. | Historical single-machine/provider evidence and Rosetta execution do not cover these stages. |
+| Step | What remains |
+| --- | --- |
+| Apple signing/notarization | Supply a Developer ID Application identity and private notary profile; run signing, notarization, stapling and Gatekeeper checks on the final app/DMG before publication. Packaging automation exists; ad-hoc signing only verifies a local preview. The September 12 identity check found no valid signing identities. |
+| Human accessibility/IME trials | Run the input trials above and record findings on the actual candidate. Automated control/accessibility checks do not replace them. |
+| Switch the old launcher after sessions finish | Verify package and installation preview, account for provider/service paths, then activate and check app/CLI/daemon versions with rollback available. A launcher update affects future launches and does not upgrade the running daemon. The old daemon lacks the live-transfer protocol. |
+| Independent release acceptance | Run second-Mac, Intel and target-Linux trials and sustained actual-provider sessions against the final candidate. |
 
-The signing/installation commands and private credential handling are in
-[Desktop distribution](DESKTOP-DISTRIBUTION.md). The sequence and pass conditions
-for human and machine trials are in [Local trial](LOCAL-TRIAL.md).
+See [desktop distribution](DESKTOP-DISTRIBUTION.md) for signing and private
+credential handling, and [local trial](LOCAL-TRIAL.md) for the operational sequence.
 
-## Historical evidence and release configuration
+## Retained evidence and release configuration
 
-Use the [delivery plan](DELIVERY-PLAN.md), [message audit](MESSAGE-DELIVERY-AUDIT.md)
-and [verification directory](verification/) for the implementation and review
-history, including failed trials. Historical passing tests do not complete a
-new candidate's release or hands-on acceptance gates.
+The [delivery plan](DELIVERY-PLAN.md), [message audit](MESSAGE-DELIVERY-AUDIT.md)
+and [verification directory](verification/) retain the full history. In
+particular, [delivery-status evidence](verification/2026-09-12-input-delivery-status.json)
+retains the incomplete restored-window capture, and the
+[integration benchmark failure](verification/2026-09-07-integration-benchmark-failure.json)
+retains the socket timeout. Historical passes do not complete a new candidate's
+release or hands-on gates.
 
-A September 9 read-only GitHub check found the Homebrew tap formula at v0.1.0,
+A September 9 read-only GitHub check found the Homebrew formula at v0.1.0,
 the publishing variable and token secret name configured, and only a README in
-`Casks/`. Creating the tap is complete; publishing a newer verified release and
-its app cask remains. That dated check did not inspect secret values or verify
-token validity. See [Distribution setup](DISTRIBUTION-SETUP.md).
+`Casks/`. The tap exists; publishing a newer verified release and app cask remains.
+That check did not inspect secret values or verify token validity.

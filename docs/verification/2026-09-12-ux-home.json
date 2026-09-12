@@ -1,0 +1,797 @@
+{
+  "format": 1,
+  "recorded_date": "2026-09-12",
+  "result": "functional acceptance passed; UI CPU increase under investigation; final CI/source review pending",
+  "runtime_build": {
+    "format": 1,
+    "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+    "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+    "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 16,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+      "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+      "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+    }
+  },
+  "contribution": {
+    "claude_commit": "54ce79b8df8da923b1157e0529487bb471ab32d9",
+    "first_integration": "60e2ce44e2ab6223c01df0262dc7c0b4b8b1acac",
+    "final_runtime": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+    "workflow_wording_correction": "7ce073e9d446ab928ad6f04314b432aacd99f097"
+  },
+  "behavior": [
+    "Sessions are grouped under project names on All projects. Explicit project or projectless selection restores normally; discovery never changes the selected view.",
+    "Needs you shows three items with at most 80 characters of question preview. Show more expands the same list; Answer reveals the exact question without submitting or changing drafts. File and permission review controls remain intact.",
+    "Setup stays in Tools; Channels, Files in use and Command line are under More. Session rows omit repeated start timestamps. Current and History remain separate.",
+    "Known Claude Chrome native-host entry points are excluded from native/interpreter discovery. Real Claude sessions, including Chrome-enabled sessions and literal prompt mentions, remain recognizable."
+  ],
+  "validation": {
+    "source_commit": "7ce073e9d446ab928ad6f04314b432aacd99f097",
+    "rust_passed": 863,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "full_gate": "passed",
+    "full_log": "/private/tmp/agentdocker-ux-home-release-check-2026-09-12.log",
+    "full_log_sha256": "a0fe71f29659213b4b02f63ac2b6486c67843724a77d814ba540e9b8ad6ef291",
+    "runtime_source_identical_to": "d42e32c3381000cb202ee0a4afcef744f2ab94b4"
+  },
+  "native_step_counts": {
+    "home_and_restore": 57,
+    "general_workflows_and_restore": 141,
+    "notification_navigation": 24,
+    "total": 222
+  },
+  "home_acceptance": {
+    "result": "passed",
+    "scope": "Actual Iced home grouping, bounded attention, exact question reveal and retained drafts in private state.",
+    "build": {
+      "format": 1,
+      "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+      "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+      "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 16,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+        "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+        "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+      }
+    },
+    "driver_sha256": "a049867fe37f5f57d3fcb251db16d0b4e9e561835e869d135696954fa244c8bc",
+    "native": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 14.183557333,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 49,
+      "scenario_steps_total": 49,
+      "screenshot_requested": true,
+      "ticks": 246
+    },
+    "restored": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 2.580732208,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 8,
+      "scenario_steps_total": 8,
+      "screenshot_requested": true,
+      "ticks": 80
+    },
+    "question": "8e8c3992ad5d4e95",
+    "exact_human_answer": "bb790bb4a08841c9",
+    "other_questions_retained": 7,
+    "agents_with_retained_same_name_history": {
+      "alpha_live": "80cf1ad38a4e4388a4c52d50053eb297",
+      "beta_live": "f27d580946064f119fc327ec4a8a245c",
+      "alpha_history": "ba1d1e0585a448a3bb8ecdaabdbbd055"
+    },
+    "saved_project_restored": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true,
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-selection-live-2026-09-12/result.json",
+      "sha256": "5cb443fa853dcc4c9dc8340ae5f9e8f84db5383bfb9e6917befa3692f7f0feb8"
+    }
+  },
+  "helper_discovery": {
+    "result": "passed",
+    "scope": "Prior/corrected daemon discovery of owned Claude-shaped helper/session processes; no model is run.",
+    "driver_sha256": "6c62ddd9fe9bfa856dd25856f0c8269cd7aa1f95c8968f70eb0fe2acdb616492",
+    "trials": [
+      {
+        "label": "prior",
+        "build": {
+          "format": 1,
+          "source_commit": "60e2ce44e2ab6223c01df0262dc7c0b4b8b1acac",
+          "source_tree": "cd8c5b4f7773d17a2fa5cd0843c56800f689369e",
+          "source_input_sha256": "c8b82a2d4e6162800062dd3646b54436f7260a282e8c27ab5724b93a909b444b",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "6b60293d74d47476a0b45f98232f62ae1016eb0bfcdcd1d9f8f443c31a26cc46",
+            "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+            "agentdocker-ui": "4660d7600259f085f73fd15a96877fee124a446715fb6de99184f38cb2d5d894"
+          }
+        },
+        "owned": [
+          {
+            "mode": "helper",
+            "pid": 66014,
+            "discovered": true,
+            "started_at": "2026-09-12T22:53:08.228981Z"
+          },
+          {
+            "mode": "session",
+            "pid": 66019,
+            "discovered": true,
+            "started_at": "2026-09-12T22:53:08.427116Z"
+          }
+        ],
+        "observed_browser_helper_1072_discovered": true,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true
+      },
+      {
+        "label": "current",
+        "build": {
+          "format": 1,
+          "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+          "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+          "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+            "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+            "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+          }
+        },
+        "owned": [
+          {
+            "mode": "helper",
+            "pid": 66014,
+            "discovered": false,
+            "started_at": null
+          },
+          {
+            "mode": "session",
+            "pid": 66019,
+            "discovered": true,
+            "started_at": "2026-09-12T22:53:08.427116Z"
+          }
+        ],
+        "observed_browser_helper_1072_discovered": false,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true
+      }
+    ],
+    "remaining_owned_processes": {},
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-chrome-helper-live-2026-09-12/result.json",
+      "sha256": "c541ce070c881be219b570b80292a33f94a61c1347c74efa2f41f68bc14ee256"
+    }
+  },
+  "actual_claude_sender": {
+    "result": "passed",
+    "scope": "Actual Claude print-mode model sends through Bash with implicit CLI sender.",
+    "mode": "fixed",
+    "build": {
+      "format": 1,
+      "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+      "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+      "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 16,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+        "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+        "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+      }
+    },
+    "driver_sha256": "77379fc38f680cb5c065fda8dbca7633ecac3dca4883a972ffb65c27e307647a",
+    "authentication_scope": "Existing access token in owned child environment only; no login or refresh",
+    "provider_version": "2.1.270 (Claude Code)",
+    "provider_pid": 68827,
+    "provider_exit": 0,
+    "agent": {
+      "id": "c9462a42651c4d4eac517448ac4030fb",
+      "spec": {
+        "name": "owned-shell-trial",
+        "runtime": "claude-code",
+        "command": [],
+        "workdir": "/private/tmp/agentdocker-ux-home-claude-sender-live-2026-09-12/workspace",
+        "env": {},
+        "labels": {
+          "registrar": "f1d68bbc-cb96-4213-b382-9e8fa0f86aba",
+          "via": "mcp"
+        }
+      },
+      "status": {
+        "state": "running"
+      },
+      "host": "local",
+      "pid": 68827,
+      "process_started_at": "2026-09-12T22:54:39.485344Z",
+      "managed": false,
+      "project": {
+        "root": "/private/tmp/agentdocker-ux-home-claude-sender-live-2026-09-12/workspace",
+        "source": "git"
+      },
+      "vcs": {
+        "branch": "main",
+        "updated_at": "2026-09-12T22:55:13.435907Z"
+      },
+      "created_at": "2026-09-12T22:54:40.300578Z",
+      "started_at": "2026-09-12T22:54:40.300594Z",
+      "last_seen": "2026-09-12T22:55:13.436047Z"
+    },
+    "message": {
+      "id": "2975e8a870b241b9",
+      "from": "c9462a42651c4d4eac517448ac4030fb",
+      "to": {
+        "kind": "agent",
+        "value": "07951cc040464b1fa64cd13c1e340ed9"
+      },
+      "kind": "chat",
+      "payload": {
+        "text": "SHELL_SENDER_83BA"
+      },
+      "sent_at": "2026-09-12T22:55:13.436036Z"
+    },
+    "reply": "6f05ac67c5dc4255",
+    "reply_destination": "c9462a42651c4d4eac517448ac4030fb",
+    "shell_command": "env -u AGENTDOCKER_AGENT_ID /private/tmp/agentdocker-ux-home-selection-binaries-2026-09-12/agentdocker send --to 07951cc040464b1fa64cd13c1e340ed9 SHELL_SENDER_83BA",
+    "tool_names": [
+      "mcp__agentdocker__list_agents",
+      "Bash"
+    ],
+    "limit": "One-shot Claude exits before reply; this verifies sender and reply queue destination, not reply consumption or idle wake",
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "binary_hashes_unchanged": true,
+    "user_configuration_unchanged": true,
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-claude-sender-live-2026-09-12/result.json",
+      "sha256": "1cef50dc57b67f80b4cefd4d8bc5b773fc6512e015357b8f3436f68bf9a177ba"
+    }
+  },
+  "general_workflows": {
+    "result": "passed",
+    "checks": [
+      "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+    "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "architecture": "arm64",
+    "binary_sha256": {
+      "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+      "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+      "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+    },
+    "first_window": {
+      "samples": 247,
+      "elapsed_seconds": 36.35064512499957,
+      "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+    },
+    "restored_window": {
+      "samples": 19,
+      "elapsed_seconds": 2.671673709002789,
+      "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+    },
+    "elapsed_seconds": 54.51348045899067,
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-workflows-corrected-live-2026-09-12/result.json",
+      "sha256": "d6354653725a08340a82b52739a691090dc4de3caf2326076be10536c8f2bad0"
+    },
+    "driver_source": "7ce073e9d446ab928ad6f04314b432aacd99f097",
+    "driver_sha256": "b18e904befc39900128840a15b083700f46f76478c3f655a9432cd075f51fffb"
+  },
+  "notification_navigation": {
+    "result": "passed",
+    "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "binary_sha256": {
+      "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+      "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+    },
+    "checks": [
+      "existing_window_forwarding",
+      "question_navigation",
+      "older_direct_message",
+      "older_channel_message",
+      "answer_draft_preserved",
+      "channel_draft_preserved",
+      "cold_start_navigation",
+      "navigation_does_not_answer_or_drain"
+    ],
+    "accepted_activations": [
+      "7de0ae439fa14366",
+      "b16796c7935c4134",
+      "12c2d84e25654ea3"
+    ],
+    "driver_sha256": "0c0eb5d74c0e20349fd03705d943e731644e84a5d8f5afa6679e0de5631f0564",
+    "existing_window_steps": 22,
+    "cold_start_steps": 2,
+    "surviving_children": [],
+    "binaries_unchanged": true,
+    "elapsed_seconds": 8.35925925000629,
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-notifications-live-2026-09-12/result.json",
+      "sha256": "8c7e1a8dec93dc965e8422352aa1ce015e44ccd4e29f1a962836802622d07234"
+    }
+  },
+  "prior_attempts": [
+    {
+      "reason": "Fixture attempted duplicate live names, correctly refused by the daemon; actual history uses a retained same-named prior run.",
+      "result": "failed",
+      "error": "{'type': 'error', 'code': 'name_taken', 'message': 'an agent named `Same named agent` is already live; stop it or pick another name'}",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-ux-home-live-2026-09-12/result.json",
+        "sha256": "f5ac1e06db2400ca6517fd109e6be77b9191ffd751e3930112435f82c75d1670"
+      }
+    },
+    {
+      "reason": "Fixture expected mixed-case text for an uppercase eyebrow; corrected without a product change.",
+      "result": "failed",
+      "error": "graphical acceptance failed: Timed out: scenario=Some(WaitText { text: \"Needs you (8)\" }),  connected=true, runtime_rows=14, fixture_discovered=true, capture_requested=false",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-ux-home-distinct-live-2026-09-12/result.json",
+        "sha256": "cf49ee476bcc13c1a4177d99329a3ea3835d2753a3b32e23b4280f5784c922a0"
+      }
+    },
+    {
+      "reason": "135 main steps passed; restored-window assertion still expected No current sessions after the UI copy changed. The corrected script passed all 141 steps.",
+      "result": "failed",
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-ux-home-workflows-live-2026-09-12/result.json",
+        "sha256": "a47264af405a7f8a74518a0c9e85882912c2ad424691f8c21601a035376d589b"
+      }
+    }
+  ],
+  "earlier_home_trial": {
+    "scope": "Before the three-item/80-character refinement and discovery-stable home fix",
+    "source": "60e2ce44e2ab6223c01df0262dc7c0b4b8b1acac",
+    "result": "passed",
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-corrected-live-2026-09-12/result.json",
+      "sha256": "bb5204b2fda21ef3292653f212f0fed4589fcee12ec002a2429fc083ae2083bf"
+    }
+  },
+  "performance": {
+    "status": "Higher UI CPU in current build; diagnosis remains open",
+    "method": "Advisory 100-session UI CPU/RSS comparison without local build or smoke polling.",
+    "limits": "Advisory same-host ABBA measurement. Kernel cumulative CPU differences over 30 seconds after 5 seconds warmup; other user/system workloads may remain. This does not explain historical socket timeouts or establish a performance guarantee.",
+    "raw_result": {
+      "path": "/private/tmp/agentdocker-ux-home-idle-live-2026-09-12/result.json",
+      "sha256": "f3b98d53f869e57302668d0931efe8a8255b97d8a138d5f6e0c83c886a25b106"
+    },
+    "trials": [
+      {
+        "label": "prior",
+        "build": {
+          "format": 1,
+          "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+          "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+          "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+            "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+            "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+          }
+        },
+        "registered_sessions": 100,
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 5.1869644907701105,
+            "median_rss_kib": 156232.0,
+            "maximum_rss_kib": 156240
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.426775559367161,
+            "median_rss_kib": 18560.0,
+            "maximum_rss_kib": 18608
+          }
+        },
+        "window_exit": -15,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true,
+        "remaining_owned_processes": {}
+      },
+      {
+        "label": "current",
+        "build": {
+          "format": 1,
+          "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+          "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+          "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+            "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+            "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+          }
+        },
+        "registered_sessions": 100,
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 7.064987639391666,
+            "median_rss_kib": 155136.0,
+            "maximum_rss_kib": 155168
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.4271852991260077,
+            "median_rss_kib": 18576.0,
+            "maximum_rss_kib": 18608
+          }
+        },
+        "window_exit": -15,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true,
+        "remaining_owned_processes": {}
+      },
+      {
+        "label": "current",
+        "build": {
+          "format": 1,
+          "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+          "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+          "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+            "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+            "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+          }
+        },
+        "registered_sessions": 100,
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 6.016097696692898,
+            "median_rss_kib": 155200.0,
+            "maximum_rss_kib": 155200
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.427373060420807,
+            "median_rss_kib": 18592.0,
+            "maximum_rss_kib": 18624
+          }
+        },
+        "window_exit": -15,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true,
+        "remaining_owned_processes": {}
+      },
+      {
+        "label": "prior",
+        "build": {
+          "format": 1,
+          "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+          "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+          "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+          "source_dirty": false,
+          "target": "aarch64-apple-darwin",
+          "version": "0.1.0",
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+          "state_schema": 16,
+          "installation_lock": 1,
+          "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+          "binary_sha256": {
+            "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+            "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+            "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+          }
+        },
+        "registered_sessions": 100,
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 4.006041394917417,
+            "median_rss_kib": 155968.0,
+            "maximum_rss_kib": 156000
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.36120045364009495,
+            "median_rss_kib": 18784.0,
+            "maximum_rss_kib": 18992
+          }
+        },
+        "window_exit": -15,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "binary_hashes_unchanged": true,
+        "remaining_owned_processes": {}
+      }
+    ],
+    "profiling_follow_up": {
+      "result": "passed",
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-ux-home-idle-profile-live-2026-09-12/result.json",
+        "sha256": "336c59af7824bd1dce5f7bee94f913c76ee4d44b5dcc6dfc090065ed2df42c97"
+      },
+      "trials": [
+        {
+          "label": "prior",
+          "build": {
+            "format": 1,
+            "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+            "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+            "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+            "source_dirty": false,
+            "target": "aarch64-apple-darwin",
+            "version": "0.1.0",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+            "state_schema": 16,
+            "installation_lock": 1,
+            "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+            "binary_sha256": {
+              "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+              "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+              "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+            }
+          },
+          "registered_sessions": 100,
+          "summary": {
+            "window": {
+              "cpu_percent_from_kernel_time": 5.320497999969433,
+              "median_rss_kib": 152016.0,
+              "maximum_rss_kib": 152064
+            },
+            "daemon": {
+              "cpu_percent_from_kernel_time": 0.3916931042922283,
+              "median_rss_kib": 18864.0,
+              "maximum_rss_kib": 18944
+            }
+          },
+          "window_exit": -15,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "binary_hashes_unchanged": true,
+          "remaining_owned_processes": {}
+        },
+        {
+          "label": "current",
+          "build": {
+            "format": 1,
+            "source_commit": "d42e32c3381000cb202ee0a4afcef744f2ab94b4",
+            "source_tree": "d63ee670226500d9fbf90437661fe37b669a2ffb",
+            "source_input_sha256": "1852e5c27c547d5599bddde6f0dd28c053d94dd6261e8c965bef1c3967ba1fe4",
+            "source_dirty": false,
+            "target": "aarch64-apple-darwin",
+            "version": "0.1.0",
+            "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+            "state_schema": 16,
+            "installation_lock": 1,
+            "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+            "binary_sha256": {
+              "agentdocker": "7ccd28f247a975f2cfe28d0d50cf977c6ec7d8f020cea46c57df8638a0aebaa4",
+              "agentd": "1495d622c939aa93dec0a7a42ccab9f2d238cacc87e9354638c3016bfa6a40ca",
+              "agentdocker-ui": "737e28e5d1e9998fa3a6de48d4e28fad9f15a688b18383d2fae43eb8ca0d680e"
+            }
+          },
+          "registered_sessions": 100,
+          "summary": {
+            "window": {
+              "cpu_percent_from_kernel_time": 5.747820406533416,
+              "median_rss_kib": 158048.0,
+              "maximum_rss_kib": 158064
+            },
+            "daemon": {
+              "cpu_percent_from_kernel_time": 0.3941362564480057,
+              "median_rss_kib": 18528.0,
+              "maximum_rss_kib": 18576
+            }
+          },
+          "window_exit": -15,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "binary_hashes_unchanged": true,
+          "remaining_owned_processes": {}
+        }
+      ],
+      "stack_samples": [
+        {
+          "path": "/private/tmp/agentdocker-ux-home-idle-profile-live-2026-09-12/0-sample.txt",
+          "sha256": "c1d9b242cfc0ed7b0548d64df3c50bfa6171177118442250a0bc7b1cab782683"
+        },
+        {
+          "path": "/private/tmp/agentdocker-ux-home-idle-profile-live-2026-09-12/1-sample.txt",
+          "sha256": "35fc7615fdf14ba814c5fbe94eb8335b14d62a9a5c3a466d029402929d8fc925"
+        }
+      ],
+      "finding": "Follow-up kernel-time measurements were closer (5.32% prior, 5.75% current). Active stacks include vImage conversion in both builds; optimized app frames are not symbolized. No cause for the earlier gap has been established."
+    }
+  },
+  "scope_limits": [
+    "Native steps invoke production rendered controls; they do not replace hands-on accessibility/IME trials or physical Notification Center clicks.",
+    "Actual Claude sender trial uses a private profile and one-shot Bash invocation; it verifies reply queue destination after model exit, not idle consumption. Monitored user configuration and immutable binaries stayed unchanged.",
+    "No installed launcher, default daemon or user-owned provider session was replaced or stopped. The observed Chrome helper was only inspected.",
+    "The four-run 100-session ABBA comparison reports a UI CPU increase from approximately 4-5% to 6-7%, with similar memory use. This short advisory measurement is being profiled; it does not explain historical socket timeouts or close sustained-use acceptance."
+  ]
+}
