@@ -147,10 +147,87 @@ pub struct Question {
     /// Who was asked.
     pub to: Destination,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<QuestionPresentation>,
     pub asked_at: DateTime<Utc>,
     /// When the asker gives up. An answer after this is still delivered as
     /// an ordinary message; it just has nobody blocked on it.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Explicit controls for a human question. The fallback text must describe the
+/// same choice, so native and terminal clients review the same request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuestionPresentation {
+    CodexCommand {
+        command: String,
+        cwd: String,
+        reason: String,
+    },
+    Choices {
+        question: String,
+        options: Vec<QuestionOption>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+impl QuestionPresentation {
+    pub fn text(&self) -> String {
+        match self {
+            Self::CodexCommand {
+                command,
+                cwd,
+                reason,
+            } => format!(
+                "Allow Codex to run this command once?\n\nDirectory: {cwd}\nCommand:\n{command}\n\nReason: {reason}\n\nReply Allow or Deny."
+            ),
+            Self::Choices { question, options } => {
+                let mut text = question.clone();
+                for option in options {
+                    text.push_str(&format!("\n- {}: {}", option.label, option.description));
+                }
+                text
+            }
+        }
+    }
+
+    pub fn valid_for(&self, text: &str) -> bool {
+        let bounded = |s: &str| !s.trim().is_empty() && s.len() <= 16_000;
+        let valid = match self {
+            Self::CodexCommand {
+                command,
+                cwd,
+                reason,
+            } => bounded(command) && bounded(cwd) && reason.len() <= 16_000,
+            Self::Choices { question, options } => {
+                let mut labels = std::collections::HashSet::new();
+                bounded(question)
+                    && !options.is_empty()
+                    && options.len() <= 16
+                    && options.iter().all(|o| {
+                        o.label == o.label.trim()
+                            && bounded(&o.label)
+                            && o.description.len() <= 16_000
+                            && labels.insert(&o.label)
+                    })
+            }
+        };
+        valid && text.len() <= 16_000 && self.text() == text
+    }
+
+    pub fn permits_choice(&self, value: &str) -> bool {
+        match self {
+            Self::CodexCommand { .. } => matches!(value, "Allow" | "Deny"),
+            Self::Choices { options, .. } => options.iter().any(|o| o.label == value),
+        }
+    }
 }
 
 impl Question {
@@ -188,6 +265,61 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_questions_match_fallback_text_and_bound_unambiguous_choices() {
+        let command = QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Print the fixture token".into(),
+        };
+        assert!(command.valid_for(&command.text()));
+        assert!(!command.valid_for("Run a different command"));
+        assert!(command.permits_choice("Allow"));
+        assert!(command.permits_choice("Deny"));
+        assert!(!command.permits_choice("Allow for this session"));
+        let option = QuestionOption {
+            label: "Blue".into(),
+            description: "Use the blue theme".into(),
+        };
+        let choice = QuestionPresentation::Choices {
+            question: "Which color?".into(),
+            options: vec![option.clone()],
+        };
+        assert!(choice.valid_for(&choice.text()));
+        assert!(choice.permits_choice("Blue"));
+        assert!(!choice.permits_choice("Red"));
+        let duplicate = QuestionPresentation::Choices {
+            question: "Which color?".into(),
+            options: vec![option.clone(), option],
+        };
+        assert!(!duplicate.valid_for(&duplicate.text()));
+        for label in [" Blue", "Blue ", "Blue\t", "Blue\n", "Blue\u{00a0}"] {
+            let ambiguous = QuestionPresentation::Choices {
+                question: "Which color?".into(),
+                options: vec![
+                    QuestionOption {
+                        label: "Blue".into(),
+                        description: String::new(),
+                    },
+                    QuestionOption {
+                        label: label.into(),
+                        description: String::new(),
+                    },
+                ],
+            };
+            assert!(
+                !ambiguous.valid_for(&ambiguous.text()),
+                "surrounding whitespace must not create a second visible Blue choice"
+            );
+        }
+        let huge = QuestionPresentation::CodexCommand {
+            command: "x".repeat(16_001),
+            cwd: "/owned".into(),
+            reason: String::new(),
+        };
+        assert!(!huge.valid_for(&huge.text()));
+    }
 
     #[test]
     fn topic_patterns() {

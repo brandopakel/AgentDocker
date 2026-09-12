@@ -105,6 +105,7 @@ fn repair_keeps_fifo_payloads_history_and_before_images() {
     store.enqueue(&a, &first, 1000).unwrap(); // identical broadcast copy only
     let project = record("canonical").project.unwrap().id();
     let question = agentdocker_core::Question {
+        presentation: None,
         id: "question".to_owned().into(),
         from: b.to_string(),
         to: Destination::Agent("human".into()),
@@ -360,6 +361,7 @@ fn repair_refuses_conflicting_copies_capacity_and_unsupported_state() {
             }
             5 => {
                 let q = agentdocker_core::Question {
+                    presentation: None,
                     id: "q".to_owned().into(),
                     from: b.to_string(),
                     to: Destination::Agent(a.clone()),

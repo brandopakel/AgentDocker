@@ -67,6 +67,13 @@ other programs running as the same OS user.
 
 ## Questions and command approvals
 
+In Inbox, command requests show the command, folder and reason with **Allow once**
+and **Deny** controls. Multiple-choice questions offer buttons and a text field
+for a different answer. These choices use the existing human answer queue, retain
+other question drafts and become unavailable when the question closes or expires.
+The structured presentation is checked against the complete fallback question
+text, so the native app and CLI describe the same request.
+
 Command approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
 records the provider request before publishing its questions. Only the exact
@@ -86,7 +93,7 @@ restart and are never silently discarded to make room.
 Loss of the question event stream or an uncertain publication/response pauses
 delivery. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-3 record accepts version-1/2 records only without recorded question
+version-4 record preserves version-3 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
@@ -110,7 +117,11 @@ The [provider-question trial](verification/2026-09-11-provider-question-receipts
 at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
 actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
 answers did not become extra ordinary turns, and cancellation did not authorize
-a later reply. Source review and CI for that follow-up remain pending.
+a later reply. PR #104 merged as `8103a0e` after final CI and source inspection.
+The [structured Iced controls](verification/2026-09-11-structured-questions.json)
+passed 808 Rust tests, 65 Python checks and 137 native workflow steps; actual
+Codex Allow and Deny each passed six rendered control steps at the earlier
+`cb17213` checkpoint. Final PR #105 review and CI remain pending.
 
 The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python

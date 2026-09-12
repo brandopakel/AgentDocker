@@ -302,3 +302,22 @@ provider input. The [retained failure](verification/2026-09-11-provider-question
 is an open follow-up for MCP tool-result receipts. The native app-server question
 callback fixes above do not cover that path. Structured Iced approval/choice
 controls are also in progress on a separate branch.
+
+
+### September 11: structured native question controls
+
+PR #104 merged as `8103a0e` after final CI and actual source inspection of
+`6f0ddc9`. The [structured-question checkpoint](verification/2026-09-11-structured-questions.json)
+adds Allow once, Deny and visible choices to Iced, all using the existing durable
+answer queue. Questions retain a validated plain-text fallback. Successful
+answers reveal the next pending question without overriding newer interaction
+or another draft. The final local gate at `0850c0e` passed 808 Rust tests,
+65 Python checks and 137 native workflow steps.
+
+Actual Codex 0.153.4 Allow and Deny trials at `cb17213` each passed six rendered
+control steps with three ordinary inputs, three correlated replies and one
+provider record. The failed first driver and the later viewport/button visual
+corrections remain source-specific evidence. These callbacks do not establish
+physical accessibility/IME acceptance. PR #105 final CI and actual source review
+remain pending. The separate MCP `ask_human` duplicate-input bug is next; it is
+not resolved by the native question controls.

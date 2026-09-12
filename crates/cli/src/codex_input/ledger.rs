@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -228,6 +228,61 @@ mod tests {
     }
 
     #[test]
+    fn version_three_populated_question_history_upgrades_without_losing_routes() {
+        use crate::codex_input::review::{Closed, Outcome, Pending};
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let mut request =
+            Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
+        request.questions[0].message = Some("recent-question".to_owned().into());
+        ledger
+            .update_reviews(|_, closed| {
+                closed.push_back(Closed {
+                    request,
+                    outcome: Outcome::Cancelled,
+                    acknowledged: true,
+                });
+                Ok(true)
+            })
+            .unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = serde_json::json!(3);
+        legacy["closed_reviews"][0]["request"]["questions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("presentation");
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            ledger.record().closed_reviews[0].request.questions[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "recent-question"
+        );
+        assert!(
+            ledger.record().closed_reviews[0].request.questions[0]
+                .presentation
+                .is_none()
+        );
+        ledger.bind_thread("thread".into()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["version"], VERSION);
+        assert_eq!(saved["closed_reviews"], legacy["closed_reviews"]);
+        assert_eq!(saved["retired_questions"], legacy["retired_questions"]);
+    }
+
+    #[test]
     fn pending_questions_and_prepared_responses_survive_restart_without_becoming_input() {
         use crate::codex_input::review::{Closed, Outcome, Pending};
         let home = tempfile::tempdir().unwrap();
@@ -396,6 +451,7 @@ impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
             self.version == VERSION
+                || self.version == 3
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()

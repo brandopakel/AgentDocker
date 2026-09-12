@@ -10,8 +10,8 @@ The three previously listed manual steps do **not** mean all engineering is
 complete. The Iced migration exists, but daily use, safe upgrades, delivery and
 platform support have separate completion conditions.
 
-PRs #99–#103 have now merged after final-head CI and actual review (latest merge
-`cb6e5e5`). The installed launcher and running daemon remain unchanged. The
+PRs #99–#104 have now merged after final-head CI and actual review (latest merge
+`8103a0e`). The installed launcher and running daemon remain unchanged. The
 [Codex input implementation](CODEX-INPUT.md) includes managed idle wake, ordered
 human/peer input, exact receipts, bounded terminal input and conservative recovery.
 Its [bridge](verification/2026-09-11-codex-input-bridge.json) and
@@ -23,8 +23,7 @@ passed 803 Rust tests, 65 Python checks and 123 native steps. Actual Codex trial
 reproduced an approval answer becoming an extra ordinary turn and a cancelled
 question accepting a later reply. The correction passed Allow, Deny, cancellation
 and a controller crash with retained queued answers. Retired question IDs also
-survive receipt rotation and restart. PR #104's final CI and source review remain
-pending. Complete the remaining review surfaces, compact durable status, guided
+survive receipt rotation and restart. PR #104 merged after final CI and actual source inspection of `6f0ddc9`. Complete the remaining review surfaces, compact durable status, guided
 recovery and broader sustained acceptance before closing the input audit.
 
 The #104 review correction at `d3fc784` passed 804 Rust tests and 65 Python
@@ -36,8 +35,12 @@ A separate actual Codex trial then found that MCP `ask_human` returns its human
 answer to the tool while the same message is also accepted as a fourth ordinary
 provider input. The [retained failure](verification/2026-09-11-provider-question-receipts.json)
 is an open follow-up for MCP tool-result receipts. The native app-server question
-callback fixes above do not cover that path. Structured Iced approval/choice
-controls are also in progress on a separate branch.
+callback fixes above do not cover that path. The [structured Iced controls](verification/2026-09-11-structured-questions.json)
+now provide Allow once, Deny and visible choices through the same answer queue.
+The final local gate passed 808 Rust tests, 65 Python checks and 137 native steps.
+Actual Codex Allow and Deny trials each passed six native control steps, three
+ordered inputs/replies and one provider record. PR #105 final CI and review remain
+pending. Physical accessibility/IME trials remain separate acceptance work.
 
 ## Desktop cleanup in this change
 

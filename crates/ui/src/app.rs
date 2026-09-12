@@ -377,6 +377,9 @@ impl App {
             match command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
+                    if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
+                        self.shell.pending_answer_reveal = None;
+                    }
                 }
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));
@@ -516,11 +519,18 @@ impl App {
                         Ok(()) => {
                             self.answers.remove(&id);
                             self.questions.retain(|q| q.id != id);
+                            if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
+                                self.shell.pending_answer_reveal = None;
+                                self.shell.reveal_next_question = true;
+                            }
                             self.say("answered");
                         }
                         // The draft stays exactly where it was, so nothing
                         // typed is lost to a daemon that was not listening.
                         Err(reason) => {
+                            if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
+                                self.shell.pending_answer_reveal = None;
+                            }
                             self.shell.answer_errors.insert(id, reason.clone());
                             self.say(reason);
                         }
@@ -1837,6 +1847,7 @@ mod tests {
         app.inbox = received[..4].to_vec();
         let question = received[3].id.clone();
         app.questions.push(Question {
+            presentation: None,
             id: question.clone(),
             from: "peer".into(),
             to: agentdocker_core::Destination::Agent("user".into()),

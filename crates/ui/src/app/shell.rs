@@ -32,6 +32,8 @@ pub(super) struct State {
     pub error: Option<String>,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
+    pub pending_answer_reveal: Option<MessageId>,
+    pub reveal_next_question: bool,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
     pub channel_target: Option<String>,
     pub generation: u64,
@@ -177,6 +179,7 @@ pub enum Message {
     CatalogSaved(u64, Result<(), String>),
     Draft(MessageId, String),
     Answer(MessageId),
+    AnswerChoice(MessageId, String),
     DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
@@ -235,6 +238,19 @@ async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>
 }
 
 impl App {
+    fn take_answer_reveal(&mut self) -> Option<MessageId> {
+        if std::mem::take(&mut self.shell.reveal_next_question)
+            && self.screen == Screen::Questions
+            && self.shell.pending_notification.is_none()
+        {
+            self.questions
+                .iter()
+                .find(|q| !q.expired(Utc::now()))
+                .map(|q| q.id.clone())
+        } else {
+            None
+        }
+    }
     pub fn subscription(&self) -> Subscription<Message> {
         fn updates() -> impl iced::futures::Stream<Item = Message> {
             iced::stream::channel(1, notifications)
@@ -269,6 +285,22 @@ impl App {
         let mut tasks = Vec::new();
         if matches!(
             &message,
+            Message::Draft(..)
+                | Message::Navigate(_)
+                | Message::SelectProject(_)
+                | Message::SelectSession(_)
+                | Message::Unassigned
+                | Message::Answer(_)
+                | Message::AnswerChoice(..)
+                | Message::Notification(_)
+                | Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
+                | Message::Event(iced::Event::Mouse(iced::mouse::Event::WheelScrolled { .. }))
+        ) {
+            self.shell.pending_answer_reveal = None;
+            self.shell.reveal_next_question = false;
+        }
+        if matches!(
+            &message,
             Message::Navigate(_)
                 | Message::SelectProject(_)
                 | Message::Unassigned
@@ -296,6 +328,11 @@ impl App {
                     tasks.push(self.update(action));
                 }
                 self.drain();
+                if let Some(id) = self.take_answer_reveal() {
+                    tasks.push(crate::controls::reveal(format!(
+                        "notification-question-{id}"
+                    )));
+                }
                 self.schedule_update_check(chrono::Utc::now().timestamp());
                 let before = self.shell.catalog.clone();
                 for project in self
@@ -562,6 +599,21 @@ impl App {
                         .insert(id, value.chars().take(16_000).collect());
                 }
             }
+            Message::AnswerChoice(id, value) => {
+                if self.connected.is_ok()
+                    && !self.sending.contains(&id)
+                    && self.questions.iter().any(|q| {
+                        q.id == id
+                            && !q.expired(Utc::now())
+                            && q.presentation
+                                .as_ref()
+                                .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
+                    })
+                {
+                    self.answers.insert(id.clone(), value);
+                    return self.update(Message::Answer(id));
+                }
+            }
             Message::Answer(id) => {
                 if self.connected.is_ok()
                     && !self.sending.contains(&id)
@@ -577,6 +629,7 @@ impl App {
                 {
                     self.shell.answer_errors.remove(&id);
                     self.sending.insert(id.clone());
+                    self.shell.pending_answer_reveal = Some(id.clone());
                     self.send(Cmd::Answer(id, answer));
                 }
             }
@@ -1236,6 +1289,50 @@ mod tests {
     }
 
     #[test]
+    fn structured_choices_use_one_answer_command_and_reject_stale_or_invalid_clicks() {
+        let (mut app, commands, _) = app();
+        app.connected = Ok(());
+        let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+            command: "printf hello".into(),
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+        };
+        let id = MessageId::from("question".to_owned());
+        let question = Question {
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: presentation.text(),
+            presentation: Some(presentation),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.questions.push(question.clone());
+        app.answers.insert(id.clone(), "earlier draft".into());
+        let _ = app.update(Message::AnswerChoice(
+            id.clone(),
+            "Allow for this session".into(),
+        ));
+        assert_eq!(commands.try_iter().count(), 0);
+        assert_eq!(app.answers[&id], "earlier draft");
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        assert!(
+            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == "Allow")
+        );
+        assert_eq!(app.answers[&id], "Allow");
+        app.sending.clear();
+        app.questions.clear();
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        let mut expired = question;
+        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        app.questions.push(expired);
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
+        assert_eq!(commands.try_iter().count(), 0);
+        assert_eq!(app.answers[&id], "Allow");
+    }
+
+    #[test]
     fn scheduled_checks_wait_for_persistence_and_queue_capacity_then_throttle_failures() {
         let (mut app, commands, messages) = app();
         app.shell.save_enabled = true;
@@ -1390,6 +1487,50 @@ mod tests {
         assert_eq!(commands.try_iter().count(), 0);
     }
 
+    #[test]
+    fn answering_reveals_the_next_question_only_while_that_interaction_is_current() {
+        let (mut app, commands, messages) = app();
+        app.screen = Screen::Questions;
+        app.connected = Ok(());
+        let first = MessageId::from("first".to_owned());
+        let second = MessageId::from("second".to_owned());
+        let question = Question {
+            presentation: None,
+            id: first.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Continue?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.questions = vec![
+            question.clone(),
+            Question {
+                id: second.clone(),
+                ..question.clone()
+            },
+        ];
+        app.answers.insert(first.clone(), "Yes".into());
+        app.answers.insert(second.clone(), "Keep my draft".into());
+        let _ = app.update(Message::Answer(first.clone()));
+        assert!(
+            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(id, _)] if id == &first)
+        );
+        messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
+        app.drain();
+        assert_eq!(app.take_answer_reveal(), Some(second.clone()));
+        assert!(app.take_answer_reveal().is_none());
+        assert_eq!(app.answers[&second], "Keep my draft");
+        app.questions.insert(0, question);
+        app.answers.insert(first.clone(), "Yes".into());
+        let _ = app.update(Message::Answer(first.clone()));
+        let _ = app.update(Message::Draft(second.clone(), "Newer draft".into()));
+        messages.send(Msg::Answered(first, Ok(()))).unwrap();
+        app.drain();
+        assert!(app.take_answer_reveal().is_none());
+        assert_eq!(app.answers[&second], "Newer draft");
+    }
+
     fn notification_app() -> (
         App,
         CommandReceiver,
@@ -1422,6 +1563,7 @@ mod tests {
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
         let question = Question {
+            presentation: None,
             id: action.target.message.clone(),
             from: action.target.agent.to_string(),
             to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
@@ -1483,6 +1625,7 @@ mod tests {
             .unwrap();
         messages
             .send(Msg::Questions(vec![Question {
+                presentation: None,
                 id: action.target.message.clone(),
                 from: "canonical".into(),
                 to: agentdocker_core::Destination::Agent("user".into()),

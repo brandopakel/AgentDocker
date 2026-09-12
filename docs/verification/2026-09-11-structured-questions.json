@@ -1,0 +1,443 @@
+{
+  "format": 1,
+  "date": "2026-09-11",
+  "scope": "Structured Iced command and choice questions; rendered callbacks and owned actual Codex trials",
+  "source_commit": "0850c0ec5f5d0a37a24db5790123a9ff9125f0ff",
+  "standard_gate": {
+    "result": "passed",
+    "rust_tests": 808,
+    "python_checks": 65,
+    "skipped_rust_tests": 6,
+    "includes": [
+      "format",
+      "strict Clippy",
+      "doctests",
+      "installer tests",
+      "packaging",
+      "release build"
+    ],
+    "report": {
+      "path": "/private/tmp/agentdocker-structured-questions-choice-style-check-2026-09-11.log",
+      "sha256": "b12aa9b9a22f94371008f973e2f89a8368871ac425df7303113db13147f73148"
+    }
+  },
+  "native_checkpoints": [
+    {
+      "build": {
+        "format": 1,
+        "source_commit": "cb172130f388d735882463251294362381a5ed3d",
+        "source_tree": "44913c1c78c49e219ed5435948f8dbf6ccee0ae8",
+        "source_input_sha256": "0e29c8ebe8a3614a64e487bea757d3350343491145d36b9a2dc58d4be3910f11",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "e8c747f3af29e851a1f91804966c94d479fd86663e94eb292319878ca6ef37b6"
+        }
+      },
+      "manifest": {
+        "path": "/private/tmp/agentdocker-structured-questions-native-2026-09-11.json",
+        "sha256": "b8c6e470d6c72ac5f2af3e2457a45185881d3df37e47eaaead73f88be5c52762"
+      },
+      "report": {
+        "path": "/private/tmp/agentdocker-structured-questions-iced-2026-09-11/result.json",
+        "sha256": "75e0b06ccea5c06e76afc3f1675993d93af1a60e7da8eff293e990adb3534c0f"
+      },
+      "result": "passed",
+      "checks": [
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance"
+      ],
+      "elapsed_seconds": 54.38683137499902
+    },
+    {
+      "build": {
+        "format": 1,
+        "source_commit": "7c25077ad0973dba850c300356df582e3fdedfe1",
+        "source_tree": "950ab9939ed167e6b5173662ff3f2414508a729e",
+        "source_input_sha256": "61ab08f948f2c70fa051b0bf89ec64d843e7a51c26d8ec773a8011c042bec262",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "3668addf2e0149f2edff8c5cf18ba33fa99b485808ee598adb4a0a4f341bff1a"
+        }
+      },
+      "manifest": {
+        "path": "/private/tmp/agentdocker-structured-questions-reveal-native-2026-09-11.json",
+        "sha256": "dd777f8bf5cc63285c2b0f9fb45a9cce54992f03647a54798bc94f52b04c70c1"
+      },
+      "report": {
+        "path": "/private/tmp/agentdocker-structured-questions-reveal-iced-2026-09-11/result.json",
+        "sha256": "d912f4b220c7d26695945d93fc1edc5502e5eb581cb692ed1b49e61ac1958907"
+      },
+      "result": "passed",
+      "checks": [
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance"
+      ],
+      "elapsed_seconds": 53.8690150409966
+    },
+    {
+      "build": {
+        "format": 1,
+        "source_commit": "0850c0ec5f5d0a37a24db5790123a9ff9125f0ff",
+        "source_tree": "caa3c388264f2d36ab41008b28f06fa70d9dee6d",
+        "source_input_sha256": "97d15d44226c6cb26bc3ea081b4f1fa9ca47bd1a1fc3e3266c37853a60d7bc33",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "f9c1b235ee7615519e025b49b37b799bfb093a2838fc0755bea3b9b4843618a2"
+        }
+      },
+      "manifest": {
+        "path": "/private/tmp/agentdocker-structured-questions-choice-style-native-2026-09-11.json",
+        "sha256": "eff6fffdf9f56b0968240dbb6598d8d23ec3dc6e557bdc5281659e8229973b54"
+      },
+      "report": {
+        "path": "/private/tmp/agentdocker-structured-questions-choice-style-iced-2026-09-11/result.json",
+        "sha256": "fd3701b1c9934a376f09ceb428393fe0c2473289ae4bc0b9b4aac0952a64e0c6"
+      },
+      "result": "passed",
+      "checks": [
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance"
+      ],
+      "elapsed_seconds": 54.14746345800813
+    }
+  ],
+  "actual_codex_trials": [
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-native-approval-2026-09-11/result.json",
+        "sha256": "5fa6c4aa00eca0f0444fe0d24e13cd76a3ac1cb896b536a112a193febe6c4efc"
+      },
+      "result": "failed",
+      "build": {
+        "format": 1,
+        "source_commit": "cb172130f388d735882463251294362381a5ed3d",
+        "source_tree": "44913c1c78c49e219ed5435948f8dbf6ccee0ae8",
+        "source_input_sha256": "0e29c8ebe8a3614a64e487bea757d3350343491145d36b9a2dc58d4be3910f11",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "e8c747f3af29e851a1f91804966c94d479fd86663e94eb292319878ca6ef37b6"
+        }
+      },
+      "driver_sha256": "bd73e63b3b675b86f9a1a58169afc10aa17f591084676f8f63dfdef6f61f9642",
+      "error": "name 'step' is not defined",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-native-approval-controls-2026-09-11/result.json",
+        "sha256": "7a0c41ee70420bbe5ac6211d6cda303876123be8f1c49688e53ca38e2cc57d8f"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "cb172130f388d735882463251294362381a5ed3d",
+        "source_tree": "44913c1c78c49e219ed5435948f8dbf6ccee0ae8",
+        "source_input_sha256": "0e29c8ebe8a3614a64e487bea757d3350343491145d36b9a2dc58d4be3910f11",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "e8c747f3af29e851a1f91804966c94d479fd86663e94eb292319878ca6ef37b6"
+        }
+      },
+      "driver_sha256": "e7be67050db51dd2ec612d4499e51ee9de9c39dc640ee417539d1b85a16257d9",
+      "native_controls": {
+        "steps": 6,
+        "decision": "Allow",
+        "result": "passed",
+        "report": "/private/tmp/agentdocker-codex-native-approval-controls-2026-09-11/ui-capture/result.json"
+      },
+      "completed": [
+        {
+          "message": "ba2cd1cdce344db1",
+          "receipt": {
+            "thread": "01a09427-babb-78e0-b7e5-ba934cb00537",
+            "turn": "01a09427-bd17-7443-89de-7b30a1e324cf",
+            "item": "01a09427-c87b-7ff1-aa12-69bb4b023a2b"
+          }
+        },
+        {
+          "message": "445e0961ae8c4152",
+          "receipt": {
+            "thread": "01a09427-babb-78e0-b7e5-ba934cb00537",
+            "turn": "01a09428-0752-7f31-b028-5e970f756fdb",
+            "item": "01a09428-0767-76f1-88c8-9c3cf160bbe5"
+          }
+        },
+        {
+          "message": "512d6514e55b47ec",
+          "receipt": {
+            "thread": "01a09427-babb-78e0-b7e5-ba934cb00537",
+            "turn": "01a09428-268e-72e1-8de1-f0ad54373c0b",
+            "item": "01a09428-26a0-7340-823a-f894f6450fb3"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "provider_version": "codex-cli 0.153.4",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "report": {
+        "path": "/private/tmp/agentdocker-codex-native-denial-controls-2026-09-11/result.json",
+        "sha256": "1e827f8512e78c8736eb471b1a88fe41e373a12d4465fa83952cf818789f4636"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "cb172130f388d735882463251294362381a5ed3d",
+        "source_tree": "44913c1c78c49e219ed5435948f8dbf6ccee0ae8",
+        "source_input_sha256": "0e29c8ebe8a3614a64e487bea757d3350343491145d36b9a2dc58d4be3910f11",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 12,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "dbd67603fba8c7f46b47c0ec869a3b13a1a75c4c0c95e896b9198c8bcfef662e",
+          "agentd": "8d8a36da99f8f874179e7a84949bf5d709f637c326227bfb7c65f146ca3f106d",
+          "agentdocker-ui": "e8c747f3af29e851a1f91804966c94d479fd86663e94eb292319878ca6ef37b6"
+        }
+      },
+      "driver_sha256": "425e41f5e2b724002df7c422c086b501974dd9aafce67337156a4f3bacb94c14",
+      "native_controls": {
+        "steps": 6,
+        "decision": "Deny",
+        "result": "passed",
+        "report": "/private/tmp/agentdocker-codex-native-denial-controls-2026-09-11/ui-capture/result.json"
+      },
+      "completed": [
+        {
+          "message": "01757299a926414e",
+          "receipt": {
+            "thread": "01a09429-d681-7290-b306-4c872f0a57cf",
+            "turn": "01a09429-d8e9-7aa3-b637-059184f93ab3",
+            "item": "01a09429-dffd-73e2-ad73-3d84c9577594"
+          }
+        },
+        {
+          "message": "25facf4d531f4446",
+          "receipt": {
+            "thread": "01a09429-d681-7290-b306-4c872f0a57cf",
+            "turn": "01a0942a-1f38-7793-a352-4fdce88e0f6c",
+            "item": "01a0942a-1f49-7fc3-9ee5-8f05539bc7f0"
+          }
+        },
+        {
+          "message": "e3b4dfc8cfef4968",
+          "receipt": {
+            "thread": "01a09429-d681-7290-b306-4c872f0a57cf",
+            "turn": "01a0942a-389b-7560-8dbe-a7df1a93e185",
+            "item": "01a0942a-38a9-7a11-bbba-440634c68461"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "provider_version": "codex-cli 0.153.4",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    }
+  ],
+  "findings": [
+    "Typed bounded presentation must exactly match retained fallback question text.",
+    "Allow once, Deny and choice buttons submit through the existing Answer command and shared durable inbox.",
+    "The first functional workflow passed but the next question could lie above the viewport. The correction reveals the next unanswered question after success unless newer user interaction intervened.",
+    "A later visual correction makes choice labels visibly actionable. All three native checkpoints passed 137 steps; actual provider trials retain their earlier cb17213 source.",
+    "The first actual native approval driver failed before submitting an answer because an import was missing. Its original failure is retained alongside corrected-driver results."
+  ],
+  "limits": [
+    "Rendered callbacks do not establish physical input, VoiceOver or IME acceptance.",
+    "A serverRequest/resolved event proves resolution, not independent observation of command execution or nonexecution.",
+    "MCP ask_human duplicate-input receipt handling remains open and is separate from these native provider questions.",
+    "File/permission approvals, MCP elicitation and secret-input presentation remain unsupported.",
+    "Final PR #105 CI and actual source inspection remain pending.",
+    "No installed launcher or active user session was switched."
+  ],
+  "parent_integration": {
+    "pr": 104,
+    "reviewed_head": "6f0ddc9d96c1f5ba34f87f4361b1352be279aa55",
+    "merge": "8103a0e87ce23834bf7f23cc105de337880f71d1",
+    "merged_at": "2026-09-12T05:41:36Z",
+    "followup_review_comment": 5643815724
+  },
+  "review_followup": {
+    "source_commit": "1fdff83437cdb85ed3ae35308c17472db04a1722",
+    "review": 5185645896,
+    "comments": [
+      3995433071,
+      3995433075
+    ],
+    "prior_manual_inspection": 5644265925,
+    "build": {
+      "format": 1,
+      "source_commit": "1fdff83437cdb85ed3ae35308c17472db04a1722",
+      "source_tree": "e31662c9c2cb119092cb49893837f452753548df",
+      "source_input_sha256": "923e0a038b4f0f8e8476df22982870a7a19b549ddf051de9223b5da80698e5dc",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 12,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "951d623a4f22f38dffb82a5016b1dda8e10e95039140063516168a8534ea50ed",
+        "agentd": "79b60ed8116beaeada035c02d01f4b7370d3d5f64b71d304f486f07a3844bf3c",
+        "agentdocker-ui": "13d5c3ab1642b0eb7a6437bd8a77303ee6b2869abf3583c696479c018a3b1a16"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_tests": 809,
+      "skipped_rust_tests": 6,
+      "python_checks": 65,
+      "report": {
+        "path": "/private/tmp/agentdocker-pr105-review-fixes-check-2026-09-11.log",
+        "sha256": "038f4a441c24d2c9e293ae586e163ba1780c67ceae570d812568d308a19cf14c"
+      }
+    },
+    "baseline": {
+      "result": "failed",
+      "reason": "Blue and Blue plus whitespace were accepted as separate visible choices",
+      "report": {
+        "path": "/private/tmp/agentdocker-pr105-label-baseline-2026-09-11.log",
+        "sha256": "8854afac373ffee9f180a2f98f54fed9dd0901eb35c2742964e241b402c12e43"
+      }
+    },
+    "corrections": [
+      "Reject leading/trailing whitespace in choice labels, including nonbreaking spaces.",
+      "Load populated version-3 question history without presentation metadata and preserve routes on the version-4 save."
+    ],
+    "limits": [
+      "Earlier actual provider and native UI reports retain their original sources; they were not relabelled as new trials.",
+      "Final follow-up CI and actual source inspection remain pending."
+    ]
+  }
+}

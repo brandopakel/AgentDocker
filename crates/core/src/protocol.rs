@@ -331,6 +331,8 @@ pub enum Request {
         from: String,
         to: String,
         question: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presentation: Option<crate::QuestionPresentation>,
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
     },

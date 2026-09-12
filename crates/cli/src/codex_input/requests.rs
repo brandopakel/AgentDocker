@@ -52,6 +52,7 @@ pub(super) async fn open(
                 from: ledger.record().binding.agent.clone(),
                 to: pending.human.clone(),
                 question: pending.questions[index].text.clone(),
+                presentation: pending.questions[index].presentation.clone(),
                 timeout_secs: 300,
             },
         )

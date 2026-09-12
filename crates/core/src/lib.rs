@@ -25,7 +25,8 @@ pub use event::{Event, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use message::{
-    Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question, topic_matches,
+    Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question, QuestionOption,
+    QuestionPresentation, topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use project::{ProjectId, ProjectRef, ProjectSource};

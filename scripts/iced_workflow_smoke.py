@@ -131,6 +131,33 @@ def smoke(binary_dir, output):
                 answer = pool.submit(rpc, endpoint, {"op": "ask", "from": agent["id"], "to": human["id"],
                                      "question": "Use the fixture API?", "timeout_secs": 150}, 160)
                 question = until(lambda: rpc(endpoint, {"op": "questions", "agent": human["id"]}).get("questions"))[0]
+                reviews = []
+                for decision in ["Allow", "Deny"]:
+                    presentation = {"kind": "codex_command", "command": "printf fixture", "cwd": str(project),
+                                    "reason": f"Exercise the {decision} control"}
+                    fallback = ("Allow Codex to run this command once?\n\nDirectory: " + presentation["cwd"] +
+                                "\nCommand:\n" + presentation["command"] + "\n\nReason: " + presentation["reason"] +
+                                "\n\nReply Allow or Deny.")
+                    created = rpc(endpoint, {"op": "post_question", "from": agent["id"], "to": human["id"],
+                                             "question": fallback, "presentation": presentation, "timeout_secs": 150})
+                    reviews.append((created["message"], decision))
+                presentation = {"kind": "choices", "question": "Which fixture route?",
+                                "options": [{"label": "Blue", "description": "Use the blue route"},
+                                            {"label": "Green", "description": "Use the green route"}]}
+                fallback = presentation["question"] + "".join(f"\n- {o['label']}: {o['description']}" for o in presentation["options"])
+                created = rpc(endpoint, {"op": "post_question", "from": agent["id"], "to": human["id"],
+                                         "question": fallback, "presentation": presentation, "timeout_secs": 150})
+                reviews.append((created["message"], "Blue"))
+                allow, deny, choice = (item[0] for item in reviews)
+                review_steps = [step("fill", id=f"answer-{choice}", text="Keep this draft until I choose"),
+                                step("wait_control", id=f"answer-{allow}", present=False),
+                                step("focus", id=f"answer-allow-{allow}"), step("wait_focus", id=f"answer-allow-{allow}"),
+                                step("capture", name="command-approval"), step("click", id=f"answer-allow-{allow}"),
+                                step("wait_control", id=f"answer-allow-{allow}", present=False),
+                                step("wait_text", text="Keep this draft until I choose"), step("click", id=f"answer-deny-{deny}"),
+                                step("wait_control", id=f"answer-deny-{deny}", present=False),
+                                step("wait_text", text="Keep this draft until I choose"), step("capture", name="question-choices"),
+                                step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
                 steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
                          step("click", id="sessions-history"), step("wait_control", id=f"session-{previous['id']}", present=True),
@@ -149,7 +176,7 @@ def smoke(binary_dir, output):
                          step("wait_text", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
-                         step("wait_text", text="answered"), step("click", id="projects"),
+                         step("wait_text", text="answered"), *review_steps, step("click", id="projects"),
                          step("click", id=f"session-{agent['id']}"), step("resize", width=720, height=540), step("wait_control", id="attach-session", present=True),
                          step("capture", name="compact-session"), step("click", id="close-session"),
                          step("wait_control", id=f"session-{agent['id']}", present=True),
@@ -207,6 +234,11 @@ def smoke(binary_dir, output):
                     report["first_window"] = launch("workflows", steps)
                     assert answer.result(timeout=5).get("text") == "Use API v2", "answer did not reach asking agent"
                     agent_inbox = rpc(endpoint, {"op": "inbox", "agent": agent["id"], "drain": False})["messages"]
+                    for question_id, decision in reviews:
+                        answers = [m for m in agent_inbox if m.get("reply_to") == question_id]
+                        assert len(answers) == 1 and answers[0]["from"] == human["id"], answers
+                        assert answers[0]["payload"] == {"text": decision}, answers
+                    checks.append("structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts")
                     direct = [message for message in agent_inbox if message["payload"] == "Direct user queue input"]
                     assert len(direct) == 1 and direct[0]["from"] == human["id"], direct
                     assert direct[0]["to"] == {"kind": "agent", "value": agent["id"]}, direct

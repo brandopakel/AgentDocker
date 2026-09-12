@@ -1239,8 +1239,12 @@ impl Daemon {
                 from,
                 to,
                 question,
+                presentation,
                 timeout_secs,
-            } => self.post_question(from, to, question, timeout_secs).await,
+            } => {
+                self.post_question(from, to, question, presentation, timeout_secs)
+                    .await
+            }
             Request::CancelQuestion { agent, message } => self.cancel_question(&agent, &message),
             Request::Answer {
                 from,
