@@ -1,178 +1,32 @@
 # Remaining engineering and release work
 
-Reconciled September 12, 2026 against this checkout's implementation and project
-documents. This is the current backlog summary; dated audits and verification
-reports retain their original source-specific results. It is not a fresh audit
-of remote PRs or other machines. A targeted read-only GitHub check verified the
-Homebrew tap, publishing configuration names, and latest release metadata.
+Updated September 12, 2026. This is the current backlog. Dated audits and
+[verification reports](verification/) preserve the source-specific history;
+older statements that an implemented feature is still missing are superseded here.
 
-The three previously listed manual steps do **not** mean all engineering is
-complete. The Iced migration exists, but daily use, safe upgrades, delivery and
-platform support have separate completion conditions.
+PRs #98–#107 have merged after final CI and actual source review (latest merge
+`645e1d5`). Delivered work includes the simpler Current/Needs input/History
+session view, compact rows and Details, identity-safe discovery and offline
+legacy duplicate repair, native notification routing, durable queues, opt-in
+Claude and Codex idle input, shared human/peer submission, question/answer
+receipts, structured approval controls, and the update consumer and scheduler.
+These source changes do not replace the installed launcher or running daemon.
 
-PRs #99–#106 have now merged after final-head CI and actual review (latest merge
-`90c9e24`). The installed launcher and running daemon remain unchanged. The
-[Codex input implementation](CODEX-INPUT.md) includes managed idle wake, ordered
-human/peer input, exact receipts, bounded terminal input and conservative recovery.
-Its [bridge](verification/2026-09-11-codex-input-bridge.json) and
-[review](verification/2026-09-11-codex-input-review.json) reports retain earlier
-failures and corrections.
-
-The [provider-question follow-up](verification/2026-09-11-provider-question-receipts.json)
-passed 803 Rust tests, 65 Python checks and 123 native steps. Actual Codex trials
-reproduced an approval answer becoming an extra ordinary turn and a cancelled
-question accepting a later reply. The correction passed Allow, Deny, cancellation
-and a controller crash with retained queued answers. Retired question IDs also
-survive receipt rotation and restart. PR #104 merged after final CI and actual source inspection of `6f0ddc9`. Complete the remaining review surfaces, compact durable status, guided
-recovery and broader sustained acceptance before closing the input audit.
-
-The #104 review correction at `d3fc784` passed 804 Rust tests and 65 Python
-checks. Its failed baseline proves version-2 records may lack older question
-routes; those records are now refused without rewriting them. Clean legacy
-ordinary-input records still upgrade with their prepared input intact.
-
-The separate MCP `ask_human` extra-input bug now has an
-[exact receipt correction](verification/2026-09-11-mcp-answer-receipts.json).
-Actual Codex normal delivery and a controller crash after tool acceptance both
-passed with three ordered inputs/replies and one provider identity. The local
-gate at `f42a8b0` passed 813 Rust tests, 65 Python checks and 137 native steps.
-PR #106 merged after final CI and actual source inspection of `1d76a88`.
-The parent review integration passed 814 Rust tests and 65 Python checks.
-The failing baseline is retained.
-
-The [structured Iced controls](verification/2026-09-11-structured-questions.json)
-now provide Allow once, Deny and visible choices through the same answer queue.
-The final local gate passed 808 Rust tests, 65 Python checks and 137 native steps.
-Actual Codex Allow and Deny trials each passed six native control steps, three
-ordered inputs/replies and one provider record. PR #105 merged after its
-809-test review correction, final CI and source inspection of `3f193d0`.
-Physical accessibility/IME trials remain separate acceptance work.
-
-The [Claude question correction](verification/2026-09-12-claude-question-queue.json)
-now posts questions without a second answer path through the MCP result, and
-preserves `reply_to` in channel input. An actual Claude 2.1.269 trial passed four
-ordered model receipts and correlated replies with one provider identity. The
-local gate passed 815 Rust tests, 65 Python checks, 137 native steps and seven
-transport scenarios. Final CI and source review of this follow-up remain pending.
-
-## Desktop cleanup in this change
-
-- Default to **Current** sessions; retain completed runs under **History**.
-  A read-only local diagnosis found ten exited records and two live coding
-  agents, plus the human identity. Showing retained runs beside current work
-  contributed directly to the apparent duplication. No registry data was deleted.
-- Add project-scoped **Needs input**, prioritize unanswered questions, and keep
-  search available across the filters. Finished askers' outstanding questions
-  remain actionable until expiry.
-- Replace large session cards with compact rows. Keep terminal/reply/stop actions
-  in the selected session and move process, checkout and ID information to Details.
-  Narrow windows open the selected session directly with Back to sessions.
-- Put Coordination, Commands and project management under **More**. Show installed
-  tools first in Connections, with paths, versions and capabilities in Details.
-- Suppress known Codex interpreter launchers when their native child is present. This
-  addresses a discovery path found in code, not a demonstrated second live
-  registration on this Mac. Suppress transient discovery/registration overlap
-  only with matching known PID and birth time; retain PID reuse and unknown cases.
-- Extend unit and native workflow coverage for history separation, attention,
-  process identity evidence and narrow-window navigation.
-- Keep successful channel sends visible across navigation and inbox refreshes;
-  group incoming messages by their actual channel destination. The bounded
-  receipt cache is partial history from this window, not a durable transcript.
-- Retain Claude's visual cleanup and plain message text, raise secondary-text
-  and primary-button contrast, and reset session controls when forgetting a project.
-
-Source changes take effect in rebuilt binaries. They do not replace the installed
-launcher or the daemon hosting existing sessions.
-
-## Engineering delivered in this pass
-
-- Codex prompt, tool-completion and Stop hooks deliver bounded inbox context and
-  acknowledge only after successful output. Fresh actual-provider trials cover
-  all three boundaries and correlated peer replies. Live coordination was also
-  exercised with the user's independently launched Claude session.
-- Schema 9 persists pending questions and their original expiry. Message fanout,
-  question creation/closure and ordered events now commit together. Restart
-  trials use real daemon crashes and refuse an incompatible downgrade without
-  changing the newer state.
-- Startup now refuses ambiguous duplicate live names before recovery writes.
-  It no longer arbitrarily retires a record and releases its protection. This
-  prevents a destructive recovery path; it does not merge legacy identities.
-- Added sustained-use and restart drivers with exact executable/driver hashes,
-  private fixtures and owned-process cleanup. Sustained campaigns snapshot the
-  daemon so concurrent builds cannot invalidate the executable mid-trial.
-- Added verified feed generation and made Homebrew publication depend on uploaded
-  release assets. Native graphical/package CI now covers ARM64 and x86-64 on both
-  macOS and Linux; all four jobs passed the schema-9 implementation checkpoint.
-- Fixed benchmark selection to use Cargo's emitted executable paths and verify
-  their hashes before/after workloads. A custom target directory previously left
-  the runner pointing at potentially stale `target/release` binaries. This does
-  not establish the cause of the older retained socket timeout.
-- Implemented notification destination metadata, native response handling and
-  forwarding to the window for the correct daemon origin. Removed the macOS
-  AppleScript fallback and preserved drafts during navigation. Release/native
-  click trials remain open in the notification audit; the installed launcher is
-  unchanged. Bundled Inter font licenses now accompany Mac and Linux packages.
-
-Schema 10 now retains addressed messages during streaming and rejects full inboxes without silent eviction. Its full standard gate passed 701 Rust tests (six skipped), 48 Python checks and lint/package/release gates. Actual-daemon trials passed reconnect/crash recovery, over-limit schema-9 migration, atomic full-recipient rejection, byte pressure and downgrade refusal. Provider input/wake adapters remain open below.
-
-The opt-in Claude channel adapter now has actual idle/busy/mixed-input evidence
-at clean source `c9677ab`: four model receipts and correlated replies, six
-release-transport scenarios, 114 native workflow steps and 23 notification
-navigation steps. The standard gate passed 715 Rust tests and 48 Python checks.
-The trial preserved an unsubmitted terminal draft. Three global Claude usage
-counters changed during concurrent use; the failed whole-file guard and narrower
-backup comparison are retained in the [report](verification/2026-09-11-claude-channel-input.json).
-
-The updater now checks the feed, verifies and previews its archive, and applies
-through the existing installation pins. Its CLI and native Settings path have
-isolated fixture evidence. Release automation now prepares installable archives
-for four native targets and a verified stable/preview feed before publishing a
-draft release. Real signing, hosted-release and update-download acceptance remain.
-
-[PR #98](https://github.com/brandopakel/AgentDocker/pull/98) merged as `aca89e1`
-after all CI passed and CodeRabbit reviewed `f9caf00` with no new actionable
-findings. This completes the engineering and review gate for
-[proven offline duplicate repair](IDENTITY-REPAIR.md), including transactional
-removal of canonical records and old-ID routes. Validation reached 756 Rust tests
-and 54 Python checks. Ambiguous identities and live/managed ownership transfers
-remain refused; applying a repair to installed user state still requires a
-quiescent maintenance window. No production registry repair was performed.
-
-The [fixture-recovery follow-up](verification/2026-09-11-recovery-fixtures.json)
-reproduces and fixes leaked known agent groups after forced soak shutdown, with
-birth-identity guards and bounded descendant cleanup. The forced outcome remains
-a failed trial. Container restart fixtures also wait for actual daemon lock
-release after a crash; permanent contention still fails. The full gate passed
-762 Rust tests and 65 Python checks, including failed process discovery and an
-undiscovered TERM-ignoring group member. Docker and Podman passed the preceding
-lock-barrier head; the final changes later passed CI and review and merged in #99.
-
-## Follow-up implementation and review
-
-The [integrated follow-up gates](verification/2026-09-11-followup-integration.json)
-passed through 770 Rust tests and 65 Python checks. Terminal selection and
-recovery fixes [#99](https://github.com/brandopakel/AgentDocker/pull/99) merged as
-`e5579cf`; coordinated provider configuration
-[#100](https://github.com/brandopakel/AgentDocker/pull/100) merged as `e290c7f`.
-Both passed final CI and source review. Canonical-target locks now coordinate
-guided apply/undo, legacy setup and hook installation across AgentDocker homes;
-independent editors/provider CLIs remain outside these advisory locks, with
-exact-entry checks and receipts still guarding ownership.
-
-Opt-in daily update checks (#101, `57a102a`) and direct session messages
-(#102, `5a2d231`) merged after final CI and source review.
-Review of session messaging reproduced a newer draft being cleared after the
-user retyped the submitted words. The [correction](verification/2026-09-11-retyped-drafts.json)
-tracks edits for each pending send, preserving the newer draft for both sessions
-and channels. It passed 771 Rust tests, 65 Python checks and 123 fresh native
-steps. Those review and CI gates are complete. Earlier actual-Claude reports keep
-their own source and executable identities.
+The [delivery-status follow-up](verification/2026-09-12-input-delivery-status.json)
+adds durable receipts, queue counts, pause reasons and a compact read-only review
+panel. Paused sessions remain visible after exit, and drafts survive review.
+It also fixes a reproduced macOS socket error that hid saved session logs.
+Local validation passed 824 Rust tests, 65 Python checks, 137 native workflow
+steps and 25 delivery/restart steps. Actual Codex and Claude trials verify
+ordered receipts and replies with one provider identity; the report retains
+failures, corrected test assumptions and each trial's scope. Final CI and actual
+source review of this follow-up remain pending.
 
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
 | --- | --- | --- | --- |
-| Top priority; Claude and Codex bounded acceptance | Unified user/agent input queue and idle wake | Managed Claude channels and the owned Codex bridge now have actual idle, busy/mixed-input, question-answer and correlated-receipt evidence under one provider identity. Codex also passes controlled receipt/crash recovery. Complete compact durable delivery status and guided recovery, file/permission/MCP elicitation/secret-input presentation, broader actual-provider interruptions/reconnect and sustained conversations. Hooks alone remain insufficient for idle wake. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md), [Claude question evidence](verification/2026-09-12-claude-question-queue.json) |
+| Top priority; Claude and Codex bounded acceptance | Unified user/agent input queue and idle wake | Managed Claude channels and the owned Codex bridge now have actual idle, busy/mixed-input, question-answer and correlated-receipt evidence under one provider identity. Codex also passes controlled receipt/crash recovery. Compact durable delivery status and read-only guided review are implemented with local acceptance; final CI/review are pending. Complete file/permission/MCP elicitation/secret-input presentation, broader actual-provider interruptions/reconnect and sustained conversations. Hooks alone remain insufficient for idle wake. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md), [Claude question evidence](verification/2026-09-12-claude-question-queue.json) |
 | High priority; routing implemented, physical acceptance open | Notification clicks open blank Script Editor | Native posting, destination metadata and existing/cold-window navigation are implemented; the AppleScript fallback is removed in source. Complete actual Notification Center click trials, signed posting and installed-launcher acceptance while preserving drafts and handling expired targets. The running old installation still needs the safe switch. | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
 | Partial acceptance | Sustained-use bounds and unresolved performance failures | A stable schema-9 checkpoint passed ten minutes each at 1/10/100 agents (255,891 cycles); the final package passed actual crash/schema-upgrade and distinct-source installation/rollback trials. The [immutable schema-11 daemon](verification/2026-09-11-hour-sustained-use.json) also passed one hour at 100 agents and 10,000 files: 1,392,836 cycles, unchanged hashes and clean child cleanup. Overnight, actual-provider queues, reboot/sleep, broader growth/retention and checkout workloads remain. Diagnose the retained socket timeout; a fresh passing diagnostic campaign does not explain it. | [Current verification](verification/2026-09-10-desktop-delivery.json), [testing standard](TESTING-AND-BENCHMARKS.md), [local trial](LOCAL-TRIAL.md) |
@@ -196,69 +50,15 @@ The signing/installation commands and private credential handling are in
 [Desktop distribution](DESKTOP-DISTRIBUTION.md). The sequence and pass conditions
 for human and machine trials are in [Local trial](LOCAL-TRIAL.md).
 
-## Distribution contradiction resolved
+## Historical evidence and release configuration
 
-[Product direction](PRODUCT-DIRECTION.md) and the root README previously said no
-Homebrew tap existed, while [Distribution setup](DISTRIBUTION-SETUP.md) marked it
-done. A September 9 read-only GitHub check found the
-[tap formula](https://github.com/brandopakel/homebrew-tap/blob/main/Formula/agentdocker.rb)
-at v0.1.0, the tap repository variable and token secret name configured, and only
-a README in `Casks/`. The latest published release metadata still named v0.1.0.
-The source workflow already generates and attempts to publish the formula/cask.
-Creating the tap is complete; publication of a newer verified release and its app
-cask remains. Secret contents were not read and token validity was not tested.
+Use the [delivery plan](DELIVERY-PLAN.md), [message audit](MESSAGE-DELIVERY-AUDIT.md)
+and [verification directory](verification/) for the implementation and review
+history, including failed trials. Historical passing tests do not complete a
+new candidate's release or hands-on acceptance gates.
 
-## Reading the older documents
-
-The root README, docs index, product direction, architecture, implementation
-notes, delivery/native trackers, desktop/Iced guides, distribution/setup guides,
-activity/integration acceptance, testing/local trial, Windows and container docs
-were cross-checked for remaining work. The September 4/6 audits and September 7/8
-review ledgers describe their own baselines. The runner notes and container test
-README define validation procedures rather than additional product features.
-
-Restore/private-state fixes, pre-exec launch gating, atomic native exit, bounded
-queues, setup preview/apply/undo, profile routing, installation retention, joined
-MCP/hooks identity and the Iced migration have implementations. Do not turn old
-audit findings into new “missing features” without checking later corrections.
-Conversely, an architecture row marked “done” or a historical green CI run does
-not complete the release, platform, soak or human-acceptance work above.
-
-The [local cleanup verification](verification/2026-09-09-desktop-simplification.json)
-records 671 passing Rust tests (six skipped), 43 Python checks, strict lint,
-packaging/release build, the final 83-test UI recheck, and 96 + 6 native workflow
-steps against the packaged binaries. The preview is 24.3 MiB installed and
-10.4 MiB zipped. Its source-input hash precedes the final guide/report-only edits.
-Public release and hands-on acceptance remain separate gates.
-
-The [September 10 delivery verification](verification/2026-09-10-desktop-delivery.json)
-records the later code checkpoint `bf39280`: 686 Rust tests (six skipped), 48 Python
-checks, lint/package/release gates, 105 packaged native workflow steps, actual
-Codex delivery, crash recovery and distinct-source installation/rollback. Its Mac
-preview is 24.8 MiB installed and 10.6 MiB zipped. The report separately pins the
-immutable 30-minute sustained-use checkpoint and the fresh diagnostic benchmark;
-neither proves idle-agent wake or completes the remaining engineering table.
-
-The [button-interaction follow-up](verification/2026-09-10-button-interaction.json)
-records code checkpoint `5772736`: 687 Rust tests (six skipped), 48 Python checks,
-the full standard gate and 105 fresh packaged native workflow steps. Primary
-labels retain the tested contrast during hover and press in both themes. The
-packaged CLI/daemon hashes match the preceding delivery/crash-recovery trial;
-the UI has its own new binary and workflow evidence. Notification click routing
-and provider idle wake remain open requirements.
-
-The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clean source `a9b54b5` and matching immutable binaries: 701 Rust tests, 48 Python checks, five actual queue scenarios, seven restart/upgrade checks, 105 native workflow steps and 23 notification-navigation steps passed. Provider input acceptance/idle wake and physical Notification Center clicks remain distinct open gates.
-
-The [receipt follow-up](verification/2026-09-10-message-receipts.json) pins `f81df24`: MCP reads retain messages by default, agents explicitly acknowledge received IDs, and the desktop can dismiss one received message without disturbing later arrivals or drafts. Validation passed 704 Rust tests, 48 Python checks, real MCP interruption/receipt scenarios, 110 native workflow steps and 23 notification-navigation steps. Provider idle-wake integration remains open.
-
-The [bulk-receipt checkpoint](verification/2026-09-10-bulk-receipts.json) pins `796270a`: Dismiss shown clears only currently displayed received messages; unanswered questions appear once, CLI output exposes receipt IDs, repeated acknowledgements emit no false events, and legacy duplicate channel membership produces one delivery. Validation passed 710 Rust tests, 48 Python checks, actual queue/MCP trials, 114 native workflow steps on a diagnostic repeat, and 23 notification-routing steps. The original idle-sample process exit is retained as unexplained; high UI resource use also needs investigation. These results do not complete provider idle wake or physical notification-click acceptance.
-
-The [update and release checkpoint](verification/2026-09-11-desktop-release.json)
-pins clean source `a910d81`: 727 Rust tests, 54 Python checks, strict lint/package
-gates, 114 packaged native steps and 11 packaged updater scenarios passed.
-Malformed versions, ambiguous feeds, archive links and failed downloads now have
-explicit rejection coverage. Release automation produces installable archives
-and keeps older/preview releases from moving stable distribution backwards.
-The earlier large light-theme shadow allocation was corrected; measured native
-resource samples are retained separately from long-duration acceptance. Public
-signing, hosted downloads, scheduled checks and safe daemon transfer remain open.
+A September 9 read-only GitHub check found the Homebrew tap formula at v0.1.0,
+the publishing variable and token secret name configured, and only a README in
+`Casks/`. Creating the tap is complete; publishing a newer verified release and
+its app cask remains. That dated check did not inspect secret values or verify
+token validity. See [Distribution setup](DISTRIBUTION-SETUP.md).

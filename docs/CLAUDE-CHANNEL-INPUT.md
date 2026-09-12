@@ -150,8 +150,8 @@ contained no authentication token. The monitored user configuration hashes were
 unchanged and the owned processes exited. The UI's separate 26-step rendering
 trial covers the checkbox; it does not replace this actual-provider evidence.
 
-Codex's supported input adapter, durable provider
-delivery status in the desktop, actual-provider reconnect/ambiguous receipt,
+The [owned Codex input adapter](CODEX-INPUT.md) and durable desktop receipt
+status are implemented. Actual-provider reconnect/ambiguous receipt,
 additional versions/policies and sustained-use acceptance remain in the
 [message delivery audit](MESSAGE-DELIVERY-AUDIT.md).
 
@@ -172,5 +172,24 @@ shows one answer in the native busy-input attachment and a posted-ID-only tool
 result. The local gate passed 815 Rust tests, 65 Python checks, 137 native steps
 and seven transport scenarios. The raw-response driver failure and provider
 history parser correction remain recorded. User configuration hashes were
-unchanged, and all owned fixture processes exited. Final CI and source review
-remain pending; broader sustained/recovery and durable UI status work remain.
+unchanged, and all owned fixture processes exited. PR #107 merged as `645e1d5`
+after final CI and actual source review of `fb73bb6`; broader sustained/recovery
+acceptance remains. The delivery-status follow-up is recorded below.
+
+
+### Durable delivery status
+
+With schema 13, explicit channel acknowledgements persist a receipt before
+removing input from the queue. Iced shows the actual queue count and last receipt;
+a failed channel retains a bounded pause reason. **Review delivery** shows that
+reason and recent saved logs without changing the queue or current draft.
+Paused sessions remain in **Needs input** after exit. An unavailable count from
+an older daemon is not shown as zero; a disconnected window labels cached status.
+
+The [status evidence](verification/2026-09-12-input-delivery-status.json) includes
+seven transport scenarios and an actual Claude 2.1.269 trial with three ordered
+receipts/replies under one identity. That bounded trial used one initial typed
+authorization turn. An earlier unprimed trial requested further authorization;
+receipt is not permission to act. The retained report explains a controller
+replay mistake and the separate read-only audit of saved events/tool calls.
+Final CI/source review of this follow-up and broader recovery acceptance remain.

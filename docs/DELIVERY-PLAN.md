@@ -979,5 +979,34 @@ shows one answer in the native busy-input attachment and a posted-ID-only tool
 result. The local gate passed 815 Rust tests, 65 Python checks, 137 native steps
 and seven transport scenarios. The raw-response driver failure and provider
 history parser correction remain recorded. User configuration hashes were
-unchanged, and all owned fixture processes exited. Final CI and source review
-remain pending; broader sustained/recovery and durable UI status work remain.
+unchanged, and all owned fixture processes exited. PR #107 merged as `645e1d5`
+after final CI and actual source review of `fb73bb6`; broader sustained/recovery
+acceptance remains. The delivery-status follow-up is recorded below.
+
+
+### September 12: durable delivery status and focused review
+
+PR #107 merged as `645e1d5` after final CI and actual source inspection of
+`fb73bb6`. The [delivery-status checkpoint](verification/2026-09-12-input-delivery-status.json)
+adds schema-13 provider receipts before queue acknowledgement, exact queue
+counts and durable bounded pause reasons. Iced shows the latest receipt and a
+small **Review delivery** panel with the reason and a bounded read-only log.
+It preserves drafts and keeps paused sessions in **Needs input** after exit.
+Receipt status confirms receipt, not task completion or authorization.
+
+The final source `33d52a3` passed 824 Rust tests, 65 Python checks, 137 native
+workflow steps and 25 delivery/restart steps. Actual Codex and Claude trials
+used identical final CLI/daemon binaries and each produced three ordered input
+receipts and correlated replies with one identity. Claude's successful bounded
+trial had one initial typed authorization turn. Its controller incorrectly
+stopped at the subscription-ready marker before event replay; a separate
+read-only audit verified persisted events and provider tool calls. The original
+failed reports remain unchanged. A separate unprimed Claude trial requested
+further authorization and did not complete all three inputs.
+
+Native trials reproduced macOS `EINVAL` when setting a log read timeout after
+a fast peer closed. Setting it before transmission fixes the reader; saved logs
+survive restart. The report retains the failed regression, corrected driver
+expectation and fresh native evidence. This does not explain the older benchmark
+timeout. Final CI/source review remain pending; other provider review surfaces,
+sustained/reconnect acceptance, live upgrade and platform/release gates remain.

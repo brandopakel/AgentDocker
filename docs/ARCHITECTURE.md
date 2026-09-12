@@ -229,7 +229,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `claim {agent, resource, mode?, amount?, ttl_secs?, note?, wait_secs?}` | `lease`, `error(conflict)`, `error(deadlock)` or `error(forbidden)` | `amount` spends a `quota:` resource and is ignored for every other kind; policy is checked once, before the first attempt | `path:` uses canonical physical absolute keys; `file:` is a validated checkout alias; conflict `details.held_by` lists the blocking leases; `wait_secs` (max 600) queues in arrival order and retries when it is this waiter's turn; a wait that would close a cycle is refused at once with `details.cycle` |
 | `activity {agent?, project?, all?}` | `activity {activity: AgentActivity[]}` | `unknown`, `starting`, `working`, `blocked {resource, held_by, since}`, `idle`, `finished`; blocked first. Presence or configuration alone never proves idle. `queued_inputs` is the durable inbox count (absent on older daemons). |
 | `report_activity {agent, observation: {activity, observed_at}}` | `ok`, `error(invalid)` | explicit `working` or `idle` observation; rejects future/stale reports, ignores older/equal reports, expires after five minutes; commits record and `agent_activity_reported` event together. CLI `report-activity --as`, MCP `report_activity`, and lifecycle hooks share this operation. |
-| `report_input {agent, process_started_at, observed_at, report}` | `ok`, `error(invalid)` | adapter-only ready/paused or received evidence; matches the live process birth and provider, rejects stale/future observations and reports older than the retained observation, validates bounded receipt data and records only exact IDs still queued for that agent; repeated/unknown IDs are no-ops, and commits the agent plus `input_delivery_reported` before the adapter's separate ACK. CLI `report-input --as --process-started-at --json` is hidden from normal help. |
+| `report_input {agent, process_started_at, observed_at, report}` | `ok`, `error(invalid)` | adapter-only ready/paused or received evidence; matches the live process birth and provider, rejects stale/future observations and reports older than the retained observation, validates bounded receipt data and records only exact IDs still queued for that agent; repeated/unknown IDs are no-ops, and commits the agent plus `input_delivery_reported` before the adapter's separate ACK. Paused reports retain a nonblank plain reason of at most 2,048 bytes; adapters use the outer error context, not the full provider error chain. Ready/Received clear the pause and retain receipt history. CLI `report-input --as --process-started-at --json` is hidden from normal help. |
 | `waiting` | `waiting {waiting: Waiter[]}` | the claim queue, oldest first |
 | `contest_open {agent, project?, task, metric, entrants?, channel?}` | `contest {contest, standing}` | announces a task and fixes the measure; opens a channel for the entrants unless told not to |
 | `contest_enter {agent, contest}` | `contest {contest, standing}` | join an open contest; a latecomer is admitted to its channel too |
@@ -793,3 +793,18 @@ Settings exposes check, download/preview and apply through the same CLI path.
 [Release automation](RELEASE-AUTOMATION.md) produces installable archives and a
 verified feed for all four native targets; stable Mac assets require Developer ID
 signing and notarization before publication.
+
+
+### Delivery review in the desktop
+
+Schema-13 `AgentRecord.input_delivery` persists the latest provider receipt and
+pause reason; `activity.queued_inputs` is a current durable inbox count. Missing
+legacy fields remain unknown, and disconnected windows label cached status.
+Paused sessions stay in Needs input after process exit. Review is read-only and
+does not navigate to questions unless one actually exists. It preserves drafts
+and loads at most 100 retained log lines with a five-second deadline, bounded
+frames and total output, and either an explicit stream End or a visible output
+truncation marker. The fixed read timeout is
+set before transmitting Logs: macOS may reject socket-option changes after a
+fast peer has written and closed, despite a readable buffered response. Partial
+frames, including split UTF-8, survive timeout polling.
