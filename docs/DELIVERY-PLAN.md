@@ -771,3 +771,11 @@ Both regressions passed 100 repetitions each with zero retries; the standard
 gate passed 762 Rust tests, 60 Python checks, lint, doctests, packaging and release
 build. Failed baseline/CI evidence is retained. Final-head CI/review and installed
 acceptance remain; the running daemon and user sessions were not replaced.
+
+The integrated session-message follow-up passed 770 Rust tests, 60 Python checks
+and 123 native steps on immutable copies. A visual audit caught wrapped filter
+counts beside the selected agent panel; search now uses the following row and
+the corrected capture keeps each count with its label. The session report retains
+separate source records for the earlier actual Claude trial and this UI follow-up.
+The [Codex configuration probe](verification/2026-09-11-codex-hook-discovery.json)
+confirms read-only discovery for the bridge preflight; it does not implement delivery.

@@ -229,3 +229,20 @@ The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clea
 ### September 11: opt-in Claude channel adapter
 
 The [Claude input adapter](CLAUDE-CHANNEL-INPUT.md) has retained inbox offers over the provider channel, explicit receipts, stable IDs, initialization gating, a single-owner lock, hook delivery suppression and a receipt path independent of long-running tools. A real transport trial exposed blocked Tokio stdin during broken-output shutdown; bounded dedicated stdio workers address that failure. The source-pinned September 11 reports above now cover transport and actual-provider acceptance, including managed launch. They do not complete Codex input delivery, ambiguous provider recovery or sustained conversations.
+
+### September 11: Codex configuration preflight
+
+An [actual Codex 0.153.4 read-only probe](verification/2026-09-11-codex-hook-discovery.json)
+confirmed `hooks/list` and effective `config/read` in an owned no-auth profile.
+User-file, user-inline and trusted-project hook definitions remained discoverable
+with and without an empty session override. No hook or model turn ran; both
+provider processes exited and monitored configuration stayed unchanged.
+
+The [official hook contract](https://learn.chatgpt.com/docs/hooks) makes hook
+sources additive and also includes managed and plugin hooks. Use the provider's
+discovery API to preflight the effective configuration; a session override must
+not be assumed to replace existing hooks. Preserve foreign hooks and their trust
+and permission settings. The managed bridge still needs one inbox consumer,
+matching AgentDocker hook/MCP behavior, stable managed identity, a durable attempt
+and exact provider receipt before acknowledgement, and explicit uncertain delivery.
+Do not convert a generic peer message into approval of a provider permission request.
