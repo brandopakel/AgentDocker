@@ -1,6 +1,7 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
 mod config;
 mod ledger;
+mod mcp_answers;
 mod question_events;
 mod recovery;
 mod requests;
@@ -99,6 +100,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         },
     )?;
     requests::recover(&client, &mut ledger).await?;
+    mcp_answers::acknowledge(&client, &mut ledger).await?;
     let arguments = provider_input::codex_arguments(&args.command[1..])?;
     let mut provider = Provider::start(std::path::Path::new(&args.command[0]), &arguments, &cwd)?;
     let result = session(&client, &agent, &mut provider, &mut ledger).await;
@@ -266,6 +268,7 @@ async fn session(
         Response::Agent { agent } => agent.id.to_string(),
         _ => bail!("human question routing is unavailable"),
     };
+    let mcp_origin = mcp_answers::Origin::from_overrides(human.clone(), &overrides)?;
     let mut question_events = question_events::Events::start(client.clone()).await?;
     activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
     println!("Codex ready. Send a message here or from AgentDocker.");
@@ -299,6 +302,9 @@ async fn session(
                 let params = &event["params"];
                 if params.get("threadId").and_then(Value::as_str) != Some(&thread) { continue; }
                 match event["method"].as_str() {
+                    Some("item/completed") if params["item"]["type"] == "mcpToolCall" => {
+                        mcp_answers::observe(client, ledger, &thread, params["turnId"].as_str().unwrap_or_default(), &params["item"]).await?;
+                    }
                     Some("serverRequest/resolved") => requests::resolved(client, ledger, params).await?,
                     Some("item/started" | "item/completed") if params["item"]["type"] == "userMessage" => {
                         let expected = turn.as_deref().context("Codex supplied an unexpected input receipt")?;
@@ -322,6 +328,7 @@ async fn session(
                         let status = params["turn"]["status"].as_str().context("Codex completed turn has no status")?;
                         ensure!(recovery::terminal(status), "Codex completed notification is not terminal");
                         requests::turn_ended(client, ledger).await?;
+                        mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
                         println!("\nCodex turn {status}.");
                         activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
@@ -345,7 +352,7 @@ async fn session(
                 if turn.is_none() && ledger.record().reviews.is_empty() {
                 if let Some(message) = messages.first() {
                     preflight(provider, &ledger.record().binding.cwd).await?;
-                    let input = ledger.prepare(message)?;
+                    let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
                     let result = provider.request("turn/start", json!({"threadId":thread,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await?;
