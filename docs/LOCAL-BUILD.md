@@ -8,9 +8,18 @@ built:
 make install
 ```
 
+Run this from your AgentDocker source checkout. Private temporary directories
+used by engineering tests are not installation prerequisites. The installed Mac
+app is at `~/Applications/AgentDocker.app`; this user Applications folder is
+different from the system `/Applications` folder shown in Finder's usual sidebar.
+
 Then quit AgentDocker and open it again. The Dock, Spotlight, the `agentdocker`
 and `agentd` commands in `~/.local/bin`, and the MCP entry your agent tools use
 all follow one managed pointer, so they switch together.
+The real launcher bundle retains `Contents/MacOS/agentdocker`, `agentd` and
+`agentdocker-ui` links for older integrations. Its launch executable is
+`agentdocker-ui`: an executable named only `AgentDocker` would collide with the
+CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
 
 ## What `make install` does
 

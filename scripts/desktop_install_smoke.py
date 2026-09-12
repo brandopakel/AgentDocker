@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import signal
 import socket
@@ -16,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from mcp_receipt_smoke import call as mcp_call
 
 MAC = sys.platform == "darwin"
 PAYLOAD = "AgentDocker.app" if MAC else "agentdocker-desktop"
@@ -77,6 +80,52 @@ def trial(args):
             assert output.returncode != 0, "unexpected successful operation"
 
         daemon = None
+
+        def check_bundle_commands(generation):
+            if not MAC:
+                return
+            launcher = prefix / "Applications/AgentDocker.app"
+            assert launcher.is_dir() and not launcher.is_symlink()
+            info = plistlib.loads((launcher / "Contents/Info.plist").read_bytes())
+            assert info["CFBundleName"] == info["CFBundleDisplayName"] == "AgentDocker"
+            assert info["CFBundleExecutable"] == "agentdocker-ui"
+            for name in ["agentdocker", "agentd", "agentdocker-ui"]:
+                entry = launcher / BIN / name
+                assert entry.is_symlink()
+                assert entry.resolve() == root_install / "versions" / generation / PAYLOAD / BIN / name
+            entry = str(launcher / BIN / "agentdocker")
+            # Exercise the exact old integration paths on the host filesystem.
+            for runtime in ["claude-code", "codex"]:
+                output = subprocess.run([entry, "hook", runtime, "--help"], env=environment,
+                                        capture_output=True, text=True, timeout=5)
+                assert output.returncode == 0, output.stderr
+                unavailable = {**environment, "AGENTDOCKER_SOCKET": str(root / "unavailable.sock")}
+                output = subprocess.run([entry, "hook", runtime], env=unavailable,
+                                        input=json.dumps({"hook_event_name": "UserPromptSubmit",
+                                                          "session_id": "launcher-fixture", "cwd": str(root)}),
+                                        capture_output=True, text=True, timeout=5)
+                assert output.returncode == 0, output.stderr
+                assert "unknown argument" not in output.stderr
+            with (args.output / "launcher-mcp.log").open("ab") as log:
+                process = subprocess.Popen([entry, "mcp", "--runtime", "custom", "--name", "launcher-fixture"],
+                                           env=environment, cwd=root, stdin=subprocess.PIPE,
+                                           stdout=subprocess.PIPE, stderr=log, bufsize=0)
+                try:
+                    response = mcp_call(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                                 "params": {"protocolVersion": "2025-06-18"}})
+                    assert "error" not in response and response["result"]["serverInfo"]["name"] == "agentdocker"
+                    response = mcp_call(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+                    assert any(tool["name"] == "send_message" for tool in response["result"]["tools"])
+                    process.stdin.close()
+                    assert process.wait(timeout=5) == 0
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    process.stdin.close()
+                    process.stdout.close()
+            result["scenarios"].append("legacy bundle hooks and MCP work through generation " + generation)
+
         try:
             assert cli("status")["installation"] is None
             preview = cli("install", "--from", first, "--preview")
@@ -101,6 +150,7 @@ def trial(args):
                     except (OSError, AssertionError):
                         assert daemon.poll() is None and time.monotonic() < deadline, "fixture daemon did not become ready"
                         time.sleep(.05)
+                check_bundle_commands(first_id)
                 preview = cli("install", "--from", second, "--preview")
                 second_id = preview["candidate"]["id"]
                 assert second_id != first_id
@@ -109,17 +159,7 @@ def trial(args):
                 assert daemon.poll() is None
                 assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
                 result["scenarios"].append("activation keeps the existing fixture daemon responsive")
-                if MAC:
-                    # A real bundle named AgentDocker, not a symlink: Launchpad
-                    # and Spotlight only list bundles they can read in place.
-                    launcher = prefix / "Applications/AgentDocker.app"
-                    assert launcher.is_dir() and not launcher.is_symlink()
-                    plist = (launcher / "Contents/Info.plist").read_text()
-                    assert "<key>CFBundleName</key><string>AgentDocker</string>" in plist
-                    script = (launcher / "Contents/MacOS/AgentDocker").read_text()
-                    assert str(root_install / "current/payload/Contents/MacOS/agentdocker-ui") in script
-                    assert (launcher / "Contents/Resources/managed-launcher.json").is_file()
-                    result["scenarios"].append("the Mac launcher is a named bundle that runs the active payload")
+                check_bundle_commands(second_id)
                 cli("install", "--from", first, "--expect-current", first_id, success=False)
                 cli("install", "--from", first, "--expect-release", second_id, success=False)
                 assert cli("status")["installation"]["current"]["id"] == second_id
@@ -132,6 +172,7 @@ def trial(args):
                     assert (binaries / name).resolve() == root_install / "versions" / first_id / PAYLOAD / BIN / name
                 assert (root_install / "versions" / second_id).is_dir()
                 result["scenarios"].append("compatible rollback switches all commands and retains both releases")
+                check_bundle_commands(first_id)
                 with (second / BIN / "agentdocker").open("ab") as executable:
                     executable.write(b"corrupt fixture\n")
                 cli("install", "--from", second, success=False)

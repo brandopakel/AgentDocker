@@ -247,23 +247,6 @@ impl Layout {
             .status();
     }
 
-    /// The executable inside the launcher bundle. It is a script, so that
-    /// the process that runs is the active payload's own binary, whose
-    /// ancestry still says which managed version it is.
-    fn launcher_script(&self) -> Result<String> {
-        let executable = self
-            .root
-            .join("current/payload/Contents/MacOS/agentdocker-ui");
-        let text = executable.to_str().context("launcher path must be UTF-8")?;
-        ensure!(
-            !text
-                .chars()
-                .any(|ch| ch.is_control() || matches!(ch, '\'' | '"' | '\\' | '`' | '$')),
-            "launcher paths cannot contain quotes, dollar signs or control characters"
-        );
-        Ok(format!("#!/bin/sh\nexec '{text}' \"$@\"\n"))
-    }
-
     /// The marker that says a launcher bundle is ours and which store it
     /// points at, so preflight can tell it from an app somebody else put
     /// at the same path.
@@ -288,10 +271,9 @@ impl Layout {
 
     /// Write the macOS launcher bundle: a real `AgentDocker.app` directory
     /// with an Info.plist naming the product, the icon of the release
-    /// being activated, and a one-line executable that runs the active
-    /// payload through the `current` pointer, so later activations and
-    /// rollbacks never rewrite it. Built beside its destination and
-    /// swapped in with renames.
+    /// being activated, and stable links to all three active executables.
+    /// The GUI and old absolute hook/MCP commands keep distinct entry points.
+    /// Built beside its destination and swapped in with renames.
     fn write_launcher_bundle(&self, release: &Release) -> Result<()> {
         let parent = self
             .application
@@ -313,7 +295,7 @@ impl Layout {
                 "<plist version=\"1.0\">\n<dict>\n",
                 "\t<key>CFBundleName</key><string>AgentDocker</string>\n",
                 "\t<key>CFBundleDisplayName</key><string>AgentDocker</string>\n",
-                "\t<key>CFBundleExecutable</key><string>AgentDocker</string>\n",
+                "\t<key>CFBundleExecutable</key><string>agentdocker-ui</string>\n",
                 "\t<key>CFBundleIdentifier</key><string>dev.agentdocker.launcher</string>\n",
                 "\t<key>CFBundleIconFile</key><string>AgentDocker</string>\n",
                 "\t<key>CFBundlePackageType</key><string>APPL</string>\n",
@@ -330,9 +312,6 @@ impl Layout {
         );
         std::fs::write(contents.join("Info.plist"), plist)?;
         std::fs::write(contents.join("PkgInfo"), "APPL????")?;
-        let script = contents.join("MacOS/AgentDocker");
-        std::fs::write(&script, self.launcher_script()?)?;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
         let icon = self
             .payload(release)
             .join("Contents/Resources/AgentDocker.icns");
@@ -344,6 +323,17 @@ impl Layout {
             self.launcher_marker()?,
         )?;
         sync_tree(staging.path())?;
+        // Keep payload validation strict: only these installer-created links
+        // are allowed in the launcher, after syncing its regular files. Sync
+        // the directory entries without following a possibly dangling current
+        // pointer on first install.
+        for name in BINARIES {
+            symlink(
+                self.root.join("current/payload/Contents/MacOS").join(name),
+                contents.join("MacOS").join(name),
+            )?;
+        }
+        std::fs::File::open(contents.join("MacOS"))?.sync_all()?;
         // Whatever is there is ours (preflight said so): a launcher from an
         // earlier activation, or the symlink earlier releases installed.
         let retired = parent.join(format!(".AgentDocker.app.retired-{}", uuid::Uuid::new_v4()));
@@ -1136,24 +1126,23 @@ mod tests {
             std::fs::read_to_string(layout.application.join("Contents/Info.plist")).unwrap();
         assert!(plist.contains("<key>CFBundleName</key><string>AgentDocker</string>"));
         assert!(plist.contains("<key>CFBundleDisplayName</key><string>AgentDocker</string>"));
-        assert!(plist.contains("<key>CFBundleExecutable</key><string>AgentDocker</string>"));
+        assert!(plist.contains("<key>CFBundleExecutable</key><string>agentdocker-ui</string>"));
         assert!(plist.contains("<string>0.1.0</string>"));
-        let script = layout.application.join("Contents/MacOS/AgentDocker");
-        assert_eq!(
-            std::fs::read_to_string(&script).unwrap(),
-            format!(
-                "#!/bin/sh\nexec '{}' \"$@\"\n",
+        for name in BINARIES {
+            assert_eq!(
+                layout
+                    .application
+                    .join("Contents/MacOS")
+                    .join(name)
+                    .read_link()
+                    .unwrap(),
                 layout
                     .root
-                    .join("current/payload/Contents/MacOS/agentdocker-ui")
-                    .display()
-            ),
-            "the launcher goes through the current pointer, so it survives activations"
-        );
-        assert_eq!(
-            script.metadata().unwrap().permissions().mode() & 0o777,
-            0o755
-        );
+                    .join("current/payload/Contents/MacOS")
+                    .join(name),
+                "each entry follows activation without case-based dispatch"
+            );
+        }
         assert!(layout.launcher_is_ours().unwrap());
 
         // A second activation replaces the bundle in place and keeps it ours.
@@ -1177,6 +1166,75 @@ mod tests {
             error.contains("already exists outside this installation"),
             "{error}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_bundle_commands_and_gui_keep_their_roles_across_activation_and_rollback() {
+        let tmp = tempfile::Builder::new()
+            .prefix("ad launcher ")
+            .tempdir()
+            .unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let first = release(&layout, "first");
+        let second = release(&layout, "second");
+        for (release, generation) in [(&first, "first"), (&second, "second")] {
+            for name in BINARIES {
+                let path = layout
+                    .payload(release)
+                    .join(layout.binary_subdir())
+                    .join(name);
+                std::fs::write(
+                    &path,
+                    format!("#!/bin/sh\nprintf '%s\\n' '{generation}:{name}' \"$@\"\n"),
+                )
+                .unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        // Simulate the old installation; its absolute provider paths must
+        // still execute the correct binary after replacing the app symlink.
+        std::fs::create_dir_all(layout.application.parent().unwrap()).unwrap();
+        symlink(layout.root.join("current/payload"), &layout.application).unwrap();
+        for (current, previous, generation) in [
+            (first.clone(), None, "first"),
+            (second.clone(), Some(first.clone()), "second"),
+            (first, Some(second), "first"),
+        ] {
+            layout.activate(current, previous).unwrap();
+            for (entry, binary, args) in [
+                ("agentdocker", "agentdocker", vec!["hook", "claude-code"]),
+                ("agentdocker", "agentdocker", vec!["hook", "codex"]),
+                (
+                    "agentdocker",
+                    "agentdocker",
+                    vec!["mcp", "--runtime", "claude-code"],
+                ),
+                ("agentd", "agentd", vec!["--help"]),
+                ("agentdocker-ui", "agentdocker-ui", vec!["--help"]),
+                ("agentdocker-ui", "agentdocker-ui", vec![]),
+                (
+                    "agentdocker-ui",
+                    "agentdocker-ui",
+                    vec!["--open-url", "agentdocker://inbox?draft=a b"],
+                ),
+            ] {
+                let output = std::process::Command::new(
+                    layout.application.join("Contents/MacOS").join(entry),
+                )
+                .args(&args)
+                .output()
+                .unwrap();
+                assert!(output.status.success(), "{entry}: {output:?}");
+                let expected = std::iter::once(format!("{generation}:{binary}"))
+                    .chain(args.into_iter().map(str::to_owned))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            }
+        }
     }
 
     #[test]
