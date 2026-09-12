@@ -1382,7 +1382,7 @@ impl App {
                             .push(heading(prompt.clone(), 18))
                             .push(self.answer_window(question, c));
                         for (index, option) in options.iter().enumerate() {
-                            body = body.push(block_button(
+                            body = body.push(action(
                                 format!("answer-choice-{id}-{index}"),
                                 option.label.clone(),
                                 enabled.then(|| {
