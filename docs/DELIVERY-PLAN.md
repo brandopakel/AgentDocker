@@ -876,3 +876,11 @@ Finish file/permission/MCP elicitation presentation, human approval-answer queue
 receipts/cancellation, compact durable delivery and guided recovery, broader
 interruptions and sustained conversations. Final source review and CI remain
 required. The installed launcher and running daemon have not been switched.
+
+The [PR #103 review follow-up](verification/2026-09-11-codex-input-review.json)
+passed 788 Rust tests, 65 Python checks and 123 native workflow steps at clean
+source `743c6d7`. Actual Codex reproduced a controller exit after invalid terminal
+bytes; the corrected bounded reader rejected malformed and oversized lines,
+then delivered valid terminal, human and peer inputs in order under one identity.
+It also returns errors for non-UTF-8 configuration paths and fixes native CI's
+stale schema-11 repair assertion. Final-head CI and follow-up review remain gates.

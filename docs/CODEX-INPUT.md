@@ -20,6 +20,13 @@ order. Peer content carries its original sender and message ID in an
 `agentdocker_message` envelope. Model text is shown in the session terminal;
 AgentDocker MCP `send_message` supplies a correlated peer reply.
 
+Terminal lines are limited to 16,000 UTF-8 bytes. Invalid or oversized lines
+produce a local error and are skipped; the controller keeps running and accepts
+the next complete line. The bounded reader retains its place when provider
+events interrupt a partial read. The [review trial](verification/2026-09-11-codex-input-review.json)
+reproduced the old controller exit and verified the correction with actual
+Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
+
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf

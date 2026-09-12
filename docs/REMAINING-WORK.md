@@ -12,11 +12,16 @@ platform support have separate completion conditions.
 
 PRs #99–#102 have now merged after final-head CI and actual review (latest merge
 `5a2d231`). The installed launcher and running daemon remain unchanged. The next
-[Codex input implementation](CODEX-INPUT.md) passed 784 Rust tests, 65 Python
+[Codex input implementation](CODEX-INPUT.md) passed 788 Rust tests, 65 Python
 checks, 123 native workflow steps and actual mixed-sender, completed-turn crash,
 uncertain-input and unused-conversation trials. The [report](verification/2026-09-11-codex-input-bridge.json)
 retains both failures and corrections. Broader recovery, provider review
-surfaces, sustained acceptance and source review are still in progress.
+surfaces, sustained acceptance and final review are still in progress. The
+[review follow-up](verification/2026-09-11-codex-input-review.json) also reproduces
+and fixes malformed terminal input stopping Codex, rejects invalid configuration
+paths, and corrects the native repair test's stale schema expectation. It passed
+123 fresh native steps and an actual Codex terminal/human/peer trial; PR #103's
+final-head CI and follow-up review remain pending.
 
 ## Desktop cleanup in this change
 
@@ -108,7 +113,7 @@ a failed trial. Container restart fixtures also wait for actual daemon lock
 release after a crash; permanent contention still fails. The full gate passed
 762 Rust tests and 65 Python checks, including failed process discovery and an
 undiscovered TERM-ignoring group member. Docker and Podman passed the preceding
-lock-barrier head; final-head CI and follow-up review remain.
+lock-barrier head; the final changes later passed CI and review and merged in #99.
 
 ## Follow-up implementation and review
 
@@ -122,13 +127,13 @@ guided apply/undo, legacy setup and hook installation across AgentDocker homes;
 independent editors/provider CLIs remain outside these advisory locks, with
 exact-entry checks and receipts still guarding ownership.
 
-Opt-in daily update checks (#101) and direct session messages (#102) are
-implemented. The daily scheduler has source review; its final CI remains open.
+Opt-in daily update checks (#101, `57a102a`) and direct session messages
+(#102, `5a2d231`) merged after final CI and source review.
 Review of session messaging reproduced a newer draft being cleared after the
 user retyped the submitted words. The [correction](verification/2026-09-11-retyped-drafts.json)
 tracks edits for each pending send, preserving the newer draft for both sessions
 and channels. It passed 771 Rust tests, 65 Python checks and 123 fresh native
-steps. Final CI and follow-up review remain. Earlier actual-Claude reports keep
+steps. Those review and CI gates are complete. Earlier actual-Claude reports keep
 their own source and executable identities.
 
 ## Engineering still open
