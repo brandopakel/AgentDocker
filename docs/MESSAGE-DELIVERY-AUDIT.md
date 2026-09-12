@@ -289,3 +289,16 @@ crash driver's corrected exited-record assertion remain in the evidence.
 PR #104 is in CI and source review. File/permission/MCP elicitation presentation,
 compact durable delivery status, guided recovery and sustained provider sessions
 remain open. The installed launcher, daemon and user sessions remain unchanged.
+
+
+The #104 review correction at `d3fc784` passed 804 Rust tests and 65 Python
+checks. Its failed baseline proves version-2 records may lack older question
+routes; those records are now refused without rewriting them. Clean legacy
+ordinary-input records still upgrade with their prepared input intact.
+
+A separate actual Codex trial then found that MCP `ask_human` returns its human
+answer to the tool while the same message is also accepted as a fourth ordinary
+provider input. The [retained failure](verification/2026-09-11-provider-question-receipts.json)
+is an open follow-up for MCP tool-result receipts. The native app-server question
+callback fixes above do not cover that path. Structured Iced approval/choice
+controls are also in progress on a separate branch.

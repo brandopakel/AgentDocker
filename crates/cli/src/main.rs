@@ -519,6 +519,7 @@ enum Command {
     },
     /// Close a question you asked; existing messages and answers are retained.
     CancelQuestion {
+        /// Asker; defaults to AGENTDOCKER_AGENT_ID, or user.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
         agent: String,
         message: String,
