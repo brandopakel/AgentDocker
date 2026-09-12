@@ -531,5 +531,16 @@
         "sha256": "15ee764175d7e10c8124656a2ef615cf4e0206ec28b0fb425052e7838d90f8cb"
       }
     }
-  ]
+  ],
+  "integrated_checkpoint": {
+    "source_commit": "5e7f98dbb7a0dd394c81d4c1f9bd929685a336b2",
+    "base_permission_pr": 115,
+    "runtime_and_scripts_identical_to": "fc97f8b10eda2d96768da11cfecb5bae8520ac3c",
+    "full_gate": "passed",
+    "rust_passed": 859,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "full_log": "/private/tmp/agentdocker-cli-sender-integrated-check-2026-09-12.log",
+    "full_log_sha256": "6ea988d2bf49c81e99f64de45ed18a16453611693b022749ccf9c51abcb4d214"
+  }
 }
