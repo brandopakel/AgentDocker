@@ -491,5 +491,18 @@
     "Pending or failed MCP questions without a completed answer receipt can require inspection; the controller does not invent a successful tool result.",
     "Native callbacks do not establish physical accessibility, input method or notification-center acceptance.",
     "Installed launcher and active user sessions were not switched."
-  ]
+  ],
+  "parent_review_integration": {
+    "source_commit": "63338415d92baa6f5c05969bb72312bad1c9c5e1",
+    "parent": "3f193d0eb933c95d377127f09ac31c5b68388aa8",
+    "result": "passed",
+    "rust_tests": 814,
+    "python_checks": 65,
+    "skipped_rust_tests": 6,
+    "report": {
+      "path": "/private/tmp/agentdocker-mcp-answers-parent-review-check-2026-09-11.log",
+      "sha256": "692d8f92863a451ed055ac54e2e83849c3822ee100582d675cabf9f3d0c5738c"
+    },
+    "scope": "Includes PR105 whitespace-label guard and populated legacy question migration test. Actual provider and native reports remain pinned to f42a8b0."
+  }
 }
