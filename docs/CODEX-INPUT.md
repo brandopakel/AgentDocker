@@ -8,7 +8,7 @@ agentdocker run --runtime codex --codex-input --tty -- codex
 ```
 
 This starts an owned Codex app-server conversation under the native supervisor.
-It needs a matching schema-12 daemon and CLI, and a Codex version supporting
+It needs a matching schema-14 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
 TUI. The option is off by default and applies only to the new session. Codex's
 app-server interface remains experimental.
@@ -90,8 +90,24 @@ as unapplied responses; after detailed receipts rotate, a reply naming an older
 question pauses delivery with that message still queued. Question IDs survive
 restart and are never silently discarded to make room.
 
-Loss of the question event stream or an uncertain publication/response pauses
-delivery. A restarted controller cancels its known pending human routes and
+A transient loss of the question event connection resumes from its last checked
+schema-14 cursor. Replayed closures remain private until the daemon's checked
+replay-complete marker arrives; incomplete replay is retried from the previous
+cursor. The worker retains at most 128 pending question events and attempts at
+most three reconnects with 100 ms backoff. That allowance resets only after a
+connection remains caught up for 30 seconds. Unknown event kinds, invalid or
+missing history and buffer overflow pause immediately; no fresh subscription
+replaces a lost cursor. The existing five-second connection/replay/frame bounds
+apply to each attempt, and shutdown cancels the worker and its socket.
+
+This recovery covers question-event transport only. Queue polling, question
+publication, activity/receipt writes and other failed RPCs still pause delivery;
+a lost write response cannot prove whether the daemon accepted that operation.
+The [687e57f reconnect trial](verification/2026-09-12-provider-event-reconnect.json)
+passed 839 Rust tests, 65 Python checks and an actual Codex event-connection cut
+while command approval was pending. Checked replay resolved that answer once,
+kept the same controller/conversation and completed three ordered peer/human
+inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
 version-5 record preserves version-3/4 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
@@ -155,7 +171,7 @@ changing the draft. Paused exited sessions remain in **Needs input**. The latest
 UI receipt covers ordinary inputs; native question and MCP answer receipts keep
 their existing ledger paths. The [status checkpoint](verification/2026-09-12-input-delivery-status.json)
 records actual Codex receipt/late-answer acceptance and native restart checks.
-Final CI/source review of this follow-up remain pending. The [delivery audit](MESSAGE-DELIVERY-AUDIT.md)
+PR #108 merged after final CI and actual source inspection at `5778212`. The [delivery audit](MESSAGE-DELIVERY-AUDIT.md)
 retains the other open review surfaces and acceptance cases.
 The existing installation and active sessions have not been switched.
 
