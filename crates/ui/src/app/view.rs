@@ -1665,7 +1665,7 @@ impl App {
                     action(
                         format!("dismiss-shown-{}", dismissible[0]),
                         "Dismiss shown",
-                        enabled.then_some(Message::DismissInbox(dismissible)),
+                        enabled.then_some(Message::DismissInbox(dismissible.clone())),
                         false,
                     )
                 ]
@@ -1679,6 +1679,10 @@ impl App {
             }
             first = false;
             let payload = spoken_payload(&message.payload);
+            let earlier_question = message.kind == "question"
+                && matches!(message.to, agentdocker_core::Destination::Agent(_))
+                && dismissible.contains(&message.id);
+            let expanded = self.shell.message_detail.as_ref() == Some(&message.id);
             let mut who = row![
                 text(self.name_of(&message.from))
                     .size(13)
@@ -1687,7 +1691,16 @@ impl App {
             .spacing(8)
             .align_y(Center);
             if message.kind.to_string().as_str() != "chat" {
-                who = who.push(pill(message.kind.to_string(), c.raised, c.muted, c));
+                who = who.push(pill(
+                    if earlier_question {
+                        "Earlier question".into()
+                    } else {
+                        message.kind.to_string()
+                    },
+                    c.raised,
+                    c.muted,
+                    c,
+                ));
             }
             if self.inbox.iter().any(|item| item.id == message.id)
                 && !self
@@ -1704,11 +1717,39 @@ impl App {
                     false,
                 ));
             }
+            let mut content = column![who].spacing(3).width(Fill);
+            if earlier_question {
+                if expanded {
+                    content = content.push(text(payload).size(13));
+                } else {
+                    let first = payload
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("");
+                    let mut preview: String = first.chars().take(160).collect();
+                    if first.chars().count() > 160 {
+                        preview.push('…');
+                    }
+                    content = content.push(text(preview).size(13));
+                }
+                content = content.push(action(
+                    format!("message-detail-{}", message.id),
+                    if expanded {
+                        "Hide question"
+                    } else {
+                        "Show question"
+                    },
+                    Some(Message::MessageDetail(message.id.clone())),
+                    false,
+                ));
+            } else {
+                content = content.push(text(payload).size(13));
+            }
             lines = lines.push(
                 container(
                     row![
                         small(ago(Utc::now(), message.sent_at), c).width(64),
-                        column![who, text(payload).size(13)].spacing(3).width(Fill)
+                        content
                     ]
                     .spacing(10),
                 )

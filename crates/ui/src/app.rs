@@ -526,12 +526,30 @@ impl App {
                         });
                     }
                 }
-                Msg::Inbox(inbox) => self.inbox = inbox,
+                Msg::Inbox(inbox) => {
+                    if self
+                        .shell
+                        .message_detail
+                        .as_ref()
+                        .is_some_and(|id| !inbox.iter().any(|message| &message.id == id))
+                    {
+                        self.shell.message_detail = None;
+                    }
+                    self.inbox = inbox;
+                }
                 Msg::MessagesDismissed(ids, result) => {
                     self.dismissing.retain(|id| !ids.contains(id));
                     match result {
                         Ok(()) => {
                             self.inbox.retain(|message| !ids.contains(&message.id));
+                            if self
+                                .shell
+                                .message_detail
+                                .as_ref()
+                                .is_some_and(|id| ids.contains(id))
+                            {
+                                self.shell.message_detail = None;
+                            }
                             if self
                                 .shell
                                 .notification_message
