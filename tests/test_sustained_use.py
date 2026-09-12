@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import select
 import signal
 from types import SimpleNamespace
 from pathlib import Path
@@ -25,10 +26,16 @@ class Cleanup(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 daemon = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                                           start_new_session=True)
-                fixture = None
+                fixture = member = None
                 try:
                     fixture = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                                               start_new_session=True)
+                                               process_group=0)
+                    member = subprocess.Popen([sys.executable, "-c",
+                        "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                        "print('ready', flush=True); time.sleep(60)"],
+                        process_group=fixture.pid, stdout=subprocess.PIPE, text=True)
+                    self.assertTrue(select.select([member.stdout], [], [], 5)[0], "member did not start")
+                    self.assertEqual(member.stdout.readline().strip(), "ready")
                     fixtures = SOAK.FixtureProcesses()
                     fixtures.remember(fixture.pid)
                     with patch.object(SOAK.subprocess, "check_output", side_effect=error), \
@@ -40,12 +47,17 @@ class Cleanup(unittest.TestCase):
                     self.assertEqual(result["fixtures"]["remaining"], [])
                     self.assertEqual(result["fixtures"]["errors"], [f"capture: {error}"])
                     self.assertIsNone(SOAK.process_identity(fixture.pid))
+                    self.assertEqual(set(fixtures.members), {fixture.pid})
+                    member.wait(timeout=2)
+                    self.assertEqual(member.returncode, -signal.SIGKILL)
                 finally:
-                    for child in [daemon, fixture]:
+                    for child in [daemon, fixture, member]:
                         if child is not None:
                             if child.poll() is None:
-                                os.killpg(child.pid, signal.SIGKILL)
+                                child.kill()
                             child.wait(timeout=5)
+                            if child.stdout is not None:
+                                child.stdout.close()
 
     def test_forced_daemon_exit_cleans_separate_fixture_group_and_descendant(self):
         with tempfile.TemporaryDirectory() as scratch:

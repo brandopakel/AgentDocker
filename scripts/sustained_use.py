@@ -131,9 +131,10 @@ class FixtureProcesses:
                 if identity and identity["group"] == group:
                     self.members.setdefault(pid, identity)
 
-    def stop(self):
+    def stop(self, force=False):
         signals = []
-        for signum, seconds in [(signal.SIGTERM, 1), (signal.SIGKILL, 4)]:
+        stages = [(signal.SIGKILL, 4)] if force else [(signal.SIGTERM, 1), (signal.SIGKILL, 4)]
+        for signum, seconds in stages:
             current = self.remaining()
             groups = {info["group"] for pid, info in current.items() if info
                       and info["group"] == self.members[pid]["group"]
@@ -157,17 +158,23 @@ class FixtureProcesses:
 
 def stop_daemon(daemon, endpoint, fixtures=None, grace_seconds=30):
     cleanup = None
+    early_signals = []
     if fixtures is not None:
         try:
             fixtures.capture()
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             fixtures.errors.add(f"capture: {error}")
+            # Discovery failed: the known leader may be our only group anchor.
+            # Kill its verified private group before graceful shutdown can let
+            # the leader exit and strand an unknown TERM-ignoring member.
+            early_signals = fixtures.stop(force=True)["signals"]
     try:
         cleanup = stop_daemon_process(daemon, endpoint, grace_seconds)
         return cleanup
     finally:
         if fixtures is not None:
             result = fixtures.stop()
+            result["signals"] = early_signals + result["signals"]
             if cleanup is not None:
                 cleanup["fixtures"] = result
                 if result["signals"] or result["remaining"] or result["errors"]:
