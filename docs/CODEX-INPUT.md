@@ -86,7 +86,9 @@ restart and are never silently discarded to make room.
 Loss of the question event stream or an uncertain publication/response pauses
 delivery. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-3 record accepts earlier records conservatively, retains eight detailed
+version-3 record accepts version-1/2 records only without recorded question
+history. Version 2 could already have discarded older question IDs; those records
+are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
 Reaching a bound preserves the previous record and reports an error.
 

@@ -585,7 +585,8 @@ Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker 
 Only an addressed recipient can close a question. Generic replies after closure
 remain ordinary inbox messages, but cannot change the accepted answer or satisfy
 a cancelled blocking wait. Blocking waits require the exact `question_closed`
-answer ID; losing either live stream returns an error with retained inbox state.
+answer ID. Losing the answer message stream or the question event stream returns
+an error with retained inbox state.
 The [managed Codex adapter](CODEX-INPUT.md#questions-and-command-approvals) records
 question routes and separates their responses from ordinary provider input.
 
