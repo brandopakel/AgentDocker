@@ -167,10 +167,15 @@ async fn write_line(
 /// Reuse the identity of the agent that spawned us, or register a new one
 /// on behalf of the MCP host.
 async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity> {
-    if let Some(id) = std::env::var("AGENTDOCKER_AGENT_ID")
+    let inherited = std::env::var("AGENTDOCKER_AGENT_ID")
         .ok()
-        .filter(|id| !id.is_empty())
-    {
+        .filter(|id| !id.is_empty());
+    anyhow::ensure!(
+        std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() != Ok("1")
+            || inherited.is_some(),
+        "Codex input MCP lost its managed identity; separate registration is refused"
+    );
+    if let Some(id) = inherited {
         return match client.call(&Request::Inspect { agent: id.clone() }).await {
             Ok(Response::Agent { agent }) => {
                 if std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref()

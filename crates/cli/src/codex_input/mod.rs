@@ -209,7 +209,12 @@ async fn session(
         &dirs::home(),
         &procinfo::executable_path()?,
     )?;
-    let resumed = ledger.record().thread.is_some();
+    // Codex does not persist an empty thread's rollout. Only a controller that
+    // has never prepared input may replace that unused handle after restart.
+    let resumed = ledger.record().attempt.is_some() || !ledger.record().completed.is_empty();
+    if !resumed {
+        ledger.discard_unused_thread()?;
+    }
     let response = if let Some(thread) = &ledger.record().thread {
         provider
             .request(
@@ -256,6 +261,8 @@ async fn session(
     println!("Codex ready. Send a message here or from AgentDocker.");
     let mut poll = interval(Duration::from_millis(500));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat = interval(Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut input = Vec::new();
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
@@ -264,6 +271,11 @@ async fn session(
     let mut request_ids = std::collections::HashSet::new();
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                activity(client, agent.id.as_str(), if turn.is_some() {
+                    ReportedActivity::Working
+                } else { ReportedActivity::Idle }).await?;
+            }
             event = provider.next() => {
                 let event = event?;
                 if event.get("method").is_some() && event.get("id").is_some() {

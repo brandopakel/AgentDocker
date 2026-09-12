@@ -110,6 +110,27 @@ mod tests {
     }
 
     #[test]
+    fn only_a_never_used_conversation_can_be_replaced_after_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        ledger
+            .bind_thread("not-persisted-by-provider".into())
+            .unwrap();
+        ledger.discard_unused_thread().unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let message = message();
+        let input = ledger.prepare(&message).unwrap();
+        let before = std::fs::read(&ledger.path).unwrap();
+        assert!(ledger.discard_unused_thread().is_err());
+        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        ledger.accept(&input, receipt()).unwrap();
+        ledger.acknowledge(message.id.as_str()).unwrap();
+        ledger.finish("turn").unwrap();
+        assert!(ledger.discard_unused_thread().is_err());
+        assert_eq!(ledger.record().thread.as_deref(), Some("thread"));
+    }
+
+    #[test]
     fn completed_receipts_remain_bounded_and_conflicting_receipts_do_not_advance_state() {
         let home = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
@@ -338,6 +359,19 @@ impl Ledger {
         let mut next = self.record.clone();
         next.thread = Some(thread);
         self.save(next)
+    }
+
+    pub fn discard_unused_thread(&mut self) -> Result<()> {
+        ensure!(
+            self.record.attempt.is_none() && self.record.completed.is_empty(),
+            "a conversation with prepared or accepted input cannot be discarded"
+        );
+        if self.record.thread.is_some() {
+            let mut next = self.record.clone();
+            next.thread = None;
+            self.save(next)?;
+        }
+        Ok(())
     }
 
     pub fn prepare(&mut self, envelope: &Envelope) -> Result<String> {
