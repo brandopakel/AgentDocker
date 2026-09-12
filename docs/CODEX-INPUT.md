@@ -65,16 +65,52 @@ it does not merge ordinary nested Codex sessions by ancestry alone. These are
 cooperative local delivery semantics, not an authentication boundary against
 other programs running as the same OS user.
 
-## Acceptance still required
+## Questions and command approvals
 
 Command approvals and nonsecret provider questions use AgentDocker's registered
-human question route. Only an explicit human **Allow** approves one command;
-peer answers and ordinary input messages cannot grant it. Unknown callbacks,
+human question route and the same retained inbox as ordinary input. The controller
+records the provider request before publishing its questions. Only the exact
+answer accepted by the daemon for that question can resolve it; an explicit
+human **Allow** approves one command. Peer answers and ordinary input messages
+cannot grant it. The response is recorded before writing to Codex, and its human
+answer is acknowledged only after Codex reports that request resolved. Resolution
+does not by itself establish that the approved command executed.
+
+Human answers resolve their active provider request without becoming another
+ordinary input turn. Busy human and peer messages keep their relative order.
+Cancellation and expiry reject later replies. Recent extra replies are retained
+as unapplied responses; after detailed receipts rotate, a reply naming an older
+question pauses delivery with that message still queued. Question IDs survive
+restart and are never silently discarded to make room.
+
+Loss of the question event stream or an uncertain publication/response pauses
+delivery. A restarted controller cancels its known pending human routes and
+requires recovery; it never automatically resends an approval. The private
+version-3 record accepts version-1/2 records only without recorded question
+history. Version 2 could already have discarded older question IDs; those records
+are refused without rewriting the file. The current record retains eight detailed
+closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
+Reaching a bound preserves the previous record and reports an error.
+
+## Acceptance still required
+
+The separate MCP `ask_human` tool still has an open receipt gap: an actual trial
+returned the human answer to the tool and also accepted it as another ordinary
+input. This is distinct from the native app-server question callbacks above.
+MCP tool-result receipt handling must be completed.
+
+Unknown callbacks,
 file/permission approvals without a complete review presentation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
+
+The [provider-question trial](verification/2026-09-11-provider-question-receipts.json)
+at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
+actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
+answers did not become extra ordinary turns, and cancellation did not authorize
+a later reply. Source review and CI for that follow-up remain pending.
 
 The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
@@ -90,8 +126,6 @@ paused state are visible in the terminal; a compact durable status and
 guided recovery surface remain part of the [delivery audit](MESSAGE-DELIVERY-AUDIT.md).
 The existing installation and active sessions have not been switched.
 
-Human answers to provider questions still also enter the ordinary answer queue;
-complete their receipt/cancellation handling before general approval acceptance.
 The provider transport and MCP policy reference are documented by OpenAI in
 [App server](https://learn.chatgpt.com/docs/app-server) and
 [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).

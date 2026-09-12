@@ -325,6 +325,21 @@ pub enum Request {
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
     },
+    /// Create the same durable question as Ask, returning its message ID
+    /// immediately. Answers remain in the ordinary inbox until acknowledged.
+    PostQuestion {
+        from: String,
+        to: String,
+        question: String,
+        #[serde(default = "default_ask_timeout")]
+        timeout_secs: u64,
+    },
+    /// The asker may close its question. Already closed IDs are a no-op;
+    /// accepted answers and the original question message are retained.
+    CancelQuestion {
+        agent: String,
+        message: MessageId,
+    },
     /// Answer a question by its message id. The daemon knows who asked.
     Answer {
         #[serde(default)]
@@ -673,6 +688,8 @@ pub enum ErrorCode {
     /// The caller waited as long as it asked to and the thing it waited
     /// for did not happen. Nothing failed; nobody answered yet.
     Timeout,
+    /// The owner explicitly cancelled the pending operation.
+    Cancelled,
     /// Waiting for this would close a cycle: every agent in it is
     /// waiting for something another member holds, so none could ever
     /// proceed. `details.cycle` says who and what.

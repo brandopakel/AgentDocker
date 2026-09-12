@@ -1,6 +1,7 @@
 //! One durable provider input attempt. Queue acknowledgement follows an exact
 //! provider receipt; a prepared attempt can never be submitted automatically again.
-use agentdocker_core::Envelope;
+use super::review::{self, Closed, Pending};
+use agentdocker_core::{Envelope, MessageId};
 use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -11,10 +12,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 1;
-const MAX_STATE_BYTES: usize = 2 * 1024 * 1024;
+const VERSION: u32 = 3;
+const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
+const MAX_RETIRED_QUESTIONS: usize = 10_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +160,186 @@ mod tests {
         assert_eq!(ledger.record().completed.len(), RETAINED_RECEIPTS);
         assert_eq!(ledger.record().completed[0].receipt.turn, "turn-3");
     }
+
+    #[test]
+    fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
+        for version in [1, 2] {
+            let home = tempfile::tempdir().unwrap();
+            let binding = binding(home.path());
+            let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+            ledger.bind_thread("thread".into()).unwrap();
+            let message = message();
+            let input = ledger.prepare(&message).unwrap();
+            let path = ledger.path.clone();
+            drop(ledger);
+            let mut legacy: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            legacy["version"] = serde_json::json!(version);
+            legacy.as_object_mut().unwrap().remove("reviews");
+            legacy.as_object_mut().unwrap().remove("closed_reviews");
+            let bytes = serde_json::to_vec(&legacy).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let mut ledger = Ledger::open(home.path(), binding).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(ledger.record().attempt.as_ref().unwrap().input, input);
+            assert!(ledger.prepare(&message).is_err());
+            ledger.accept(&input, receipt()).unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["version"], VERSION);
+            assert_eq!(saved["attempt"]["input"], input);
+        }
+    }
+
+    #[test]
+    fn legacy_question_history_without_retired_routes_is_refused_without_rewriting_it() {
+        use crate::codex_input::review::{Closed, Outcome, Pending};
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let mut request =
+            Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
+        request.questions[0].message = Some("recent-question".to_owned().into());
+        ledger
+            .update_reviews(|_, closed| {
+                closed.push_back(Closed {
+                    request,
+                    outcome: Outcome::Cancelled,
+                    acknowledged: true,
+                });
+                Ok(true)
+            })
+            .unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = serde_json::json!(2);
+        legacy.as_object_mut().unwrap().remove("retired_questions");
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(
+            Ledger::open(home.path(), binding).is_err(),
+            "version 2 cannot prove that older question IDs were never evicted"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn pending_questions_and_prepared_responses_survive_restart_without_becoming_input() {
+        use crate::codex_input::review::{Closed, Outcome, Pending};
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let input = ledger.prepare(&message()).unwrap();
+        ledger.accept(&input, receipt()).unwrap();
+        let original = ledger.record().attempt.as_ref().unwrap().message.clone();
+        ledger.acknowledge(&original).unwrap();
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let pending =
+            Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews.push(pending);
+                Ok(true)
+            })
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert_eq!(ledger.record().reviews.len(), 1);
+        assert!(ledger.record().reviews[0].questions[0].message.is_none());
+        assert!(ledger.finish("turn").is_err());
+        assert!(ledger.prepare(&message()).is_err());
+        let answer = Envelope::new(
+            "human",
+            Destination::Agent("owned-agent".into()),
+            "answer",
+            serde_json::json!({"text":"Allow"}),
+            Some("question".to_owned().into()),
+            chrono::Utc::now(),
+        );
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews[0].questions[0].message = Some("question".to_owned().into());
+                reviews[0].observe(
+                    &agentdocker_core::EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(answer.id.clone()),
+                    },
+                    "owned-agent",
+                )?;
+                reviews[0].capture(std::slice::from_ref(&answer), "owned-agent", false)?;
+                reviews[0].response = reviews[0].reply(chrono::Utc::now())?;
+                Ok(true)
+            })
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        let request = &ledger.record().reviews[0];
+        assert_eq!(request.answers().next().unwrap().id, answer.id);
+        assert_eq!(
+            request.response.as_ref().unwrap()["result"]["decision"],
+            "accept"
+        );
+        assert!(
+            request.reply(chrono::Utc::now()).unwrap().is_none(),
+            "prepared responses must never be replayed"
+        );
+        assert!(ledger.finish("turn").is_err());
+        ledger
+            .update_reviews(|reviews, closed| {
+                closed.push_back(Closed {
+                    request: reviews.remove(0),
+                    outcome: Outcome::Resolved,
+                    acknowledged: false,
+                });
+                Ok(true)
+            })
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert!(ledger.record().reviews.is_empty());
+        assert!(!ledger.record().closed_reviews[0].acknowledged);
+        assert_eq!(
+            ledger.record().closed_reviews[0]
+                .request
+                .answers()
+                .next()
+                .unwrap()
+                .id,
+            answer.id
+        );
+        ledger.finish("turn").unwrap();
+        assert_eq!(
+            ledger.record().completed.len(),
+            1,
+            "only the original input is a model turn"
+        );
+        ledger
+            .update_reviews(|_, closed| {
+                closed.front_mut().unwrap().acknowledged = true;
+                Ok(true)
+            })
+            .unwrap();
+        ledger
+            .update_reviews(|_, closed| {
+                closed.pop_front();
+                Ok(true)
+            })
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        let before = std::fs::read(&ledger.path).unwrap();
+        assert!(
+            ledger.prepare(&answer).is_err(),
+            "retired question replies cannot become new input"
+        );
+        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        assert!(ledger.prepare(&message()).is_ok());
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -192,6 +374,12 @@ pub(super) struct Record {
     pub thread: Option<String>,
     pub attempt: Option<Attempt>,
     pub completed: VecDeque<Completed>,
+    #[serde(default)]
+    pub reviews: Vec<Pending>,
+    #[serde(default)]
+    pub closed_reviews: VecDeque<Closed>,
+    #[serde(default)]
+    retired_questions: Vec<MessageId>,
 }
 
 pub(super) struct Ledger {
@@ -207,7 +395,11 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == VERSION,
+            self.version == VERSION
+                || (matches!(self.version, 1 | 2)
+                    && self.reviews.is_empty()
+                    && self.closed_reviews.is_empty()
+                    && self.retired_questions.is_empty()),
             "unsupported Codex delivery record version"
         );
         ensure!(
@@ -225,6 +417,67 @@ impl Record {
         for completed in &self.completed {
             ensure!(valid_id(&completed.message), "invalid retained message ID");
             self.validate_receipt(&completed.receipt)?;
+        }
+        ensure!(
+            self.reviews.len() <= review::MAX_QUESTIONS
+                && self.closed_reviews.len() <= review::RETAINED
+                && self
+                    .reviews
+                    .iter()
+                    .map(|r| r.questions.len())
+                    .sum::<usize>()
+                    <= review::MAX_QUESTIONS,
+            "too many retained provider questions"
+        );
+        ensure!(
+            self.reviews.is_empty() || self.attempt.is_some(),
+            "provider question has no active input"
+        );
+        let mut requests = std::collections::HashSet::new();
+        for request in &self.reviews {
+            request.validate(self.thread.as_deref(), &self.binding.agent)?;
+            ensure!(
+                requests.insert(request.key()),
+                "duplicate pending provider request"
+            );
+            if let Some(receipt) = self.attempt.as_ref().and_then(|a| a.receipt.as_ref()) {
+                ensure!(
+                    request.turn == receipt.turn,
+                    "provider question belongs to another input turn"
+                );
+            }
+        }
+        let mut routes = std::collections::HashSet::new();
+        ensure!(
+            self.retired_questions.len() <= MAX_RETIRED_QUESTIONS,
+            "provider question route history is full; delivery must pause"
+        );
+        for id in &self.retired_questions {
+            ensure!(
+                valid_id(id.as_str()) && routes.insert(id),
+                "invalid or repeated retired provider question"
+            );
+        }
+        for request in self
+            .reviews
+            .iter()
+            .chain(self.closed_reviews.iter().map(|r| &r.request))
+        {
+            request.validate(self.thread.as_deref(), &self.binding.agent)?;
+            for question in &request.questions {
+                if let Some(id) = &question.message {
+                    ensure!(
+                        routes.insert(id),
+                        "provider requests share a question route"
+                    );
+                }
+            }
+        }
+        for closed in &self.closed_reviews {
+            ensure!(
+                closed.outcome != review::Outcome::Resolved || closed.request.response.is_some(),
+                "resolved provider request has no prepared response"
+            );
         }
         if let Some(attempt) = &self.attempt {
             ensure!(
@@ -292,7 +545,7 @@ impl Ledger {
         let owner = lock::try_exclusive_existing(&lock_path)?
             .context("another Codex input bridge already owns this agent")?;
         let path = directory.join("delivery.json");
-        let record = match dirs::read_private_file(&path) {
+        let mut record = match dirs::read_private_file(&path) {
             Ok(file) => {
                 let mut data = Vec::new();
                 file.take((MAX_STATE_BYTES + 1) as u64)
@@ -310,10 +563,14 @@ impl Ledger {
                 thread: None,
                 attempt: None,
                 completed: VecDeque::new(),
+                reviews: Vec::new(),
+                closed_reviews: VecDeque::new(),
+                retired_questions: Vec::new(),
             },
             Err(error) => return Err(error.into()),
         };
         record.validate(&binding)?;
+        record.version = VERSION;
         Ok(Self {
             _owner: owner,
             path,
@@ -323,6 +580,40 @@ impl Ledger {
 
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    pub fn update_reviews(
+        &mut self,
+        edit: impl FnOnce(&mut Vec<Pending>, &mut VecDeque<Closed>) -> Result<bool>,
+    ) -> Result<()> {
+        let mut next = self.record.clone();
+        if edit(&mut next.reviews, &mut next.closed_reviews)? {
+            // Detailed receipts rotate, but forgetting their routing identity
+            // would turn a later answer into a new ordinary model prompt.
+            for old in &self.record.closed_reviews {
+                for id in old
+                    .request
+                    .questions
+                    .iter()
+                    .filter_map(|q| q.message.as_ref())
+                {
+                    if !next.closed_reviews.iter().any(|r| {
+                        r.request
+                            .questions
+                            .iter()
+                            .any(|q| q.message.as_ref() == Some(id))
+                    }) {
+                        ensure!(
+                            old.acknowledged,
+                            "cannot retire unacknowledged provider answers"
+                        );
+                        next.retired_questions.push(id.clone());
+                    }
+                }
+            }
+            self.save(next)?;
+        }
+        Ok(())
     }
 
     fn save(&mut self, next: Record) -> Result<()> {
@@ -366,7 +657,10 @@ impl Ledger {
 
     pub fn discard_unused_thread(&mut self) -> Result<()> {
         ensure!(
-            self.record.attempt.is_none() && self.record.completed.is_empty(),
+            self.record.attempt.is_none()
+                && self.record.completed.is_empty()
+                && self.record.reviews.is_empty()
+                && self.record.closed_reviews.is_empty(),
             "a conversation with prepared or accepted input cannot be discarded"
         );
         if self.record.thread.is_some() {
@@ -379,12 +673,23 @@ impl Ledger {
 
     pub fn prepare(&mut self, envelope: &Envelope) -> Result<String> {
         ensure!(
+            envelope
+                .reply_to
+                .as_ref()
+                .is_none_or(|id| !self.record.retired_questions.contains(id)),
+            "this reply names a retired provider question; it remains queued for review and cannot become new input"
+        );
+        ensure!(
             self.record.thread.is_some(),
             "Codex conversation is not ready"
         );
         ensure!(
             self.record.attempt.is_none(),
             "an earlier Codex input still needs receipt recovery; automatic resubmission is refused"
+        );
+        ensure!(
+            self.record.reviews.is_empty(),
+            "a provider question still needs response recovery"
         );
         let message = envelope.id.to_string();
         ensure!(
@@ -445,6 +750,10 @@ impl Ledger {
     }
 
     pub fn finish(&mut self, turn: &str) -> Result<()> {
+        ensure!(
+            self.record.reviews.is_empty(),
+            "provider turn still has unresolved questions"
+        );
         let mut next = self.record.clone();
         let attempt = next
             .attempt

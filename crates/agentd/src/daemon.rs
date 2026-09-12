@@ -1235,6 +1235,13 @@ impl Daemon {
                 question,
                 timeout_secs,
             } => self.ask(from, to, question, timeout_secs).await,
+            Request::PostQuestion {
+                from,
+                to,
+                question,
+                timeout_secs,
+            } => self.post_question(from, to, question, timeout_secs).await,
+            Request::CancelQuestion { agent, message } => self.cancel_question(&agent, &message),
             Request::Answer {
                 from,
                 message,
@@ -4502,6 +4509,7 @@ impl State {
         }
         let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
             .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+            .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
             .map(|pending| pending.id.clone());
         let sender = self
             .registry
