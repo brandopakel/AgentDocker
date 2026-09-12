@@ -85,8 +85,11 @@ in the same active thread and turn, following the [documented approval sequence]
 and the installed Codex 0.153.4 schema. It retains at most 64 items of 32,000 bytes,
 at most 16 files per review, and a 16,000-byte complete question. Missing,
 completed, reused, ambiguous, unsupported or oversized changes are refused.
-Repeated details after review publication pause the controller and cancel its
-pending routes. Turn completion discards old item snapshots. Non-null `grantRoot`
+Repeated details after review publication pause the controller, shut down its
+owned Codex process and cancel its pending human routes. The ledger keeps the
+uncertain review; it does not invent a confirmed cancellation or discard a
+possibly transmitted approval. Restart continues to require review of that
+retained uncertainty. Turn completion discards old item snapshots. Non-null `grantRoot`
 is refused because it can describe session-wide write authority. Allow sends
 only `accept`; it never sends `acceptForSession`. Empty diffs are currently
 refused. File presentations and their receipts require delivery-record version
