@@ -182,6 +182,44 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_event_sequences_refuse_startup_and_never_saturate_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        append(&store, i64::MAX as u64);
+        store.prune_events(0).unwrap();
+        let invalid = Event {
+            seq: i64::MAX as u64 + 1,
+            at: Utc::now(),
+            kind: EventKind::WatcherStarted,
+        };
+        assert!(
+            store
+                .append_event(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("sequence exhausted")
+        );
+        assert!(
+            store.recent_events(1).unwrap().is_empty(),
+            "no saturated reuse of the pruned position"
+        );
+        assert_eq!(store.max_event_seq().unwrap(), i64::MAX as u64);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let daemon =
+            crate::daemon::Daemon::with_store(tmp.path().into(), tmp.path().join("sock"), store);
+        let error = match daemon {
+            Ok(_) => panic!("exhausted event state admitted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("sequence exhausted"));
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.max_event_seq().unwrap(), i64::MAX as u64);
+        assert!(store.recent_events(1).unwrap().is_empty());
+    }
+
+    #[test]
     fn checked_replay_preserves_order_and_matches_live_cursors() {
         let store = Store::in_memory().unwrap();
         let initial = store.event_replay(None).unwrap().unwrap();

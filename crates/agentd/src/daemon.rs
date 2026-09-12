@@ -825,7 +825,12 @@ impl Daemon {
             registry.insert(record.clone())?;
         }
         registry.restore_aliases(&store.identity_aliases()?)?;
-        let mut next_seq = store.max_event_seq()? + 1;
+        let high_water = store.max_event_seq()?;
+        anyhow::ensure!(
+            high_water < i64::MAX as u64,
+            "durable event sequence exhausted"
+        );
+        let mut next_seq = high_water + 1;
         for mut record in records {
             if record.managed
                 && record.container.is_none()

@@ -1266,7 +1266,7 @@ impl Store {
         self.conn.execute(
             "INSERT INTO events (seq, at, json) VALUES (NULLIF(?1, 0), ?2, ?3)",
             params![
-                i64::try_from(event.seq).unwrap_or(i64::MAX),
+                i64::try_from(event.seq).context("durable event sequence exhausted")?,
                 event.at.to_rfc3339(),
                 serde_json::to_string(event)?
             ],

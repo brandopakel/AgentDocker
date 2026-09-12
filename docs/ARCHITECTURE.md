@@ -71,7 +71,9 @@ Persisted replay events carry a strictly increasing `seq`, continued across rest
 The checked stream starts at the current durable head when `after` is absent. A
 cursor contains the database's random durable `log` identity, event `seq` and
 SHA-256 `digest` of that retained event's exact stored JSON (empty digest only at
-sequence zero). Resume requires the same identity and anchor plus every subsequent
+sequence zero). Startup refuses an exhausted SQLite sequence high-water mark;
+out-of-range writes fail before SQL rather than saturating into an old position.
+Resume requires the same identity and anchor plus every subsequent
 sequence through the snapshot head. A missing/pruned anchor, interior gap,
 rewritten anchor, future cursor or replay beyond 4,096 events/8 MiB fails before
 `events_ready_at`; all history reads propagate errors. No fresh subscription is
