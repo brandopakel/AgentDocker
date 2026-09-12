@@ -8,7 +8,9 @@ import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import ctypes
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -28,6 +30,184 @@ import time
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def save_report(path, report):
+    """Replace one owned report atomically; previous evidence survives a failed write."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w") as stream:
+        json.dump(report, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+@lru_cache(maxsize=1)
+def mac_process_api():
+    # proc_bsdinfo from the macOS SDK's sys/proc_info.h. Keep kernel birth
+    # precision; ps lstart rounds to seconds and is not a sufficient PID guard.
+    class BsdInfo(ctypes.Structure):
+        _fields_ = [("ids", ctypes.c_uint32 * 12), ("comm", ctypes.c_char * 16),
+                    ("name", ctypes.c_char * 32), ("counts", ctypes.c_uint32 * 6),
+                    ("started_seconds", ctypes.c_uint64), ("started_microseconds", ctypes.c_uint64)]
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                    ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    return library, BsdInfo
+
+
+def process_identity(pid):
+    """Read an OS birth identity and process group, without trusting a reused PID."""
+    if platform.system() == "Linux":
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+        return {"pid": pid, "group": int(fields[2]), "birth": fields[19]}
+    if platform.system() == "Darwin":
+        library, record_type = mac_process_api()
+        record = record_type()
+        ctypes.set_errno(0)
+        size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(record), ctypes.sizeof(record))
+        if size == 0 and ctypes.get_errno() in (0, 3):
+            return None
+        if size != ctypes.sizeof(record) or record.ids[3] != pid:
+            raise OSError(ctypes.get_errno(), f"cannot verify fixture process {pid}")
+        return {"pid": pid, "group": record.counts[1],
+                "birth": (record.started_seconds, record.started_microseconds)}
+    raise RuntimeError("fixture cleanup requires Linux or macOS process identities")
+
+
+class FixtureProcesses:
+    """Only the private fixture groups, pinned before their daemon can disappear."""
+    def __init__(self):
+        self.leaders = {}
+        self.members = {}
+        self.errors = set()
+
+    def remember(self, pid):
+        identity = process_identity(pid)
+        if identity is None:
+            raise RuntimeError("fixture agent disappeared before its identity was retained")
+        if identity["group"] != pid or pid == os.getpgrp():
+            raise RuntimeError("fixture agent does not own a separate process group")
+        self.leaders[pid] = identity
+        self.members[pid] = identity
+
+    def remaining(self):
+        retained = {}
+        for pid, expected in self.members.items():
+            try:
+                current = process_identity(pid)
+                if current and current["birth"] == expected["birth"]:
+                    # Reap only our pinned direct/adopted children. Other
+                    # orphans belong to the OS reaper, whose exit we await.
+                    try:
+                        reaped, _ = os.waitpid(pid, os.WNOHANG)
+                    except ChildProcessError:
+                        reaped = 0
+                    if not reaped:
+                        retained[pid] = current
+            except OSError as error:
+                self.errors.add(str(error))
+                retained[pid] = None  # unknown is retained, never signalled
+        return retained
+
+    def capture(self):
+        # Capture descendants while a pinned leader still proves group ownership.
+        # This also retains an anchor if the leader exits before its descendants.
+        current = self.remaining()
+        groups = {pid for pid, expected in self.leaders.items()
+                  if current.get(pid) == expected}
+        if not groups:
+            return
+        rows = subprocess.check_output(["ps", "-axo", "pid=,pgid="], text=True, timeout=5)
+        for row in rows.splitlines():
+            pid, group = map(int, row.split())
+            if group in groups:
+                identity = process_identity(pid)
+                if identity and identity["group"] == group:
+                    self.members.setdefault(pid, identity)
+
+    def stop(self, force=False):
+        signals = []
+        stages = [(signal.SIGKILL, 4)] if force else [(signal.SIGTERM, 1), (signal.SIGKILL, 4)]
+        for signum, seconds in stages:
+            current = self.remaining()
+            groups = {info["group"] for pid, info in current.items() if info
+                      and info["group"] == self.members[pid]["group"]
+                      and info["group"] in self.leaders}
+            for group in sorted(groups):
+                try:
+                    os.killpg(group, signum)
+                    signals.append({"group": group, "signal": signal.Signals(signum).name})
+                except ProcessLookupError:
+                    pass
+                except OSError as error:
+                    self.errors.add(str(error))
+            deadline = time.monotonic() + seconds
+            while current and time.monotonic() < deadline:
+                time.sleep(0.05)
+                current = self.remaining()
+            if not current:
+                break
+        return {"signals": signals, "remaining": sorted(current), "errors": sorted(self.errors)}
+
+
+def stop_daemon(daemon, endpoint, fixtures=None, grace_seconds=30):
+    cleanup = None
+    early_signals = []
+    if fixtures is not None:
+        try:
+            fixtures.capture()
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            fixtures.errors.add(f"capture: {error}")
+            # Discovery failed: the known leader may be our only group anchor.
+            # Kill its verified private group before graceful shutdown can let
+            # the leader exit and strand an unknown TERM-ignoring member.
+            early_signals = fixtures.stop(force=True)["signals"]
+    try:
+        cleanup = stop_daemon_process(daemon, endpoint, grace_seconds)
+        return cleanup
+    finally:
+        if fixtures is not None:
+            result = fixtures.stop()
+            result["signals"] = early_signals + result["signals"]
+            if cleanup is not None:
+                cleanup["fixtures"] = result
+                if result["signals"] or result["remaining"] or result["errors"]:
+                    cleanup["forced"] = True
+
+
+def stop_daemon_process(daemon, endpoint, grace_seconds):
+    """Reap an exited child before considering a signal; retain all cleanup failures."""
+    cleanup = {"forced": False, "errors": []}
+    if daemon.poll() is not None:
+        cleanup["exit"] = daemon.returncode
+        return cleanup
+    try:
+        rpc(endpoint, {"op": "shutdown"})
+    except (OSError, ValueError, RuntimeError) as error:
+        cleanup["errors"].append(f"shutdown: {type(error).__name__}: {error}")
+    try:
+        # A disappearing socket can mean graceful shutdown is already in flight.
+        daemon.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        cleanup["forced"] = True
+        if daemon.poll() is None:
+            try:
+                # The unreaped owned leader still reserves the process group.
+                os.killpg(daemon.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError) as error:
+                cleanup["errors"].append(f"signal: {type(error).__name__}: {error}")
+        try:
+            daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            cleanup["errors"].append(f"wait: {error}")
+    cleanup["exit"] = daemon.returncode
+    return cleanup
 
 
 def rpc(endpoint, request):
@@ -59,7 +239,8 @@ def sample(pid, state):
             "rows": counts}
 
 
-def population(binary, output, count, seconds, files):
+def population(binary, output, count, seconds, files, interrupted=None):
+    interrupted = interrupted if interrupted is not None else threading.Event()
     report = {"agents": count, "requested_seconds": seconds, "checkout_files": files,
               "result": "failed", "samples": [], "scope": "supervised sleep processes plus concurrent IPC clients"}
     with tempfile.TemporaryDirectory(prefix="ad-soak-", dir="/tmp") as scratch:
@@ -74,12 +255,13 @@ def population(binary, output, count, seconds, files):
         env.update(AGENTDOCKER_HOME=str(state), AGENTDOCKER_SOCKET=str(endpoint),
                    AGENTDOCKER_NO_AUTOSTART="1", RUST_LOG="warn,agentd_state_timing=debug")
         daemon = None
-        child_pids = []
+        fixture_processes = FixtureProcesses()
         stop_workers = threading.Event()
         latencies = deque(maxlen=100_000)
         cycles = 0
         sample_lock = threading.Lock()
         started = time.monotonic()
+        save_report(output / f"population-{count}.json", report)
         try:
             with (output / f"daemon-{count}.log").open("wb") as log:
                 daemon = subprocess.Popen([str(binary)], cwd=checkout, env=env,
@@ -96,18 +278,20 @@ def population(binary, output, count, seconds, files):
                     time.sleep(0.05)
                 agents = []
                 for index in range(count):
+                    if interrupted.is_set():
+                        break
                     reply, _ = rpc(endpoint, {"op": "run", "spec": {"name": f"soak-{index}",
                         "runtime": "fixture", "workdir": str(checkout),
                         "command": ["/bin/sleep", str(seconds + 300)]}})
                     agents.append(reply["agent"]["id"])
-                    child_pids.append(reply["agent"]["pid"])
+                    fixture_processes.remember(reply["agent"]["pid"])
                 report["startup_seconds"] = time.monotonic() - started
                 deadline = time.monotonic() + seconds
 
                 def worker(agent):
                     nonlocal cycles
                     index = 0
-                    while not stop_workers.is_set() and time.monotonic() < deadline:
+                    while not stop_workers.is_set() and not interrupted.is_set() and time.monotonic() < deadline:
                         durations = []
                         token = {"sequence": index, "agent": agent}
                         sent, duration = rpc(endpoint, {"op": "send", "from": agent,
@@ -133,14 +317,21 @@ def population(binary, output, count, seconds, files):
                 with ThreadPoolExecutor(max_workers=count) as pool:
                     workers = [pool.submit(worker, agent) for agent in agents]
                     try:
-                        while time.monotonic() < deadline:
+                        while time.monotonic() < deadline and not interrupted.is_set():
                             for worker_result in workers:
                                 if worker_result.done():
                                     worker_result.result()
                             current = sample(daemon.pid, state)
                             current["at"] -= started
                             report["samples"].append(current)
-                            stop_workers.wait(min(5, max(0, deadline - time.monotonic())))
+                            with sample_lock:
+                                current["completed_cycles"] = cycles
+                            # Keep completed samples even after a hard interruption
+                            # or a later exception in cleanup/final serialization.
+                            with (output / f"samples-{count}.jsonl").open("a") as sample_log:
+                                sample_log.write(json.dumps(current) + "\n")
+                                sample_log.flush()
+                            interrupted.wait(min(5, max(0, deadline - time.monotonic())))
                         for worker_result in workers:
                             worker_result.result()
                     finally:
@@ -150,37 +341,26 @@ def population(binary, output, count, seconds, files):
                     assert not rpc(endpoint, {"op": "leases", "agent": agent})[0]["leases"]
                     record = rpc(endpoint, {"op": "inspect", "agent": agent})[0]["agent"]
                     assert record["status"]["state"] == "running", "supervised child unexpectedly stopped"
-                report["result"] = "passed"
+                report["result"] = "interrupted" if interrupted.is_set() else "passed"
         except Exception as error:
             report["error"] = str(error)
         finally:
             stop_workers.set()
-            if daemon is not None and daemon.returncode is None:
+            if daemon is not None:
                 try:
-                    rpc(endpoint, {"op": "shutdown"})
-                    daemon.wait(timeout=30)
-                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    # Only our unreaped daemon group is signalled; native child
-                    # ownership gates handle its independently supervised groups.
-                    try:
-                        os.killpg(daemon.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    daemon.wait(timeout=5)
+                    report["cleanup"] = stop_daemon(daemon, endpoint, fixture_processes)
+                    if report["cleanup"]["forced"]:
+                        report["result"] = "failed"
+                except Exception as error:
+                    report["cleanup_error"] = f"{type(error).__name__}: {error}"
                     report["result"] = "failed"
-                    report["shutdown_forced"] = True
             report["daemon_exit"] = daemon.returncode if daemon else None
-            survivors = []
-            for pid in child_pids:
-                try:
-                    os.kill(pid, 0)
-                    survivors.append(pid)
-                except ProcessLookupError:
-                    pass
+            survivors = sorted(fixture_processes.remaining())
             report["remaining_child_pids"] = survivors
             if survivors or report["daemon_exit"] != 0:
                 report["result"] = "failed"
             report["duration_seconds"] = time.monotonic() - started
+            report["interrupted"] = interrupted.is_set()
             report["cycles"] = cycles
             ordered = sorted(latencies)
             report["latency_sample_count"] = len(ordered)
@@ -190,11 +370,50 @@ def population(binary, output, count, seconds, files):
             if report["samples"]:
                 rss = [s["rss_kib"] for s in report["samples"]]
                 report["daemon_rss_kib"] = {"first": rss[0], "last": rss[-1], "maximum": max(rss), "median": statistics.median(rss)}
-                report["maximum_descriptors"] = max(s["descriptors"] for s in report["samples"] if s["descriptors"] is not None)
+                report["maximum_descriptors"] = max((s["descriptors"] for s in report["samples"] if s["descriptors"] is not None), default=None)
+            save_report(output / f"population-{count}.json", report)
     return report
 
 
-def main(args):
+class Interruption:
+    """The signal handler only records the first signal; it takes no locks."""
+    def __init__(self):
+        self.signum = None
+
+    def record(self, signum, _frame):
+        if self.signum is None:
+            self.signum = signum
+
+    def is_set(self):
+        return self.signum is not None
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while not self.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+        return self.is_set()
+
+
+def finish_report(path, report, interrupted):
+    # A signal may arrive while the final atomic write is in progress. The
+    # state changes at most once, so one additional write is sufficient.
+    while True:
+        signum = interrupted.signum
+        report["interrupted"] = signum is not None
+        if signum is not None:
+            report["signal"] = {"number": signum, "name": signal.Signals(signum).name}
+            if report["result"] != "failed":
+                report["result"] = "interrupted"
+        save_report(path, report)
+        if interrupted.signum == signum:
+            break
+    return 130 if report["result"] == "interrupted" else int(report["result"] != "passed")
+
+
+def run(args, interrupted):
     os.umask(0o077)
     args.output.mkdir(mode=0o700)
     original = args.binary.resolve(strict=True)
@@ -209,21 +428,40 @@ def main(args):
     report = {"binary_sha256": original_digest, "driver_sha256": digest(Path(__file__)),
               "started_at": datetime.now(timezone.utc).isoformat(),
               "platform": platform.platform(), "result": "running", "populations": []}
+    save_report(args.output / "result.json", report)
     for count in args.agents:
+        if interrupted.is_set():
+            report["result"] = "interrupted"
+            break
         print(f"starting {count} supervised agents for {args.seconds} seconds", flush=True)
-        result = population(binary, args.output, count, args.seconds, args.files)
+        result = population(binary, args.output, count, args.seconds, args.files, interrupted)
         report["populations"].append(result)
-        (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        save_report(args.output / "result.json", report)
         print(json.dumps({key: result.get(key) for key in ["agents", "result", "error", "cycles", "request_ms", "daemon_rss_kib"]}), flush=True)
         if result["result"] != "passed":
-            report["result"] = "failed"
-            (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-            return 1
+            report["result"] = result["result"]
+            break
+    else:
+        report["result"] = "passed"
     report["binary_unchanged"] = digest(binary) == report["binary_sha256"]
     report["driver_unchanged"] = digest(Path(__file__)) == report["driver_sha256"]
-    report["result"] = "passed" if report["binary_unchanged"] and report["driver_unchanged"] else "failed"
-    (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    return int(report["result"] != "passed")
+    if not report["binary_unchanged"] or not report["driver_unchanged"]:
+        report["result"] = "failed"
+    return finish_report(args.output / "result.json", report, interrupted)
+
+
+def main(args):
+    interrupted = Interruption()
+    old_handlers = {}
+    old_mask = os.umask(0o077)
+    try:
+        for signum in [signal.SIGINT, signal.SIGTERM]:
+            old_handlers[signum] = signal.signal(signum, interrupted.record)
+        return run(args, interrupted)
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
+        os.umask(old_mask)
 
 
 if __name__ == "__main__":

@@ -69,7 +69,10 @@ supported; live and managed transfers remain refused. [Recorded validation](veri
 tests, 54 Python checks and six actual CLI/restart steps. The clean packaged
 checkpoint passed 114 native workflow steps, 23 routing steps and 11 updater
 cases. The later database-key refusal guard passed the full gate and another
-source-pinned CLI trial. CI and actual final-head review remain.
+source-pinned CLI trial. The removal review follow-up passed 756 Rust tests and
+54 Python checks. All CI and actual final-head review passed at `f9caf00`;
+[PR #98](https://github.com/brandopakel/AgentDocker/pull/98) merged as `aca89e1`.
+Production repair and the installed-launcher switch have not been performed.
 
 ### Notification clicks open Script Editor (September 10)
 
@@ -670,3 +673,83 @@ accepted idle peer/human input and mixed steering in one active turn. Replaying
 the same client message ID started another turn. The owned input adapter therefore
 needs durable attempt tracking and an explicit uncertain-acceptance state before
 retries; this prototype does not close queue integration or provider recovery.
+
+### September 11: terminal selection and interrupted test recovery
+
+The terminal follow-up adds mouse range selection and copies the highlighted
+visible-grid snapshot while live output continues draining. Copy, Escape, input,
+scroll, resize and window blur release the snapshot. Focused tests cover reverse
+ranges, wide/combining text, soft wraps, changed output and control-key behavior.
+The [clean selection checkpoint](verification/2026-09-11-terminal-selection.json)
+passed 762 Rust tests, 58 Python checks, the full standard gate, 114 native
+workflow steps and an actual macOS drag/Cmd-C trial. The highlighted text stayed
+stable while the parser changed; copy returned the selected range and released
+the snapshot. The clipboard was restored. Initial probe failures are retained.
+Human accessibility/IME, other-platform input and the follow-up PR gate remain.
+
+The interrupted one-hour run at `f9caf00` is not counted as acceptance. Its daemon
+shut down, then harness cleanup raised PermissionError before serializing samples.
+The corrected driver records samples incrementally, handles SIGINT/SIGTERM as
+interruption and waits for an already-exiting daemon before considering a signal.
+A normal short run and intentional interruption both completed cleanup; the latter
+retained 21 cycles and two samples, reported interrupted, and left no children.
+
+### September 11: completed 100-agent hour
+
+The [immutable daemon trial](verification/2026-09-11-hour-sustained-use.json)
+completed 3,600 seconds at 100 supervised fixture agents and 10,000 checkout
+files: 1,392,836 message/lease cycles, unchanged binary/driver hashes and graceful
+cleanup with no remaining children. Daemon RSS ranged from 20,560 to 31,024 KiB.
+The retained final 100,000 request samples had p95 2.48 ms and p99 5.16 ms.
+This closes the bounded one-hour fixture run; actual-provider conversations,
+overnight, sleep/reboot and other-platform acceptance remain separate.
+
+Review also found a late-interruption reporting gap. The corrected driver records
+the first signal without taking locks and checks interruption during final report
+writes, while preserving an existing failure. Injected SIGINT/SIGTERM tests and
+actual normal/interrupted private trials retained the right outcomes and clean
+owned-process cleanup. The full standard gate passed 762 Rust tests and 60
+Python checks, including the two new signal regressions. Final CI and review
+remain required.
+
+### September 11: macOS watcher loss reproduced and corrected
+
+Final-stack CI exposed a surviving-file deletion that never reached the ledger
+when another checkout disappeared. Immediate watch reconciliation reproduces the
+loss locally: the unavailable-checkout gap is present but the deletion is absent.
+The [correction](verification/2026-09-11-macos-watcher-recovery.json) isolates
+FSEvents streams by checkout, so adding/removing one does not restart another's
+stream. Linux retains its shared watcher. A separate macOS acknowledgement test
+fixture now clears inherited nonblocking mode before its bounded request read.
+Both regressions passed 100 repetitions each with zero retries; the standard
+gate passed 762 Rust tests, 60 Python checks, lint, doctests, packaging and release
+build. Failed baseline/CI evidence is retained. Final-head CI/review and installed
+acceptance remain; the running daemon and user sessions were not replaced.
+
+### September 11: forced-fixture cleanup and restart ownership
+
+[Review recovery evidence](verification/2026-09-11-recovery-fixtures.json) reproduces
+two sleep agents surviving a forced daemon shutdown under the previous driver.
+The corrected harness pins process birth identities, captures private-group
+descendants before shutdown, terminates retained groups with bounded escalation,
+and waits for their removal. A changed PID identity is neither signalled nor
+reaped. The actual frozen-daemon trial leaves no fixture agents; it remains a
+failed trial because shutdown was forced. Normal shutdown remains signal-free.
+
+A separate Docker CI restart exited while the daemon lock was still held. A
+controlled inherited-descriptor probe reproduces that startup result; the
+container fixture now waits at most five seconds for actual lock release before
+launching its successor. A permanent owner remains a failure, and the lock inode
+is preserved. The original CI log does not identify its holder. Full verification
+passed 762 Rust tests and 64 Python checks, including descendant/reused-PID and
+inherited/persistent-lock regressions, with lint, doctests, packaging and release
+build. Fresh engine CI and follow-up review remain required.
+
+Follow-up review found that a timed-out process-table query could skip all
+shutdown. The correction retains query failures and continues cleanup. A stronger
+real-process regression also exposed an undiscovered TERM-ignoring group member
+surviving its leader; failed discovery now kills the verified private group
+before that anchor can disappear. Both timeout and nonzero-query cases pass,
+with their failed baseline retained. The full gate at `8d09453` passed 762 Rust
+tests and 65 Python checks. Docker and Podman passed the preceding lock-barrier
+head `2ff8f93`; final-head CI and review remain required.

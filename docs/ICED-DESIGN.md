@@ -178,8 +178,13 @@ separate. Legacy duplicate registry reconciliation remains engineering work.
 - Terminal transport retains bounded input/output, resize coalescing, scrollback,
   replay and shutdown behavior. The Iced widget draws the real VT grid, including
   ANSI/true colors, styles, wide Unicode cells and a cursor. Input supports native
-  IME, Unicode, clipboard paste and application cursor mode. Copy currently copies
-  the visible screen; selecting an arbitrary cell range is not implemented.
+  IME, Unicode, clipboard paste and application cursor mode. Drag to select a
+  cell range, then use Command+C or Control+Shift+C to copy it. Selection holds
+  only the visible grid while the parser continues draining output, so copied
+  text stays tied to the highlight. Copy, Escape, typing, scrolling, resizing or
+  leaving the window returns to current output. Wide and combining characters
+  remain whole, and soft-wrapped lines join without extra newlines. With no
+  selection, copy retains the existing visible-screen behavior.
 - Commands run the actual bundled CLI in the selected project, without a shell.
   Output, history, request queues and execution deadlines remain bounded. Late
   results do not steal navigation focus.

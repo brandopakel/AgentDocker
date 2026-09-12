@@ -8,6 +8,10 @@ use iced::advanced::{
 use iced::advanced::{Renderer as _, text::Renderer as _};
 use iced::{Event, Font, Length, Point, Rectangle, Size, keyboard, mouse};
 
+#[path = "selection.rs"]
+mod selection;
+use selection::Selection;
+
 pub struct Display<'a> {
     pub terminal: &'a Terminal,
     pub palette: &'a Palette,
@@ -18,6 +22,8 @@ pub struct Display<'a> {
 struct State {
     focus: Focus,
     preedit: input_method::Preedit,
+    selection: Option<Selection>,
+    source: std::sync::Weak<Mutex<vt100::Parser>>,
 }
 
 impl<'a> From<Display<'a>> for iced::Element<'a, Message> {
@@ -51,15 +57,41 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
         operation: &mut dyn Operation,
     ) {
         let id = widget::Id::new("terminal");
-        let mut semantic = crate::accessibility::Semantic::terminal(
-            lock(&self.terminal.shared.parser).screen().contents(),
-        );
+        let state = tree.state.downcast_ref::<State>();
+        let contents = state
+            .selection
+            .as_ref()
+            .filter(|_| state.source.as_ptr() == Arc::as_ptr(&self.terminal.shared.parser))
+            .map(Selection::contents)
+            .unwrap_or_else(|| lock(&self.terminal.shared.parser).screen().contents());
+        let mut semantic = crate::accessibility::Semantic::terminal(contents);
         operation.custom(Some(&id), layout.bounds(), &mut semantic);
         operation.focusable(
             Some(&id),
             layout.bounds(),
             &mut tree.state.downcast_mut::<State>().focus,
         );
+    }
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _: &Rectangle,
+        _: &iced::Renderer,
+    ) -> mouse::Interaction {
+        if cursor.is_over(layout.bounds())
+            || tree
+                .state
+                .downcast_ref::<State>()
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.dragging)
+        {
+            mouse::Interaction::Text
+        } else {
+            mouse::Interaction::default()
+        }
     }
     fn update(
         &mut self,
@@ -74,19 +106,65 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
     ) {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
+        if state.source.as_ptr() != Arc::as_ptr(&self.terminal.shared.parser) {
+            state.source = Arc::downgrade(&self.terminal.shared.parser);
+            state.selection = None;
+            state.preedit = Default::default();
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if cursor.is_over(bounds) =>
             {
+                if let Some(point) = cursor.position() {
+                    state.selection = Some(Selection::begin(
+                        lock(&self.terminal.shared.parser).screen(),
+                        point,
+                        bounds,
+                        self.size,
+                    ));
+                }
                 shell.publish(Message::Focus("terminal".into()));
+                shell.request_redraw();
+                shell.capture_event();
+            }
+            Event::Mouse(mouse::Event::CursorMoved { position })
+                if state
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.dragging) =>
+            {
+                if let Some(selection) = &mut state.selection {
+                    selection.extend(*position, bounds, self.size);
+                }
+                shell.request_redraw();
+                shell.capture_event();
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if state
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.dragging) =>
+            {
+                if let Some(selection) = &mut state.selection {
+                    if let Some(point) = cursor.position() {
+                        selection.extend(point, bounds, self.size);
+                    }
+                    selection.dragging = false;
+                    if selection.is_empty() {
+                        state.selection = None;
+                    }
+                }
+                shell.request_redraw();
                 shell.capture_event();
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
+                state.selection = None;
                 let rows = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => *y * 3.0,
                     mouse::ScrollDelta::Pixels { y, .. } => *y / (self.size * 1.4),
                 };
                 shell.publish(Message::TerminalScroll(rows.round() as i32));
+                shell.request_redraw();
                 shell.capture_event();
             }
             Event::Keyboard(event @ keyboard::Event::KeyPressed { key, modifiers, .. })
@@ -101,9 +179,17 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                 {
                     return;
                 }
+                if matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape))
+                    && state.selection.take().is_some()
+                {
+                    shell.request_redraw();
+                    shell.capture_event();
+                    return;
+                }
                 if (modifiers.logo() || (modifiers.control() && modifiers.shift()))
                     && matches!(key,keyboard::Key::Character(c) if c.eq_ignore_ascii_case("v"))
                 {
+                    state.selection = None;
                     if let Some(paste) = clipboard.read(iced::advanced::clipboard::Kind::Standard) {
                         let bracketed = lock(&self.terminal.shared.parser)
                             .screen()
@@ -114,11 +200,15 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                 } else if (modifiers.logo() || (modifiers.control() && modifiers.shift()))
                     && matches!(key,keyboard::Key::Character(c) if c.eq_ignore_ascii_case("c"))
                 {
-                    clipboard.write(
-                        iced::advanced::clipboard::Kind::Standard,
-                        lock(&self.terminal.shared.parser).screen().contents(),
-                    );
+                    let copied = state
+                        .selection
+                        .take()
+                        .filter(|selection| !selection.is_empty())
+                        .map(|selection| selection.text())
+                        .unwrap_or_else(|| lock(&self.terminal.shared.parser).screen().contents());
+                    clipboard.write(iced::advanced::clipboard::Kind::Standard, copied);
                 } else if state.preedit.content.is_empty() {
+                    state.selection = None;
                     let bytes = keys::encode(
                         event,
                         lock(&self.terminal.shared.parser)
@@ -127,11 +217,13 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                     );
                     shell.publish(Message::TerminalInput(bytes));
                 }
+                shell.request_redraw();
                 shell.capture_event();
             }
             Event::InputMethod(input_method::Event::Preedit(content, selection))
                 if state.focus.focused =>
             {
+                state.selection = None;
                 state.preedit = input_method::Preedit {
                     content: content.clone(),
                     selection: selection.clone(),
@@ -141,11 +233,17 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                 shell.capture_event();
             }
             Event::InputMethod(input_method::Event::Commit(content)) if state.focus.focused => {
+                state.selection = None;
                 state.preedit = Default::default();
                 shell.publish(Message::TerminalInput(content.as_bytes().to_vec()));
                 shell.capture_event();
             }
             Event::InputMethod(input_method::Event::Closed) => state.preedit = Default::default(),
+            Event::Window(iced::window::Event::Unfocused) => {
+                state.selection = None;
+                state.preedit = Default::default();
+                shell.request_redraw();
+            }
             Event::Window(iced::window::Event::RedrawRequested(_)) => {
                 let cols = (bounds.width / (self.size * 0.61))
                     .floor()
@@ -154,7 +252,15 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                     .floor()
                     .clamp(4.0, 200.0) as u16;
                 if self.terminal.size != (cols, rows) {
+                    state.selection = None;
                     shell.publish(Message::TerminalResize(cols, rows));
+                }
+                if state
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.size() != (rows, cols))
+                {
+                    state.selection = None;
                 }
                 if state.focus.focused {
                     let (row, col) = lock(&self.terminal.shared.parser)
@@ -190,6 +296,10 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
             return;
         };
         let state = tree.state.downcast_ref::<State>();
+        let selection = state
+            .selection
+            .as_ref()
+            .filter(|_| state.source.as_ptr() == Arc::as_ptr(&self.terminal.shared.parser));
         renderer.fill_quad(
             renderer::Quad {
                 bounds,
@@ -200,7 +310,16 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
         let (cw, ch) = (self.size * 0.61, self.size * 1.4);
         // Copy only painted cells while holding the parser lock. Shaping and
         // software drawing must not keep the output reader from draining frames.
-        let (cells, cursor_position) = {
+        let (cells, cursor_position) = if let Some(selection) = selection {
+            (
+                selection
+                    .cells()
+                    .filter(|(_, _, cell)| needs_paint(cell))
+                    .map(|(row, col, cell)| (row, col, cell.clone()))
+                    .collect(),
+                None,
+            )
+        } else {
             let parser = lock(&self.terminal.shared.parser);
             let screen = parser.screen();
             let cells = painted_cells(
@@ -212,6 +331,24 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
             (cells, cursor_position)
         };
         renderer.with_layer(clip, |renderer| {
+            if let Some(selection) = selection {
+                for (row, col, cell) in selection.cells() {
+                    if selection.contains(row, col, cell.is_wide()) {
+                        renderer.fill_quad(
+                            renderer::Quad {
+                                bounds: Rectangle {
+                                    x: bounds.x + f32::from(col) * cw,
+                                    y: bounds.y + f32::from(row) * ch,
+                                    width: cw * if cell.is_wide() { 2.0 } else { 1.0 },
+                                    height: ch,
+                                },
+                                ..Default::default()
+                            },
+                            iced::Color::from(self.palette.accent),
+                        );
+                    }
+                }
+            }
             for (row, col, cell) in cells {
                 let pos = Point::new(
                     bounds.x + f32::from(col) * cw,
@@ -228,6 +365,10 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Display<'_> {
                 );
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
+                }
+                if selection.is_some_and(|selection| selection.contains(row, col, cell.is_wide())) {
+                    fg = self.palette.ground;
+                    bg = self.palette.accent;
                 }
                 if bg != self.palette.ground {
                     renderer.fill_quad(
@@ -330,18 +471,21 @@ fn painted_cells(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<(u16, u16,
             if cell.is_wide_continuation() {
                 continue;
             }
-            let content = cell.contents();
-            if (content.is_empty() || content == " ")
-                && cell.bgcolor() == vt100::Color::Default
-                && !cell.inverse()
-                && !cell.underline()
-            {
+            if !needs_paint(cell) {
                 continue;
             }
             cells.push((row, col, cell.clone()));
         }
     }
     cells
+}
+
+fn needs_paint(cell: &vt100::Cell) -> bool {
+    let content = cell.contents();
+    !((content.is_empty() || content == " ")
+        && cell.bgcolor() == vt100::Color::Default
+        && !cell.inverse()
+        && !cell.underline())
 }
 
 fn paste_bytes(mut paste: String, bracketed: bool) -> Vec<u8> {
@@ -361,6 +505,205 @@ fn paste_bytes(mut paste: String, bracketed: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct MemoryClipboard(Option<String>);
+    impl Clipboard for MemoryClipboard {
+        fn read(&self, _: iced::advanced::clipboard::Kind) -> Option<String> {
+            self.0.clone()
+        }
+        fn write(&mut self, _: iced::advanced::clipboard::Kind, text: String) {
+            self.0 = Some(text);
+        }
+    }
+
+    fn fixture() -> Terminal {
+        Terminal {
+            agent: "selection-fixture".into(),
+            shared: Shared {
+                parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 10))),
+                status: Arc::new(Mutex::new(Status::Attached)),
+                connection: Arc::new(Mutex::new(Connection::default())),
+                input: Arc::new(Input::default()),
+            },
+            input_notice: None,
+            size: DEFAULT_SIZE,
+            scrollback: 0,
+        }
+    }
+
+    fn key(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            modified_key: key.clone(),
+            key,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        })
+    }
+
+    fn update(
+        element: &mut iced::Element<'_, Message>,
+        tree: &mut Tree,
+        event: Event,
+        cursor: mouse::Cursor,
+        clipboard: &mut MemoryClipboard,
+    ) -> Vec<Message> {
+        let renderer = iced::Renderer::new(Font::MONOSPACE, 10.0.into());
+        let bounds = Rectangle::with_size(Size::new(488.0, 336.0));
+        let node = element.as_widget_mut().layout(
+            tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, bounds.size()),
+        );
+        let mut messages = Vec::new();
+        element.as_widget_mut().update(
+            tree,
+            &event,
+            Layout::new(&node),
+            cursor,
+            &renderer,
+            clipboard,
+            &mut Shell::new(&mut messages),
+            &bounds,
+        );
+        messages
+    }
+
+    fn drag(
+        element: &mut iced::Element<'_, Message>,
+        tree: &mut Tree,
+        clipboard: &mut MemoryClipboard,
+    ) {
+        update(
+            element,
+            tree,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            mouse::Cursor::Available(Point::new(0.0, 7.0)),
+            clipboard,
+        );
+        let point = Point::new(4.0 * 6.1, 7.0);
+        update(
+            element,
+            tree,
+            Event::Mouse(mouse::Event::CursorMoved { position: point }),
+            mouse::Cursor::Available(point),
+            clipboard,
+        );
+        update(
+            element,
+            tree,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            mouse::Cursor::Unavailable,
+            clipboard,
+        );
+    }
+
+    #[test]
+    fn mouse_selection_copies_the_highlighted_snapshot_without_sending_input() {
+        let terminal = fixture();
+        lock(&terminal.shared.parser).process(b"original");
+        let mut element: iced::Element<'_, Message> = Display {
+            terminal: &terminal,
+            palette: &crate::theme::PALETTES[0],
+            size: 10.0,
+            height: 336.0,
+        }
+        .into();
+        let mut tree = Tree::new(&element);
+        tree.state.downcast_mut::<State>().focus.focused = true;
+        let mut clipboard = MemoryClipboard::default();
+        drag(&mut element, &mut tree, &mut clipboard);
+        assert!(
+            !tree
+                .state
+                .downcast_ref::<State>()
+                .selection
+                .as_ref()
+                .unwrap()
+                .dragging
+        );
+        lock(&terminal.shared.parser).process(b"\rchanged ");
+        let messages = update(
+            &mut element,
+            &mut tree,
+            key(
+                keyboard::Key::Character("c".into()),
+                keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT,
+            ),
+            mouse::Cursor::Unavailable,
+            &mut clipboard,
+        );
+        assert_eq!(clipboard.0.as_deref(), Some("orig"));
+        assert!(messages.is_empty());
+        assert!(tree.state.downcast_ref::<State>().selection.is_none());
+        let messages = update(
+            &mut element,
+            &mut tree,
+            key(
+                keyboard::Key::Character("c".into()),
+                keyboard::Modifiers::CTRL,
+            ),
+            mouse::Cursor::Unavailable,
+            &mut clipboard,
+        );
+        assert!(matches!(messages.as_slice(), [Message::TerminalInput(bytes)] if bytes == &[3]));
+    }
+
+    #[test]
+    fn escape_clears_selection_then_reaches_the_terminal_and_scroll_clears_snapshot() {
+        let terminal = fixture();
+        lock(&terminal.shared.parser).process(b"original");
+        let mut element: iced::Element<'_, Message> = Display {
+            terminal: &terminal,
+            palette: &crate::theme::PALETTES[0],
+            size: 10.0,
+            height: 336.0,
+        }
+        .into();
+        let mut tree = Tree::new(&element);
+        tree.state.downcast_mut::<State>().focus.focused = true;
+        let mut clipboard = MemoryClipboard::default();
+        drag(&mut element, &mut tree, &mut clipboard);
+        let escape = key(
+            keyboard::Key::Named(keyboard::key::Named::Escape),
+            keyboard::Modifiers::empty(),
+        );
+        assert!(
+            update(
+                &mut element,
+                &mut tree,
+                escape.clone(),
+                mouse::Cursor::Unavailable,
+                &mut clipboard
+            )
+            .is_empty()
+        );
+        let messages = update(
+            &mut element,
+            &mut tree,
+            escape,
+            mouse::Cursor::Unavailable,
+            &mut clipboard,
+        );
+        assert!(matches!(messages.as_slice(), [Message::TerminalInput(bytes)] if bytes == &[27]));
+        drag(&mut element, &mut tree, &mut clipboard);
+        let messages = update(
+            &mut element,
+            &mut tree,
+            Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+            }),
+            mouse::Cursor::Available(Point::new(10.0, 10.0)),
+            &mut clipboard,
+        );
+        assert!(tree.state.downcast_ref::<State>().selection.is_none());
+        assert!(matches!(messages.as_slice(), [Message::TerminalScroll(3)]));
+    }
 
     #[test]
     fn bracketed_paste_cannot_end_early_or_fall_back_to_raw_input() {
