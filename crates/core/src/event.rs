@@ -341,6 +341,12 @@ pub enum EventKind {
         agent: AgentId,
         status: AgentStatus,
     },
+    /// Output capture failed; the separate exit event retains the actual
+    /// process status. A successful exit does not imply the log is complete.
+    AgentOutputFailed {
+        agent: AgentId,
+        reason: String,
+    },
     AgentRemoved {
         agent: AgentId,
     },

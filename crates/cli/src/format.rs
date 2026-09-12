@@ -468,6 +468,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentExited { agent, status } => {
             format!("agent exited     {} {status}", agent.short())
         }
+        EventKind::AgentOutputFailed { agent, reason } => {
+            format!("agent log incomplete {}: {reason}", agent.short())
+        }
         EventKind::AgentRemoved { agent } => format!("agent removed    {}", agent.short()),
         EventKind::QuestionOpened {
             question,

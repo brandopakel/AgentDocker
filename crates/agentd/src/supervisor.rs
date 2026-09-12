@@ -12,7 +12,7 @@ use anyhow::Context;
 use chrono::Utc;
 use std::os::fd::{AsRawFd, OwnedFd};
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::daemon::Daemon;
@@ -24,10 +24,58 @@ pub struct Spawned {
     pending: Option<Pending>,
     batch_log: Option<mpsc::Sender<String>>,
     launch_error: Option<String>,
+    output: OutputCapture,
     pub control: watch::Sender<Option<bool>>,
     stop: watch::Receiver<Option<bool>>,
     /// The daemon's end of the agent's terminal, when it was given one.
     pub session: Option<Session>,
+}
+
+/// Readers and their log sink stay owned until every buffered write finishes.
+/// Dropping supervision cancels the tasks instead of leaving detached writers.
+#[derive(Default)]
+struct OutputCapture {
+    tasks: tokio::task::JoinSet<anyhow::Result<()>>,
+    input: Option<tokio::task::JoinHandle<()>>,
+    error: Option<String>,
+}
+
+impl OutputCapture {
+    /// Returns true on the first failure, so supervision can stop a producer
+    /// whose output can no longer be captured. A successful early EOF is fine.
+    fn completed(&mut self, result: Result<anyhow::Result<()>, tokio::task::JoinError>) -> bool {
+        let error = match result {
+            Ok(Ok(())) => return false,
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(error) => format!("output task failed: {error}"),
+        };
+        if self.error.is_some() {
+            return false;
+        }
+        self.error = Some(error);
+        true
+    }
+
+    async fn finish(&mut self) {
+        // Attached clients may still hold input senders after the child exits.
+        // They must not keep the terminal writer waiting for more keystrokes.
+        if let Some(input) = self.input.take() {
+            input.abort();
+            let _ = input.await;
+        }
+        while let Some(result) = self.tasks.join_next().await {
+            self.completed(result);
+        }
+    }
+}
+
+impl Drop for OutputCapture {
+    fn drop(&mut self) {
+        if let Some(input) = &self.input {
+            input.abort();
+        }
+        // JoinSet aborts the readers and log writer on drop.
+    }
 }
 
 /// What a client attaching late is shown before the live stream: enough
@@ -170,7 +218,8 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     daemon.validate_native_launch(record)?;
 
     let (tx, rx) = mpsc::channel::<String>(256);
-    tokio::spawn(write_log(log, rx));
+    let mut capture = OutputCapture::default();
+    capture.tasks.spawn(write_log(log, rx));
     let mut batch_log = None;
     let session = match pty {
         Some(pty) => {
@@ -185,16 +234,16 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
             // whoever is attached; another types into it.
             //
             let (reader, writer) = terminal_io.expect("allocated before launch");
-            tokio::spawn(pump_terminal(
+            capture.tasks.spawn(pump_terminal(
                 tokio::fs::File::from_std(std::fs::File::from(reader)),
                 tx,
                 output,
                 scrollback.clone(),
             ));
-            tokio::spawn(type_into_terminal(
+            capture.input = Some(tokio::spawn(type_into_terminal(
                 tokio::fs::File::from_std(std::fs::File::from(writer)),
                 keystrokes,
-            ));
+            )));
             Some(Session {
                 output: session_output,
                 input,
@@ -216,6 +265,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         pending: Some(pending),
         batch_log,
         launch_error: None,
+        output: capture,
         control,
         stop,
         session,
@@ -253,10 +303,10 @@ impl Spawned {
                 .map(tokio::process::ChildStderr::from_std)
                 .transpose()?;
             if let Some(stdout) = stdout {
-                tokio::spawn(pump(stdout, "out", tx.clone()));
+                self.output.tasks.spawn(pump(stdout, "out", tx.clone()));
             }
             if let Some(stderr) = stderr {
-                tokio::spawn(pump(stderr, "err", tx));
+                self.output.tasks.spawn(pump(stderr, "err", tx));
             }
         }
         self.child = Some(child);
@@ -271,7 +321,7 @@ async fn pump_terminal(
     log: mpsc::Sender<String>,
     output: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
-) {
+) -> anyhow::Result<()> {
     use tokio::io::AsyncReadExt;
     let mut buffer = vec![0_u8; 8192];
     let mut line = String::new();
@@ -279,7 +329,10 @@ async fn pump_terminal(
         // A closed terminal reads zero; a vanished one errors. Either ends
         // the session.
         let read = match terminal.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            // Linux reports the last terminal slave closing as EIO.
+            Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => break,
+            Err(error) => return Err(error).context("cannot read agent terminal output"),
             Ok(read) => read,
         };
         let chunk = &buffer[..read];
@@ -297,21 +350,24 @@ async fn pump_terminal(
         while let Some(end) = line.find('\n') {
             let complete: String = line.drain(..=end).collect();
             let complete = complete.trim_end_matches(['\n', '\r']).to_owned();
-            if log.send(format!("out {complete}")).await.is_err() {
-                return;
-            }
+            log.send(format!("out {complete}\n"))
+                .await
+                .context("terminal log writer closed")?;
         }
         // A prompt with no newline should not be held forever.
         if line.len() > 4096 {
             let partial = std::mem::take(&mut line);
-            if log.send(format!("out {partial}")).await.is_err() {
-                return;
-            }
+            log.send(format!("out {partial}\n"))
+                .await
+                .context("terminal log writer closed")?;
         }
     }
     if !line.is_empty() {
-        let _ = log.send(format!("out {line}")).await;
+        log.send(format!("out {line}\n"))
+            .await
+            .context("terminal log writer closed")?;
     }
+    Ok(())
 }
 
 /// Type what an attached client sends into the agent's terminal.
@@ -361,6 +417,15 @@ pub fn supervise(
                 tokio::select! {
                     biased;
                     result = wait_owned_child(child) => break result,
+                    Some(result) = spawned.output.tasks.join_next(), if !spawned.output.tasks.is_empty() => {
+                        if spawned.output.completed(result) {
+                            let _ = kill(group, Signal::SIGTERM);
+                            if !stopping {
+                                deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                                stopping = true;
+                            }
+                        }
+                    }
                     Ok(()) = spawned.stop.changed() => {
                         if let Some(force) = *spawned.stop.borrow_and_update() {
                             let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
@@ -406,8 +471,19 @@ pub fn supervise(
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
         }
-        // The terminal goes with the agent: anyone attached sees the
-        // stream end rather than a room that is no longer there.
+        // A prepared launch may have failed before its pipe readers existed.
+        // Release that sender so the log task can finish even on this path.
+        spawned.batch_log.take();
+        spawned.output.finish().await;
+        if let Some(reason) = spawned.output.error.take() {
+            tracing::warn!(agent = %id, %reason, "agent output capture failed");
+            daemon.emit(agentdocker_core::EventKind::AgentOutputFailed {
+                agent: id.clone(),
+                reason,
+            });
+        }
+        // Publish completion only after all output and final log writes have
+        // drained, so shutdown/restart cannot abandon the tail of the log.
         daemon.end_session(&id);
         daemon.mark_exited(&id, status.clone());
         // After the exit is recorded, so a reader of the event stream
@@ -416,27 +492,35 @@ pub fn supervise(
     })
 }
 
-async fn pump<R: AsyncRead + Unpin>(reader: R, stream: &'static str, tx: mpsc::Sender<String>) {
+async fn pump<R: AsyncRead + Unpin>(
+    reader: R,
+    stream: &'static str,
+    tx: mpsc::Sender<String>,
+) -> anyhow::Result<()> {
     let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .context("cannot read agent pipe output")?
+    {
         let stamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
-        if tx
-            .send(format!("{stamp} [{stream}] {line}\n"))
+        tx.send(format!("{stamp} [{stream}] {line}\n"))
             .await
-            .is_err()
-        {
-            break;
-        }
+            .context("agent log writer closed")?;
     }
+    Ok(())
 }
 
-async fn write_log(mut log: File, mut rx: mpsc::Receiver<String>) {
+async fn write_log<W: AsyncWrite + Unpin>(
+    mut log: W,
+    mut rx: mpsc::Receiver<String>,
+) -> anyhow::Result<()> {
     while let Some(line) = rx.recv().await {
-        if log.write_all(line.as_bytes()).await.is_err() {
-            break;
-        }
+        log.write_all(line.as_bytes())
+            .await
+            .context("cannot write agent log")?;
     }
-    let _ = log.flush().await;
+    log.flush().await.context("cannot flush agent log")
 }
 
 /// Whether a validated dedicated group still has any processes. Uncertainty
@@ -458,6 +542,56 @@ mod tests {
     use nix::libc;
     use std::io::Write;
     use std::os::{fd::OwnedFd, unix::process::CommandExt};
+
+    #[tokio::test]
+    async fn output_completion_waits_for_a_slow_sink_and_preserves_the_partial_last_line() {
+        use tokio::io::AsyncReadExt;
+        let (writer, mut reader) = tokio::io::duplex(8);
+        let (tx, rx) = mpsc::channel(1);
+        let mut capture = OutputCapture::default();
+        capture.tasks.spawn(write_log(writer, rx));
+        capture
+            .tasks
+            .spawn(pump(&b"first\nlast without newline"[..], "out", tx));
+        let mut completion = tokio::spawn(async move {
+            capture.finish().await;
+            capture.error.take()
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut completion)
+                .await
+                .is_err()
+        );
+        let mut written = String::new();
+        reader.read_to_string(&mut written).await.unwrap();
+        assert_eq!(completion.await.unwrap(), None);
+        assert!(written.contains("[out] first\n"), "{written}");
+        assert!(
+            written.ends_with("[out] last without newline\n"),
+            "{written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_log_sink_is_reported_and_all_capture_tasks_finish() {
+        let (writer, reader) = tokio::io::duplex(8);
+        drop(reader);
+        let (tx, rx) = mpsc::channel(1);
+        let mut capture = OutputCapture::default();
+        capture.tasks.spawn(write_log(writer, rx));
+        capture
+            .tasks
+            .spawn(pump(&b"first\nsecond\nthird\n"[..], "out", tx));
+        tokio::time::timeout(std::time::Duration::from_secs(2), capture.finish())
+            .await
+            .unwrap();
+        let error = capture
+            .error
+            .as_deref()
+            .expect("sink failure is not successful capture");
+        assert!(error.contains("log"), "{error}");
+        assert!(capture.tasks.is_empty());
+    }
 
     #[tokio::test]
     async fn child_exit_before_or_after_signal_subscription_is_not_lost() {

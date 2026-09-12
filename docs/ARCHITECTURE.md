@@ -348,7 +348,18 @@ The complete variant definitions and payloads are in [`EventKind`](../crates/cor
 
 ## Process supervision
 
-`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Captured log lines carry timestamps and stream tags. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+
+Supervision retains terminal/pipe readers, the input writer and log writer. After
+the child and its group finish, it closes terminal input and waits for output
+EOF and the final log flush before publishing `agent_exited`, releasing leases
+or considering restart. A capture task failure stops the owned producer with
+the existing TERM/KILL grace period and emits `agent_output_failed {agent,
+reason}` before the exit event; the exit retains the actual process status.
+`agentdocker events` renders the separate incomplete-log reason. Output tasks
+are cancelled if supervision is dropped, rather than left detached. This does
+not yet move process ownership outside the daemon or guarantee crash durability
+of filesystem writes.
 
 For supervised native commands, the daemon overrides `AGENTDOCKER_HOME`, `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID` and `AGENTDOCKER_AGENT_NAME` with its own context after applying `spec.env`. It removes `AGENTDOCKER_TOKEN_FILE` because these children use the host endpoint, and sets `AGENTDOCKER_NO_AUTOSTART=1` so an unavailable owner fails explicitly instead of starting a replacement from a child. The same rules apply to initial launches and restored commands, including PTY launches. Explicit container mounts use their separate scoped endpoint and credentials.
 
