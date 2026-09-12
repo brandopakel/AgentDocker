@@ -53,6 +53,16 @@ review and broader permission forms are still open.
 
 ## Engineering still open
 
+The [CLI sender follow-up](verification/2026-09-12-cli-sender-identity.json) fixes
+a reproduced path where commands issued inside an agent defaulted to the human
+sender, sending replies to the wrong queue. Exact registered provider ancestry
+now supplies omitted sender identities, including questions, answers and
+cancellations. At `fc97f8b`, 859 Rust tests, 65 Python checks and six prior/corrected
+CLI process scenarios passed. Actual Claude Code 2.1.270 Bash trials also
+reproduce the old human attribution and verify the corrected provider identity
+and reply destination, with unchanged monitored user profiles. Final CI/source
+review remain; this does not retrofit idle wake into an existing hook-only session.
+
 | Priority | Work | Completion condition | Supporting documents |
 | --- | --- | --- | --- |
 | Top priority; Claude and Codex bounded acceptance | Unified user/agent input queue and idle wake | Managed Claude channels and the owned Codex bridge now have actual idle, busy/mixed-input, question-answer and correlated-receipt evidence under one provider identity. Codex also passes controlled receipt/crash recovery. Compact durable delivery status and read-only guided review are merged with local acceptance and final CI/source review. [Bounded file-change review](verification/2026-09-12-file-change-review.json) now passes 848 Rust tests, 65 Python checks, 19 native review/draft/restart steps and actual Codex Allow/Deny with three ordered peer/human inputs each. PR #112 passed final CI and source review, corrected schema-history documentation and retained intentional uncertainty protection; it merged as `dd0665a`. Complete permission/MCP elicitation/secret-input presentation, broader actual-provider interruptions/reconnect and sustained conversations. Hooks alone remain insufficient for idle wake. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md), [Claude question evidence](verification/2026-09-12-claude-question-queue.json) |
