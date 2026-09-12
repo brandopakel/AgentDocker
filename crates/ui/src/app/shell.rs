@@ -155,9 +155,13 @@ pub enum Message {
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
     SelectProject(PathBuf),
+    /// Every project at once: the home view.
+    AllProjects,
     Unassigned,
     RetryProject,
     SelectSession(String),
+    /// Jump to one session from anywhere: its project first, then the row.
+    OpenSession(String),
     CloseSession,
     Search(String),
     SessionFilter(super::sessions::Filter),
@@ -414,6 +418,16 @@ impl App {
                 }
             }
             Message::RetryProject => self.shell.checked_project = None,
+            Message::AllProjects => {
+                self.shell.catalog.unassigned = false;
+                self.shell.catalog.selected = None;
+                self.shell.selected = None;
+                self.shell.search.clear();
+                self.reset_session_view();
+                self.screen = Screen::Agents;
+                self.shell.changed();
+                self.refresh_project_context();
+            }
             Message::Unassigned => {
                 self.shell.catalog.unassigned = true;
                 self.shell.catalog.selected = None;
@@ -442,6 +456,22 @@ impl App {
                     self.shell.changed();
                     self.refresh_project_context();
                 }
+            }
+            Message::OpenSession(id) => {
+                let root = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == id)
+                    .and_then(|a| a.project.as_ref().map(|p| p.root.clone()));
+                match root {
+                    Some(root) => {
+                        tasks.push(self.update(Message::SelectProject(root)));
+                    }
+                    None => {
+                        tasks.push(self.update(Message::Unassigned));
+                    }
+                }
+                tasks.push(self.update(Message::SelectSession(id)));
             }
             Message::SelectSession(id) => {
                 self.shell.unviewed_done.remove(&id);
@@ -1744,6 +1774,82 @@ mod tests {
         let _ = app.update(Message::LaunchChannel(true));
         let _ = app.update(Message::ShowLaunch);
         assert!(!app.shell.launch_channel);
+    }
+
+    #[test]
+    fn the_home_view_shows_every_project_until_one_is_chosen() {
+        use agentdocker_core::AgentSpec;
+        let (mut app, _, _) = app();
+        let mut agents = Vec::new();
+        for (name, root) in [
+            ("a-worker", "/fixture/alpha"),
+            ("b-worker", "/fixture/beta"),
+        ] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.status = agentdocker_core::AgentStatus::Running;
+            let mut project = ProjectRef::directory(root);
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project.clone());
+            app.shell.catalog.remember(project, false);
+            agents.push(agent);
+        }
+        let mut homeless = AgentRecord::new(
+            AgentSpec {
+                name: "nowhere".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        homeless.status = agentdocker_core::AgentStatus::Running;
+        agents.push(homeless.clone());
+        app.agents = agents.clone();
+
+        // Home: everything, projectless included.
+        let _ = app.update(Message::AllProjects);
+        assert!(app.all_projects());
+        assert_eq!(app.shell.catalog.selected, None);
+        assert_eq!(
+            app.session_records(sessions::Filter::Current).len(),
+            3,
+            "the home view lists every live agent"
+        );
+        // A project narrows it.
+        let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
+        assert!(!app.all_projects());
+        let names: Vec<_> = app
+            .session_records(sessions::Filter::Current)
+            .iter()
+            .map(|a| a.spec.name.clone())
+            .collect();
+        assert_eq!(names, ["a-worker"]);
+        // Other sessions: only the projectless.
+        let _ = app.update(Message::Unassigned);
+        assert!(!app.all_projects());
+        let names: Vec<_> = app
+            .session_records(sessions::Filter::Current)
+            .iter()
+            .map(|a| a.spec.name.clone())
+            .collect();
+        assert_eq!(names, ["nowhere"]);
+        // Opening a session from anywhere lands in its project with it selected.
+        let _ = app.update(Message::OpenSession(agents[1].id.to_string()));
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/fixture/beta"))
+        );
+        assert_eq!(app.shell.selected.as_deref(), Some(agents[1].id.as_str()));
+        assert_eq!(app.screen, Screen::Agents);
+        let _ = app.update(Message::OpenSession(homeless.id.to_string()));
+        assert!(app.shell.catalog.unassigned);
+        assert_eq!(app.shell.selected.as_deref(), Some(homeless.id.as_str()));
     }
 
     #[test]

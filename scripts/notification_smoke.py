@@ -117,7 +117,7 @@ def smoke(binary_dir, output):
                          step("capture", name="question-route"), step("click", id="connections")]
             gates.append((len(sequence), action(direct, agents[1])))
             sequence += [step("wait_text", text="OLD DIRECT NOTIFICATION TARGET"), step("capture", name="direct-route"),
-                         step("click", id=f"project-{second}"), step("click", id="project-tab-Channels"),
+                         step("click", id=f"project-{second}"), step("click", id="project-more"), step("click", id="project-tab-Channels"),
                          step("click", id=f"reply-channel-{room['id']}"), step("fill", id="channel-message", text="Keep this channel draft"),
                          step("click", id="connections")]
             gates.append((len(sequence), action(channel_message, agents[1], room)))

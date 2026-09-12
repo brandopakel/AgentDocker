@@ -201,6 +201,9 @@ mod tests {
     #[test]
     fn attention_is_scoped_to_the_project_and_keeps_unanswered_finished_sessions() {
         let mut app = app();
+        // Other sessions: the projectless view. With nothing selected and
+        // this flag off, the home view would show every project at once.
+        app.shell.catalog.unassigned = true;
         let first = record("needs-input");
         let quiet = record("quiet");
         let mut finished = record("finished-but-unanswered");
