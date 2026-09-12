@@ -1,0 +1,97 @@
+{
+  "result": "passed",
+  "scope": "Owned real daemon + Codex app-server queue/recovery prototype; not a production adapter.",
+  "driver_sha256": "23da5995b915d0d4f53eb65b54ceb69a4e27b8318ffa8737033c4599f3128100",
+  "daemon_sha256": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+  "mixed_inputs_queued_before_completion_observation_seconds": 3.325197833000857,
+  "fifo_after_active_turn": [
+    "3114a2025162423f",
+    "6fdc25ceadc94f6f"
+  ],
+  "recovery_after_provider_acceptance": {
+    "phase": "recover",
+    "result": "passed",
+    "recovered": [
+      {
+        "message": "b19658142da44adc",
+        "turn": "01a092f7-8507-7613-8ba5-dc83e678add8",
+        "item": "01a092f7-895b-74c2-8a85-74df95ae96f4"
+      }
+    ],
+    "uncertain": [],
+    "history_turns": 4,
+    "submitted_turns": 0,
+    "events": []
+  },
+  "uncertain_without_receipt": {
+    "phase": "recover",
+    "result": "passed",
+    "recovered": [],
+    "uncertain": [
+      "03bbc81fcad049a1"
+    ],
+    "history_turns": 4,
+    "submitted_turns": 0,
+    "events": []
+  },
+  "automatic_retry_refused": true,
+  "unconfirmed_message_retained": true,
+  "cleanup": {
+    "forced": false,
+    "errors": [],
+    "exit": 0
+  },
+  "provider_configuration_unchanged": true,
+  "date": "2026-09-11",
+  "provider_version": "codex-cli 0.153.4",
+  "daemon_source_commit": "2ea59c98d393290151350e852eb2aef53b869b86",
+  "private_result": "/private/tmp/agentdocker-codex-queue-correlated-2026-09-11/result.json",
+  "private_driver": "/private/tmp/agentdocker-codex-queue-correlated-2026-09-11/driver.py",
+  "fault_method": "A worker commits its attempt to SQLite with synchronous=FULL, then exits with os._exit at an explicit cutpoint. Each owned app-server is stopped before the worker exits. A fresh worker/app-server resumes the same stored thread. This exercises process restart at controlled boundaries, not random loss during an active tool.",
+  "normal_inputs": [
+    {
+      "phase": "normal",
+      "result": "passed",
+      "message": "74090715014f4e8b",
+      "sender": "30c3ff40466c4d8a9ab3a53bc0e1904c",
+      "turn": "01a092f7-59e3-7ec1-be28-38c389888709",
+      "item": "01a092f7-5e1a-7c22-acb8-9849d803d22f",
+      "model_echo": true
+    },
+    {
+      "phase": "normal",
+      "result": "passed",
+      "message": "3114a2025162423f",
+      "sender": "8d9de2e78277489585cfa56c7e654be9",
+      "turn": "01a092f7-6789-7f30-ab65-c29eb8bed268",
+      "item": "01a092f7-6b7c-7b10-bb0f-df9c53fff7e1",
+      "model_echo": true
+    },
+    {
+      "phase": "normal",
+      "result": "passed",
+      "message": "6fdc25ceadc94f6f",
+      "sender": "30c3ff40466c4d8a9ab3a53bc0e1904c",
+      "turn": "01a092f7-7411-7f21-a302-cc2df5a935ff",
+      "item": "01a092f7-7810-79f3-9b38-3fb51d76ba17",
+      "model_echo": true
+    }
+  ],
+  "accepted_before_receipt_cut": {
+    "phase": "crash-before-ack",
+    "message": "b19658142da44adc",
+    "thread": "01a092f7-59c1-7872-bae8-3492a8232661",
+    "turn": "01a092f7-8507-7613-8ba5-dc83e678add8",
+    "item": "01a092f7-895b-74c2-8a85-74df95ae96f4",
+    "model_echo": true
+  },
+  "limits": [
+    "This is a private Python queue/recovery prototype, not a shipped native provider adapter.",
+    "Production still needs owned managed launch, durable sender-visible delivery state, approval routing, terminal draft interaction, bounded ongoing conversations and recovery controls.",
+    "Busy arrival timing compares completed daemon sends with the provider completion notification observed by the worker; it is not a provider-internal timestamp.",
+    "Existing provider configuration hashes remained unchanged; the provider wrote only the newly created trial conversation into its own history.",
+    "No existing user provider, daemon or launcher was replaced."
+  ],
+  "official_protocol": "https://learn.chatgpt.com/docs/app-server",
+  "earlier_trial": "/private/tmp/agentdocker-codex-queue-2026-09-11/result.json"
+}

@@ -43,11 +43,18 @@ planned entry appears after add, or the reserved entry is absent after remove.
 
 The provider CLI remains the writer of its live application state, using its
 [documented MCP registration interface](https://code.claude.com/docs/en/mcp).
-These checks are not a compare-and-swap transaction with that CLI: an independent
-writer can still race between validation and the provider command. Avoid
-simultaneous edits to the same MCP entry while applying or undoing. Fully
-coordinated provider mutations remain separate delivery work; ordinary unrelated
-application-state updates do not invalidate a receipt.
+AgentDocker writers now lock the canonical configuration targets for the entire
+operation. Guided apply/undo, legacy setup and hook installation coordinate even
+when they use different AgentDocker homes; symlink aliases share a lock. A busy
+target fails before configuration or receipt changes. Independent profiles can
+still be configured concurrently. Locks live in a private per-user namespace
+under `/tmp`, independent of endpoint and profile overrides; do not delete lock
+files while setup operations are running.
+
+These locks and ownership checks are not a compare-and-swap transaction with an
+independent provider CLI or editor. Such writers can still race between validation
+and the provider command, so edits to the same MCP entry need coordination.
+Ordinary unrelated provider application-state updates do not invalidate a receipt.
 
 ## What a connection check proves
 

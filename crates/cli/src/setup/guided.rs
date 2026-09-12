@@ -561,6 +561,12 @@ fn check(change: &Change) -> Result<Option<String>> {
 
 /// Apply or undo a saved plan, allowing mixed states only during recovery.
 fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
+    let mutation = super::mutation::Guard::acquire(
+        plan.changes
+            .iter()
+            .map(|change| change.path.clone())
+            .chain(plan.delegated.iter().map(|step| step.path.clone())),
+    )?;
     let allowed = if undo {
         ["prepared", "applying", "applied", "undoing", "undone"].as_slice()
     } else {
@@ -581,6 +587,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     // Prepared/applied/completed receipts have one exact expected state.
     // Only a durable in-progress receipt can explain a mix of before/after.
     for change in &plan.changes {
+        mutation.covers(&change.path)?;
         let current = check(change)?;
         let expected = match plan.phase.as_str() {
             "prepared" | "undone" => Some(change.before.as_deref()),
@@ -596,6 +603,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         }
     }
     for step in &plan.delegated {
+        mutation.covers(&step.path)?;
         check_delegated(step, undo)?;
     }
     if (!undo && plan.phase == "applied") || (undo && plan.phase == "undone") {
@@ -608,6 +616,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     plan.phase = if undo { "undoing" } else { "applying" }.into();
     save(directory, plan)?; // durable recovery/undo snapshots precede configuration writes
     for change in &plan.changes {
+        mutation.covers(&change.path)?;
         let current = check(change)?;
         let desired = if undo {
             change.before.as_deref()
@@ -633,6 +642,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     // what the apply recorded itself as having made: a registration that
     // was already there when we ran is somebody else's.
     for index in 0..plan.delegated.len() {
+        mutation.covers(&plan.delegated[index].path)?;
         if undo {
             if plan.delegated[index].created {
                 deregister(&plan.delegated[index])?;
@@ -857,6 +867,49 @@ path.write_text(json.dumps(value))
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn delegated_target_contention_blocks_apply_and_undo_before_any_writes() {
+        for undo in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (roots, _) = fake_claude(tmp.path());
+            writing_claude(tmp.path());
+            let executable = tmp.path().join("bin/agentdocker");
+            let mut plan = prepare(&roots, &["claude-code".into()], &executable).unwrap();
+            let directory = directory(&tmp.path().join("separate-agentdocker-state")).unwrap();
+            save(&directory, &plan).unwrap();
+            if undo {
+                apply(&directory, &mut plan, false).unwrap();
+            }
+            let receipt_path = receipt(&directory, &plan.id).unwrap();
+            let receipt_before = std::fs::read(&receipt_path).unwrap();
+            let plan_before = serde_json::to_value(&plan).unwrap();
+            let files_before: Vec<_> = plan
+                .changes
+                .iter()
+                .map(|change| read_config(&change.path).unwrap())
+                .collect();
+            let provider_before = read_config(&plan.delegated[0].path).unwrap();
+            // This lock is independent of the saved plan/daemon directory.
+            let _other_writer =
+                super::super::mutation::Guard::acquire([plan.delegated[0].path.clone()]).unwrap();
+            let error = apply(&directory, &mut plan, undo).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("another AgentDocker setup operation")
+            );
+            assert_eq!(serde_json::to_value(&plan).unwrap(), plan_before);
+            assert_eq!(std::fs::read(&receipt_path).unwrap(), receipt_before);
+            assert_eq!(
+                read_config(&plan.delegated[0].path).unwrap(),
+                provider_before
+            );
+            for (change, before) in plan.changes.iter().zip(files_before) {
+                assert_eq!(read_config(&change.path).unwrap(), before);
+            }
+        }
     }
 
     /// A `claude` on the injected PATH, so the planner has something to
