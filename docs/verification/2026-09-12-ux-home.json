@@ -786,12 +786,20 @@
         }
       ],
       "finding": "Follow-up kernel-time measurements were closer (5.32% prior, 5.75% current). Active stacks include vImage conversion in both builds; optimized app frames are not symbolized. No cause for the earlier gap has been established."
-    }
+    },
+    "concurrent_work_disclosure": "After these measurements, the parallel Claude session reported an independent local full gate at 7ce073e, completed by its 23:06 UTC message. This driver did not record that campaign's start/end or exclude other agents' builds. The measurements must not be treated as a verified quiet-machine comparison; coordinated remeasurement is required. The original raw observations are retained."
   },
   "scope_limits": [
     "Native steps invoke production rendered controls; they do not replace hands-on accessibility/IME trials or physical Notification Center clicks.",
     "Actual Claude sender trial uses a private profile and one-shot Bash invocation; it verifies reply queue destination after model exit, not idle consumption. Monitored user configuration and immutable binaries stayed unchanged.",
     "No installed launcher, default daemon or user-owned provider session was replaced or stopped. The observed Chrome helper was only inspected.",
-    "The four-run 100-session ABBA comparison reports a UI CPU increase from approximately 4-5% to 6-7%, with similar memory use. This short advisory measurement is being profiled; it does not explain historical socket timeouts or close sustained-use acceptance."
-  ]
+    "The short 100-session comparisons showed variable UI CPU. A parallel agent subsequently reported a local gate that may overlap them; neither a regression nor its absence is established. Coordinate a quiet remeasurement before closing this item."
+  ],
+  "independent_claude_gate": {
+    "reported_source": "7ce073e9d446ab928ad6f04314b432aacd99f097",
+    "result": "863 Rust tests, 6 skipped, 65 Python checks; fmt/clippy/doctests/package/release passed",
+    "report_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/56d5bda8-681c-4c32-a4bd-b8a026f8cf7b/scratchpad/2026-09-12-main-verification.json",
+    "report_sha256": "b27d97ce06cbff6dbe8e643bbe96d8f561d1c3559a127cc03209ee5cb6dbada2",
+    "limit": "The separate quiet idle result in that report uses earlier main binaries, not the current home candidate."
+  }
 }
