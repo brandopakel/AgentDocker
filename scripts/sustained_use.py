@@ -243,6 +243,44 @@ def population(binary, output, count, seconds, files, interrupted=None):
     return report
 
 
+class Interruption:
+    """The signal handler only records the first signal; it takes no locks."""
+    def __init__(self):
+        self.signum = None
+
+    def record(self, signum, _frame):
+        if self.signum is None:
+            self.signum = signum
+
+    def is_set(self):
+        return self.signum is not None
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while not self.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+        return self.is_set()
+
+
+def finish_report(path, report, interrupted):
+    # A signal may arrive while the final atomic write is in progress. The
+    # state changes at most once, so one additional write is sufficient.
+    while True:
+        signum = interrupted.signum
+        report["interrupted"] = signum is not None
+        if signum is not None:
+            report["signal"] = {"number": signum, "name": signal.Signals(signum).name}
+            if report["result"] != "failed":
+                report["result"] = "interrupted"
+        save_report(path, report)
+        if interrupted.signum == signum:
+            break
+    return 130 if report["result"] == "interrupted" else int(report["result"] != "passed")
+
+
 def run(args, interrupted):
     os.umask(0o077)
     args.output.mkdir(mode=0o700)
@@ -260,6 +298,9 @@ def run(args, interrupted):
               "platform": platform.platform(), "result": "running", "populations": []}
     save_report(args.output / "result.json", report)
     for count in args.agents:
+        if interrupted.is_set():
+            report["result"] = "interrupted"
+            break
         print(f"starting {count} supervised agents for {args.seconds} seconds", flush=True)
         result = population(binary, args.output, count, args.seconds, args.files, interrupted)
         report["populations"].append(result)
@@ -267,22 +308,23 @@ def run(args, interrupted):
         print(json.dumps({key: result.get(key) for key in ["agents", "result", "error", "cycles", "request_ms", "daemon_rss_kib"]}), flush=True)
         if result["result"] != "passed":
             report["result"] = result["result"]
-            save_report(args.output / "result.json", report)
-            return 130 if result["result"] == "interrupted" else 1
+            break
+    else:
+        report["result"] = "passed"
     report["binary_unchanged"] = digest(binary) == report["binary_sha256"]
     report["driver_unchanged"] = digest(Path(__file__)) == report["driver_sha256"]
-    report["result"] = "passed" if report["binary_unchanged"] and report["driver_unchanged"] else "failed"
-    save_report(args.output / "result.json", report)
-    return int(report["result"] != "passed")
+    if not report["binary_unchanged"] or not report["driver_unchanged"]:
+        report["result"] = "failed"
+    return finish_report(args.output / "result.json", report, interrupted)
 
 
 def main(args):
-    interrupted = threading.Event()
+    interrupted = Interruption()
     old_handlers = {}
     old_mask = os.umask(0o077)
     try:
         for signum in [signal.SIGINT, signal.SIGTERM]:
-            old_handlers[signum] = signal.signal(signum, lambda *_: interrupted.set())
+            old_handlers[signum] = signal.signal(signum, interrupted.record)
         return run(args, interrupted)
     finally:
         for signum, handler in old_handlers.items():
