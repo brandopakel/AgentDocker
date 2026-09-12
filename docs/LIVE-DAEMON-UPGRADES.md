@@ -2,8 +2,10 @@
 
 Implementation work in progress. The first source prerequisite provides checked
 event cursors, bounded replay and an explicit replay-complete boundary. Targeted
-store/client/socket tests pass; full candidate acceptance and provider integration
-remain pending. Production `reload` continues to refuse without
+store/client/socket tests pass. The [463f5ae checkpoint](verification/2026-09-12-event-continuation.json)
+passed 836 Rust tests, 65 Python checks and an actual immutable CLI/daemon
+restart, question-answer replay and schema-upgrade trial. Final CI/source review
+and provider integration remain pending. Production `reload` continues to refuse without
 changing the running daemon or agents. This document records the concrete
 ownership and recovery requirements behind the open item in
 [Remaining work](REMAINING-WORK.md).
