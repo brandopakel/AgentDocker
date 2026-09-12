@@ -106,12 +106,22 @@ lock-barrier head; final-head CI and follow-up review remain.
 
 The [integrated follow-up gates](verification/2026-09-11-followup-integration.json)
 passed through 770 Rust tests and 65 Python checks. Terminal selection and
-recovery fixes (#99), coordinated provider configuration (#100), opt-in daily
-update checks (#101), and direct session messages (#102) are implemented.
-CodeRabbit inspected the current heads of #99–#101 and reported no remaining
-actionable findings in their reviewed scopes. Final CI and #102 review remain
-integration gates. The earlier native and actual-Claude reports keep their own
-source and executable identities; the standard suite does not replace them.
+recovery fixes [#99](https://github.com/brandopakel/AgentDocker/pull/99) merged as
+`e5579cf`; coordinated provider configuration
+[#100](https://github.com/brandopakel/AgentDocker/pull/100) merged as `e290c7f`.
+Both passed final CI and source review. Canonical-target locks now coordinate
+guided apply/undo, legacy setup and hook installation across AgentDocker homes;
+independent editors/provider CLIs remain outside these advisory locks, with
+exact-entry checks and receipts still guarding ownership.
+
+Opt-in daily update checks (#101) and direct session messages (#102) are
+implemented. The daily scheduler has source review; its final CI remains open.
+Review of session messaging reproduced a newer draft being cleared after the
+user retyped the submitted words. The [correction](verification/2026-09-11-retyped-drafts.json)
+tracks edits for each pending send, preserving the newer draft for both sessions
+and channels. It passed 771 Rust tests, 65 Python checks and 123 fresh native
+steps. Final CI and follow-up review remain. Earlier actual-Claude reports keep
+their own source and executable identities.
 
 ## Engineering still open
 
@@ -126,7 +136,6 @@ source and executable identities; the standard suite does not replace them.
 | Platform | Full native Windows product | Integrate the daemon and clients with named pipes; finish supervised lifecycle, ConPTY, identity-safe stopping/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Core/host/desktop adapter coverage is only a foundation. | [Windows port](WINDOWS-PORT.md), [architecture](ARCHITECTURE.md) |
 | Range selection accepted on this Mac; broader input trials open | Terminal selection and richer interaction | Range selection/copy retains a bounded visible-grid snapshot, preserves Unicode and wrapped text, and releases it after copy or resumed input. The [selection checkpoint](verification/2026-09-11-terminal-selection.json) passed 762 Rust tests, 58 Python checks, 114 native workflow steps and an actual macOS drag/copy/changed-output trial with clipboard restoration. Complete human accessibility/IME and other-platform input trials, and repair observed defects. | [Iced contracts](ICED-DESIGN.md), [desktop guide](DESKTOP-UX.md) |
 | Acceptance | Removed-checkout conflict fix in installed app | Source ignores events for vanished checkout roots and reports lost coverage. The [macOS follow-up](verification/2026-09-11-macos-watcher-recovery.json) reproduces a separate surviving-file event loss during watch reconciliation and fixes it with independent checkout streams; both macOS regressions passed 100 repetitions without retries. Verify after the safe launcher/daemon switch; historical conflict channels remain. | [Bulk receipts and watcher evidence](verification/2026-09-10-bulk-receipts.json) |
-| Implemented and reviewed; final CI pending | Concurrent provider configuration mutation | Canonical-target locks now coordinate guided apply/undo, legacy setup and hook installation across AgentDocker homes. The [configuration checkpoint](verification/2026-09-11-provider-configuration.json) passed 765 Rust tests, 58 Python checks, 114 native steps and six actual CLI contention/recovery scenarios. Final-head source review found no actionable issues; complete final CI and integration. Independent provider CLIs/editors remain outside these advisory locks; exact-entry checks and receipts still guard ownership. | [Guided setup](GUIDED-SETUP.md), [delivery checkpoints](DELIVERY-PLAN.md) |
 | Later | Optional expansion | Authenticated federation/host namespaces and cross-host lease/routing semantics; additional provider/desktop adapters and engine capabilities such as image-declared volumes. Keep these behind a dependable single-host desktop. | [Product direction](PRODUCT-DIRECTION.md), [architecture](ARCHITECTURE.md), [containers](CONTAINER-ENGINES.md) |
 
 ## Manual and operational steps

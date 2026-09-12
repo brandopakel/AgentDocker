@@ -817,3 +817,14 @@ build. CodeRabbit inspected final heads `e9cdabf`, `fc41522` and `7830a65`,
 resolved the cleanup findings and reported no remaining actionable issues in
 the reviewed scopes. Final CI and direct-message review remain integration gates.
 The native and actual-provider trials retain their earlier source records.
+
+### September 11: merged recovery/configuration and preserved retyped drafts
+
+PR #99 merged as `e5579cf` and PR #100 as `e290c7f` after final CI and actual
+source review. A subsequent #102 review reproduced a send receipt clearing a
+newer draft after its text was edited back to the submitted words. Each pending
+send now records whether any edit occurred; both channel and session callbacks
+preserve that draft, while untouched submissions still clear normally. The
+[clean correction](verification/2026-09-11-retyped-drafts.json) passed 771 Rust
+tests, 65 Python checks, the full gate and 123 fresh native workflow steps.
+The failed baseline remains recorded. Final CI and follow-up review remain.

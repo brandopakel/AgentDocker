@@ -1,0 +1,93 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source_commit": "a3f87b6e286f84d39c0e816d993c7842d887e353",
+  "review": "https://github.com/brandopakel/AgentDocker/pull/102#issuecomment-5642813145",
+  "defect": "A send receipt erased an edited draft when the new text happened to equal the submitted text.",
+  "correction": "Each single in-flight send remembers whether the draft was edited. Both channel and session input callbacks mark edits; returning to identical words still preserves the new draft. A subsequent untouched send still clears its own draft.",
+  "baseline": "The rendered-input state regression failed on the prior implementation, clearing the retyped channel draft.",
+  "regression": "The new test passes for channel and session callbacks, delayed receipts and a subsequent untouched send.",
+  "standard_gate": {
+    "rust_passed": 771,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "retries": 0,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed"
+  },
+  "native_manifest": {
+    "format": 1,
+    "source_commit": "a3f87b6e286f84d39c0e816d993c7842d887e353",
+    "source_tree": "d246461f72840d2ccaac781fd10361ffc45c7baf",
+    "source_input_sha256": "3c6852c01029cb9d28f3d5da4218ba658a16f2477a366f254257be11cafa629c",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "4a2115fb4e47ae6a6d7c0d09227d4f3e7184c2f01f76eff9e9cadf5a593672b9",
+      "agentd": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+      "agentdocker-ui": "6c506e835ce34b08055a0e2567d3240c942bc7ce8e180b767e569ecd6e13d4ff"
+    }
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 123,
+    "elapsed_seconds": 50.377410332999716,
+    "checks": [
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "binary_sha256": {
+      "agentd": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+      "agentdocker": "4a2115fb4e47ae6a6d7c0d09227d4f3e7184c2f01f76eff9e9cadf5a593672b9",
+      "agentdocker-ui": "6c506e835ce34b08055a0e2567d3240c942bc7ce8e180b767e569ecd6e13d4ff"
+    }
+  },
+  "private_evidence": [
+    {
+      "path": "/private/tmp/agentdocker-retyped-draft-baseline-2026-09-11.log",
+      "sha256": "ef0e91e1f29aefe1da5c4c709656a7a02791f745267c358ab8c5986478bd1cb2"
+    },
+    {
+      "path": "/private/tmp/agentdocker-retyped-draft-fixed-2026-09-11.log",
+      "sha256": "1a508ca610cafc7826f608424194a5762404040712aa024ca7547be6bce283e1"
+    },
+    {
+      "path": "/private/tmp/agentdocker-retyped-draft-check-2026-09-11.log",
+      "sha256": "dfd4269780d83187f54a894c9106e0ca8013097793d808d431fd538f1d0e3c43"
+    },
+    {
+      "path": "/private/tmp/agentdocker-retyped-draft-iced-2026-09-11/result.json",
+      "sha256": "d6acc53fd55d6358884f52561eacd08b4661e88258b5dade83d057f1641065a4"
+    }
+  ],
+  "limits": [
+    "The delayed-receipt regression exercises real App input callbacks and result handling under controlled timing. Native rendered-control scenarios do not claim physical keyboard/IME or OS notification-click acceptance.",
+    "No fresh actual-provider run is inferred from this UI change. Earlier managed Claude receipts retain their own source and executable identity.",
+    "Final-head CI and follow-up review remain required. The installed launcher and user daemon were not replaced."
+  ]
+}
