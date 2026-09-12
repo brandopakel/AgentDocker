@@ -1,0 +1,463 @@
+{
+  "date": "2026-09-11",
+  "scope": "Experimental managed native Codex input, queue ownership and bounded crash recovery",
+  "source_commit": "b1ce9d01568ff86ede20d47e69a16164b20b7f27",
+  "build": {
+    "format": 1,
+    "source_commit": "b1ce9d01568ff86ede20d47e69a16164b20b7f27",
+    "source_tree": "72c45a4e4b93323ad940111ab62b9b93f7833a3d",
+    "source_input_sha256": "719bbd3f9822e07a959fc94c6bdc8a33203afb2a71d58a8c7283b3d3771302fa",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 12,
+    "installation_lock": 1,
+    "binary_sha256": {
+      "agentdocker": "641a3bc136d37e9366027ce9569da0c79dfe3bc988b58b969a227418eed9a472",
+      "agentd": "241cac4ebf01a5af2e75425f48c48db0c6babb54f5809af151ec0739f1e4109a",
+      "agentdocker-ui": "6a864e2fd98872ad2cacd30ad5092028c62416220740d9c7c035d253e2dba417"
+    }
+  },
+  "validation": {
+    "rust_tests": 784,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "standard_gate": "passed",
+    "includes": [
+      "format",
+      "strict Clippy",
+      "zero-retry nextest",
+      "doctests",
+      "Python checks",
+      "package",
+      "release build"
+    ],
+    "log": {
+      "path": "/private/tmp/agentdocker-codex-unused-thread-check-2026-09-11.log",
+      "sha256": "16eb643e7931fe5049e5c577db210d43c1dc2890e4eb205848fd6b9047f19a82"
+    },
+    "source_note": "Gate ran on the Rust content committed as b1ce9d0; the clean native manifest records that committed source."
+  },
+  "provider": "codex-cli 0.153.4",
+  "cases": [
+    {
+      "name": "restart_before_first_input",
+      "result": "passed",
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-unused-thread-fixed-2026-09-11/result.json",
+        "sha256": "5a01e1d37ab412100776249acab3c6357fcc8fe05b9f1d507503981d050cca57"
+      },
+      "driver_sha256": "6544e9dd439ac02ab2a5ccc2ad08f8cf1f49e3a825446d0535475df1c5e8a556",
+      "agent": "734acdb93dd24491b4d704e7d697edad",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "unused_restart": {
+        "old_thread": "01a093b4-8abb-7bc2-b940-99cfa07e5886",
+        "new_thread": "01a093b4-8c53-72e0-bffb-a74c634a9993",
+        "old_pid": 44152,
+        "new_pid": 44252,
+        "attempt": null
+      },
+      "completed": [
+        {
+          "message": "8a2f61e9bbfd4c45",
+          "receipt": {
+            "thread": "01a093b4-8c53-72e0-bffb-a74c634a9993",
+            "turn": "01a093b4-8e99-70d1-a2f1-bde00ed69c66",
+            "item": "01a093b4-92cc-7e83-954d-147ae3fed9c9"
+          }
+        },
+        {
+          "message": "47a27da8175447b7",
+          "receipt": {
+            "thread": "01a093b4-8c53-72e0-bffb-a74c634a9993",
+            "turn": "01a093b4-b63b-7df2-b983-44559421ca60",
+            "item": "01a093b4-b64b-7341-8392-02d1493eac2f"
+          }
+        },
+        {
+          "message": "f33c10207c6f4897",
+          "receipt": {
+            "thread": "01a093b4-8c53-72e0-bffb-a74c634a9993",
+            "turn": "01a093b4-d4ed-7f32-ad0c-6b5bffe2d1c2",
+            "item": "01a093b4-d4f8-7c22-a716-b7204d0767c5"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "senders": [
+        "b59784bb3e144486bcc37590690acb7c",
+        "74db40b3f794449ba7169475dfa3ab3c",
+        "b59784bb3e144486bcc37590690acb7c"
+      ],
+      "message_ids": [
+        "8a2f61e9bbfd4c45",
+        "47a27da8175447b7",
+        "f33c10207c6f4897"
+      ],
+      "duplicate_discovery_in_fixture": 0
+    },
+    {
+      "name": "completed_turn_before_controller_completion",
+      "result": "passed",
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-final-recovery-2026-09-11/result.json",
+        "sha256": "09b723255c8e219eaaffc6320a876e8a92ceabf781515f1427f04c8af032604f"
+      },
+      "driver_sha256": "3723ffe94af7c15171073cf8bfff6f3e68d7b309b9a7887eb9109879e9a21d97",
+      "agent": "cb220177a66d4222b1e5d799acddbc6b",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "cut": {
+        "message": "c16600f8395943ce",
+        "receipt": {
+          "thread": "01a093b5-0bdc-70c0-9555-009314b2d0d7",
+          "turn": "01a093b5-0e2d-7b20-9895-35ca11979698",
+          "item": "01a093b5-1470-75c2-893c-e6bfebf7b296"
+        },
+        "acknowledged": true,
+        "controller": 46442
+      },
+      "provider_terminal_before_crash": {
+        "type": "task_complete",
+        "turn_id": "01a093b5-0e2d-7b20-9895-35ca11979698"
+      },
+      "restart_pid": 47273,
+      "completed": [
+        {
+          "message": "c16600f8395943ce",
+          "receipt": {
+            "thread": "01a093b5-0bdc-70c0-9555-009314b2d0d7",
+            "turn": "01a093b5-0e2d-7b20-9895-35ca11979698",
+            "item": "01a093b5-1470-75c2-893c-e6bfebf7b296"
+          }
+        },
+        {
+          "message": "863cc0e0ac1c407e",
+          "receipt": {
+            "thread": "01a093b5-0bdc-70c0-9555-009314b2d0d7",
+            "turn": "01a093b5-3b91-71e1-817a-8738e7d10f21",
+            "item": "01a093b5-3f80-7cb2-be1b-680fb59ed8a1"
+          }
+        },
+        {
+          "message": "37563fa596a44b75",
+          "receipt": {
+            "thread": "01a093b5-0bdc-70c0-9555-009314b2d0d7",
+            "turn": "01a093b5-69db-70c3-8f02-3b33d5e3e590",
+            "item": "01a093b5-69f0-7b12-9da0-d44a8f4554d1"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "senders": [
+        "b6afa2fac1db46b4a768f8f2d3d5e56e",
+        "c8d6268557724ef89a4520bbfc8d685e",
+        "b6afa2fac1db46b4a768f8f2d3d5e56e"
+      ],
+      "message_ids": [
+        "c16600f8395943ce",
+        "863cc0e0ac1c407e",
+        "37563fa596a44b75"
+      ],
+      "duplicate_discovery_in_fixture": 0
+    },
+    {
+      "name": "prepared_before_provider_submission",
+      "result": "passed",
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-final-uncertain-2026-09-11/result.json",
+        "sha256": "4e7bd793aac227c6b674a0aa46c41e10d27a95910cedaea02bc04cdb0c06bd9d"
+      },
+      "driver_sha256": "23ec7c385d66bffe6f5bb8b065baaf71c916d3ceae03dabe6ce7fe3ea42e7c50",
+      "agent": "eb29497ecefe41279c15c552bb8bda38",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "cut": {
+        "message": "2c3db10b4b5940fc",
+        "thread": "01a093b5-0bac-76f2-af42-a579c94c0f5a",
+        "before_provider_submission": true,
+        "controller": 46440
+      },
+      "retained_message_ids": [
+        "2c3db10b4b5940fc"
+      ],
+      "automatic_user_submissions": 0,
+      "restarts": 2,
+      "senders": [
+        "ab115f02817d4a3e943ad0303eec9ab0"
+      ],
+      "message_ids": [
+        "2c3db10b4b5940fc"
+      ],
+      "recovery_outcome": "Provider refused resume because no rollout had been saved; both bounded restarts retained the prepared input and made zero automatic user submissions."
+    }
+  ],
+  "native_workflows": {
+    "result": "passed",
+    "steps": 123,
+    "elapsed_seconds": 50.01849966699956,
+    "checks": [
+      "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "record": {
+      "path": "/private/tmp/agentdocker-codex-final-iced-2026-09-11/result.json",
+      "sha256": "bff2d23958577363864a59d3432add9b71114da1a45a534f77ccd4fbd03b3974"
+    },
+    "workflow_record": {
+      "path": "/private/tmp/agentdocker-codex-final-iced-2026-09-11/workflows/result.json",
+      "sha256": "37f8fdf5a0b04fa269586f95afe3cefb8bde42201af66d4e3b9a38af1d706412"
+    },
+    "restored_record": {
+      "path": "/private/tmp/agentdocker-codex-final-iced-2026-09-11/restored/result.json",
+      "sha256": "8b19a78a72bb3b7e8b12f6b70017bfd52063639d91bd8a3b59aa81c4ee807bb6"
+    }
+  },
+  "mcp_missing_identity": {
+    "result": "passed",
+    "exit": 1,
+    "daemon_connections": 0,
+    "error": "Error: Codex input MCP lost its managed identity; separate registration is refused",
+    "binary_sha256": "641a3bc136d37e9366027ce9569da0c79dfe3bc988b58b969a227418eed9a472",
+    "record": {
+      "path": "/private/tmp/agentdocker-codex-missing-mcp-identity-2026-09-11.json",
+      "sha256": "b0cd4379588309ae21e684972ea2e0021a13b750a8780d9bfbe3cb7edfc70ed1"
+    }
+  },
+  "leaf_override_probe": {
+    "result": "passed",
+    "read_default_timeout": null,
+    "observed": {
+      "binding": "bound",
+      "other": "retained"
+    },
+    "thread": "01a0939f-72c4-7403-84d2-b1f08e127b66",
+    "cleanup": {
+      "signals": [
+        {
+          "group": 1340,
+          "signal": "SIGTERM"
+        }
+      ],
+      "remaining": [],
+      "errors": []
+    },
+    "record": {
+      "path": "/private/tmp/agentdocker-codex-config-leaf-2026-09-11/result.json",
+      "sha256": "8ed00d2dc3b33fab9705e80852a76b8a9ff869931caa979aec59dee7fb6a53c9"
+    }
+  },
+  "retained_failures": [
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-bridge-live-2026-09-11/result.json",
+        "sha256": "f43a5a900e85848aadd593a601eb02aca3e618d58a813c93306bd43eb835f513"
+      },
+      "driver_sha256": "fa5ba6c50cb3d8306fd2aac10afa16bda71051c86d470ea8dc378b33c66b8456",
+      "error": "missing correlated model reply",
+      "meaning": "Original reply trial failed; its log capture retained only one line.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "a03e0ac3bb1258fca80f9d5c5633eb1f7b1333af8f8a48ae5d3d754985b8892c"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-bridge-live-diagnostic-2026-09-11/result.json",
+        "sha256": "1aef3eb40fdd5eae352ba690621cdb336047aa7d5694f9b1687141b80f6d4778"
+      },
+      "driver_sha256": "2f09be1d2c392f07fbc4af13908d4e29242c347035eafec6f7be0c138c765bd7",
+      "error": "missing correlated model reply",
+      "meaning": "The temporary provider policy refused send_message. Three queued turns completed, but no correlated reply was accepted.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "a03e0ac3bb1258fca80f9d5c5633eb1f7b1333af8f8a48ae5d3d754985b8892c"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-bridge-live-authorized-2026-09-11/result.json",
+        "sha256": "125e9824cdf5243fbf92b6d76d7a17fa0a7dfed52930560620a45195d96eb780"
+      },
+      "driver_sha256": "4fcf67fecde7ef62f98c14586ccf97c1f31453ff7b1868c036c3c671bee9d213",
+      "error": "missing correlated model reply",
+      "meaning": "Even after explicitly authorizing the fixture tool, filtered MCP environment lost the private daemon/managed identity; this exposed the routing defect.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "a03e0ac3bb1258fca80f9d5c5633eb1f7b1333af8f8a48ae5d3d754985b8892c"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-binding-live-2026-09-11/result.json",
+        "sha256": "8f5373624d5ec4c6947b8bc6daf1b2cdf4ecf985e01346953e4821d2e1d9395e"
+      },
+      "driver_sha256": "7d274ec7e99303a096809697620536413d769b5810140a02e4c61ed0c990828f",
+      "error": "fixture agent disappeared before its identity was retained",
+      "meaning": "Replaying normalized optional config nulls failed provider configuration loading; a fast failed restart also outlived the fixture PID observation.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "11ad59a338c80e5be8c074587c4f9e0d4f6f74453256424c8c413b0de125326b"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-leaf-binding-live-2026-09-11/result.json",
+        "sha256": "fd2c5c50e13806fad54e96561148d48361158792502e0649b94422a6d1a331bf"
+      },
+      "driver_sha256": "7d274ec7e99303a096809697620536413d769b5810140a02e4c61ed0c990828f",
+      "error": "bridge never bound a provider thread",
+      "meaning": "The Homebrew Node symlink launcher did not satisfy the original ownership predicate, so MCP initialization was refused.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "00085b4c4ea2401f45764e99aaaf9b00784209f56679a4044702e91c0cbcc4cf"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-unused-thread-baseline-2026-09-11/result.json",
+        "sha256": "988c2ef6695a79ba954c59cf94ab677da19935e598ea830eb09895e347b104f4"
+      },
+      "driver_sha256": "4021ea7b4d753d949f71b32b454c7fb106c9aa1fef65e2a0d08ff47c86b64e78",
+      "error": "fixture agent disappeared before its identity was retained",
+      "meaning": "An unused thread could not resume; the initial baseline also stopped on a transient already-exited PID observation.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "931beab15af69b3f7101a9e53763f13d3b0aad781e3cb3486df03e7407ba7a08"
+    },
+    {
+      "record": {
+        "path": "/private/tmp/agentdocker-codex-unused-thread-baseline-bounded-2026-09-11/result.json",
+        "sha256": "bec4a6e407f89e8f5bff4c6dd5244d677f78670624ddae47d697dbf44de85461"
+      },
+      "driver_sha256": "6544e9dd439ac02ab2a5ccc2ad08f8cf1f49e3a825446d0535475df1c5e8a556",
+      "error": "unused conversation remains unresumable after bounded restarts",
+      "meaning": "Corrected observation reached the intended failed assertion: an unused conversation remained unresumable after bounded restarts.",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "source_input_sha256": "931beab15af69b3f7101a9e53763f13d3b0aad781e3cb3486df03e7407ba7a08"
+    }
+  ],
+  "fixture_registry_cleanup": {
+    "records": 3,
+    "record": {
+      "path": "/private/tmp/agentdocker-codex-bridge-owned-record-cleanup-2026-09-11.json",
+      "sha256": "aa945cd73e709eb4c2809355370dc9dc8b7e90f31352bd6a5639924df8b84a9c"
+    },
+    "scope": "Only three exact exited fixture records with matching private checkout paths were removed from the default daemon after before-image capture."
+  },
+  "limits": [
+    "The actual provider fixture uses a private profile with only send_message explicitly authorized; the user profile/authentication bytes were unchanged.",
+    "The completion cut occurs after the exact receipt and daemon acknowledgement, and after provider task_complete; it does not claim a random interruption of active tools or loss between receipt and queue acknowledgement.",
+    "The pre-submission cut retains an uncertain prepared input. Missing rollout is a visible pause, never proof that automatic replay is safe.",
+    "The unused-thread restart can replace a handle only before any input was prepared; a prepared or completed input forbids that reset.",
+    "Full file/permission/MCP elicitation review surfaces, approval-answer queue handling, compact durable delivery status, guided recovery and longer provider conversations remain open.",
+    "Source review and final-head CI remain gates. Installed launcher/daemon, Apple signing, physical accessibility/IME trials and full Windows delivery are unchanged."
+  ],
+  "references": [
+    "https://learn.chatgpt.com/docs/app-server",
+    "https://learn.chatgpt.com/docs/extend/mcp",
+    "https://learn.chatgpt.com/docs/config-file/config-reference"
+  ]
+}

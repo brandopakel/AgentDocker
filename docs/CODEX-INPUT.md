@@ -42,6 +42,9 @@ a successful pipe write or a client message ID is not sufficient.
 After a supervised restart, paginated provider history can recover an exact
 receipt and acknowledge it without starting another turn. An uncertain input,
 ambiguous match, changed binding or nonterminal previous turn pauses delivery.
+Codex may not have saved an unused conversation yet. A controller that has never
+prepared input may replace that unused handle after restart. Prepared or
+previously completed input always forbids this reset.
 Do not delete the record to make a paused controller retry: that discards its
 duplicate-work protection. History, frames, pending requests and retained receipts
 are bounded; exceeding a bound reports an error and preserves the pending input.
@@ -66,13 +69,22 @@ those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
 
-The current implementation passed thirteen targeted tests, the full gate with
-783 Rust tests and 65 Python checks, and 123 native workflow steps. An actual
+The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
+passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
+checks, and 123 native workflow steps. An actual
 Codex 0.153.4 trial delivered peer/human/peer input in order, received three
 correlated replies and retained one Codex record. The trial used an explicitly
 authorized `send_message` tool in its private profile; it does not establish
-general approval acceptance. Crash cuts, sustained use and source review remain
-gates. Its current
-delivery/paused state is visible in the terminal; a compact durable status and
+general approval acceptance. Actual cuts also covered a completed provider turn
+before controller completion, an uncertain input before provider submission,
+and an unused conversation. Both queue recovery and refusal to replay passed.
+Broader crash cuts, sustained use and source review remain gates. Delivery and
+paused state are visible in the terminal; a compact durable status and
 guided recovery surface remain part of the [delivery audit](MESSAGE-DELIVERY-AUDIT.md).
 The existing installation and active sessions have not been switched.
+
+Human answers to provider questions still also enter the ordinary answer queue;
+complete their receipt/cancellation handling before general approval acceptance.
+The provider transport and MCP policy reference are documented by OpenAI in
+[App server](https://learn.chatgpt.com/docs/app-server) and
+[MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
