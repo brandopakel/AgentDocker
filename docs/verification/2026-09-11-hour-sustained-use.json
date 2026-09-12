@@ -1,0 +1,163 @@
+{
+  "binary_sha256": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+  "driver_sha256": "5704c71dfc10175b503f5eebc67e85c24b04800ddaf13df8e8aade0f20c6c681",
+  "started_at": "2026-09-11T23:53:55.445639+00:00",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "result": "passed_for_listed_scope",
+  "populations": [
+    {
+      "agents": 100,
+      "requested_seconds": 3600,
+      "checkout_files": 10000,
+      "result": "passed",
+      "scope": "supervised sleep processes plus concurrent IPC clients",
+      "startup_seconds": 0.3974918749954668,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0
+      },
+      "daemon_exit": 0,
+      "remaining_child_pids": [],
+      "duration_seconds": 3600.7248752499945,
+      "interrupted": false,
+      "cycles": 1392836,
+      "latency_sample_count": 100000,
+      "latency_sample_scope": "last at most 100000 requests; all cycles counted",
+      "request_ms": {
+        "0.5": 0.27054200472775847,
+        "0.95": 2.4761669992585666,
+        "0.99": 5.156708000868093,
+        "1": 60.47141599992756
+      },
+      "daemon_rss_kib": {
+        "first": 20560,
+        "last": 31024,
+        "maximum": 31024,
+        "median": 29888
+      },
+      "maximum_descriptors": 418
+    }
+  ],
+  "binary_unchanged": true,
+  "driver_unchanged": true,
+  "source": {
+    "format": 1,
+    "source_commit": "2ea59c98d393290151350e852eb2aef53b869b86",
+    "source_tree": "0131cfe839247afb434ed54ecc051fa5b508d8ec",
+    "source_input_sha256": "9eb6be66bf2779587983b55303b6ebd79dc94333ad423307dfff5400d047ad47",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "e04f6f7abd486d37f58d39e38081512d3fb6329f87bb5a91688b1b271373763f",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "3e7dae4ee818133c12db6c11bc5103d603e6f5c06d2f993f2fa623b3adb9a640"
+    }
+  },
+  "sample_summary": {
+    "count": 715,
+    "first": {
+      "at": 0.44285949999903096,
+      "rss_kib": 20560,
+      "cpu_percent": 22.0,
+      "descriptors": 315,
+      "state_bytes": 4697664,
+      "rows": {
+        "agents": 100,
+        "inbox": 0,
+        "leases": 0,
+        "events": 803,
+        "journal": 100
+      },
+      "completed_cycles": 100
+    },
+    "last": {
+      "at": 3599.2837119589967,
+      "rss_kib": 31024,
+      "cpu_percent": 22.8,
+      "descriptors": 328,
+      "state_bytes": 62269584,
+      "rows": {
+        "agents": 100,
+        "inbox": 1,
+        "leases": 4,
+        "events": 102795,
+        "journal": 100
+      },
+      "completed_cycles": 1392431
+    },
+    "maximum_rows": {
+      "agents": 100,
+      "inbox": 90,
+      "leases": 12,
+      "events": 103652,
+      "journal": 100
+    },
+    "maximum_state_bytes": 62269584
+  },
+  "raw_result_private": "/private/tmp/agentdocker-2ea59c9-hour-100-2026-09-11/result.json",
+  "raw_result_sha256": "503087e17f988c7e66f8354057339dc1b67aeffeddc40b2c6dffc0e208537787",
+  "samples_private": "/private/tmp/agentdocker-2ea59c9-hour-100-2026-09-11/samples-100.jsonl",
+  "samples_sha256": "cc9cca6f7b64e1b52510630d842376ab5e6705769f09e12422adedbbbf8fa522",
+  "limits": [
+    "One Mac, 100 supervised sleep processes and concurrent synthetic IPC clients, 10,000 checkout files; not actual provider/model load, overnight, sleep/reboot, other-platform or live-upgrade acceptance.",
+    "Request latency percentiles use the last at most 100,000 request samples; completed cycle count covers the entire hour. RSS is observed daemon memory, not a leak-proof or battery/power measurement.",
+    "The trial used the immutable 2ea59c9 daemon and pre-finalization-fix driver. No interruption occurred. The subsequent signal-report correction has separate injected and actual owned-process evidence."
+  ],
+  "finalization_correction": {
+    "source_commit": "9cb903dbbf7102970a3697def17f84861bfb7d9a",
+    "driver_sha256": "efca9c473e33d308349467ae3bd14f1290ac60ab902dfe19bbe07eab9e9b8f4b",
+    "standard_gate": {
+      "rust_passed": 762,
+      "rust_skipped": 6,
+      "python_passed": 60,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "private_log": "/private/tmp/agentdocker-terminal-finalization-check-2026-09-11.log"
+    },
+    "signal_regressions": "SIGINT/SIGTERM after a passing last population; signal during final atomic report write; existing failures remain failures",
+    "actual_trials": [
+      {
+        "case": "normal",
+        "result": "passed",
+        "signal": null,
+        "binary_unchanged": true,
+        "driver_unchanged": true,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0
+        },
+        "remaining_child_pids": [],
+        "private_result": "/private/tmp/agentdocker-finalization-normal-2026-09-11/result.json",
+        "sha256": "5d37a5c73009df6f8e237f2ce70575c172170c30cd30603ad375eeb67bbddf6f"
+      },
+      {
+        "case": "interrupted",
+        "result": "interrupted",
+        "signal": {
+          "number": 15,
+          "name": "SIGTERM"
+        },
+        "binary_unchanged": true,
+        "driver_unchanged": true,
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0
+        },
+        "remaining_child_pids": [],
+        "private_result": "/private/tmp/agentdocker-finalization-interrupted-2026-09-11/result.json",
+        "sha256": "684413be3b994e95090bbcb9b1c7123ac35939aa8084231ba947c8d306ae3139"
+      }
+    ]
+  }
+}

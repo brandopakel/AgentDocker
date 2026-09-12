@@ -693,3 +693,21 @@ The corrected driver records samples incrementally, handles SIGINT/SIGTERM as
 interruption and waits for an already-exiting daemon before considering a signal.
 A normal short run and intentional interruption both completed cleanup; the latter
 retained 21 cycles and two samples, reported interrupted, and left no children.
+
+### September 11: completed 100-agent hour
+
+The [immutable daemon trial](verification/2026-09-11-hour-sustained-use.json)
+completed 3,600 seconds at 100 supervised fixture agents and 10,000 checkout
+files: 1,392,836 message/lease cycles, unchanged binary/driver hashes and graceful
+cleanup with no remaining children. Daemon RSS ranged from 20,560 to 31,024 KiB.
+The retained final 100,000 request samples had p95 2.48 ms and p99 5.16 ms.
+This closes the bounded one-hour fixture run; actual-provider conversations,
+overnight, sleep/reboot and other-platform acceptance remain separate.
+
+Review also found a late-interruption reporting gap. The corrected driver records
+the first signal without taking locks and checks interruption during final report
+writes, while preserving an existing failure. Injected SIGINT/SIGTERM tests and
+actual normal/interrupted private trials retained the right outcomes and clean
+owned-process cleanup. The full standard gate passed 762 Rust tests and 60
+Python checks, including the two new signal regressions. Final CI and review
+remain required.
