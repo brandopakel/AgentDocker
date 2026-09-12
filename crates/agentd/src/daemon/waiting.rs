@@ -109,6 +109,100 @@ impl Drop for Waiting<'_> {
 }
 
 impl State {
+    pub(super) fn report_input(
+        &mut self,
+        reference: &str,
+        process_started_at: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+        report: agentdocker_core::InputReport,
+        now: DateTime<Utc>,
+    ) -> Response {
+        use agentdocker_core::{InputDelivery, InputReceipt, InputReport};
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        let codex = agentdocker_host::provider_input::is_codex_input(&record);
+        let claude = record.container.is_none() && record.spec.runtime == "claude-code";
+        if !record.status.is_live()
+            || record.process_started_at != Some(process_started_at)
+            || (!codex && !claude)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "input report has no matching live provider process",
+            );
+        }
+        if observed_at > now
+            || now - observed_at >= Duration::minutes(5)
+            || record
+                .input_delivery
+                .as_ref()
+                .is_some_and(|d| observed_at < d.reported_at)
+        {
+            return Response::error(ErrorCode::Invalid, "input report is stale or in the future");
+        }
+        let mut delivery = record.input_delivery.clone().unwrap_or(InputDelivery {
+            process_started_at,
+            paused: false,
+            reported_at: observed_at,
+            received: None,
+            received_at: None,
+        });
+        match report {
+            InputReport::Received { mut input } => {
+                let provider_matches = match input.receipt {
+                    InputReceipt::Codex { .. } => codex,
+                    InputReceipt::ClaudeChannel => claude,
+                };
+                if !input.valid() || !provider_matches {
+                    return Response::error(ErrorCode::Invalid, "invalid provider input receipt");
+                }
+                // Preserve ACK idempotence, including a batch that repeats an
+                // older receipt alongside a newly received queue head. Unknown
+                // IDs are no-ops and can never create provider evidence.
+                let queued = self.inboxes.get(&id);
+                input.messages.retain(|message| {
+                    queued.is_some_and(|queue| queue.iter().any(|envelope| &envelope.id == message))
+                });
+                if input.messages.is_empty() {
+                    return Response::Ok;
+                }
+                if delivery.received.as_ref() != Some(&input) {
+                    delivery.received_at = Some(now);
+                    delivery.received = Some(input);
+                }
+                delivery.paused = false;
+            }
+            InputReport::Ready => delivery.paused = false,
+            InputReport::Paused => delivery.paused = true,
+        }
+        delivery.process_started_at = process_started_at;
+        delivery.reported_at = observed_at;
+        if record.input_delivery.as_ref() == Some(&delivery) {
+            return Response::Ok;
+        }
+        record.input_delivery = Some(delivery.clone());
+        let mut event = agentdocker_core::Event::new(
+            agentdocker_core::EventKind::InputDeliveryReported {
+                agent: id.clone(),
+                delivery,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        self.persist("input delivery report", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if self.storage_error.is_none() {
+            *self.registry.get_mut(&id).expect("resolved agent") = record;
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        self.storage_failure().unwrap_or(Response::Ok)
+    }
+
     pub(super) fn report_activity(
         &mut self,
         reference: &str,
@@ -272,6 +366,7 @@ impl Daemon {
                 name: record.spec.name.clone(),
                 project: record.project.as_ref().map(ProjectRef::id),
                 activity: state.activity_of(record, now),
+                queued_inputs: Some(state.inboxes.get(&record.id).map_or(0, |queue| queue.len())),
             })
             .collect();
         // Blocked first, because that is the one somebody has to do

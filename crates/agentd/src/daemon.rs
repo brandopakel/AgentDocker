@@ -1203,6 +1203,18 @@ impl Daemon {
             Request::ReportActivity { agent, observation } => {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
+            Request::ReportInput {
+                agent,
+                process_started_at,
+                observed_at,
+                report,
+            } => lock(&self.state).report_input(
+                &agent,
+                process_started_at,
+                observed_at,
+                report,
+                Utc::now(),
+            ),
             Request::Changes {
                 project,
                 since_seq,
@@ -6714,6 +6726,200 @@ mod tests {
                 }
             ));
         }
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn input_delivery_persists_receipts_and_pause_without_inventing_delivery() {
+        use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut receiver = register(&daemon, "receipt-status", None).await;
+        let generation = Utc::now();
+        receiver.spec.runtime = "claude-code".into();
+        receiver.process_started_at = Some(generation);
+        {
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&receiver).unwrap();
+            *state.registry.get_mut(&receiver.id).unwrap() = receiver.clone();
+        }
+        let Response::Sent { message, .. } = send(&daemon, "user", "receipt-status").await else {
+            panic!("not queued")
+        };
+        let input = ReceivedInput {
+            messages: vec![message.clone()],
+            receipt: InputReceipt::ClaudeChannel,
+        };
+        let report = InputReport::Received {
+            input: input.clone(),
+        };
+        let request = |report| Request::ReportInput {
+            agent: receiver.id.to_string(),
+            process_started_at: generation,
+            observed_at: generation,
+            report,
+        };
+        let mut events = daemon.subscribe_events();
+        assert!(matches!(
+            daemon.handle(request(report.clone())).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            events.try_recv().unwrap().kind,
+            EventKind::InputDeliveryReported { .. }
+        ));
+        assert_eq!(
+            inbox(&daemon, "receipt-status", false).await.len(),
+            1,
+            "a receipt report does not silently remove input"
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::AckInbox {
+                    agent: receiver.id.to_string(),
+                    messages: vec![message]
+                })
+                .await,
+            Response::Ok
+        ));
+        let before = lock(&daemon.state).next_seq;
+        assert!(
+            matches!(daemon.handle(request(report)).await, Response::Ok),
+            "a lost ACK reply can repeat the exact durable receipt"
+        );
+        assert_eq!(lock(&daemon.state).next_seq, before);
+        assert!(matches!(
+            daemon
+                .handle(request(InputReport::Received {
+                    input: ReceivedInput {
+                        messages: vec!["never-queued".to_owned().into()],
+                        receipt: InputReceipt::ClaudeChannel
+                    }
+                }))
+                .await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            daemon.handle(request(InputReport::Paused)).await,
+            Response::Ok
+        ));
+        for observed_at in [
+            generation - Duration::seconds(1),
+            Utc::now() + Duration::minutes(1),
+        ] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::ReportInput {
+                        agent: receiver.id.to_string(),
+                        process_started_at: generation,
+                        observed_at,
+                        report: InputReport::Ready,
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+        let saved = lock(&daemon.state)
+            .store
+            .load_agents()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == receiver.id)
+            .unwrap();
+        let delivery = saved.input_delivery.unwrap();
+        assert_eq!(delivery.received, Some(input));
+        assert!(delivery.paused_for(Some(generation)));
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: Some(receiver.id.to_string()),
+                project: None,
+                all: true,
+            })
+            .await
+        else {
+            panic!("activity")
+        };
+        assert_eq!(activity[0].queued_inputs, Some(0));
+        // A supervised successor has another process birth. Delayed reports
+        // from the old process must neither clear its pause nor invent receipt.
+        let successor = generation + Duration::seconds(1);
+        lock(&daemon.state)
+            .registry
+            .get_mut(&receiver.id)
+            .unwrap()
+            .process_started_at = Some(successor);
+        assert!(matches!(
+            daemon.handle(request(InputReport::Ready)).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(!delivery.paused_for(Some(successor)));
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .input_delivery
+                .as_ref()
+                .unwrap()
+                .paused
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_input_receipt_write_keeps_queue_and_publishes_nothing() {
+        use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut receiver = register(&daemon, "receipt-write-failure", None).await;
+        let generation = Utc::now();
+        receiver.spec.runtime = "claude-code".into();
+        receiver.process_started_at = Some(generation);
+        {
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&receiver).unwrap();
+            *state.registry.get_mut(&receiver.id).unwrap() = receiver.clone();
+        }
+        let Response::Sent { message, .. } = send(&daemon, "user", "receipt-write-failure").await
+        else {
+            panic!("not queued")
+        };
+        let mut events = daemon.subscribe_events();
+        lock(&daemon.state).store.reject_agent_writes_for_test();
+        assert!(matches!(
+            daemon
+                .handle(Request::ReportInput {
+                    agent: receiver.id.to_string(),
+                    process_started_at: generation,
+                    observed_at: generation,
+                    report: InputReport::Received {
+                        input: ReceivedInput {
+                            messages: vec![message.clone()],
+                            receipt: InputReceipt::ClaudeChannel
+                        }
+                    },
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert!(
+            state
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .input_delivery
+                .is_none()
+        );
+        assert_eq!(state.inboxes.get(&receiver.id).unwrap()[0].id, message);
         assert!(events.try_recv().is_err());
     }
 

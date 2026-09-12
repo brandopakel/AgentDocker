@@ -162,6 +162,13 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::InputDeliveryReported { agent, delivery } => {
+            format!(
+                "input delivery   {} {}",
+                agent.short(),
+                if delivery.paused { "paused" } else { "updated" }
+            )
+        }
         EventKind::ContestOpened {
             contest,
             task,

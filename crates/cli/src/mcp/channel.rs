@@ -97,6 +97,10 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     }
                 };
                 if value["method"] == "notifications/initialized" && value.get("id").is_none() {
+                    if !initialized {
+                        crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
+                            agentdocker_core::InputReport::Ready).await?;
+                    }
                     initialized = true;
                     continue;
                 }
@@ -285,6 +289,7 @@ mod tests {
                         .retain(|message| !messages.contains(&message.id));
                     Ok(Response::Ok)
                 }
+                Request::ReportInput { .. } => Ok(Response::Ok),
                 Request::Claim { .. } => std::future::pending().await,
                 other => panic!("unexpected channel request {other:?}"),
             }
@@ -312,7 +317,7 @@ mod tests {
                 name: "fixture".into(),
                 registered_here: false,
                 host_pid: None,
-                host_started_at: None,
+                host_started_at: Some(chrono::Utc::now()),
             },
         );
         server.claude_channel = true;

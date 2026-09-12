@@ -81,6 +81,7 @@ enum Cmd {
     Channels(String, String),
     Inbox,
     Activity,
+    SessionLog(String),
     /// Register the person at the keyboard, so agents can address them.
     Me,
     Questions,
@@ -100,6 +101,49 @@ enum Cmd {
     SessionSend(String, String),
 }
 
+/// A bounded, read-only log snapshot. No console command is constructed, and
+/// a stalled stream cannot occupy the request worker indefinitely.
+fn read_session_log(client: &crate::client::Client, agent: &str) -> anyhow::Result<String> {
+    use std::io::{BufRead, BufReader, Read};
+    let stream = client.open(&Request::Logs {
+        agent: agent.into(),
+        follow: false,
+        tail: 100,
+    })?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut reader = BufReader::new(stream);
+    let mut result = String::new();
+    const LIMIT: usize = 128 * 1024;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .ok_or_else(|| anyhow::anyhow!("session log timed out"))?;
+        reader.get_ref().set_read_timeout(Some(remaining))?;
+        let mut line = String::new();
+        let bytes = reader
+            .by_ref()
+            .take((LIMIT + 1) as u64)
+            .read_line(&mut line)?;
+        anyhow::ensure!(
+            bytes > 0 && bytes <= LIMIT,
+            "session log ended early or exceeded its size limit"
+        );
+        match serde_json::from_str::<Response>(&line)? {
+            Response::Log { line } => {
+                if result.len() + line.len() + 1 > LIMIT {
+                    result.push_str("\n[Log snapshot truncated]");
+                    return Ok(result);
+                }
+                result.push_str(&line);
+                result.push('\n');
+            }
+            Response::End => return Ok(result),
+            Response::Error { message, .. } => anyhow::bail!("{message}"),
+            _ => anyhow::bail!("unexpected session log response"),
+        }
+    }
+}
+
 /// What comes back to the window.
 enum Msg {
     Agents(Vec<AgentRecord>, BTreeMap<String, String>),
@@ -110,6 +154,7 @@ enum Msg {
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
@@ -207,6 +252,8 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    queued_inputs: BTreeMap<String, usize>,
+    session_log: Option<(String, Result<String, String>)>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
@@ -305,6 +352,8 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            queued_inputs: BTreeMap::new(),
+            session_log: None,
         }
     }
 
@@ -356,6 +405,8 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            queued_inputs: BTreeMap::new(),
+            session_log: None,
             dismissing: std::collections::BTreeSet::new(),
         }
     }
@@ -495,7 +546,16 @@ impl App {
                         self.journal.reverse();
                     }
                 }
+                Msg::SessionLog(agent, result) => {
+                    if self.shell.selected.as_deref() == Some(agent.as_str()) {
+                        self.session_log = Some((agent, result));
+                    }
+                }
                 Msg::Activity(activity) => {
+                    self.queued_inputs = activity
+                        .iter()
+                        .filter_map(|a| a.queued_inputs.map(|count| (a.agent.to_string(), count)))
+                        .collect();
                     let fresh: BTreeMap<String, Activity> = activity
                         .into_iter()
                         .map(|a| (a.agent.to_string(), a.activity))
@@ -707,6 +767,11 @@ impl App {
             | EventKind::AgentRemoved { .. }
             | EventKind::AgentReconciled { .. }
             | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
+            EventKind::InputDeliveryReported { .. } => {
+                self.send(Cmd::Agents);
+                self.send(Cmd::Activity);
+            }
+            EventKind::InboxAcknowledged { .. } => self.send(Cmd::Activity),
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
@@ -1225,10 +1290,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Agent { .. } => None,
             _ => None,
         },
+        Cmd::SessionLog(agent) => {
+            let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
+            Some(Msg::SessionLog(agent, result))
+        }
         Cmd::Activity => match client.call(&Request::Activity {
             agent: None,
             project: None,
-            all: false,
+            all: true,
         })? {
             Response::Activity { activity } => Some(Msg::Activity(activity)),
             _ => None,
@@ -2395,6 +2464,86 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn delivery_review_preserves_drafts_and_ignores_another_sessions_log() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let now = Utc::now();
+        let mut agent = AgentRecord::new(agentdocker_core::AgentSpec::default(), true, now);
+        agent.process_started_at = Some(now);
+        agent.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        let id = agent.id.to_string();
+        app.agents.push(agent.clone());
+        app.shell.selected = Some(id.clone());
+        app.shell.session_message = true;
+        app.shell
+            .session_drafts
+            .entry(id.clone())
+            .or_default()
+            .draft
+            .text = "unfinished message".into();
+        let _ = app.update(Message::ReviewDelivery);
+        assert!(app.shell.session_details);
+        assert!(matches!(requests.recv(), Ok(Cmd::SessionLog(target)) if target == id));
+        messages
+            .send(Msg::Activity(vec![AgentActivity {
+                agent: agent.id.clone(),
+                name: agent.spec.name.clone(),
+                project: None,
+                activity: Activity::Finished,
+                queued_inputs: Some(2),
+            }]))
+            .unwrap();
+        messages
+            .send(Msg::SessionLog(id.clone(), Ok("input retained".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.queued_inputs[&id], 2);
+        assert_eq!(
+            app.session_log.as_ref().unwrap().1.as_ref().unwrap(),
+            "input retained"
+        );
+        assert_eq!(
+            app.shell.session_drafts[&id].draft.text,
+            "unfinished message"
+        );
+        assert!(app.shell.session_message);
+        app.shell.selected = Some("another-session".into());
+        messages
+            .send(Msg::SessionLog(id.clone(), Ok("late reply".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.session_log.as_ref().unwrap().1.as_ref().unwrap(),
+            "input retained"
+        );
+        assert_eq!(
+            app.shell.session_drafts[&id].draft.text,
+            "unfinished message"
+        );
+        // Old daemons omit counts; do not retain a stale zero/nonzero snapshot.
+        messages
+            .send(Msg::Activity(vec![AgentActivity {
+                agent: agent.id,
+                name: agent.spec.name,
+                project: None,
+                activity: Activity::Unknown,
+                queued_inputs: None,
+            }]))
+            .unwrap();
+        app.drain();
+        assert!(!app.queued_inputs.contains_key(&id));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn direct_messages_use_the_common_send_request_and_never_retry_lost_receipts() {
         use serde_json::json;
         for reply in [
@@ -2764,6 +2913,7 @@ mod tests {
                         name: agent.spec.name.clone(),
                         project: agent.project.as_ref().map(|p| p.id()),
                         activity: activity.clone(),
+                        queued_inputs: Some(0),
                     })
                     .collect(),
             )

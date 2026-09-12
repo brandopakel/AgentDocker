@@ -245,6 +245,14 @@ pub enum Request {
         agent: String,
         observation: crate::ActivityObservation,
     },
+    /// Provider evidence, bound to the exact live process generation.
+    /// Receipt reports persist before the existing explicit queue ACK.
+    ReportInput {
+        agent: String,
+        process_started_at: chrono::DateTime<chrono::Utc>,
+        observed_at: chrono::DateTime<chrono::Utc>,
+        report: crate::InputReport,
+    },
     /// Ledger entries for a project: newest `limit`, oldest first.
     Changes {
         /// A project id (any unique prefix), or an absolute path inside it.

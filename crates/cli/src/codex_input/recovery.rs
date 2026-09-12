@@ -142,6 +142,7 @@ pub(super) async fn recover(
     provider: &mut Provider,
     client: &Client,
     ledger: &mut Ledger,
+    agent: &agentdocker_core::AgentRecord,
 ) -> Result<()> {
     if ledger.record().attempt.is_some() {
         find_receipt(provider, ledger).await?;
@@ -151,7 +152,7 @@ pub(super) async fn recover(
             .as_ref()
             .and_then(|a| a.receipt.clone())
             .context("receipt recovery did not find the input")?;
-        acknowledge(client, ledger).await?;
+        acknowledge(client, ledger, agent).await?;
         let status = tokio::time::timeout(
             Duration::from_secs(60),
             turn_status(provider, &receipt.thread, Some(&receipt.turn)),

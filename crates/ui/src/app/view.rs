@@ -329,6 +329,8 @@ impl App {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
+        } else if self.delivery_paused(agent) {
+            "delivery paused".to_owned()
         } else if agent.status.is_live() {
             self.activity
                 .get(&id)
@@ -341,7 +343,7 @@ impl App {
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) {
+        if self.needs_input(&agent.id.to_string()) || self.delivery_paused(agent) {
             c.amber
         } else if agent.status.is_live() {
             c.green
@@ -1067,6 +1069,41 @@ impl App {
             rule(c),
         ]
         .spacing(12);
+        let delivery = agent.input_delivery.as_ref();
+        let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
+        if agent.spec.runtime != "human" {
+            let queue = self.queued_inputs.get(&id).map(|count| {
+                if *count == 0 {
+                    "No queued messages".to_owned()
+                } else {
+                    format!("{count} queued")
+                }
+            });
+            let mut status = Vec::new();
+            if self.connected.is_err() {
+                status.push("Last known".to_owned());
+            }
+            if paused {
+                status.push("Delivery paused".to_owned());
+            }
+            if let Some(queue) = queue {
+                status.push(queue);
+            }
+            if let Some(received_at) = delivery.and_then(|d| d.received_at) {
+                status.push(format!("Last receipt {}", ago(Utc::now(), received_at)));
+            }
+            if !status.is_empty() {
+                body = body.push(small(status.join(" · "), c));
+            }
+            if paused {
+                body = body.push(action(
+                    "review-delivery",
+                    "Review delivery",
+                    self.connected.is_ok().then_some(Message::ReviewDelivery),
+                    false,
+                ));
+            }
+        }
         if self.needs_input(&id) {
             body = body.push(primary(
                 "session-reply",
@@ -1126,11 +1163,19 @@ impl App {
                 if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
                     body = body.push(text(error).size(13).color(c.amber));
                 } else if entry.is_some_and(|entry| entry.queued.is_some()) {
+                    let received =
+                        entry
+                            .and_then(|entry| entry.queued.as_ref())
+                            .is_some_and(|id| {
+                                delivery
+                                    .and_then(|d| d.received.as_ref())
+                                    .is_some_and(|input| input.messages.contains(id))
+                            });
                     body = body.push(small(
-                        if value.is_empty() {
-                            "Queued for this agent"
+                        if received {
+                            "Received by agent"
                         } else {
-                            "Previous message queued"
+                            "Message saved to queue"
                         },
                         c,
                     ));
@@ -1168,6 +1213,22 @@ impl App {
             }
             if let Some(session) = &agent.session {
                 details = details.push(kv("Terminal", format!("{session:?}"), c));
+            }
+            if paused {
+                details = details.push(note("Review the session log before restarting. Uncertain input is retained. Check whether the agent received it before taking further action.", c));
+            }
+            if let Some((log_agent, result)) = &self.session_log
+                && log_agent == &id
+            {
+                details = details.push(heading("Session log", 14));
+                details = details.push(
+                    text(match result {
+                        Ok(log) if log.is_empty() => "No retained log output.",
+                        Ok(log) => log.as_str(),
+                        Err(error) => error.as_str(),
+                    })
+                    .size(12),
+                );
             }
             body = body.push(details);
         }

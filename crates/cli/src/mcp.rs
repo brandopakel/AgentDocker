@@ -119,12 +119,30 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1");
     // Transport shutdown preserves a live provider identity; cleanup below
     // only retires a registration whose owning process has ended.
+    // Hold ownership through the final status write so a successor adapter's
+    // ready report cannot be overwritten after this adapter releases its lock.
+    let _channel_owner = if server.claude_channel {
+        Some(channel::acquire(&server.identity)?)
+    } else {
+        None
+    };
     let outcome = if server.claude_channel {
-        let _owner = channel::acquire(&server.identity)?;
         channel::serve(&server).await
     } else {
         pump(&server).await
     };
+    if server.claude_channel && outcome.is_err() {
+        if let Err(error) = crate::input_status::report(
+            &server.backend,
+            &server.identity.id,
+            server.identity.host_started_at,
+            agentdocker_core::InputReport::Paused,
+        )
+        .await
+        {
+            eprintln!("agentdocker channel: could not persist paused delivery status: {error:#}");
+        }
+    }
     server.shutdown().await;
     outcome
 }
@@ -650,9 +668,28 @@ impl<B: Backend> McpServer<B> {
                         "provide 1 to 1000 message IDs, each 1 to 128 bytes".into(),
                     ));
                 }
+                let mut messages: Vec<MessageId> =
+                    args.messages.into_iter().map(MessageId::from).collect();
+                let mut seen = std::collections::HashSet::new();
+                messages.retain(|id| seen.insert(id.clone()));
+                if self.claude_channel {
+                    crate::input_status::report(
+                        &self.backend,
+                        &me,
+                        self.identity.host_started_at,
+                        agentdocker_core::InputReport::Received {
+                            input: agentdocker_core::ReceivedInput {
+                                messages: messages.clone(),
+                                receipt: agentdocker_core::InputReceipt::ClaudeChannel,
+                            },
+                        },
+                    )
+                    .await
+                    .map_err(|error| (INTERNAL_ERROR, format!("{error:#}")))?;
+                }
                 self.forward(Request::AckInbox {
                     agent: me,
-                    messages: args.messages.into_iter().map(MessageId::from).collect(),
+                    messages,
                 })
                 .await
             }
@@ -2128,6 +2165,70 @@ mod tests {
                 agent: "abc123".into(),
                 drain: false
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_receipt_is_durable_before_ack_and_failure_retains_input() {
+        use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
+        let generation = Utc::now();
+        for (responses, expected_requests) in [
+            (vec![Response::Ok, Response::Ok], 2),
+            (
+                vec![Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "receipt not saved",
+                )],
+                1,
+            ),
+        ] {
+            let mut s = server(responses);
+            s.claude_channel = true;
+            s.identity.host_started_at = Some(generation);
+            let reply = s.handle(rpc(1, "tools/call", json!({
+                "name": "acknowledge_messages", "arguments": {"messages": ["received-id", "received-id"]}
+            }))).await.unwrap();
+            let requests = s.backend.requests.lock().unwrap();
+            assert_eq!(requests.len(), expected_requests);
+            let Request::ReportInput { observed_at, .. } = &requests[0] else {
+                panic!("missing receipt report")
+            };
+            assert!(*observed_at >= generation);
+            assert_eq!(
+                requests[0],
+                Request::ReportInput {
+                    agent: "abc123".into(),
+                    process_started_at: generation,
+                    observed_at: *observed_at,
+                    report: InputReport::Received {
+                        input: ReceivedInput {
+                            messages: vec![MessageId::from("received-id".to_owned())],
+                            receipt: InputReceipt::ClaudeChannel,
+                        }
+                    },
+                }
+            );
+            if expected_requests == 2 {
+                assert!(
+                    matches!(&requests[1], Request::AckInbox { messages, .. } if messages.len() == 1)
+                );
+                assert_ne!(reply["result"]["isError"], true);
+            } else {
+                assert!(reply.get("error").is_some() || reply["result"]["isError"] == true);
+            }
+        }
+        let mut unbound = server(vec![]);
+        unbound.claude_channel = true;
+        unbound
+            .handle(rpc(
+                1,
+                "tools/call",
+                json!({"name":"acknowledge_messages", "arguments":{"messages":["id"]}}),
+            ))
+            .await;
+        assert!(
+            unbound.backend.requests.lock().unwrap().is_empty(),
+            "an unknown process generation cannot acknowledge input"
         );
     }
 

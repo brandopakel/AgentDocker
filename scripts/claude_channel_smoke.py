@@ -114,7 +114,8 @@ def run(args):
             daemon = start_daemon()
             human = rpc(endpoint, {"op": "me", "workdir": str(root)})["agent"]["id"]
             receiver, peer = [rpc(endpoint, {"op": "register", "spec": {
-                "name": name, "runtime": "claude-code", "workdir": str(root)}})["agent"]["id"]
+                "name": name, "runtime": "claude-code", "workdir": str(root)},
+                "pid": os.getpid() if name == "receiver" else None})["agent"]["id"]
                 for name in ["receiver", "peer"]]
             channel_env = {**env, "AGENTDOCKER_AGENT_ID": receiver, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "1"}
             command = [str(output / "agentdocker"), "mcp", "--runtime", "claude-code", "--claude-channel"]
@@ -215,9 +216,14 @@ def run(args):
             # Tokio runtime alive after the five-second write deadline expires.
             assert connection.process.wait(timeout=8) != 0
             assert queued() == [stalled]
+            assert rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]["paused"] is True
             connection = start_channel()
             assert connection.offer()["meta"]["message_id"] == stalled
             connection.ack(107, [stalled])
+            receipt = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert receipt["paused"] is False and receipt["received"]["messages"] == [stalled]
+            assert receipt["received"]["receipt"]["provider"] == "claude_channel"
+            assert rpc(endpoint, {"op": "activity", "agent": receiver})["activity"][0]["queued_inputs"] == 0
             connection.process.stdin.close()
             assert connection.process.wait(timeout=5) == 0
             report["steps"].append("an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact")

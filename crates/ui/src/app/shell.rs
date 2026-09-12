@@ -162,6 +162,7 @@ pub enum Message {
     SessionFilter(super::sessions::Filter),
     More,
     SessionDetails,
+    ReviewDelivery,
     ComposeSession,
     SessionDraft(String, String),
     SendSession(String),
@@ -492,6 +493,22 @@ impl App {
                 self.confirm_stop = None;
             }
             Message::More => self.shell.more = !self.shell.more,
+            Message::ReviewDelivery => {
+                if self.connected.is_ok()
+                    && let Some(id) = self.shell.selected.clone()
+                    && self.agents.iter().any(|agent| {
+                        agent.id.as_str() == id
+                            && agent
+                                .input_delivery
+                                .as_ref()
+                                .is_some_and(|d| d.paused_for(agent.process_started_at))
+                    })
+                {
+                    self.shell.session_details = true;
+                    self.session_log = None;
+                    self.send(Cmd::SessionLog(id));
+                }
+            }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
             Message::ConnectionDetails(name) => {
                 self.shell.connection_details =
