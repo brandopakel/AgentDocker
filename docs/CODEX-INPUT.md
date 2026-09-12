@@ -93,7 +93,7 @@ restart and are never silently discarded to make room.
 Loss of the question event stream or an uncertain publication/response pauses
 delivery. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-4 record preserves version-3 records and accepts version-1/2 records only without recorded question
+version-5 record preserves version-3/4 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
@@ -101,10 +101,22 @@ Reaching a bound preserves the previous record and reports an error.
 
 ## Acceptance still required
 
-The separate MCP `ask_human` tool still has an open receipt gap: an actual trial
-returned the human answer to the tool and also accepted it as another ordinary
-input. This is distinct from the native app-server question callbacks above.
-MCP tool-result receipt handling must be completed.
+The separate MCP `ask_human` path now records an exact completed tool result
+before acknowledging its human answer. Each submitted input retains the MCP
+server bindings actually installed for that turn. Recovery matches the result's
+message ID, sender and complete text to the queued answer and retains its
+question route. Current configuration cannot prove an older turn's MCP origin;
+unmatched human answers stay queued and pause input instead of becoming new turns.
+Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
+turn; their older question routes share the 10,000-ID bound above.
+
+The [MCP receipt trial](verification/2026-09-11-mcp-answer-receipts.json) retains
+the failed extra-input baseline and passing actual Codex normal/crash recovery
+cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
+controller was stopped, then recovered the receipt from provider history after
+one controller restart. Both cases kept three ordered ordinary inputs and one
+provider record. The local gate passed 813 Rust tests, 65 Python checks and
+137 native workflow steps. Final CI and source review remain required.
 
 Unknown callbacks,
 file/permission approvals without a complete review presentation, secret inputs

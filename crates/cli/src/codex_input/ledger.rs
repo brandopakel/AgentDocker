@@ -1,6 +1,9 @@
 //! One durable provider input attempt. Queue acknowledgement follows an exact
 //! provider receipt; a prepared attempt can never be submitted automatically again.
-use super::review::{self, Closed, Pending};
+use super::{
+    mcp_answers::{Answer, Origin},
+    review::{self, Closed, Pending},
+};
 use agentdocker_core::{Envelope, MessageId};
 use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, ensure};
@@ -12,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -410,6 +413,8 @@ pub(super) struct Receipt {
 pub(super) struct Attempt {
     pub message: String,
     pub input: String,
+    #[serde(default)]
+    pub mcp_origin: Option<Origin>,
     pub receipt: Option<Receipt>,
     pub acknowledged: bool,
 }
@@ -435,6 +440,8 @@ pub(super) struct Record {
     pub closed_reviews: VecDeque<Closed>,
     #[serde(default)]
     retired_questions: Vec<MessageId>,
+    #[serde(default)]
+    pub mcp_answers: VecDeque<Answer>,
 }
 
 pub(super) struct Ledger {
@@ -450,8 +457,14 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 5
+                || (self.mcp_answers.is_empty()
+                    && self.attempt.as_ref().is_none_or(|a| a.mcp_origin.is_none())),
+            "legacy input cannot supply MCP origin or answer receipts"
+        );
+        ensure!(
             self.version == VERSION
-                || self.version == 3
+                || matches!(self.version, 3 | 4)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
@@ -535,7 +548,33 @@ impl Record {
                 "resolved provider request has no prepared response"
             );
         }
+        ensure!(
+            self.mcp_answers.len() <= RETAINED_RECEIPTS,
+            "too many retained MCP answer receipts"
+        );
+        let mut answer_ids = std::collections::HashSet::new();
+        let mut item_ids = std::collections::HashSet::new();
+        for answer in &self.mcp_answers {
+            self.validate_receipt(&answer.receipt)?;
+            answer.validate(&self.binding.agent)?;
+            ensure!(
+                answer_ids.insert(&answer.answer.id)
+                    && item_ids.insert((&answer.receipt.turn, &answer.receipt.item)),
+                "duplicate MCP answer receipt"
+            );
+            ensure!(
+                answer
+                    .answer
+                    .reply_to
+                    .as_ref()
+                    .is_some_and(|id| self.retired_questions.contains(id)),
+                "MCP answer has no retained question route"
+            );
+        }
         if let Some(attempt) = &self.attempt {
+            if let Some(origin) = &attempt.mcp_origin {
+                origin.validate()?;
+            }
             ensure!(
                 self.thread.is_some(),
                 "delivery attempt has no retained thread"
@@ -622,6 +661,7 @@ impl Ledger {
                 reviews: Vec::new(),
                 closed_reviews: VecDeque::new(),
                 retired_questions: Vec::new(),
+                mcp_answers: VecDeque::new(),
             },
             Err(error) => return Err(error.into()),
         };
@@ -672,6 +712,68 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn capture_mcp_answer(&mut self, answer: Answer) -> Result<()> {
+        let mut next = self.record.clone();
+        if let Some(old) = next
+            .mcp_answers
+            .iter()
+            .find(|old| old.answer.id == answer.answer.id || old.receipt == answer.receipt)
+        {
+            ensure!(old.same_proof(&answer), "conflicting MCP answer receipt");
+            return Ok(());
+        }
+        let active = next
+            .attempt
+            .as_ref()
+            .and_then(|a| a.receipt.as_ref())
+            .context("MCP answer has no accepted input turn")?;
+        ensure!(
+            active.thread == answer.receipt.thread && active.turn == answer.receipt.turn,
+            "MCP answer belongs to another input turn"
+        );
+        let origin = next
+            .attempt
+            .as_ref()
+            .and_then(|a| a.mcp_origin.as_ref())
+            .context("retained input has no proven MCP binding")?;
+        ensure!(
+            origin.human == answer.answer.from.as_str() && origin.servers.contains(&answer.server),
+            "MCP answer has another provider binding"
+        );
+        if next.mcp_answers.len() == RETAINED_RECEIPTS {
+            ensure!(
+                next.mcp_answers
+                    .front()
+                    .is_some_and(|old| old.acknowledged && old.receipt.turn != active.turn),
+                "MCP answer receipt history is full; delivery must pause"
+            );
+            next.mcp_answers.pop_front();
+        }
+        let question = answer
+            .answer
+            .reply_to
+            .clone()
+            .context("MCP answer has no question")?;
+        ensure!(
+            !next.retired_questions.contains(&question),
+            "MCP question already has another answer receipt"
+        );
+        next.retired_questions.push(question);
+        next.mcp_answers.push_back(answer);
+        self.save(next)
+    }
+
+    pub fn acknowledge_mcp_answer(&mut self, message: &MessageId) -> Result<()> {
+        let mut next = self.record.clone();
+        let answer = next
+            .mcp_answers
+            .iter_mut()
+            .find(|a| &a.answer.id == message)
+            .context("MCP acknowledgement has no durable receipt")?;
+        answer.acknowledged = true;
+        self.save(next)
+    }
+
     fn save(&mut self, next: Record) -> Result<()> {
         next.validate(&self.record.binding)?;
         let bytes = serde_json::to_vec(&next)?;
@@ -716,7 +818,9 @@ impl Ledger {
             self.record.attempt.is_none()
                 && self.record.completed.is_empty()
                 && self.record.reviews.is_empty()
-                && self.record.closed_reviews.is_empty(),
+                && self.record.closed_reviews.is_empty()
+                && self.record.mcp_answers.is_empty()
+                && self.record.retired_questions.is_empty(),
             "a conversation with prepared or accepted input cannot be discarded"
         );
         if self.record.thread.is_some() {
@@ -727,7 +831,18 @@ impl Ledger {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn prepare(&mut self, envelope: &Envelope) -> Result<String> {
+        self.prepare_bound(envelope, None)
+    }
+
+    pub fn prepare_bound(&mut self, envelope: &Envelope, origin: Option<Origin>) -> Result<String> {
+        ensure!(
+            !origin
+                .as_ref()
+                .is_some_and(|o| envelope.kind == "answer" && envelope.from.as_str() == o.human),
+            "this human answer has no reconciled tool receipt; it remains queued and cannot become new input"
+        );
         ensure!(
             envelope
                 .reply_to
@@ -765,6 +880,7 @@ impl Ledger {
         next.attempt = Some(Attempt {
             message,
             input: input.clone(),
+            mcp_origin: origin,
             receipt: None,
             acknowledged: false,
         });
@@ -806,6 +922,10 @@ impl Ledger {
     }
 
     pub fn finish(&mut self, turn: &str) -> Result<()> {
+        ensure!(
+            self.record.mcp_answers.iter().all(|a| a.acknowledged),
+            "MCP answer still needs queue acknowledgement"
+        );
         ensure!(
             self.record.reviews.is_empty(),
             "provider turn still has unresolved questions"

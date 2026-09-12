@@ -321,3 +321,24 @@ corrections remain source-specific evidence. These callbacks do not establish
 physical accessibility/IME acceptance. PR #105 final CI and actual source review
 remain pending. The separate MCP `ask_human` duplicate-input bug is next; it is
 not resolved by the native question controls.
+
+
+### September 11: MCP human answers retain exact tool-result receipts
+
+The [MCP receipt checkpoint](verification/2026-09-11-mcp-answer-receipts.json)
+at `f42a8b0` fixes the separately reproduced extra ordinary input after
+`ask_human`. Bound MCP server names are saved with each input before submission;
+a completed tool result must match the exact queued answer before the durable
+receipt and acknowledgement. Recovery reconciles the accepted input turn's
+provider history. Legacy origin is never inferred from current configuration,
+and unmatched human answers remain queued with delivery paused. Older question
+IDs survive detailed receipt rotation.
+
+Actual Codex normal delivery and a controller crash after tool acceptance both
+passed with three ordered inputs, three replies and one provider identity.
+In the crash trial, the provider completed the tool while the controller was
+stopped; one restart recovered that receipt without a fourth turn. Monitored
+user profiles were unchanged and all owned processes were cleaned up. The full
+local gate passed 813 Rust tests, 65 Python checks and 137 native steps. Final
+CI and actual source review remain pending; sustained conversations, visible
+durable status and the other review surfaces still need completion.

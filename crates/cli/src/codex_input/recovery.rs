@@ -47,7 +47,7 @@ pub(super) fn receipt(
     }))
 }
 
-fn page<'a>(
+pub(super) fn page<'a>(
     response: &'a Value,
     cursors: &mut HashSet<String>,
 ) -> Result<(&'a Vec<Value>, Option<String>)> {
@@ -162,6 +162,7 @@ pub(super) async fn recover(
             terminal(&status),
             "the retained Codex turn has no terminal outcome; input remains paused"
         );
+        super::mcp_answers::reconcile(provider, client, ledger).await?;
         ledger.finish(&receipt.turn)?;
         println!("Recovered the accepted Codex input ({status}); it was not submitted again.");
     }
