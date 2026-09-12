@@ -165,6 +165,11 @@ pub enum QuestionPresentation {
         cwd: String,
         reason: String,
     },
+    CodexFiles {
+        cwd: String,
+        reason: String,
+        changes: Vec<QuestionFileChange>,
+    },
     Choices {
         question: String,
         options: Vec<QuestionOption>,
@@ -176,6 +181,38 @@ pub enum QuestionPresentation {
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionFileChange {
+    pub path: String,
+    pub kind: QuestionFileChangeKind,
+    pub diff: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuestionFileChangeKind {
+    Add,
+    Delete,
+    Update {
+        #[serde(default)]
+        move_path: Option<String>,
+    },
+}
+
+impl QuestionFileChange {
+    pub fn label(&self) -> String {
+        match &self.kind {
+            QuestionFileChangeKind::Add => format!("Create {}", self.path),
+            QuestionFileChangeKind::Delete => format!("Delete {}", self.path),
+            QuestionFileChangeKind::Update { move_path: None } => format!("Update {}", self.path),
+            QuestionFileChangeKind::Update {
+                move_path: Some(to),
+            } => format!("Move {} → {to}", self.path),
+        }
+    }
 }
 
 impl QuestionPresentation {
@@ -193,6 +230,20 @@ impl QuestionPresentation {
                 for option in options {
                     text.push_str(&format!("\n- {}: {}", option.label, option.description));
                 }
+                text
+            }
+            Self::CodexFiles {
+                cwd,
+                reason,
+                changes,
+            } => {
+                let mut text = format!(
+                    "Allow Codex to apply these file changes once?\n\nDirectory: {cwd}\nReason: {reason}\n"
+                );
+                for change in changes {
+                    text.push_str(&format!("\n{}\n{}\n", change.label(), change.diff));
+                }
+                text.push_str("\nReply Allow or Deny.");
                 text
             }
         }
@@ -218,13 +269,38 @@ impl QuestionPresentation {
                             && labels.insert(&o.label)
                     })
             }
+            Self::CodexFiles {
+                cwd,
+                reason,
+                changes,
+            } => {
+                let path = |s: &str| bounded(s) && !s.chars().any(char::is_control);
+                let mut paths = std::collections::HashSet::new();
+                path(cwd)
+                    && reason.len() <= 16_000
+                    && !changes.is_empty()
+                    && changes.len() <= 16
+                    && changes.iter().all(|change| {
+                        path(&change.path)
+                            && paths.insert(&change.path)
+                            && bounded(&change.diff)
+                            && match &change.kind {
+                                QuestionFileChangeKind::Update {
+                                    move_path: Some(to),
+                                } => path(to),
+                                _ => true,
+                            }
+                    })
+            }
         };
         valid && text.len() <= 16_000 && self.text() == text
     }
 
     pub fn permits_choice(&self, value: &str) -> bool {
         match self {
-            Self::CodexCommand { .. } => matches!(value, "Allow" | "Deny"),
+            Self::CodexCommand { .. } | Self::CodexFiles { .. } => {
+                matches!(value, "Allow" | "Deny")
+            }
             Self::Choices { options, .. } => options.iter().any(|o| o.label == value),
         }
     }

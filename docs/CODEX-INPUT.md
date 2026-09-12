@@ -65,7 +65,7 @@ it does not merge ordinary nested Codex sessions by ancestry alone. These are
 cooperative local delivery semantics, not an authentication boundary against
 other programs running as the same OS user.
 
-## Questions and command approvals
+## Questions and approvals
 
 In Inbox, command requests show the command, folder and reason with **Allow once**
 and **Deny** controls. Multiple-choice questions offer buttons and a text field
@@ -74,7 +74,26 @@ other question drafts and become unavailable when the question closes or expires
 The structured presentation is checked against the complete fallback question
 text, so the native app and CLI describe the same request.
 
-Command approvals and nonsecret provider questions use AgentDocker's registered
+Schema 15 also supports bounded file-change approval. Inbox lists the complete
+file operations and offers **Review changes**, **Allow once** and **Deny**.
+Allow becomes available after opening the complete diff; Deny remains available
+without that extra step. The fallback question retains the same paths, rename
+destination, complete diffs, directory and reason. No diff is silently truncated.
+
+The controller correlates the request's item ID with an earlier file-change item
+in the same active thread and turn, following the [documented approval sequence](https://developers.openai.com/codex/app-server#file-change-approvals)
+and the installed Codex 0.153.4 schema. It retains at most 64 items of 32,000 bytes,
+at most 16 files per review, and a 16,000-byte complete question. Missing,
+completed, reused, ambiguous, unsupported or oversized changes are refused.
+Repeated details after review publication pause the controller and cancel its
+pending routes. Turn completion discards old item snapshots. Non-null `grantRoot`
+is refused because it can describe session-wide write authority. Allow sends
+only `accept`; it never sends `acceptForSession`. Empty diffs are currently
+refused. File presentations and their receipts require delivery-record version
+6; an older record cannot claim to contain them. Actual-provider and native
+window acceptance for this new surface remain pending.
+
+Command/file approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
 records the provider request before publishing its questions. Only the exact
 answer accepted by the daemon for that question can resolve it; an explicit
@@ -109,7 +128,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-5 record preserves version-3/4 records and accepts version-1/2 records only without recorded question
+version-6 record preserves version-3/4/5 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
@@ -137,7 +156,7 @@ actual source inspection of `1d76a88`; its parent integration gate passed
 814 Rust tests and 65 Python checks.
 
 Unknown callbacks,
-file/permission approvals without a complete review presentation, secret inputs
+session-wide file grants, permission approvals, MCP elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy

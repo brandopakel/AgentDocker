@@ -346,6 +346,14 @@ The complete variant definitions and payloads are in [`EventKind`](../crates/cor
 
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
+Schema 15 adds `codex_files` question presentations: directory, reason and an
+ordered list of paths, add/delete/update operations, optional rename destinations
+and complete diffs. The same 16,000-byte question limit applies, with at most 16
+files and no truncated approval text. The native app opens the full review before
+enabling Allow once; CLI answers retain the same complete fallback text. Provider
+item/turn correlation, one-time decisions and receipt handling are described in
+[Codex input](CODEX-INPUT.md#questions-and-approvals).
+
 ## Process supervision
 
 `run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.

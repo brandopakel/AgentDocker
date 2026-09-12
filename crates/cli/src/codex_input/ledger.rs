@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
-        for version in [1, 2] {
+        for version in 1..=5 {
             let home = tempfile::tempdir().unwrap();
             let binding = binding(home.path());
             let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
@@ -192,6 +192,64 @@ mod tests {
             assert_eq!(saved["version"], VERSION);
             assert_eq!(saved["attempt"]["input"], input);
         }
+    }
+
+    #[test]
+    fn file_review_history_requires_version_six_and_round_trips_without_losing_the_diff() {
+        use crate::codex_input::review::Pending;
+        use agentdocker_core::{QuestionFileChange, QuestionFileChangeKind, QuestionPresentation};
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        ledger.prepare(&message()).unwrap();
+        let presentation = QuestionPresentation::CodexFiles {
+            cwd: "/owned".into(),
+            reason: "Fixture".into(),
+            changes: vec![QuestionFileChange {
+                path: "/owned/a".into(),
+                kind: QuestionFileChangeKind::Add,
+                diff: "+new\n".into(),
+            }],
+        };
+        let event = serde_json::json!({"id":10,"method":"item/fileChange/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"patch"}});
+        let pending = Pending::plan_with_files(
+            &event,
+            "thread",
+            Some("turn"),
+            "human",
+            chrono::Utc::now(),
+            Some(presentation.clone()),
+        )
+        .unwrap();
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews.push(pending);
+                Ok(true)
+            })
+            .unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let original = std::fs::read(&path).unwrap();
+        let mut old: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        old["version"] = serde_json::json!(5);
+        let old = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &old).unwrap();
+        assert!(
+            Ledger::open(home.path(), binding.clone())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("legacy input cannot supply file-change review receipts")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        std::fs::write(&path, &original).unwrap();
+        let reopened = Ledger::open(home.path(), binding).unwrap();
+        assert_eq!(
+            reopened.record().reviews[0].questions[0].presentation,
+            Some(presentation)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]
@@ -457,6 +515,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 6
+                || (self.reviews.iter().all(|r| !r.is_file_review())
+                    && self
+                        .closed_reviews
+                        .iter()
+                        .all(|r| !r.request.is_file_review())),
+            "legacy input cannot supply file-change review receipts"
+        );
+        ensure!(
             self.version >= 5
                 || (self.mcp_answers.is_empty()
                     && self.attempt.as_ref().is_none_or(|a| a.mcp_origin.is_none())),
@@ -464,7 +531,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3 | 4)
+                || matches!(self.version, 3..=5)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()

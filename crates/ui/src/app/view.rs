@@ -1415,6 +1415,62 @@ impl App {
                 .filter(|p| p.valid_for(&question.text));
             let enabled = !busy && !expired && self.connected.is_ok();
             match presentation {
+                Some(agentdocker_core::QuestionPresentation::CodexFiles {
+                    cwd,
+                    reason,
+                    changes,
+                }) => {
+                    let expanded = self.shell.file_review.as_ref() == Some(&id);
+                    body = body
+                        .push(heading("Apply these file changes?", 18))
+                        .push(mono(format!("Folder: {cwd}"), c));
+                    if !reason.trim().is_empty() {
+                        body = body.push(note(reason.clone(), c));
+                    }
+                    for change in changes {
+                        body = body.push(mono(change.label(), c));
+                    }
+                    body = body.push(action(
+                        format!("review-files-{id}"),
+                        if expanded {
+                            "Hide changes"
+                        } else {
+                            "Review changes"
+                        },
+                        Some(Message::ReviewFiles(id.clone())),
+                        false,
+                    ));
+                    if expanded {
+                        let mut details = column![].spacing(12);
+                        for change in changes {
+                            details = details.push(mono(change.label(), c)).push(
+                                text(change.diff.clone())
+                                    .font(Font::MONOSPACE)
+                                    .size(13)
+                                    .color(c.text),
+                            );
+                        }
+                        body = body.push(scrollable(details).height(320));
+                    }
+                    body = body.push(self.answer_window(question, c)).push(
+                        row![
+                            primary(
+                                format!("answer-allow-{id}"),
+                                if busy { "Sending…" } else { "Allow once" },
+                                (enabled && expanded)
+                                    .then(|| Message::AnswerChoice(id.clone(), "Allow".into()))
+                            ),
+                            action(
+                                format!("answer-deny-{id}"),
+                                "Deny",
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                                false
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    );
+                }
                 Some(agentdocker_core::QuestionPresentation::CodexCommand {
                     command,
                     cwd,
