@@ -1,0 +1,103 @@
+{
+  "date": "2026-09-11",
+  "result": "local_gates_passed_final_ci_pending",
+  "source_commit": "a8b1dbf70f3c6fda6fdf7b096f28c0238e20338e",
+  "scope": "Integrated source verification of PRs 99 through 102; installed launcher and user daemon unchanged",
+  "pull_requests": [
+    {
+      "pr": "https://github.com/brandopakel/AgentDocker/pull/99",
+      "head_at_check": "e9cdabfada0db4f45e83b77ff21d2209fb2419b5",
+      "tested_source_commit": "8d094531357d60018585d33f3ae3cea2f24c0b43",
+      "rust_passed": 762,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "retries": 0,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "private_log": "/private/tmp/agentdocker-capture-group-recovery-check-2026-09-11.log",
+      "log_sha256": "44a1844d42e4d69ee3c96dabf7ce3428bd7ded4f8b45292dc0a3448346343a80",
+      "review": "https://github.com/brandopakel/AgentDocker/pull/99#issuecomment-5642777385",
+      "review_result": "no_remaining_actionable_findings_in_reviewed_scope",
+      "final_ci": "pending"
+    },
+    {
+      "pr": "https://github.com/brandopakel/AgentDocker/pull/100",
+      "head_at_check": "fc415226e4695261b73a4fdf71919c2bc374e891",
+      "tested_source_commit": "fc415226e4695261b73a4fdf71919c2bc374e891",
+      "rust_passed": 765,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "retries": 0,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "private_log": "/private/tmp/agentdocker-provider-recovery-final-check-2026-09-11.log",
+      "log_sha256": "230461ecf99ee0b091237f46e6d1474acc72c80811ad4a280adfc7b525b2d804",
+      "review": "https://github.com/brandopakel/AgentDocker/pull/100#issuecomment-5642789646",
+      "review_result": "no_remaining_actionable_findings_in_reviewed_scope",
+      "final_ci": "pending"
+    },
+    {
+      "pr": "https://github.com/brandopakel/AgentDocker/pull/101",
+      "head_at_check": "7830a654e61ffb9dd1911acd09425fe8c918667f",
+      "tested_source_commit": "7830a654e61ffb9dd1911acd09425fe8c918667f",
+      "rust_passed": 768,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "retries": 0,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "private_log": "/private/tmp/agentdocker-daily-recovery-final-check-2026-09-11.log",
+      "log_sha256": "89eff1a12a51966494a539986207fbe5dccc0f0a82fe4622b7a6b9cfe19a0a79",
+      "review": "https://github.com/brandopakel/AgentDocker/pull/101#issuecomment-5642801069",
+      "review_result": "no_remaining_actionable_findings_in_reviewed_scope",
+      "final_ci": "pending"
+    },
+    {
+      "pr": "https://github.com/brandopakel/AgentDocker/pull/102",
+      "head_at_check": "a8b1dbf70f3c6fda6fdf7b096f28c0238e20338e",
+      "tested_source_commit": "a8b1dbf70f3c6fda6fdf7b096f28c0238e20338e",
+      "rust_passed": 770,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "retries": 0,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "private_log": "/private/tmp/agentdocker-session-recovery-final-check-2026-09-11.log",
+      "log_sha256": "e2a5c4ca9087a592be4c4c7176d0c0dc059079f603389230597c53f0d0e9ef3d",
+      "review": "pending",
+      "review_result": "pending",
+      "final_ci": "pending"
+    }
+  ],
+  "earlier_acceptance": [
+    {
+      "report": "2026-09-11-session-messages.json",
+      "source_commit": "7c6f43d68be6d92afd24f96193aa4e2d23dddcf7",
+      "native_workflow_steps": 123,
+      "scope": "Native controls and corrected filter/search layout; predates the Python recovery integration."
+    },
+    {
+      "report": "2026-09-11-session-messages.json",
+      "source_commit": "0c7bd7ab7699dc09b6265f2c5b257f3892edea46",
+      "scope": "Actual managed Claude idle peer and native human messages, correlated replies, one provider identity and preserved unsubmitted draft."
+    }
+  ],
+  "limits": [
+    "No fresh actual-provider or graphical trial is inferred from these integrated standard gates. Earlier reports retain their distinct source and executable hashes.",
+    "CodeRabbit chat inspections pin the actual source heads; rate-limited automatic statuses are not counted as reviews.",
+    "PR102 gained only documentation conflict resolution while its standard gate ran; no Rust or Python source changed during that gate.",
+    "Final-head CI and PR102 review still gate integration. Production Codex idle wake, safe live daemon replacement, physical notification clicks, signing, overnight and complete Windows/platform acceptance remain open."
+  ]
+}

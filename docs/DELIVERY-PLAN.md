@@ -807,3 +807,13 @@ before that anchor can disappear. Both timeout and nonzero-query cases pass,
 with their failed baseline retained. The full gate at `8d09453` passed 762 Rust
 tests and 65 Python checks. Docker and Podman passed the preceding lock-barrier
 head `2ff8f93`; final-head CI and review remain required.
+
+### September 11: integrated follow-up verification
+
+The [follow-up integration report](verification/2026-09-11-followup-integration.json)
+records all four local gates with the recovery fixes included: 762/765/768/770
+Rust tests and 65 Python checks each, plus lint, doctests, packaging and release
+build. CodeRabbit inspected final heads `e9cdabf`, `fc41522` and `7830a65`,
+resolved the cleanup findings and reported no remaining actionable issues in
+the reviewed scopes. Final CI and direct-message review remain integration gates.
+The native and actual-provider trials retain their earlier source records.
