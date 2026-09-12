@@ -87,10 +87,13 @@ impl Client {
 
 async fn read_frame(reader: &mut BufReader<Stream>) -> Result<Response> {
     // Wait for the first byte without imposing a deadline on idle sessions.
-    anyhow::ensure!(
-        !reader.fill_buf().await?.is_empty(),
-        "checked event stream closed; resume from the last processed cursor"
-    );
+    if reader.fill_buf().await?.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "checked event stream closed; resume from the last processed cursor",
+        )
+        .into());
+    }
     let mut line = String::new();
     let count = timeout(
         FRAME_TIMEOUT,
@@ -101,9 +104,16 @@ async fn read_frame(reader: &mut BufReader<Stream>) -> Result<Response> {
     .await
     .context("checked event frame timed out")??;
     anyhow::ensure!(
-        count <= EVENT_STREAM_FRAME_BYTES && line.ends_with('\n'),
+        count <= EVENT_STREAM_FRAME_BYTES,
         "checked event frame is oversized or incomplete"
     );
+    if !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "checked event frame is oversized or incomplete",
+        )
+        .into());
+    }
     into_result(serde_json::from_str(&line)?)
 }
 
