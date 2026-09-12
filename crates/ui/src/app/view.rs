@@ -836,6 +836,11 @@ impl App {
     }
 
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
+        let selected = self.shell.selected.as_ref().and_then(|id| {
+            self.agents
+                .iter()
+                .find(|a| a.id.as_str() == self.canonical_agent(id))
+        });
         let mut panel_col = column![]
             .spacing(if self.settings.roomy { 20 } else { 14 })
             .width(Fill);
@@ -880,6 +885,10 @@ impl App {
                 top = top.push(launch);
             }
             panel_col = panel_col.push(column![top, filters].spacing(10));
+        } else if selected.is_some() {
+            // The inspector takes 340 px from this column. Keep the filter
+            // labels and counts together instead of squeezing them beside search.
+            panel_col = panel_col.push(column![filters, search].spacing(10));
         } else {
             panel_col = panel_col.push(
                 row![container(filters).width(Fill), container(search).width(260)]
@@ -1023,11 +1032,7 @@ impl App {
             };
             panel_col = panel_col.push(empty(title_text, hint, None, c));
         }
-        if let Some(agent) = self.shell.selected.as_ref().and_then(|id| {
-            self.agents
-                .iter()
-                .find(|a| a.id.as_str() == self.canonical_agent(id))
-        }) {
+        if let Some(agent) = selected {
             let inspector = self.inspector(agent, c);
             if self.shell.width / self.scale_factor() >= 1120.0 {
                 return row![panel_col, container(inspector).width(320)]
