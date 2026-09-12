@@ -708,4 +708,7 @@ AgentDocker state directory. Guided apply/undo, legacy setup and hook installati
 share these locks; aliases contend, separate profiles remain independent, and a
 busy delegated target refuses the operation before hook or receipt writes.
 External editors/provider CLIs do not participate in these advisory locks. The
-final native and PR gates remain pending.
+[configuration checkpoint](verification/2026-09-11-provider-configuration.json)
+passed the full gate (765 Rust tests, 58 Python checks), 114 native workflow
+steps and six actual CLI contention/recovery scenarios. The regression now runs
+in all four Mac/Linux native CI jobs; final-head CI and review remain pending.
