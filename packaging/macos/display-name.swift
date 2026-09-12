@@ -5,6 +5,6 @@ import Foundation
 let url = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 let saved = try url.resourceValues(forKeys: [.isApplicationKey])
 guard saved.isApplication == true,
-      Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String == "agentdocker" else {
+      Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String == "AgentDocker" else {
     fatalError("bundle display metadata failed verification")
 }

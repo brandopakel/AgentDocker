@@ -208,9 +208,13 @@ impl Layout {
         }
     }
 
+    /// The command links. On macOS the application is not among them: it
+    /// is a real launcher bundle written by `write_launcher_bundle`,
+    /// because Launchpad, Spotlight and the Dock ignore a symlinked bundle
+    /// and only show one whose Info.plist they can read in place.
     fn links(&self) -> Vec<(PathBuf, PathBuf)> {
         let active = self.root.join("current/payload");
-        let mut links = BINARIES
+        BINARIES
             .iter()
             .map(|name| {
                 (
@@ -218,11 +222,159 @@ impl Layout {
                     active.join(self.binary_subdir()).join(name),
                 )
             })
-            .collect::<Vec<_>>();
-        if cfg!(target_os = "macos") {
-            links.push((self.application.clone(), active));
+            .collect()
+    }
+
+    /// Tell Launch Services about the launcher so it appears in Launchpad
+    /// and Spotlight at once instead of after the next login. Best effort,
+    /// and only for the real home prefix: trial prefixes must not register
+    /// throwaway bundles on the machine.
+    fn register_launcher(&self) {
+        if !cfg!(target_os = "macos")
+            || Some(self.prefix.as_path()) != std::env::home_dir().as_deref()
+        {
+            return;
         }
-        links
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+        if !Path::new(lsregister).is_file() {
+            return;
+        }
+        let _ = std::process::Command::new(lsregister)
+            .arg("-f")
+            .arg(&self.application)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    /// The executable inside the launcher bundle. It is a script, so that
+    /// the process that runs is the active payload's own binary, whose
+    /// ancestry still says which managed version it is.
+    fn launcher_script(&self) -> Result<String> {
+        let executable = self
+            .root
+            .join("current/payload/Contents/MacOS/agentdocker-ui");
+        let text = executable.to_str().context("launcher path must be UTF-8")?;
+        ensure!(
+            !text
+                .chars()
+                .any(|ch| ch.is_control() || matches!(ch, '\'' | '"' | '\\' | '`' | '$')),
+            "launcher paths cannot contain quotes, dollar signs or control characters"
+        );
+        Ok(format!("#!/bin/sh\nexec '{text}' \"$@\"\n"))
+    }
+
+    /// The marker that says a launcher bundle is ours and which store it
+    /// points at, so preflight can tell it from an app somebody else put
+    /// at the same path.
+    fn launcher_marker(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "format": 1,
+            "product": "agentdocker",
+            "root": self.root.to_str().context("store path must be UTF-8")?,
+        }))? + "\n")
+    }
+
+    fn launcher_is_ours(&self) -> Result<bool> {
+        let marker = self
+            .application
+            .join("Contents/Resources/managed-launcher.json");
+        let Ok(text) = std::fs::read_to_string(&marker) else {
+            return Ok(false);
+        };
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        Ok(value["product"] == "agentdocker" && value["root"].as_str() == self.root.to_str())
+    }
+
+    /// Write the macOS launcher bundle: a real `AgentDocker.app` directory
+    /// with an Info.plist naming the product, the icon of the release
+    /// being activated, and a one-line executable that runs the active
+    /// payload through the `current` pointer, so later activations and
+    /// rollbacks never rewrite it. Built beside its destination and
+    /// swapped in with renames.
+    fn write_launcher_bundle(&self, release: &Release) -> Result<()> {
+        let parent = self
+            .application
+            .parent()
+            .context("launcher has no parent")?;
+        std::fs::create_dir_all(parent)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".AgentDocker.app.")
+            .tempdir_in(parent)?;
+        let contents = staging.path().join("Contents");
+        std::fs::create_dir_all(contents.join("MacOS"))?;
+        std::fs::create_dir_all(contents.join("Resources"))?;
+        let version = release.version.split(['-', '+']).next().unwrap_or("0.0.0");
+        let plist = format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
+                "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
+                "<plist version=\"1.0\">\n<dict>\n",
+                "\t<key>CFBundleName</key><string>AgentDocker</string>\n",
+                "\t<key>CFBundleDisplayName</key><string>AgentDocker</string>\n",
+                "\t<key>CFBundleExecutable</key><string>AgentDocker</string>\n",
+                "\t<key>CFBundleIdentifier</key><string>dev.agentdocker.launcher</string>\n",
+                "\t<key>CFBundleIconFile</key><string>AgentDocker</string>\n",
+                "\t<key>CFBundlePackageType</key><string>APPL</string>\n",
+                "\t<key>CFBundleShortVersionString</key><string>{version}</string>\n",
+                "\t<key>CFBundleVersion</key><string>{version}</string>\n",
+                "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n",
+                "\t<key>LSMinimumSystemVersion</key><string>11.0</string>\n",
+                "\t<key>LSApplicationCategoryType</key>",
+                "<string>public.app-category.developer-tools</string>\n",
+                "\t<key>NSHighResolutionCapable</key><true/>\n",
+                "</dict>\n</plist>\n"
+            ),
+            version = version
+        );
+        std::fs::write(contents.join("Info.plist"), plist)?;
+        std::fs::write(contents.join("PkgInfo"), "APPL????")?;
+        let script = contents.join("MacOS/AgentDocker");
+        std::fs::write(&script, self.launcher_script()?)?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        let icon = self
+            .payload(release)
+            .join("Contents/Resources/AgentDocker.icns");
+        if icon.is_file() {
+            std::fs::copy(&icon, contents.join("Resources/AgentDocker.icns"))?;
+        }
+        std::fs::write(
+            contents.join("Resources/managed-launcher.json"),
+            self.launcher_marker()?,
+        )?;
+        sync_tree(staging.path())?;
+        // Whatever is there is ours (preflight said so): a launcher from an
+        // earlier activation, or the symlink earlier releases installed.
+        let retired = parent.join(format!(".AgentDocker.app.retired-{}", uuid::Uuid::new_v4()));
+        match self.application.symlink_metadata() {
+            Ok(_) => std::fs::rename(&self.application, &retired)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::rename(staging.keep(), &self.application)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        match retired.symlink_metadata() {
+            Ok(metadata) if metadata.file_type().is_symlink() => std::fs::remove_file(&retired)?,
+            Ok(_) => std::fs::remove_dir_all(&retired)?,
+            Err(_) => (),
+        }
+        Ok(())
+    }
+
+    /// Whether the macOS application path holds something this store may
+    /// replace: nothing, the symlink earlier releases installed, or our
+    /// own launcher bundle.
+    fn application_is_replaceable(&self) -> Result<bool> {
+        match self.application.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                Ok(self.application.read_link()? == self.root.join("current/payload"))
+            }
+            Ok(metadata) if metadata.is_dir() => self.launcher_is_ours(),
+            Ok(_) => Ok(false),
+        }
     }
 
     fn launcher(&self) -> Result<String> {
@@ -254,7 +406,7 @@ impl Layout {
             .replace('\\', "\\\\");
         let icon = text(&icon)?.replace('\\', "\\\\");
         Ok(format!(
-            "[Desktop Entry]\nType=Application\nName=agentdocker\nComment=Orchestrate local AI agents\nExec=\"{}\"\nIcon={}\nTerminal=false\nCategories=Development;\n",
+            "[Desktop Entry]\nType=Application\nName=AgentDocker\nComment=Orchestrate local AI agents\nExec=\"{}\"\nIcon={}\nTerminal=false\nCategories=Development;\n",
             executable, icon
         ))
     }
@@ -278,7 +430,13 @@ impl Layout {
                 Err(error) => return Err(error.into()),
             }
         }
-        if !cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") {
+            ensure!(
+                self.application_is_replaceable()?,
+                "{} already exists outside this installation; preserved",
+                self.application.display()
+            );
+        } else {
             match self.application.symlink_metadata() {
                 Ok(metadata) => ensure!(
                     metadata.is_file()
@@ -414,6 +572,9 @@ impl Layout {
                 ),
                 Err(error) => return Err(error.into()),
             }
+        }
+        if cfg!(target_os = "macos") {
+            self.write_launcher_bundle(&activation.current)?;
         }
         if !cfg!(target_os = "macos") && !self.application.exists() {
             std::fs::create_dir_all(
@@ -834,6 +995,9 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         expect_release,
         expect_current,
     )?;
+    if !preview {
+        layout.register_launcher();
+    }
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -952,6 +1116,67 @@ mod tests {
             std::fs::write(payload.join(layout.binary_subdir()).join(name), marker).unwrap();
         }
         release
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_application_is_a_real_bundle_named_agentdocker_that_runs_the_active_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let first = release(&layout, "first");
+        // Earlier releases installed a symlink here; it is ours to replace.
+        std::fs::create_dir_all(layout.application.parent().unwrap()).unwrap();
+        symlink(layout.root.join("current/payload"), &layout.application).unwrap();
+        layout.activate(first.clone(), None).unwrap();
+
+        let metadata = layout.application.symlink_metadata().unwrap();
+        assert!(metadata.is_dir(), "a bundle Launchpad can see, not a link");
+        let plist =
+            std::fs::read_to_string(layout.application.join("Contents/Info.plist")).unwrap();
+        assert!(plist.contains("<key>CFBundleName</key><string>AgentDocker</string>"));
+        assert!(plist.contains("<key>CFBundleDisplayName</key><string>AgentDocker</string>"));
+        assert!(plist.contains("<key>CFBundleExecutable</key><string>AgentDocker</string>"));
+        assert!(plist.contains("<string>0.1.0</string>"));
+        let script = layout.application.join("Contents/MacOS/AgentDocker");
+        assert_eq!(
+            std::fs::read_to_string(&script).unwrap(),
+            format!(
+                "#!/bin/sh\nexec '{}' \"$@\"\n",
+                layout
+                    .root
+                    .join("current/payload/Contents/MacOS/agentdocker-ui")
+                    .display()
+            ),
+            "the launcher goes through the current pointer, so it survives activations"
+        );
+        assert_eq!(
+            script.metadata().unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(layout.launcher_is_ours().unwrap());
+
+        // A second activation replaces the bundle in place and keeps it ours.
+        let second = release(&layout, "second");
+        layout.activate(second, Some(first)).unwrap();
+        assert!(layout.application.join("Contents/Info.plist").is_file());
+        assert!(layout.launcher_is_ours().unwrap());
+        assert_eq!(
+            std::fs::read_dir(layout.application.parent().unwrap())
+                .unwrap()
+                .count(),
+            1,
+            "no staging or retired bundles are left beside it"
+        );
+
+        // Somebody else's app at that path is never replaced.
+        std::fs::remove_dir_all(&layout.application).unwrap();
+        std::fs::create_dir_all(layout.application.join("Contents")).unwrap();
+        let error = layout.preflight().unwrap_err().to_string();
+        assert!(
+            error.contains("already exists outside this installation"),
+            "{error}"
+        );
     }
 
     #[test]

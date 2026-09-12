@@ -50,11 +50,25 @@ agentdocker daemon stop
 Then move the hand-copied files into a fresh backup directory (the name
 carries a timestamp so an earlier backup is never overwritten) and install:
 
+One command per line; a pasted line continuation has broken this before.
+
 ```sh
-backup=~/AgentDocker-old-$(date +%Y%m%d-%H%M%S) && [ ! -e "$backup" ] && mkdir "$backup" && \
-  mv ~/Applications/AgentDocker.app ~/.local/bin/agentdocker ~/.local/bin/agentd ~/.local/bin/agentdocker-ui "$backup"/
+backup=~/AgentDocker-old-$(date +%Y%m%d-%H%M%S)
+mkdir "$backup"
+cp -p ~/.agentdocker/state.db "$backup"/
+mv ~/Applications/AgentDocker.app ~/.local/bin/agentdocker ~/.local/bin/agentd ~/.local/bin/agentdocker-ui "$backup"/
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$backup/AgentDocker.app"
 make install
+agentdocker daemon restart
 ```
+
+The `lsregister -u` line matters: Launch Services otherwise keeps the moved
+bundle registered and the Dock or Spotlight reopens the old app from the
+backup folder. Quit any old window that is still open, then restart agent
+sessions (Claude Code, Codex) so their helper processes run the new build,
+and run `agentdocker setup <tool>` for integrations the old build lacked.
+The state database upgrades one way on the first start of the new daemon;
+the copy in the backup folder is the rollback for it.
 
 ## Source builds versus published updates
 

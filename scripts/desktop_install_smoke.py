@@ -109,6 +109,17 @@ def trial(args):
                 assert daemon.poll() is None
                 assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
                 result["scenarios"].append("activation keeps the existing fixture daemon responsive")
+                if MAC:
+                    # A real bundle named AgentDocker, not a symlink: Launchpad
+                    # and Spotlight only list bundles they can read in place.
+                    launcher = prefix / "Applications/AgentDocker.app"
+                    assert launcher.is_dir() and not launcher.is_symlink()
+                    plist = (launcher / "Contents/Info.plist").read_text()
+                    assert "<key>CFBundleName</key><string>AgentDocker</string>" in plist
+                    script = (launcher / "Contents/MacOS/AgentDocker").read_text()
+                    assert str(root_install / "current/payload/Contents/MacOS/agentdocker-ui") in script
+                    assert (launcher / "Contents/Resources/managed-launcher.json").is_file()
+                    result["scenarios"].append("the Mac launcher is a named bundle that runs the active payload")
                 cli("install", "--from", first, "--expect-current", first_id, success=False)
                 cli("install", "--from", first, "--expect-release", second_id, success=False)
                 assert cli("status")["installation"]["current"]["id"] == second_id
@@ -162,6 +173,7 @@ def trial(args):
                     assert cli("status")["installation"] is None
                     assert all(not (binaries / name).is_symlink()
                                for name in ["agentdocker", "agentd", "agentdocker-ui"])
+                    assert not (prefix / "Applications/AgentDocker.app").exists()
                     assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
                     assert Path(environment["AGENTDOCKER_HOME"]).is_dir()
                     result["scenarios"].append("uninstall preserves the live daemon and its state")
