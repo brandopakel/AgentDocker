@@ -132,8 +132,12 @@ request timeout, with 100 ms between attempts. Retries cannot start a replacemen
 daemon. Protocol errors and explicit daemon refusals stop immediately. Each retry
 reads the retained queue again; it neither submits a provider turn nor acknowledges
 a message. Socket tests verify a discarded read response, bounded exhaustion and
-no retry for an uncertain acknowledgement or malformed response. Actual-provider
-acceptance for this additional read path remains pending.
+no retry for an uncertain acknowledgement or malformed response. The
+[read-reconnect trial](verification/2026-09-12-queue-read-reconnect.json) passed
+850 Rust tests, 65 Python checks and an actual Codex read-response cut while file
+approval was pending. The previous controller stopped; the correction kept the
+same controller/conversation, resolved the approval once and completed three
+ordered peer/human inputs. Other connections and the daemon remained live.
 
 Queue acknowledgements, question publication, activity/receipt writes and other
 failed RPCs still pause delivery;

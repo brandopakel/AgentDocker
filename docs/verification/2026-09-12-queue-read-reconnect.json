@@ -1,0 +1,277 @@
+{
+  "date": "2026-09-12",
+  "scope": "Bounded retry of retained Codex inbox reads with empty acknowledgements; uncertain writes retain existing pause behavior.",
+  "source": {
+    "format": 1,
+    "source_commit": "80fe790979adde98933439572b1c04b69f892809",
+    "source_tree": "b42cfff94e834e6c312823f8c774de66b1863df3",
+    "source_input_sha256": "ad96adbc99e5da8e57d8bb1656493679356adac925c6d09e1f197a6f7fa6bc3d",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 15,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+      "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+      "agentdocker-ui": "36ecea4426d04805a1751c4c48724fed793bcc6017ff78601e46c1291a2b52d8"
+    }
+  },
+  "validation": {
+    "rust_tests": 850,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "gate": "passed: formatting, strict Clippy, nextest, doctests, installer/package checks and release build",
+    "full_log": "/private/tmp/agentdocker-queue-read-check-2026-09-12.log",
+    "targeted_tests": 2,
+    "targeted_log": "/private/tmp/agentdocker-queue-read-targeted-2026-09-12.log"
+  },
+  "actual_previous_binary": {
+    "result": "failed",
+    "error": "Baseline controller stopped after a deliberately lost read-only queue response",
+    "mode": "baseline",
+    "build": {
+      "format": 1,
+      "source_commit": "f50e4c3e170e6d7254d1bfafadf5eab55c4a36c8",
+      "source_tree": "44d779f6fb7b668c4cf8fb2ced6f99f6bdc7b591",
+      "source_input_sha256": "5b33da1f2766a0ebbbc3b16873e9ccdf2298f6e33767866cacb9115bc964116d",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "55565b6b175c700b7cd67fcee119baffa9f08e8f39a7beb3616c6f59cecfdccc",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "b7a2a3fd049d6fbf6e57eb162eacf53bf899553d0a2f2747456bc5f0f736544a"
+      }
+    },
+    "driver_sha256": "94492d487937bf05c410d88945b793eaa96c095259f251a1f52e2e27689b933b",
+    "proxy_sha256": "35aa503a569c6ce5988fd5ae442333e4a9adf964b1a43bd8b0919624d1440fc6",
+    "baseline_observation": {
+      "controller_stopped": true,
+      "human_routes_cancelled": true,
+      "file_not_created": true,
+      "retained_reviews": 1
+    },
+    "controller_pid": 61594,
+    "controller_started_at": "2026-09-12T21:10:54.268219Z",
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "source_profile_unchanged": true,
+    "binary_hashes_unchanged": true,
+    "local_report": "/private/tmp/agentdocker-codex-queue-read-baseline-fixed-live-2026-09-12/result.json",
+    "report_sha256": "70191f12430fe1865377f749c9a98d44f7f710c28cccad837c1cca5f5b2ecb67",
+    "queue_read_cut": {
+      "count": 1,
+      "read_count": 16,
+      "cut_read": {
+        "agent": "d21660c217cd4c9bbe8687e806b75772",
+        "acknowledge": [],
+        "message_ids": [
+          "f8f133f3e9024153",
+          "9624edb885a84437"
+        ],
+        "reply_suppressed": true
+      },
+      "reads_after_cut": 0,
+      "all_acknowledgements_empty": true,
+      "event_connections": 1,
+      "proxy_errors": [],
+      "remaining_proxy_threads": 0
+    }
+  },
+  "actual_corrected_binary": {
+    "result": "passed",
+    "mode": "acceptance",
+    "build": {
+      "format": 1,
+      "source_commit": "80fe790979adde98933439572b1c04b69f892809",
+      "source_tree": "b42cfff94e834e6c312823f8c774de66b1863df3",
+      "source_input_sha256": "ad96adbc99e5da8e57d8bb1656493679356adac925c6d09e1f197a6f7fa6bc3d",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 15,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+        "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+        "agentdocker-ui": "36ecea4426d04805a1751c4c48724fed793bcc6017ff78601e46c1291a2b52d8"
+      }
+    },
+    "driver_sha256": "94492d487937bf05c410d88945b793eaa96c095259f251a1f52e2e27689b933b",
+    "proxy_sha256": "35aa503a569c6ce5988fd5ae442333e4a9adf964b1a43bd8b0919624d1440fc6",
+    "same_controller": true,
+    "controller_pid": 63031,
+    "controller_started_at": "2026-09-12T21:12:08.522507Z",
+    "provider_version": "codex-cli 0.153.4",
+    "same_queue": true,
+    "reply_count": 3,
+    "codex_records": 1,
+    "file_result": {
+      "name": "review-file.txt",
+      "contents": "FILE_72CE\n",
+      "sha256": "de1b8f39b6bf3f55d5a4dba9c44b604bce0bd2f06b2c9ce9a770fefc13e5c51c"
+    },
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "remaining_owned_processes": {},
+    "source_profile_unchanged": true,
+    "binary_hashes_unchanged": true,
+    "question_resolution": {
+      "request": {
+        "id": 0,
+        "thread": "01a09776-9fac-72c1-8a93-7430f6a0a472",
+        "turn": "01a09776-a1fa-7792-acf3-007f71930bc2",
+        "human": "bbeedf9a38524a55a17d969a12866f81",
+        "kind": "files",
+        "expires_at": "2026-09-12T21:17:15.031344Z",
+        "questions": [
+          {
+            "field": "files",
+            "text": "Allow Codex to apply these file changes once?\n\nDirectory: /private/tmp/ad-cb-ehsse_hs/repo\nReason: Requested by Codex\n\nCreate /private/tmp/ad-cb-ehsse_hs/repo/review-file.txt\nFILE_72CE\n\n\nReply Allow or Deny.",
+            "message": "0b2111726d474f5c",
+            "presentation": {
+              "kind": "codex_files",
+              "cwd": "/private/tmp/ad-cb-ehsse_hs/repo",
+              "reason": "Requested by Codex",
+              "changes": [
+                {
+                  "path": "/private/tmp/ad-cb-ehsse_hs/repo/review-file.txt",
+                  "kind": {
+                    "type": "add"
+                  },
+                  "diff": "FILE_72CE\n"
+                }
+              ]
+            },
+            "answer": {
+              "id": "e01746b81f184f4c",
+              "from": "bbeedf9a38524a55a17d969a12866f81",
+              "to": {
+                "kind": "agent",
+                "value": "38b74efcd22a4bb784f061408f0d236a"
+              },
+              "kind": "answer",
+              "payload": {
+                "text": "Allow"
+              },
+              "reply_to": "0b2111726d474f5c",
+              "sent_at": "2026-09-12T21:12:15.454655Z"
+            },
+            "closure": {
+              "state": "answered",
+              "message": "e01746b81f184f4c"
+            }
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "accept"
+          }
+        },
+        "extra_answers": []
+      },
+      "outcome": "resolved",
+      "acknowledged": true
+    },
+    "completed": [
+      {
+        "message": "dc1152a22e4144b5",
+        "receipt": {
+          "thread": "01a09776-9fac-72c1-8a93-7430f6a0a472",
+          "turn": "01a09776-a1fa-7792-acf3-007f71930bc2",
+          "item": "01a09776-a634-7ce0-963d-3842913a6582"
+        }
+      },
+      {
+        "message": "7dbb2a7699564e7f",
+        "receipt": {
+          "thread": "01a09776-9fac-72c1-8a93-7430f6a0a472",
+          "turn": "01a09776-d2cf-7b00-88a6-2d38e80d86d3",
+          "item": "01a09776-d2e7-7430-8769-a6e7a241f14d"
+        }
+      },
+      {
+        "message": "dadfc71d09fc408f",
+        "receipt": {
+          "thread": "01a09776-9fac-72c1-8a93-7430f6a0a472",
+          "turn": "01a09776-f402-7190-a044-adecbf22f183",
+          "item": "01a09776-f413-7313-95f8-67a1b218e39e"
+        }
+      }
+    ],
+    "local_report": "/private/tmp/agentdocker-codex-queue-read-live-2026-09-12/result.json",
+    "report_sha256": "a6ac3acbb781365e3c75baed1e694bb4fbfbedb1a16afcf1b29bfc50689b10b2",
+    "queue_read_cut": {
+      "count": 1,
+      "read_count": 70,
+      "cut_read": {
+        "agent": "38b74efcd22a4bb784f061408f0d236a",
+        "acknowledge": [],
+        "message_ids": [
+          "7dbb2a7699564e7f",
+          "dadfc71d09fc408f"
+        ],
+        "reply_suppressed": true
+      },
+      "reads_after_cut": 55,
+      "all_acknowledgements_empty": true,
+      "event_connections": 1,
+      "proxy_errors": [],
+      "remaining_proxy_threads": 0
+    },
+    "ordinary_input_ids": [
+      "dc1152a22e4144b5",
+      "7dbb2a7699564e7f",
+      "dadfc71d09fc408f"
+    ],
+    "reply_to_ids": [
+      "dc1152a22e4144b5",
+      "7dbb2a7699564e7f",
+      "dadfc71d09fc408f"
+    ],
+    "input_senders": [
+      "peer",
+      "human",
+      "peer"
+    ]
+  },
+  "retained_setup_failure": {
+    "log": "/private/tmp/agentdocker-codex-queue-read-baseline-live-2026-09-12.log",
+    "reason": "The first private driver-generation script expected raise SystemExit rather than the source sys.exit entrypoint and stopped on its preparation assertion. The attempted driver path did not exist; no daemon/provider fixture launched. Corrected generation before both actual trials."
+  },
+  "limits": [
+    "A read has at most three retries with 100 ms backoff and the existing five-second per-request timeout. Retry budget applies per read. No replacement daemon autostarts.",
+    "Socket tests cover a lost read response, four-attempt exhaustion, immediate malformed-response failure and no retry of an uncertain nonempty acknowledgement. The actual trial drops one complete read response while file approval is pending.",
+    "The actual corrected trial retains the controller PID/start identity, one provider conversation/record, one event connection, exact human approval closure and three ordered peer/human inputs. It creates only the reviewed private fixture file.",
+    "Queue acknowledgement, question publication, activity/input-receipt reports and other mutations still pause on failure; no generic write retries or full daemon handover are introduced.",
+    "The daemon and UI binaries are unchanged from the compact file-review build. The separate Inbox history PR is outside this branch; no native visual changes are made here.",
+    "Private state, immutable binaries and owned fixture processes only; existing provider profiles and active user sessions are unchanged. Final CI and actual source inspection remain required before integration."
+  ]
+}
