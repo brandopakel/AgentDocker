@@ -3,6 +3,7 @@ mod config;
 mod ledger;
 mod recovery;
 mod requests;
+mod terminal;
 mod transport;
 
 use crate::client::Client;
@@ -168,6 +169,7 @@ async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> R
 async fn preflight(provider: &mut Provider, cwd: &std::path::Path) -> Result<Value> {
     // Read the effective provider configuration and hook discovery. Do not
     // rewrite user/project profiles or turn off hooks, MCP, trust or approvals.
+    let cwd = cwd.to_str().context("Codex checkout path is not UTF-8")?;
     let config = provider
         .request("config/read", json!({"cwd":cwd,"includeLayers":true}))
         .await?;
@@ -182,7 +184,7 @@ async fn preflight(provider: &mut Provider, cwd: &std::path::Path) -> Result<Val
         .as_array()
         .context("Codex hook discovery is unavailable")?;
     ensure!(
-        entries.len() == 1 && entries[0]["cwd"].as_str() == cwd.to_str(),
+        entries.len() == 1 && entries[0]["cwd"].as_str() == Some(cwd),
         "Codex hook discovery returned another checkout"
     );
     ensure!(
@@ -264,7 +266,7 @@ async fn session(
     let mut heartbeat = interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stdin = BufReader::new(tokio::io::stdin());
-    let mut input = Vec::new();
+    let mut input = terminal::Input::default();
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
     let mut answers = JoinSet::new();
@@ -329,17 +331,13 @@ async fn session(
                 request_ids.remove(&key);
                 provider.send(&response).await?;
             }
-            line = transport::read_frame(&mut stdin, &mut input), if input_open => {
+            line = input.read(&mut stdin), if input_open => {
                 match line {
-                    Ok(bytes) => {
-                        let text = String::from_utf8(bytes).context("input must be UTF-8")?;
-                        let text = text.trim_end_matches(['\r', '\n']);
-                        if !text.is_empty() {
-                            ensure!(text.len() <= 16_000, "message exceeds 16000 bytes");
-                            ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),
-                                kind: "chat".into(), payload: json!({"text":text}), reply_to: None }).await?, Response::Sent { .. }), "message was not queued");
-                        }
+                    Ok(Some(text)) => {
+                        ensure!(matches!(call(client, Request::Send { from: HUMAN.into(), to: agent.id.to_string(),
+                            kind: "chat".into(), payload: json!({"text":text}), reply_to: None }).await?, Response::Sent { .. }), "message was not queued");
                     }
+                    Ok(None) => (),
                     Err(error) => { input_open = false; eprintln!("Terminal input closed: {error}"); }
                 }
             }

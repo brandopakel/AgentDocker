@@ -102,11 +102,14 @@ mod tests {
         std::fs::write(&path, b"corrupted").unwrap();
         assert!(Ledger::open(home.path(), binding.clone()).is_err());
         std::fs::remove_file(&path).unwrap();
-        let target = home.path().join("untouched");
-        std::fs::write(&target, b"private").unwrap();
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(Ledger::open(home.path(), binding).is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"private");
+        #[cfg(unix)]
+        {
+            let target = home.path().join("untouched");
+            std::fs::write(&target, b"private").unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            assert!(Ledger::open(home.path(), binding).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"private");
+        }
     }
 
     #[test]
