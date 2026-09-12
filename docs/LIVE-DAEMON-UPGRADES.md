@@ -4,8 +4,10 @@ Implementation work in progress. The first source prerequisite provides checked
 event cursors, bounded replay and an explicit replay-complete boundary. Targeted
 store/client/socket tests pass. The [9dda825 checkpoint](verification/2026-09-12-event-continuation.json)
 passed 837 Rust tests, 65 Python checks and an actual immutable CLI/daemon
-restart, question-answer replay and schema-upgrade trial. Final CI/source review
-and provider integration remain pending. Production `reload` continues to refuse without
+restart, question-answer replay and schema-upgrade trial. PR #109 passed final
+CI and source review and merged as `ebaba5be`. The provider event worker's
+bounded reconnect is implemented with an actual pending-approval cut trial;
+PR #110 passed final CI/source inspection and merged as `d89a85c`. Production `reload` continues to refuse without
 changing the running daemon or agents. This document records the concrete
 ownership and recovery requirements behind the open item in
 [Remaining work](REMAINING-WORK.md).
@@ -13,7 +15,13 @@ ownership and recovery requirements behind the open item in
 ## Current boundaries
 
 `supervisor.rs` owns each native child, terminal, stdout/stderr reader, log writer
-and scrollback. Dropping an unreaped `OwnedChild` kills and reaps its group.
+and scrollback. The output tasks are now retained through EOF and final flush
+before publishing exit, releasing protection or restarting. A regression on the
+previous implementation reported exit with only 1,969 of 4,096 stdout lines
+logged; the correction covers both pipe streams and terminal output. Sink/read
+failures emit a separate incomplete-output event and retain the actual child
+exit status. This closes the detached-output race within one owner, while
+cross-process ownership remains open. The [output-drain checkpoint](verification/2026-09-12-output-drain.json) passed 842 Rust tests, 65 Python checks and an actual immutable pipe/PTY exit-and-immediate-shutdown trial. Both streams retained all 4,096 lines in order once, with unchanged logs through shutdown and no remaining fixture processes. Final CI/source review remain required. Dropping an unreaped `OwnedChild` kills and reaps its group.
 `lib.rs` stops managed agents when serving ends. Passing the listening socket and
 PTY descriptor does not preserve the other owners or their buffered work.
 

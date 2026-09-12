@@ -11706,6 +11706,57 @@ deny = ["send:all"]
     }
 
     #[tokio::test]
+    async fn managed_exit_publishes_only_after_terminal_and_pipe_logs_are_complete() {
+        for tty in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let mut command = spec("output-before-exit");
+            command.workdir = Some(dir.path().to_path_buf());
+            command.tty = tty;
+            command.command = vec![
+                "sh".into(),
+                "-c".into(),
+                "i=0; while [ $i -lt 4096 ]; do printf 'OUT_%04d_END\\n' \"$i\"; printf 'ERR_%04d_END\\n' \"$i\" >&2; i=$((i+1)); done; exit 17".into(),
+            ];
+            let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await
+            else {
+                panic!("managed launch failed");
+            };
+            let finished = eventually(async || {
+                lock(&daemon.state)
+                    .registry
+                    .get(&agent.id)
+                    .filter(|current| !current.status.is_live())
+                    .cloned()
+            })
+            .await;
+            assert_eq!(finished.status, AgentStatus::Exited { code: Some(17) });
+            // No eventual log polling: reported completion is the boundary
+            // at which shutdown, restart and a successor can rely on the log.
+            let log = std::fs::read_to_string(daemon.log_path(&agent.id)).unwrap();
+            for stream in ["OUT", "ERR"] {
+                let prefix = format!("{stream}_");
+                let markers: Vec<_> = log
+                    .split_whitespace()
+                    .filter(|word| word.starts_with(&prefix))
+                    .collect();
+                assert_eq!(
+                    markers.len(),
+                    4096,
+                    "tty={tty}: incomplete {stream} log at exit"
+                );
+                for (index, marker) in markers.into_iter().enumerate() {
+                    assert_eq!(
+                        marker,
+                        format!("{stream}_{index:04}_END"),
+                        "tty={tty}: missing, reordered or duplicated {stream} line"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn an_agent_without_a_tty_has_no_session() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
