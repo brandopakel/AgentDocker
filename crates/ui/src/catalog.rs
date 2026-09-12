@@ -21,6 +21,7 @@ pub struct Catalog {
     pub dark: bool,
     pub unassigned: bool,
     pub appearance: Option<crate::theme::Settings>,
+    pub updates: crate::desktop::UpdateSchedule,
 }
 
 impl Catalog {

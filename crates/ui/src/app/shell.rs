@@ -37,6 +37,7 @@ pub(super) struct State {
     pub generation: u64,
     pub saved_generation: u64,
     pub saving: bool,
+    pending_update: Option<i64>,
     pub save_enabled: bool,
     pub window: Option<window::Id>,
     pub closing: bool,
@@ -187,6 +188,7 @@ pub enum Message {
     DesktopUseCurrent,
     DesktopPreview(String),
     DesktopApply,
+    AutomaticUpdates(bool),
     Dark(bool),
     TextSize(f32),
     TerminalSize(f32),
@@ -275,6 +277,7 @@ impl App {
                     tasks.push(self.update(action));
                 }
                 self.drain();
+                self.schedule_update_check(chrono::Utc::now().timestamp());
                 let before = self.shell.catalog.clone();
                 for project in self
                     .discovered
@@ -713,6 +716,8 @@ impl App {
                     self.desktop.prefix = value;
                     self.desktop.report = None;
                     self.desktop.installed = None;
+                    self.desktop.update = None;
+                    self.desktop.update_check_error = false;
                 }
             }
             Message::DesktopLocal(value) => {
@@ -739,6 +744,12 @@ impl App {
                 if !self.desktop.busy
                     && let Some(args) = self.desktop.preview(&operation)
                 {
+                    if operation == "update-check" && self.desktop.prefix.trim().is_empty() {
+                        self.shell.pending_update = None;
+                        self.shell.catalog.updates.last_attempt =
+                            Some(chrono::Utc::now().timestamp());
+                        self.shell.changed();
+                    }
                     self.desktop.busy = true;
                     self.send(Cmd::Desktop(args));
                 }
@@ -750,6 +761,10 @@ impl App {
                     self.desktop.busy = true;
                     self.send(Cmd::Desktop(args));
                 }
+            }
+            Message::AutomaticUpdates(enabled) => {
+                self.shell.catalog.updates.enabled = enabled;
+                self.shell.changed();
             }
             Message::Dark(dark) => {
                 self.shell.catalog.dark = dark;
@@ -913,6 +928,37 @@ impl App {
         }
         tasks.push(crate::accessibility::collect());
         Task::batch(tasks)
+    }
+
+    fn schedule_update_check(&mut self, now: i64) {
+        if self.shell.closing || !self.shell.save_enabled || !self.shell.catalog.updates.enabled {
+            if self.shell.pending_update.take().is_some() {
+                self.shell.catalog.updates.last_attempt = None;
+                self.shell.changed();
+            }
+            return;
+        }
+        if self.desktop.busy
+            || self.desktop.checking_updates
+            || !self.desktop.prefix.trim().is_empty()
+        {
+            return;
+        }
+        if self.shell.pending_update.is_some() {
+            // Persist the daily reservation before any network work. A full
+            // worker queue keeps the reservation pending instead of losing it.
+            if !self.shell.saving
+                && self.shell.generation == self.shell.saved_generation
+                && self.tx.send(Cmd::UpdateCheck).is_ok()
+            {
+                self.shell.pending_update = None;
+                self.desktop.checking_updates = true;
+            }
+        } else if self.shell.catalog.updates.due(now) {
+            self.shell.catalog.updates.last_attempt = Some(now);
+            self.shell.pending_update = Some(now);
+            self.shell.changed();
+        }
     }
 
     fn refresh_project_context(&mut self) {
@@ -1129,6 +1175,53 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    #[test]
+    fn scheduled_checks_wait_for_persistence_and_queue_capacity_then_throttle_failures() {
+        let (mut app, commands, messages) = app();
+        app.shell.save_enabled = true;
+        app.shell.catalog.updates.enabled = true;
+        app.schedule_update_check(100_000);
+        assert_eq!(app.shell.pending_update, Some(100_000));
+        app.schedule_update_check(100_001);
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "reservation is not persisted yet"
+        );
+        app.shell.saved_generation = app.shell.generation;
+        for _ in 0..queue::CAPACITY {
+            app.tx.send(Cmd::Stop("fixture".into())).unwrap();
+        }
+        app.schedule_update_check(100_002);
+        assert!(app.shell.pending_update.is_some());
+        assert!(!app.desktop.checking_updates);
+        assert_eq!(commands.try_iter().count(), queue::CAPACITY);
+        app.schedule_update_check(100_003);
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::UpdateCheck]
+        ));
+        assert!(app.desktop.checking_updates);
+        assert!(app.shell.pending_update.is_none());
+        app.schedule_update_check(200_000);
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "only one check may be in flight"
+        );
+        messages
+            .send(Msg::UpdateChecked(Err("offline fixture".into())))
+            .unwrap();
+        app.drain();
+        app.schedule_update_check(186_399);
+        assert!(app.shell.pending_update.is_none());
+        app.schedule_update_check(186_400);
+        assert_eq!(app.shell.pending_update, Some(186_400));
+        app.shell.catalog.updates.enabled = false;
+        app.schedule_update_check(186_401);
+        assert!(app.shell.pending_update.is_none());
     }
 
     fn notification_app() -> (

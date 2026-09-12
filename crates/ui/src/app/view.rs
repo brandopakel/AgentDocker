@@ -621,12 +621,13 @@ impl App {
                 )
                 .width(Fill),
                 match self.desktop.update_available() {
-                    Some(version) => small(
-                        format!("Update {version} available · Settings › Installation"),
-                        c
-                    )
-                    .color(c.accent_ink),
-                    None => small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c),
+                    Some(version) => action(
+                        "open-available-update",
+                        format!("Update {version} available"),
+                        Some(Message::Navigate(Screen::Desktop)),
+                        false,
+                    ),
+                    None => small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c).into(),
                 }
             ]
             .spacing(8)
@@ -2236,20 +2237,36 @@ impl App {
             .spacing(10),
             c,
         );
-        let installation = card(
-            column![
-                heading("Installation", 18),
-                note("Preview and apply installs, rollbacks and cleanup.", c),
-                action(
-                    "installation",
-                    "Manage installation and retained versions",
-                    Some(Message::Navigate(Screen::Desktop)),
-                    false
-                )
-            ]
-            .spacing(10),
-            c,
-        );
+        let mut installation = column![
+            heading("Installation", 18),
+            action(
+                "automatic-update-checks",
+                if self.shell.catalog.updates.enabled {
+                    "Daily update checks: on"
+                } else {
+                    "Daily update checks: off"
+                },
+                self.shell.save_enabled.then_some(Message::AutomaticUpdates(
+                    !self.shell.catalog.updates.enabled
+                )),
+                self.shell.catalog.updates.enabled,
+            ),
+            note("Preview and apply installs, rollbacks and cleanup.", c),
+            action(
+                "installation",
+                "Manage installation and retained versions",
+                Some(Message::Navigate(Screen::Desktop)),
+                false
+            )
+        ]
+        .spacing(10);
+        if self.desktop.update_check_error {
+            installation = installation.push(small(
+                "Couldn’t check for updates. Try again in Installation.",
+                c,
+            ));
+        }
+        let installation = card(installation, c);
         let diagnostics = card(
             column![
                 heading("Diagnostics", 18),
