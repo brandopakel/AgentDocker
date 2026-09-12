@@ -1,5 +1,6 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
 mod config;
+mod daemon_io;
 mod file_changes;
 mod ledger;
 mod mcp_answers;
@@ -148,15 +149,7 @@ async fn queue(
     ledger: &Ledger,
     acknowledge: Vec<agentdocker_core::MessageId>,
 ) -> Result<Vec<Envelope>> {
-    match call(
-        client,
-        Request::ProviderInbox {
-            agent: ledger.record().binding.agent.clone(),
-            acknowledge,
-        },
-    )
-    .await?
-    {
+    match daemon_io::queue(client, &ledger.record().binding.agent, acknowledge).await? {
         Response::Messages { messages } => Ok(messages),
         _ => bail!(
             "daemon does not support the Codex input queue; update it before launching this mode"
