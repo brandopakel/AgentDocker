@@ -298,6 +298,15 @@ pub enum Request {
         messages: Vec<MessageId>,
     },
 
+    /// The sole input controller of a managed Codex session acknowledges exact
+    /// provider receipts, then reads the same durable queue used by human/peer
+    /// Send. Legacy inbox consumers are refused for sessions using this mode.
+    ProviderInbox {
+        agent: String,
+        #[serde(default)]
+        acknowledge: Vec<MessageId>,
+    },
+
     /// Register the person at the keyboard as a persistent agent named
     /// `user`, or return the one already registered. Idempotent, and the
     /// record is never expired by liveness: there is no process to watch.

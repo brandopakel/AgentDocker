@@ -246,3 +246,22 @@ and permission settings. The managed bridge still needs one inbox consumer,
 matching AgentDocker hook/MCP behavior, stable managed identity, a durable attempt
 and exact provider receipt before acknowledgement, and explicit uncertain delivery.
 Do not convert a generic peer message into approval of a provider permission request.
+
+
+### September 11: managed Codex input and controlled crash acceptance
+
+The [bridge report](verification/2026-09-11-codex-input-bridge.json) records clean
+source `b1ce9d0`, 784 Rust tests, 65 Python checks and 123 native workflow steps.
+Actual Codex 0.153.4 trials proved ordered peer/human/peer inputs and three
+correlated replies under one agent, recovery of a completed provider turn after
+controller SIGKILL without a second submission, preservation of an uncertain
+prepared input across two bounded restarts, and replacement of an unused handle
+only before any input was prepared. All owned fixture processes were cleaned up.
+The earlier configuration/identity/launcher failures and the empty-thread failed
+baseline are retained in the report.
+
+This advances the opt-in native bridge; it does not close the whole input audit.
+Finish file/permission/MCP elicitation presentation, human approval-answer queue
+receipts/cancellation, compact durable delivery and guided recovery, broader
+interruptions and sustained conversations. Final source review and CI remain
+required. The installed launcher and running daemon have not been switched.

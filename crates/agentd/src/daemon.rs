@@ -1274,8 +1274,30 @@ impl Daemon {
                 winner,
                 resolution,
             } => self.contest_close(&agent, &contest, winner, resolution),
-            Request::Inbox { agent, drain } => lock(&self.state).inbox(&agent, drain),
-            Request::AckInbox { agent, messages } => lock(&self.state).ack_inbox(&agent, &messages),
+            Request::Inbox { agent, drain } => {
+                let mut state = lock(&self.state);
+                match state.input_consumer(&agent, false) {
+                    Ok(()) => state.inbox(&agent, drain),
+                    Err(error) => *error,
+                }
+            }
+            Request::AckInbox { agent, messages } => {
+                let mut state = lock(&self.state);
+                match state.input_consumer(&agent, false) {
+                    Ok(()) => state.ack_inbox(&agent, &messages),
+                    Err(error) => *error,
+                }
+            }
+            Request::ProviderInbox { agent, acknowledge } => {
+                let mut state = lock(&self.state);
+                match state.input_consumer(&agent, true) {
+                    Ok(()) => match state.ack_inbox(&agent, &acknowledge) {
+                        Response::Ok => state.inbox(&agent, false),
+                        error => error,
+                    },
+                    Err(error) => *error,
+                }
+            }
             Request::Claim {
                 agent,
                 resource,
@@ -1580,6 +1602,36 @@ impl Daemon {
                 );
             };
             spec.workdir = Some(resolved);
+        }
+        // The provider child is part of its supervised input controller. Older
+        // hooks may still register its PID; return the existing owner without
+        // changing its spec, PID, session binding or queue consumer.
+        if spec.runtime == "codex" {
+            if let Some(pid) = pid {
+                let owners: Vec<_> = lock(&self.state)
+                    .registry
+                    .live()
+                    .filter(|a| agentdocker_host::provider_input::is_codex_input(a))
+                    .cloned()
+                    .collect();
+                let table = procinfo::processes().unwrap_or_default();
+                if let Some(owner) = owners.iter().find(|owner| {
+                    spec.workdir == owner.spec.workdir
+                        && agentdocker_host::provider_input::owns_codex_process(owner, pid, &table)
+                }) {
+                    let state = lock(&self.state);
+                    if let Some(current) = state.registry.get(&owner.id) {
+                        if current.status.is_live()
+                            && current.pid == owner.pid
+                            && current.process_started_at == owner.process_started_at
+                        {
+                            return Response::Agent {
+                                agent: current.clone(),
+                            };
+                        }
+                    }
+                }
+            }
         }
         let project = self.project_for(spec.workdir.clone(), true).await;
         let vcs = Self::vcs_for(spec.workdir.clone()).await;
@@ -1940,9 +1992,24 @@ impl Daemon {
     /// cache or announce a repository.
     async fn scan(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let mine = std::process::id();
+        let owners: Vec<_> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| agentdocker_host::provider_input::is_codex_input(a))
+            .cloned()
+            .collect();
         tokio::task::spawn_blocking(move || {
             let table = procinfo::processes().map_err(|e| e.to_string())?;
             let launchers = procinfo::codex_launchers(&table);
+            let controlled: HashSet<_> = table
+                .iter()
+                .filter(|p| {
+                    owners.iter().any(|owner| {
+                        agentdocker_host::provider_input::owns_codex_process(owner, p.pid, &table)
+                    })
+                })
+                .map(|p| p.pid)
+                .collect();
             // Ancestry needs the whole table, and only agents are asked
             // about, so it is built once rather than per candidate.
             let by_pid: BTreeMap<u32, procinfo::Process> =
@@ -1950,6 +2017,7 @@ impl Daemon {
             let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
                 .filter(|p| p.pid != mine && !launchers.contains(&p.pid))
+                .filter(|p| !controlled.contains(&p.pid))
                 .filter_map(|p| {
                     let runtime = procinfo::runtime_of(&p.argv)?;
                     let cwd = procinfo::cwd(p.pid);
@@ -2869,6 +2937,7 @@ impl Daemon {
         let receiver = state.bus.subscribe();
         let backlog = match &agent {
             Some(id) => {
+                state.input_consumer(id.as_str(), false)?;
                 let backlog = state.read_inbox(id, false)?;
                 *state.live_subscribers.entry(id.clone()).or_default() += 1;
                 backlog
@@ -3514,6 +3583,23 @@ impl State {
             let _ = self.events.send(event);
         }
         true
+    }
+
+    fn input_consumer(&mut self, reference: &str, provider: bool) -> Result<(), Box<Response>> {
+        let id = self.resolve(reference)?;
+        let agent = self.registry.get(&id).expect("resolved input identity");
+        let owned = agentdocker_host::provider_input::is_codex_input(agent);
+        if provider != owned {
+            return Err(Box::new(Response::error(
+                ErrorCode::Invalid,
+                if owned {
+                    "This agent receives queued input through its Codex bridge; legacy inbox delivery is disabled."
+                } else {
+                    "Provider input requires a managed Codex bridge session."
+                },
+            )));
+        }
+        Ok(())
     }
 
     fn ack_inbox(&mut self, reference: &str, messages: &[MessageId]) -> Response {
@@ -9011,6 +9097,100 @@ deny = ["send:all"]
         assert!(events.try_recv().is_err());
         assert_eq!(lock(&daemon.state).next_seq, next_seq + 1);
         assert!(inbox(&daemon, "receiver", false).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_input_reserves_the_same_durable_human_and_peer_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut receiver = register(&daemon, "receiver", None).await;
+        receiver.managed = true;
+        receiver.spec.runtime = "codex".into();
+        receiver.spec.env.insert(
+            agentdocker_host::provider_input::CODEX_INPUT_ENV.into(),
+            "1".into(),
+        );
+        {
+            let mut state = lock(&daemon.state);
+            state.store.upsert_agent(&receiver).unwrap();
+            *state.registry.get_mut(&receiver.id).unwrap() = receiver.clone();
+        }
+        let mut ids = Vec::new();
+        for sender in ["user", "peer", "user"] {
+            let Response::Sent { message, .. } = send(&daemon, sender, "receiver").await else {
+                panic!("not queued");
+            };
+            ids.push(message);
+        }
+        for request in [
+            Request::Inbox {
+                agent: "receiver".into(),
+                drain: false,
+            },
+            Request::Inbox {
+                agent: "receiver".into(),
+                drain: true,
+            },
+            Request::AckInbox {
+                agent: "receiver".into(),
+                messages: ids.clone(),
+            },
+        ] {
+            assert!(matches!(
+                daemon.handle(request).await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+        assert!(daemon.subscribe(Some("receiver"), Vec::new()).is_err());
+        let read = || Request::ProviderInbox {
+            agent: "receiver".into(),
+            acknowledge: Vec::new(),
+        };
+        let Response::Messages { messages } = daemon.handle(read()).await else {
+            panic!("missing queue");
+        };
+        assert_eq!(
+            messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            ids.iter().collect::<Vec<_>>()
+        );
+        let ack = || Request::ProviderInbox {
+            agent: "receiver".into(),
+            acknowledge: vec![ids[0].clone()],
+        };
+        for _ in 0..2 {
+            let Response::Messages { messages } = daemon.handle(ack()).await else {
+                panic!("ack refused");
+            };
+            assert_eq!(
+                messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+                ids[1..].iter().collect::<Vec<_>>()
+            );
+        }
+        drop(daemon);
+        let daemon = open(&dir);
+        let Response::Messages { messages } = daemon.handle(read()).await else {
+            panic!("queue lost on reopen");
+        };
+        assert_eq!(
+            messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            ids[1..].iter().collect::<Vec<_>>()
+        );
+        register(&daemon, "ordinary", None).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::ProviderInbox {
+                    agent: "ordinary".into(),
+                    acknowledge: Vec::new()
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

@@ -10,6 +10,19 @@ The three previously listed manual steps do **not** mean all engineering is
 complete. The Iced migration exists, but daily use, safe upgrades, delivery and
 platform support have separate completion conditions.
 
+PRs #99–#102 have now merged after final-head CI and actual review (latest merge
+`5a2d231`). The installed launcher and running daemon remain unchanged. The next
+[Codex input implementation](CODEX-INPUT.md) passed 788 Rust tests, 65 Python
+checks, 123 native workflow steps and actual mixed-sender, completed-turn crash,
+uncertain-input and unused-conversation trials. The [report](verification/2026-09-11-codex-input-bridge.json)
+retains both failures and corrections. Broader recovery, provider review
+surfaces, sustained acceptance and final review are still in progress. The
+[review follow-up](verification/2026-09-11-codex-input-review.json) also reproduces
+and fixes malformed terminal input stopping Codex, rejects invalid configuration
+paths, and corrects the native repair test's stale schema expectation. It passed
+123 fresh native steps and an actual Codex terminal/human/peer trial; PR #103's
+final-head CI and follow-up review remain pending.
+
 ## Desktop cleanup in this change
 
 - Default to **Current** sessions; retain completed runs under **History**.
@@ -100,7 +113,7 @@ a failed trial. Container restart fixtures also wait for actual daemon lock
 release after a crash; permanent contention still fails. The full gate passed
 762 Rust tests and 65 Python checks, including failed process discovery and an
 undiscovered TERM-ignoring group member. Docker and Podman passed the preceding
-lock-barrier head; final-head CI and follow-up review remain.
+lock-barrier head; the final changes later passed CI and review and merged in #99.
 
 ## Follow-up implementation and review
 
@@ -114,20 +127,20 @@ guided apply/undo, legacy setup and hook installation across AgentDocker homes;
 independent editors/provider CLIs remain outside these advisory locks, with
 exact-entry checks and receipts still guarding ownership.
 
-Opt-in daily update checks (#101) and direct session messages (#102) are
-implemented. The daily scheduler has source review; its final CI remains open.
+Opt-in daily update checks (#101, `57a102a`) and direct session messages
+(#102, `5a2d231`) merged after final CI and source review.
 Review of session messaging reproduced a newer draft being cleared after the
 user retyped the submitted words. The [correction](verification/2026-09-11-retyped-drafts.json)
 tracks edits for each pending send, preserving the newer draft for both sessions
 and channels. It passed 771 Rust tests, 65 Python checks and 123 fresh native
-steps. Final CI and follow-up review remain. Earlier actual-Claude reports keep
+steps. Those review and CI gates are complete. Earlier actual-Claude reports keep
 their own source and executable identities.
 
 ## Engineering still open
 
 | Priority | Work | Completion condition | Supporting documents |
 | --- | --- | --- | --- |
-| Top priority; Claude partial acceptance | Unified user/agent input queue and idle wake | The [native message composer](verification/2026-09-11-session-messages.json) now sends human input through the peer inbox queue and passed an actual Claude idle-reply/draft trial. The opt-in Claude adapter and managed launch passed actual idle, mixed-sender and terminal-draft cases; the earlier adapter trial also covered busy input. Complete compact durable delivery status, actual-provider reconnect/ambiguous receipt and sustained conversations. The [Codex app-server trial](verification/2026-09-11-codex-appserver-input.json) proved idle start and busy acceptance, but repeating the same client message ID created another turn. A [real-daemon recovery prototype](verification/2026-09-11-codex-queue-recovery.json) preserved mixed-sender FIFO, recovered one accepted input from exact thread/turn/item history without resending, and refused automatic replay of uncertain input. Implement this in the owned native bridge with visible delivery state; lifecycle hooks alone do not wake idle Codex. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Claude input guide](CLAUDE-CHANNEL-INPUT.md), [active delivery plan](DELIVERY-PLAN.md) |
+| Top priority; Claude partial acceptance | Unified user/agent input queue and idle wake | The [native message composer](verification/2026-09-11-session-messages.json) now sends human input through the peer inbox queue and passed an actual Claude idle-reply/draft trial. The opt-in Claude adapter and managed launch passed actual idle, mixed-sender and terminal-draft cases; the earlier adapter trial also covered busy input. Complete compact durable delivery status, actual-provider reconnect/ambiguous receipt and sustained conversations. The [Codex app-server trial](verification/2026-09-11-codex-appserver-input.json) proved idle start and busy acceptance, but repeating the same client message ID created another turn. A [real-daemon recovery prototype](verification/2026-09-11-codex-queue-recovery.json) preserved mixed-sender FIFO, recovered one accepted input from exact thread/turn/item history without resending, and refused automatic replay of uncertain input. The [owned Codex bridge](verification/2026-09-11-codex-input-bridge.json) now passes actual mixed-sender and controlled crash trials. Complete provider approval/answer handling, compact durable status, guided recovery and broader interruptions; lifecycle hooks alone do not wake idle Codex. | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md), [Claude input guide](CLAUDE-CHANNEL-INPUT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | High priority; routing implemented, physical acceptance open | Notification clicks open blank Script Editor | Native posting, destination metadata and existing/cold-window navigation are implemented; the AppleScript fallback is removed in source. Complete actual Notification Center click trials, signed posting and installed-launcher acceptance while preserving drafts and handling expired targets. The running old installation still needs the safe switch. | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md), [active delivery plan](DELIVERY-PLAN.md) |
 | Next | Safe live daemon replacement | Pending questions now retain answer routing across restart, with atomic message fanout and closure. Full replacement still must preserve child ownership, batch/PTY I/O, logs, identity, leases and schema compatibility; require the actual successor to be ready before retiring its predecessor, with failure recovery. `daemon reload` deliberately returns unavailable today. | [Architecture](ARCHITECTURE.md#sessions-and-persistence), [delivery plan](DELIVERY-PLAN.md) |
 | Partial acceptance | Sustained-use bounds and unresolved performance failures | A stable schema-9 checkpoint passed ten minutes each at 1/10/100 agents (255,891 cycles); the final package passed actual crash/schema-upgrade and distinct-source installation/rollback trials. The [immutable schema-11 daemon](verification/2026-09-11-hour-sustained-use.json) also passed one hour at 100 agents and 10,000 files: 1,392,836 cycles, unchanged hashes and clean child cleanup. Overnight, actual-provider queues, reboot/sleep, broader growth/retention and checkout workloads remain. Diagnose the retained socket timeout; a fresh passing diagnostic campaign does not explain it. | [Current verification](verification/2026-09-10-desktop-delivery.json), [testing standard](TESTING-AND-BENCHMARKS.md), [local trial](LOCAL-TRIAL.md) |

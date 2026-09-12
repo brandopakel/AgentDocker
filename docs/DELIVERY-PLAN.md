@@ -828,3 +828,59 @@ preserve that draft, while untouched submissions still clear normally. The
 [clean correction](verification/2026-09-11-retyped-drafts.json) passed 771 Rust
 tests, 65 Python checks, the full gate and 123 fresh native workflow steps.
 The failed baseline remains recorded. Final CI and follow-up review remain.
+
+
+### September 11: final integration and Codex input implementation
+
+PR #101 merged as `57a102a` and PR #102 as `5a2d231`, after actual final-head
+review and successful CI, including both macOS architectures and Linux graphical
+acceptance. The reviewed interface head was `fc225a8`. These source changes have
+not replaced the installed launcher or running daemon.
+
+The [managed Codex input bridge](CODEX-INPUT.md) is now being implemented on a
+separate branch. It reserves the shared human/peer queue, binds one supervised
+provider conversation, persists input before submission, and reconciles exact
+provider receipts without automatic replay. Ten targeted tests and strict
+workspace Clippy passed. Actual-provider and crash recovery trials, full/native
+validation, complete provider approval surfaces and review remain gates; this
+work does not close the unified-input backlog yet.
+
+The live trial found two concrete integration failures: Codex filters the MCP
+environment, so tools lost their managed identity/socket; and Homebrew's Node
+launcher uses its symlink path rather than the canonical package path. Explicit
+MCP leaf overrides and recognition of the directly owned selected launcher fix
+both. A third trial caught normalized config nulls being replayed as invalid
+TOML; a no-auth actual-provider probe verified leaf overrides preserve unrelated
+values. The corrected bridge passed peer/human/peer FIFO, three correlated
+replies, one Codex record and no duplicate discovery entry in a private checkout.
+Its full gate passed 783 Rust tests, 65 Python checks and 123 native workflow
+steps. Earlier failures remain recorded; three exited trial records created in
+the default daemon were removed after exact identity/path checks and private
+before-image capture. Crash-recovery and approval-surface acceptance remain open.
+
+
+### September 11: managed Codex input and controlled crash acceptance
+
+The [bridge report](verification/2026-09-11-codex-input-bridge.json) records clean
+source `b1ce9d0`, 784 Rust tests, 65 Python checks and 123 native workflow steps.
+Actual Codex 0.153.4 trials proved ordered peer/human/peer inputs and three
+correlated replies under one agent, recovery of a completed provider turn after
+controller SIGKILL without a second submission, preservation of an uncertain
+prepared input across two bounded restarts, and replacement of an unused handle
+only before any input was prepared. All owned fixture processes were cleaned up.
+The earlier configuration/identity/launcher failures and the empty-thread failed
+baseline are retained in the report.
+
+This advances the opt-in native bridge; it does not close the whole input audit.
+Finish file/permission/MCP elicitation presentation, human approval-answer queue
+receipts/cancellation, compact durable delivery and guided recovery, broader
+interruptions and sustained conversations. Final source review and CI remain
+required. The installed launcher and running daemon have not been switched.
+
+The [PR #103 review follow-up](verification/2026-09-11-codex-input-review.json)
+passed 788 Rust tests, 65 Python checks and 123 native workflow steps at clean
+source `743c6d7`. Actual Codex reproduced a controller exit after invalid terminal
+bytes; the corrected bounded reader rejected malformed and oversized lines,
+then delivered valid terminal, human and peer inputs in order under one identity.
+It also returns errors for non-UTF-8 configuration paths and fixes native CI's
+stale schema-11 repair assertion. Final-head CI and follow-up review remain gates.

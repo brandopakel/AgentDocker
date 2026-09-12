@@ -3,6 +3,7 @@
 mod agentfile;
 mod attach;
 mod client;
+mod codex_input;
 mod desktop;
 mod format;
 mod hooks;
@@ -617,6 +618,9 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
+    /// Supervised Codex input controller (launched by run --codex-input).
+    #[command(hide = true)]
+    CodexInput(codex_input::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -649,6 +653,9 @@ struct RunArgs {
     /// Enable idle-message input for a new interactive Claude session (experimental; Claude consent still applies).
     #[arg(long, conflicts_with = "image_build")]
     claude_channel: bool,
+    /// Receive queued human and peer messages while idle (experimental Codex app server).
+    #[arg(long, conflicts_with_all = ["image_build", "claude_channel"])]
+    codex_input: bool,
     /// Run inside this recorded image build (mounts and network are opt-in).
     #[arg(long)]
     image_build: Option<String>,
@@ -1595,6 +1602,12 @@ async fn main() -> Result<()> {
                     &agentdocker_host::procinfo::executable_path()?,
                 )?;
             }
+            if args.codex_input {
+                agentdocker_host::provider_input::enable_codex_input(
+                    &mut spec,
+                    &agentdocker_host::procinfo::executable_path()?,
+                )?;
+            }
             let request = match args.image_build {
                 Some(build) => Request::RunContainer {
                     spec,
@@ -1971,6 +1984,7 @@ async fn main() -> Result<()> {
         Command::Daemon(args) => service::run(socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;
