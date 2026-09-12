@@ -1422,6 +1422,7 @@ mod tests {
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
         let question = Question {
+            presentation: None,
             id: action.target.message.clone(),
             from: action.target.agent.to_string(),
             to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
@@ -1483,6 +1484,7 @@ mod tests {
             .unwrap();
         messages
             .send(Msg::Questions(vec![Question {
+                presentation: None,
                 id: action.target.message.clone(),
                 from: "canonical".into(),
                 to: agentdocker_core::Destination::Agent("user".into()),

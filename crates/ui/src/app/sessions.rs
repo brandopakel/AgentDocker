@@ -170,6 +170,7 @@ mod tests {
         let now = Utc::now();
         for agent in [&first, &finished, &elsewhere] {
             app.questions.push(Question {
+                presentation: None,
                 id: agent.id.to_string().into(),
                 from: agent.id.to_string(),
                 to: agentdocker_core::Destination::Agent("user".into()),

@@ -1837,6 +1837,7 @@ mod tests {
         app.inbox = received[..4].to_vec();
         let question = received[3].id.clone();
         app.questions.push(Question {
+            presentation: None,
             id: question.clone(),
             from: "peer".into(),
             to: agentdocker_core::Destination::Agent("user".into()),

@@ -1,6 +1,8 @@
 //! Typed review routes share the ordinary inbox. A response is retained before
 //! writing it to Codex and is acknowledged only after that request resolves.
-use agentdocker_core::{Destination, Envelope, EventKind, MessageId};
+use agentdocker_core::{
+    Destination, Envelope, EventKind, MessageId, QuestionOption, QuestionPresentation,
+};
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,6 +37,8 @@ pub(super) struct Question {
     field: String,
     pub text: String,
     pub message: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<QuestionPresentation>,
     answer: Option<Envelope>,
     #[serde(default)]
     closure: Closure,
@@ -130,16 +134,20 @@ impl Pending {
                 let command = text(&params["command"])?;
                 let cwd = text(&params["cwd"])?;
                 let reason = params["reason"].as_str().unwrap_or("Requested by Codex");
-                let prompt = format!(
-                    "Allow Codex to run this command once?\n\nDirectory: {cwd}\nCommand:\n{command}\n\nReason: {reason}\n\nReply Allow or Deny."
-                );
+                let presentation = QuestionPresentation::CodexCommand {
+                    command: command.into(),
+                    cwd: cwd.into(),
+                    reason: reason.into(),
+                };
+                let prompt = presentation.text();
                 ensure!(
-                    prompt.len() <= MAX_TEXT,
+                    presentation.valid_for(&prompt),
                     "provider request is too large to review as a question"
                 );
                 questions.push(Question {
                     field: "command".into(),
                     text: prompt,
+                    presentation: Some(presentation),
                     message: None,
                     answer: None,
                     closure: Closure::Open,
@@ -166,22 +174,38 @@ impl Pending {
                         "invalid or repeated question ID"
                     );
                     let mut prompt = text(&value["question"])?.to_owned();
+                    let mut presentation = None;
                     if let Some(options) = value["options"].as_array() {
-                        for option in options {
-                            prompt.push_str(&format!(
-                                "\n- {}: {}",
-                                text(&option["label"])?,
-                                option["description"].as_str().unwrap_or_default()
-                            ));
+                        ensure!(options.len() <= 16, "too many provider question choices");
+                        if !options.is_empty() {
+                            let options = options
+                                .iter()
+                                .map(|option| {
+                                    Ok(QuestionOption {
+                                        label: text(&option["label"])?.into(),
+                                        description: option["description"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .into(),
+                                    })
+                                })
+                                .collect::<Result<Vec<_>>>()?;
+                            let choices = QuestionPresentation::Choices {
+                                question: prompt,
+                                options,
+                            };
+                            prompt = choices.text();
                             ensure!(
-                                prompt.len() <= MAX_TEXT,
-                                "provider request is too large to review as a question"
+                                choices.valid_for(&prompt),
+                                "unsupported or oversized provider choices"
                             );
+                            presentation = Some(choices);
                         }
                     }
                     questions.push(Question {
                         field: field.into(),
                         text: prompt,
+                        presentation,
                         message: None,
                         answer: None,
                         closure: Closure::Open,
@@ -354,6 +378,13 @@ impl Pending {
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                question
+                    .presentation
+                    .as_ref()
+                    .is_none_or(|p| p.valid_for(&question.text)),
+                "stored question controls differ from the review text"
+            );
             ensure!(
                 valid_id(&question.field)
                     && fields.insert(&question.field)

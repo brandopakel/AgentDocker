@@ -18,7 +18,7 @@
 use std::time::Duration as StdDuration;
 
 use super::*;
-use agentdocker_core::{HUMAN, HUMAN_RUNTIME, Question};
+use agentdocker_core::{HUMAN, HUMAN_RUNTIME, Question, QuestionPresentation};
 use agentdocker_host::notify::{self, Notification};
 
 /// Enough outstanding questions that a busy fleet is never refused, few
@@ -53,10 +53,17 @@ impl State {
         from: String,
         to: Destination,
         text: String,
+        presentation: Option<QuestionPresentation>,
         timeout: StdDuration,
     ) -> Response {
         if text.trim().is_empty() {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
+        }
+        if presentation.as_ref().is_some_and(|p| !p.valid_for(&text)) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "question controls must match the complete question text",
+            );
         }
         if !matches!(to, Destination::Agent(_) | Destination::Broadcast) {
             return Response::error(
@@ -78,6 +85,7 @@ impl State {
             from,
             to,
             text,
+            presentation,
             asked_at,
             expires_at: asked_at + Duration::from_std(timeout).unwrap_or_else(|_| Duration::zero()),
         };
@@ -350,7 +358,7 @@ impl Daemon {
             (
                 state.bus.subscribe(),
                 state.events.subscribe(),
-                state.open_question(from.clone(), to.clone(), question, timeout),
+                state.open_question(from.clone(), to.clone(), question, None, timeout),
             )
         };
         let Response::Sent { message, .. } = sent else {
@@ -410,10 +418,20 @@ impl Daemon {
         from: String,
         to: String,
         question: String,
+        presentation: Option<QuestionPresentation>,
         timeout_secs: u64,
     ) -> Response {
         if question.trim().is_empty() {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
+        }
+        if presentation
+            .as_ref()
+            .is_some_and(|p| !p.valid_for(&question))
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "question controls must match the complete question text",
+            );
         }
         let (from, to) = match self.endpoints(from, &to).await {
             Ok(pair) => pair,
@@ -423,6 +441,7 @@ impl Daemon {
             from,
             to,
             question,
+            presentation,
             StdDuration::from_secs(timeout_secs.clamp(1, 24 * 60 * 60)),
         )
     }
@@ -553,6 +572,7 @@ mod tests {
     fn question(seconds: i64) -> Question {
         let now = Utc::now();
         Question {
+            presentation: None,
             id: MessageId::generate(),
             from: "asker".to_owned(),
             to: Destination::Broadcast,
@@ -606,7 +626,7 @@ mod tests {
                     .await
             } else {
                 daemon
-                    .post_question("user".into(), "all".into(), " \n ".into(), 1)
+                    .post_question("user".into(), "all".into(), " \n ".into(), None, 1)
                     .await
             };
             assert!(matches!(
@@ -632,6 +652,7 @@ mod tests {
         register(&daemon, "peer").await;
         let Response::Sent { message, .. } = daemon
             .handle(Request::PostQuestion {
+                presentation: None,
                 from: "asker".into(),
                 to: "recipient".into(),
                 question: "Continue?".into(),
@@ -842,6 +863,7 @@ mod tests {
         register(&daemon, "recipient").await;
         let Response::Sent { message, .. } = daemon
             .handle(Request::PostQuestion {
+                presentation: None,
                 from: "asker".into(),
                 to: "recipient".into(),
                 question: "Continue?".into(),

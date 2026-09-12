@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -358,6 +358,7 @@ impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
             self.version == VERSION
+                || self.version == 3
                 || self.version == 2
                 || (self.version == 1
                     && self.reviews.is_empty()
