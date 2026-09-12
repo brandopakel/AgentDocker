@@ -1,0 +1,78 @@
+# Managed Codex input (experimental)
+
+New Codex sessions can receive human and peer messages while idle. In New session,
+choose Codex and tick **Receive messages while idle (experimental)**, or run:
+
+```sh
+agentdocker run --runtime codex --codex-input --tty -- codex
+```
+
+This starts an owned Codex app-server conversation under the native supervisor.
+It needs a matching schema-12 daemon and CLI, and a Codex version supporting
+`hooks/list` and paginated thread history. It does not attach to an existing Codex
+TUI. The option is off by default and applies only to the new session. Codex's
+app-server interface remains experimental.
+
+Send through the selected session's message composer, `send_message`, or the
+terminal input. All three use the daemon's ordinary `Send` queue. The bridge polls
+while idle, starts one ordinary input turn, and leaves busy arrivals queued in
+order. Peer content carries its original sender and message ID in an
+`agentdocker_message` envelope. Model text is shown in the session terminal;
+AgentDocker MCP `send_message` supplies a correlated peer reply.
+
+The provider profile, authentication, hooks, trust and approval policy are
+inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
+explicitly to the matching CLI, managed identity and daemon socket through leaf
+configuration overrides. Other MCP settings, approval modes and disabled entries
+remain unchanged. This is required because Codex filters the MCP environment;
+plain inheritance sent early trial tools to the wrong daemon. `-c`/`--config`, `--enable`,
+`--disable` and `--strict-config` are preserved; `-m`/`--model` has an exact config
+equivalent. Other arguments, including initial prompts, are refused rather than
+dropped. Send the first prompt through AgentDocker. Provider restart remains the
+launch's existing explicit restart policy (`--restart on-failure:2`, for example).
+
+## Delivery and recovery
+
+One private, locked record under `AGENTDOCKER_HOME/codex-input/<agent-id>` binds
+the agent, daemon socket, physical checkout, provider profile and conversation.
+The controller durably records a complete input before submitting it. Queue
+acknowledgement requires the exact provider thread, turn, item and complete text;
+a successful pipe write or a client message ID is not sufficient.
+
+After a supervised restart, paginated provider history can recover an exact
+receipt and acknowledge it without starting another turn. An uncertain input,
+ambiguous match, changed binding or nonterminal previous turn pauses delivery.
+Do not delete the record to make a paused controller retry: that discards its
+duplicate-work protection. History, frames, pending requests and retained receipts
+are bounded; exceeding a bound reports an error and preserves the pending input.
+
+Schema 12 reserves these queues for `provider_inbox`. Legacy inbox reads,
+acknowledgements and receiver subscriptions are refused for that mode. Current
+hooks skip their competing delivery path after checking the actual provider's
+ownership. Current MCP hides/refuses its three inbox-consumer tools. The daemon
+joins registration from the owned app-server child to its existing controller;
+it does not merge ordinary nested Codex sessions by ancestry alone. These are
+cooperative local delivery semantics, not an authentication boundary against
+other programs running as the same OS user.
+
+## Acceptance still required
+
+Command approvals and nonsecret provider questions use AgentDocker's registered
+human question route. Only an explicit human **Allow** approves one command;
+peer answers and ordinary input messages cannot grant it. Unknown callbacks,
+file/permission approvals without a complete review presentation, secret inputs
+and oversized requests currently return an explicit provider error. Complete
+those review surfaces before treating the adapter as a general replacement for
+the provider terminal. Automatic provider review and configured approval policy
+are not overridden.
+
+The current implementation passed thirteen targeted tests, the full gate with
+783 Rust tests and 65 Python checks, and 123 native workflow steps. An actual
+Codex 0.153.4 trial delivered peer/human/peer input in order, received three
+correlated replies and retained one Codex record. The trial used an explicitly
+authorized `send_message` tool in its private profile; it does not establish
+general approval acceptance. Crash cuts, sustained use and source review remain
+gates. Its current
+delivery/paused state is visible in the terminal; a compact durable status and
+guided recovery surface remain part of the [delivery audit](MESSAGE-DELIVERY-AUDIT.md).
+The existing installation and active sessions have not been switched.

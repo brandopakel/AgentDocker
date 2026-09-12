@@ -193,6 +193,24 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         pid = process.ppid;
     }
     let pid = host.context("hook has no Codex CLI ancestor")?;
+    if std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1") {
+        let id = std::env::var("AGENTDOCKER_AGENT_ID").context("Codex bridge hook has no owner")?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.call(&Request::Inspect { agent: id }),
+        )
+        .await??;
+        let Response::Agent { agent } = response else {
+            bail!("Codex bridge owner is unavailable");
+        };
+        ensure!(
+            agentdocker_host::provider_input::owns_codex_process(&agent, pid, &table),
+            "Codex bridge hook does not belong to the managed provider"
+        );
+        // The bridge reports activity and supplies the next ordinary input turn.
+        // Running legacy stop continuations here would compete with that queue.
+        return Ok(());
+    }
     let started_at =
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);

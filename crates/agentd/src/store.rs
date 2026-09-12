@@ -22,7 +22,9 @@ pub(crate) mod reconcile;
 // v9 retains pending questions. v10 retains addressed messages while subscribed
 // and refuses inbox overflow. v11 adds durable identity redirects; older daemons
 // would route former IDs incorrectly and must not open repaired state.
-pub(crate) const SCHEMA_VERSION: i64 = 11;
+// v12 reserves managed Codex inbox delivery for its receipt-tracking bridge;
+// older daemons would let legacy hooks consume the same pending input.
+pub(crate) const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -562,7 +564,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=10)) => {
+            Some(Ok(1..=11)) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.

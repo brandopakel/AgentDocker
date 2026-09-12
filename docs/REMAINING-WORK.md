@@ -10,6 +10,13 @@ The three previously listed manual steps do **not** mean all engineering is
 complete. The Iced migration exists, but daily use, safe upgrades, delivery and
 platform support have separate completion conditions.
 
+PRs #99–#102 have now merged after final-head CI and actual review (latest merge
+`5a2d231`). The installed launcher and running daemon remain unchanged. The next
+[Codex input implementation](CODEX-INPUT.md) passed 783 Rust tests, 65 Python
+checks, 123 native workflow steps and an actual mixed-sender Codex trial with
+three correlated replies and one record. Crash recovery, provider review
+surfaces, sustained acceptance and source review are still in progress.
+
 ## Desktop cleanup in this change
 
 - Default to **Current** sessions; retain completed runs under **History**.

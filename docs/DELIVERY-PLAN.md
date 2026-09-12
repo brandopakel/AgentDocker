@@ -828,3 +828,32 @@ preserve that draft, while untouched submissions still clear normally. The
 [clean correction](verification/2026-09-11-retyped-drafts.json) passed 771 Rust
 tests, 65 Python checks, the full gate and 123 fresh native workflow steps.
 The failed baseline remains recorded. Final CI and follow-up review remain.
+
+
+### September 11: final integration and Codex input implementation
+
+PR #101 merged as `57a102a` and PR #102 as `5a2d231`, after actual final-head
+review and successful CI, including both macOS architectures and Linux graphical
+acceptance. The reviewed interface head was `fc225a8`. These source changes have
+not replaced the installed launcher or running daemon.
+
+The [managed Codex input bridge](CODEX-INPUT.md) is now being implemented on a
+separate branch. It reserves the shared human/peer queue, binds one supervised
+provider conversation, persists input before submission, and reconciles exact
+provider receipts without automatic replay. Ten targeted tests and strict
+workspace Clippy passed. Actual-provider and crash recovery trials, full/native
+validation, complete provider approval surfaces and review remain gates; this
+work does not close the unified-input backlog yet.
+
+The live trial found two concrete integration failures: Codex filters the MCP
+environment, so tools lost their managed identity/socket; and Homebrew's Node
+launcher uses its symlink path rather than the canonical package path. Explicit
+MCP leaf overrides and recognition of the directly owned selected launcher fix
+both. A third trial caught normalized config nulls being replayed as invalid
+TOML; a no-auth actual-provider probe verified leaf overrides preserve unrelated
+values. The corrected bridge passed peer/human/peer FIFO, three correlated
+replies, one Codex record and no duplicate discovery entry in a private checkout.
+Its full gate passed 783 Rust tests, 65 Python checks and 123 native workflow
+steps. Earlier failures remain recorded; three exited trial records created in
+the default daemon were removed after exact identity/path checks and private
+before-image capture. Crash-recovery and approval-surface acceptance remain open.

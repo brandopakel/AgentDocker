@@ -1231,7 +1231,10 @@ impl App {
                 &self.shell.launch_arguments,
                 Message::LaunchArguments,
             ));
-        if self.shell.launch_runtime.as_deref() == Some("claude-code") {
+        if matches!(
+            self.shell.launch_runtime.as_deref(),
+            Some("claude-code" | "codex")
+        ) {
             // Explicit and per launch: nothing on disk changes, and an
             // existing session is never taken over.
             tools = tools.push(
@@ -1242,8 +1245,10 @@ impl App {
                         .size(16)
                         .text_size(13),
                     small(
-                        "Replies reach this session between turns. Requires Claude consent \
-                         in the terminal. Applies to this new session only.",
+                        if self.shell.launch_runtime.as_deref() == Some("codex") {
+                            "Opens a Codex conversation here. Messages wait until the current turn finishes."
+                        } else { "Replies reach this session between turns. Requires Claude consent \
+                         in the terminal. Applies to this new session only." },
                         c
                     )
                 ]

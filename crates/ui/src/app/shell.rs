@@ -25,10 +25,8 @@ pub(super) struct State {
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
-    /// Explicit, per-launch opt-in to the Claude research-preview channel
-    /// that lets a new Claude Code session receive messages while idle.
-    /// Off every time the form opens; never persisted; only read for
-    /// claude-code, the one runtime the helper supports.
+    /// Explicit, per-launch opt-in to provider input while idle. Off every time
+    /// the form opens; never persisted; supported by Claude and Codex adapters.
     pub launch_channel: bool,
     pub launching: bool,
     pub error: Option<String>,
@@ -1136,22 +1134,23 @@ impl App {
         ))
     }
 
-    /// The one launch-time transformation: the Claude channel, when the
-    /// user ticked it for a Claude launch. Any other runtime, or an
-    /// unticked box, passes the spec through untouched. The CLI must be
-    /// this app's own sibling: the helper pins the session to it, and a
-    /// `PATH` fallback could pin it to an older install that lacks the
-    /// channel.
+    /// Enable the selected provider's input adapter using this installation's
+    /// matching CLI. A PATH fallback could select an incompatible old install.
     fn prepare_launch(
         &self,
         mut spec: agentdocker_core::AgentSpec,
         cli: Result<PathBuf, String>,
     ) -> Result<agentdocker_core::AgentSpec, String> {
-        if !self.shell.launch_channel || spec.runtime != "claude-code" {
+        if !self.shell.launch_channel || !matches!(spec.runtime.as_str(), "claude-code" | "codex") {
             return Ok(spec);
         }
         let cli = cli?;
-        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
+        let enable = if spec.runtime == "codex" {
+            agentdocker_host::provider_input::enable_codex_input
+        } else {
+            agentdocker_host::provider_input::enable_claude_channel
+        };
+        enable(&mut spec, &cli)
             .map_err(|error| format!("Cannot enable messages while idle: {error}"))?;
         Ok(spec)
     }
@@ -1510,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn the_channel_opt_in_changes_only_a_claude_launch_and_needs_the_sibling_cli() {
+    fn input_opt_in_selects_the_provider_adapter_and_needs_the_sibling_cli() {
         use agentdocker_core::AgentSpec;
         let (mut app, _, _) = app();
         let directory = tempfile::tempdir().unwrap();
@@ -1533,11 +1532,21 @@ mod tests {
         }
 
         let _ = app.update(Message::LaunchChannel(true));
-        // Other runtimes are untouched even when ticked: the box is only
-        // shown for Claude, and the flag must not leak into codex launches.
+        // Unsupported runtimes pass through; Codex selects its own adapter.
         assert_eq!(
-            app.prepare_launch(spec("codex"), Ok(cli.clone())),
-            Ok(spec("codex"))
+            app.prepare_launch(spec("custom"), Ok(cli.clone())),
+            Ok(spec("custom"))
+        );
+        let codex = app.prepare_launch(spec("codex"), Ok(cli.clone())).unwrap();
+        assert_eq!(&codex.command[1..4], ["codex-input", "--", "codex"]);
+        assert_eq!(
+            codex.env[agentdocker_host::provider_input::CODEX_INPUT_ENV],
+            "1"
+        );
+        assert!(
+            !codex
+                .env
+                .contains_key(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV)
         );
         // Claude gains the channel, after the user's own arguments are kept.
         let launched = app
