@@ -243,6 +243,17 @@ mod tests {
                 .contains("legacy input cannot supply file-change review receipts")
         );
         assert_eq!(std::fs::read(&path).unwrap(), old);
+        let mut version_six: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        version_six["version"] = serde_json::json!(6);
+        let version_six = serde_json::to_vec(&version_six).unwrap();
+        std::fs::write(&path, &version_six).unwrap();
+        let old_files = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert_eq!(
+            old_files.record().reviews[0].questions[0].presentation,
+            Some(presentation.clone())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), version_six);
+        drop(old_files);
         std::fs::write(&path, &original).unwrap();
         let reopened = Ledger::open(home.path(), binding).unwrap();
         assert_eq!(

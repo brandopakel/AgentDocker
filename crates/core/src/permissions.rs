@@ -65,7 +65,7 @@ fn concrete_path(path: &str) -> bool {
 
 impl QuestionPermissions {
     pub fn valid(&self) -> bool {
-        let mut paths = std::collections::HashSet::new();
+        let mut paths = std::collections::HashMap::new();
         let mut grants = self
             .network
             .as_ref()
@@ -74,20 +74,29 @@ impl QuestionPermissions {
             if files.glob_scan_max_depth.is_some() {
                 return false;
             }
-            for path in files
-                .read
-                .iter()
-                .flatten()
-                .chain(files.write.iter().flatten())
-            {
-                if !concrete_path(path) || !paths.insert(path) {
-                    return false;
+            for (values, access) in [
+                (&files.read, QuestionPermissionAccess::Read),
+                (&files.write, QuestionPermissionAccess::Write),
+            ] {
+                for path in values.iter().flatten() {
+                    if !concrete_path(path) || paths.insert(path, access).is_some() {
+                        return false;
+                    }
+                    grants = true;
                 }
-                grants = true;
             }
+            let mut entries = std::collections::HashSet::new();
             for entry in files.entries.iter().flatten() {
                 let QuestionPermissionPath::Path { path } = &entry.path;
-                if !concrete_path(path) || !paths.insert(path) {
+                if !concrete_path(path) || !entries.insert(path) {
+                    return false;
+                }
+                // Codex 0.153.4 mirrors concrete entries in legacy lists.
+                // Accept only an identical mirror, never conflicting access.
+                if paths
+                    .insert(path, entry.access)
+                    .is_some_and(|old| old != entry.access)
+                {
                     return false;
                 }
                 grants |= entry.access != QuestionPermissionAccess::Deny;
@@ -103,7 +112,7 @@ impl QuestionPermissions {
                 if enabled {
                     "Allow network access"
                 } else {
-                    "Network access disabled"
+                    "No additional network access"
                 }
                 .into(),
             );
@@ -116,11 +125,13 @@ impl QuestionPermissions {
                 let access = match entry.access {
                     QuestionPermissionAccess::Read => "Read",
                     QuestionPermissionAccess::Write => "Write",
-                    QuestionPermissionAccess::Deny => "Block",
+                    QuestionPermissionAccess::Deny => "Exclude",
                 };
                 lines.push(format!("{access}: {path}"));
             }
         }
+        let mut shown = std::collections::HashSet::new();
+        lines.retain(|line| shown.insert(line.clone()));
         lines
     }
 }
@@ -129,6 +140,33 @@ impl QuestionPermissions {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn matching_legacy_permission_mirrors_are_preserved_but_shown_once() {
+        let wire = json!({"fileSystem":{"write":["/owned/output"],"entries":[{"path":{"type":"path","path":"/owned/output"},"access":"write"}]}});
+        let parsed: QuestionPermissions = serde_json::from_value(wire.clone()).unwrap();
+        assert!(parsed.valid());
+        assert_eq!(parsed.lines(), ["Write: /owned/output"]);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+        let mut conflict = wire.clone();
+        conflict["fileSystem"]["entries"][0]["access"] = json!("deny");
+        assert!(
+            !serde_json::from_value::<QuestionPermissions>(conflict)
+                .unwrap()
+                .valid()
+        );
+        let mut repeated = wire;
+        let first = repeated["fileSystem"]["entries"][0].clone();
+        repeated["fileSystem"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
+        assert!(
+            !serde_json::from_value::<QuestionPermissions>(repeated)
+                .unwrap()
+                .valid()
+        );
+    }
 
     #[test]
     fn concrete_profiles_are_complete_bounded_and_preserve_restrictions() {
@@ -142,7 +180,7 @@ mod tests {
                 "Allow network access",
                 "Read: /owned/input",
                 "Write: C:\\owned\\output",
-                "Block: /owned/private"
+                "Exclude: /owned/private"
             ]
         );
         for profile in [

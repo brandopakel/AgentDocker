@@ -111,8 +111,10 @@ Codex's configured automatic review policy.
 
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown
-fields, duplicate selectors, relative paths, control characters, empty/no-op
-grants, more than 16 paths and questions exceeding 16,000 bytes. Glob/special
+fields, conflicting or repeated selectors within one representation, relative paths, control characters, empty/no-op
+grants, more than 16 distinct paths and questions exceeding 16,000 bytes. Matching
+legacy/typed mirrors emitted by Codex are retained in the grant and shown once.
+Glob/special
 selectors, scan-depth settings and remote environments require a richer review
 and remain unsupported. The omitted/null environment ID and Codex's reserved
 `local` ID select this local flow; other IDs are refused. Permission receipts require delivery-record version 7;
