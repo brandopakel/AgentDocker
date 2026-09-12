@@ -1,0 +1,72 @@
+{
+  "date": "2026-09-11",
+  "result": "passed",
+  "source_commit": "4d516d0210a96b36d9ffd6fb061927d985c52e0e",
+  "scope": "macOS filesystem event retention during checkout removal and bounded acknowledgement socket fixture",
+  "environment": {
+    "os": "26.5.1",
+    "arch": "arm64",
+    "notify_version": "8.2.0"
+  },
+  "baseline": {
+    "source_parent": "dd7d79f550f4ff08db84ca9e088d6426ad5e2642",
+    "test_change": "Force immediate reconciliation after deleting the worktree and surviving checkout file; report both missing conditions without extending the five-second deadline.",
+    "result": "failed",
+    "missing_deletion": true,
+    "missing_checkout_gap": false,
+    "ledger_entries": 0
+  },
+  "fixes": [
+    "Independent FSEvents stream per checkout and Git metadata; other Unix hosts retain shared watcher.",
+    "Accepted acknowledgement fixture socket explicitly switches to blocking mode with existing two-second read/write deadlines."
+  ],
+  "stress": {
+    "iterations": 100,
+    "tests_per_iteration": 2,
+    "passed_iterations": 100,
+    "failed_iterations": 0,
+    "retries": 0,
+    "elapsed_seconds": 37.271
+  },
+  "standard_gate": {
+    "rust_passed": 762,
+    "rust_skipped": 6,
+    "python_passed": 60,
+    "format": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "retries": 0
+  },
+  "artifacts": {
+    "baseline_reproducer": {
+      "private_path": "/private/tmp/agentdocker-watcher-repro-2026-09-11.log",
+      "sha256": "8b000494b0c75bd6e02ac8949613509d0a6bb2008a3c080391d0031909eaad9c"
+    },
+    "targeted": {
+      "private_path": "/private/tmp/agentdocker-macos-fixes-targeted-2026-09-11.log",
+      "sha256": "76ff89e2605d046b19cafb4214dddf87ed103f892100531aa661077a4bb1b00e"
+    },
+    "stress": {
+      "private_path": "/private/tmp/agentdocker-macos-fixes-stress-2026-09-11.log",
+      "sha256": "9726e7e6f317e05b50dfa2af25807ca7fcb75abb787772276b8a8c37abbeed2a"
+    },
+    "standard_gate": {
+      "private_path": "/private/tmp/agentdocker-macos-fixes-check-2026-09-11.log",
+      "sha256": "ebd54700a9d3b0535630928542a01c6e5d90af5db9733cb3691cbcc70900959a"
+    }
+  },
+  "release_binaries": {
+    "agentd": "e4f38317641435da9b6a2ab04db25b2eaa88748e8f673d4839a59ed3f9d50a27",
+    "agentdocker": "07b792f45dfc74af4c0741ea537c3814fdaae6ad419447bb145cf7a3c381a9be",
+    "agentdocker-ui": "3e7dae4ee818133c12db6c11bc5103d603e6f5c06d2f993f2fa623b3adb9a640"
+  },
+  "limits": [
+    "Source content matches the recorded commit; targeted/stress and the standard gate began before that identical content was committed.",
+    "Retains the failed baseline and CI failures; passing stress runs do not erase them.",
+    "One native FSEvents stream per checkout changes macOS resource use; this is not overnight or many-project resource acceptance.",
+    "No installed launcher, production daemon, registry or user session was replaced.",
+    "Final-head CI and CodeRabbit review remain required."
+  ]
+}

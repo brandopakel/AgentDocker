@@ -757,3 +757,17 @@ survived the reply and navigation; monitored user configuration remained unchang
 and all owned fixture processes exited. The [checkpoint](verification/2026-09-11-session-messages.json)
 retains source/driver hashes and the separate native/protocol evidence. The Codex
 managed bridge, durable delivery status and broader provider acceptance remain open.
+
+### September 11: macOS watcher loss reproduced and corrected
+
+Final-stack CI exposed a surviving-file deletion that never reached the ledger
+when another checkout disappeared. Immediate watch reconciliation reproduces the
+loss locally: the unavailable-checkout gap is present but the deletion is absent.
+The [correction](verification/2026-09-11-macos-watcher-recovery.json) isolates
+FSEvents streams by checkout, so adding/removing one does not restart another's
+stream. Linux retains its shared watcher. A separate macOS acknowledgement test
+fixture now clears inherited nonblocking mode before its bounded request read.
+Both regressions passed 100 repetitions each with zero retries; the standard
+gate passed 762 Rust tests, 60 Python checks, lint, doctests, packaging and release
+build. Failed baseline/CI evidence is retained. Final-head CI/review and installed
+acceptance remain; the running daemon and user sessions were not replaced.

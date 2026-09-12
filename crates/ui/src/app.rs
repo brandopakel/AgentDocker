@@ -1703,6 +1703,9 @@ mod tests {
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Darwin inherits the listener's O_NONBLOCK flag. The request
+            // reader must wait for bytes using the bounded socket deadline.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
