@@ -1,0 +1,175 @@
+{
+  "date": "2026-09-11",
+  "result": "passed_for_listed_scope",
+  "source": {
+    "format": 1,
+    "source_commit": "2ea59c98d393290151350e852eb2aef53b869b86",
+    "source_tree": "0131cfe839247afb434ed54ecc051fa5b508d8ec",
+    "source_input_sha256": "9eb6be66bf2779587983b55303b6ebd79dc94333ad423307dfff5400d047ad47",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 11,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "e04f6f7abd486d37f58d39e38081512d3fb6329f87bb5a91688b1b271373763f",
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "3e7dae4ee818133c12db6c11bc5103d603e6f5c06d2f993f2fa623b3adb9a640"
+    }
+  },
+  "standard_gate": {
+    "rust_passed": 762,
+    "rust_skipped": 6,
+    "python_passed": 58,
+    "fmt": "passed",
+    "clippy": "passed",
+    "doctests": "passed",
+    "packaging": "passed",
+    "release_build": "passed",
+    "private_log": "/private/tmp/agentdocker-terminal-selection-check-2026-09-11.log"
+  },
+  "native_workflow": {
+    "result": "passed",
+    "steps": 114,
+    "checks": [
+      "explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft",
+      "rendered_actions",
+      "answer_and_draft_navigation",
+      "native_vt_rendering",
+      "terminal_attach_detach",
+      "channels",
+      "setup_review_apply_undo",
+      "launch_and_confirmed_stop",
+      "focused_control_reveal",
+      "compact_zoom",
+      "current_history_separation",
+      "project_attention",
+      "compact_session_navigation",
+      "folder_pin_has_no_project_files",
+      "same_project_after_launch",
+      "last_project_restore",
+      "quiet_project_retained",
+      "saved_appearance"
+    ],
+    "idle_resources": {
+      "window": {
+        "median_rss_bytes": 194707456.0,
+        "maximum_rss_bytes": 194838528,
+        "median_ps_cpu_percent": 1.25
+      },
+      "daemon": {
+        "median_rss_bytes": 17645568.0,
+        "maximum_rss_bytes": 17645568,
+        "median_ps_cpu_percent": 0.0
+      }
+    },
+    "private_result": "/private/tmp/agentdocker-terminal-selection-iced-2026-09-11/result.json"
+  },
+  "os_input": {
+    "result": "passed",
+    "scope": "OS mouse drag and Cmd+C directed only to an owned fixture window; clipboard restored conditionally; no provider session",
+    "binary_sha256": {
+      "agentd": "4a585df6ee3bcfa9d885ad81ca8e8eff533621f491dddb7dcadbfe8aba6fca12",
+      "agentdocker-ui": "3e7dae4ee818133c12db6c11bc5103d603e6f5c06d2f993f2fa623b3adb9a640"
+    },
+    "input": {
+      "result": "passed",
+      "copied_expected_range": true,
+      "copy_returned_to_live_output": true,
+      "clipboard_restored": true,
+      "selection_retained_original_accessible_text": true
+    },
+    "window": {
+      "capture_attempts": 1,
+      "connected": true,
+      "elapsed_seconds": 13.992653291,
+      "error": null,
+      "fixture_discovered": true,
+      "native_accessibility_nodes": null,
+      "renderer": "iced tiny-skia",
+      "result": "passed",
+      "runtime_rows": 14,
+      "scenario_steps_completed": 12,
+      "scenario_steps_total": 12,
+      "screenshot_requested": true,
+      "ticks": 211
+    },
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0
+    }
+  },
+  "os_input_method": "Activate only the owned fixture window, find its terminal through external AX, and post mouse drag/Cmd+C through the normal OS input path while guarding foreground PID before every event. Replace the parser output during selection. Verify exact clipboard range and AX text before/after copy; inspect selected and copied window captures. Restore clipboard and cursor only while the observed values still belong to this test.",
+  "private_os_input_result": "/private/tmp/agentdocker-selection-os-input-foreground-2026-09-11/result.json",
+  "os_input_helpers": {
+    "agentdocker-selection-input.swift": {
+      "private_path": "/private/tmp/agentdocker-selection-os-input-foreground-2026-09-11/agentdocker-selection-input.swift",
+      "sha256": "0eec80602780f46b81d322d035a2e83175997c7de590eeb494f40ab24321d860"
+    },
+    "agentdocker-selection-trial.py": {
+      "private_path": "/private/tmp/agentdocker-selection-os-input-foreground-2026-09-11/agentdocker-selection-trial.py",
+      "sha256": "ddb83158226f9872aee0cbeede94625a5954ec2ee36d869087f28e5f1c4e3cb3"
+    }
+  },
+  "retained_failed_input_attempts": [
+    {
+      "directory": "/private/tmp/agentdocker-selection-os-input-2026-09-11",
+      "finding": "Inactive app AX query did not find terminal"
+    },
+    {
+      "directory": "/private/tmp/agentdocker-selection-os-input-tree-2026-09-11",
+      "finding": "Probe needed cycle detection; raw private tree is not published"
+    },
+    {
+      "directory": "/private/tmp/agentdocker-selection-os-input-bounded-tree-2026-09-11",
+      "finding": "Inactive app AX query still did not find terminal"
+    },
+    {
+      "directory": "/private/tmp/agentdocker-selection-os-input-activated-2026-09-11",
+      "finding": "Activating resolved external AX discovery; postToPid input did not select/copy; use guarded foreground OS input instead"
+    }
+  ],
+  "soak_cleanup_trials": {
+    "normal": {
+      "private_result": "/private/tmp/agentdocker-soak-cleanup-normal-2026-09-11/result.json",
+      "result": "passed",
+      "populations": [
+        {
+          "agents": 1,
+          "result": "passed",
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0
+          },
+          "cycles": 20
+        }
+      ]
+    },
+    "interrupted": {
+      "private_result": "/private/tmp/agentdocker-soak-cleanup-interrupted-2026-09-11/result.json",
+      "result": "interrupted",
+      "populations": [
+        {
+          "agents": 1,
+          "result": "interrupted",
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0
+          },
+          "cycles": 21
+        }
+      ]
+    }
+  },
+  "limits": [
+    "The one-hour 100-session campaign is still running; this report does not count it as passed.",
+    "OS input proves one visible range on this ARM64 Mac. Unicode, reverse ranges, wraps, changed-output and keyboard-control cases additionally have focused widget/unit coverage; VoiceOver, human IME and other-platform input acceptance remain.",
+    "No installed daemon, launcher, user provider session or production registry was replaced.",
+    "Final follow-up PR CI and review remain pending."
+  ]
+}

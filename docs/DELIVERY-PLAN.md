@@ -680,7 +680,12 @@ The terminal follow-up adds mouse range selection and copies the highlighted
 visible-grid snapshot while live output continues draining. Copy, Escape, input,
 scroll, resize and window blur release the snapshot. Focused tests cover reverse
 ranges, wide/combining text, soft wraps, changed output and control-key behavior.
-Native acceptance and the follow-up PR gate remain pending.
+The [clean selection checkpoint](verification/2026-09-11-terminal-selection.json)
+passed 762 Rust tests, 58 Python checks, the full standard gate, 114 native
+workflow steps and an actual macOS drag/Cmd-C trial. The highlighted text stayed
+stable while the parser changed; copy returned the selected range and released
+the snapshot. The clipboard was restored. Initial probe failures are retained.
+Human accessibility/IME, other-platform input and the follow-up PR gate remain.
 
 The interrupted one-hour run at `f9caf00` is not counted as acceptance. Its daemon
 shut down, then harness cleanup raised PermissionError before serializing samples.
