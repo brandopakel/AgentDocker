@@ -8,12 +8,55 @@ import tempfile
 import time
 import threading
 import subprocess
+import select
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "container_evidence", Path(__file__).parent / "containers/evidence.py")
 EVIDENCE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EVIDENCE)
+
+
+@unittest.skipUnless(os.name == "posix", "Unix daemon ownership locks")
+class DaemonRestartOwnership(unittest.TestCase):
+    def test_inherited_lock_is_released_before_starting_a_successor(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "host.lock"
+            held = path.open("a+b")
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            inode = path.stat().st_ino
+            child = subprocess.Popen([sys.executable, "-c",
+                "import time; print('ready',flush=True); time.sleep(0.3)"],
+                pass_fds=(held.fileno(),), stdout=subprocess.PIPE)
+            try:
+                self.assertTrue(select.select([child.stdout], [], [], 3)[0])
+                self.assertEqual(child.stdout.readline(), b"ready\n")
+                held.close()  # the child alone retains the open file description
+                EVIDENCE.wait_for_daemon_lock(path, timeout=3)
+                with path.open("a+b") as successor:
+                    fcntl.flock(successor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(path.stat().st_ino, inode)
+            finally:
+                held.close()
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=3)
+                child.stdout.close()
+
+    def test_a_persistent_lock_owner_remains_a_bounded_failure(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "host.lock"
+            with path.open("a+b") as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                inode = path.stat().st_ino
+                with self.assertRaisesRegex(TimeoutError, "did not release"):
+                    EVIDENCE.wait_for_daemon_lock(path, timeout=0.05)
+                self.assertEqual(path.stat().st_ino, inode)
+                with path.open("a+b") as outsider:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(outsider, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 class ContainerFailureEvidence(unittest.TestCase):
