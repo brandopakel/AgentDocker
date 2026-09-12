@@ -25,8 +25,12 @@ The permanent candidate keeps a real app bundle, uses `agentdocker-ui` as its
 launch executable, and preserves all three legacy command paths as links through
 the managed active release. Acceptance must execute hooks and MCP through those
 paths after initial installation, upgrade and rollback; checking file contents
-or the package's direct CLI alone misses the defect. Package validation and
-review are still required before treating the source fix as delivered.
+or the package's direct CLI alone misses the defect. The [repair checkpoint](verification/2026-09-12-launcher-hook-repair.json)
+passed 852 Rust tests, 65 Python checks, 12 packaged installation scenarios,
+and a real Launch Services open/render/exit trial. The tested package was
+installed over the marked script launcher with provider configuration and active
+process identities preserved. Claude source review passed; GitHub CI and
+CodeRabbit review remain pending before integration.
 
 Setup follow-up requirements remain open: the normal managed Codex bridge/MCP
 flow should not require optional lifecycle hooks; show provider trust instructions

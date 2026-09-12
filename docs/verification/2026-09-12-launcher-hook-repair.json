@@ -1,0 +1,95 @@
+{
+  "date": "2026-09-12",
+  "source_commit": "5610c9158eb3c08b8cb57083ce7c6830f9800148",
+  "source_input_sha256": "cecb806524f3938eb5ad339518a9915dd26110322237ec0392e77e0bfe442d0d",
+  "state_schema": 15,
+  "target": "aarch64-apple-darwin",
+  "binary_sha256_before_packaging": {
+    "agentdocker": "13ddc81be77dde52834bd37b47a103f44a22ece490072ca8d505dea243f8f830",
+    "agentd": "3f3177e20ea41a997ad0069762f8a80c8612ad7a5ef1599e36768eb0d6b548ef",
+    "agentdocker-ui": "767957b54b64d8627b5fdbde47db36b3822c04a0091d583d8aec7c5bb283df67"
+  },
+  "package_binary_sha256": {
+    "agentdocker": "f220c5af2862f2f2fbd482e8023f16f3393bf1eca3a8043c3ac87c33e85edd39",
+    "agentd": "b132f2b0593f86bbeb13e5bdcc28296b71ddd50f76e9c287db792384891ceb05",
+    "agentdocker-ui": "712a8bac68060fe8f0c39d0efa777ce21b48de24908cc71aa075e69166125485"
+  },
+  "scope": "macOS launcher hook/MCP regression, real bundle discovery/opening, legacy paths across activation and rollback",
+  "root_cause": "Case-insensitive AgentDocker launcher filename answered the legacy lowercase agentdocker path and forwarded CLI hook/MCP arguments into the GUI.",
+  "user_confirmation": "User retried an ordinary prompt successfully in the existing Claude session after the backed-up installed launcher compatibility repair.",
+  "standard_gate": {
+    "passed": true,
+    "rust_tests": 852,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "fmt": true,
+    "clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "private_log": "/private/tmp/agentdocker-launcher-hook-repair-check-2026-09-12.log"
+  },
+  "native_install": {
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "legacy bundle hooks and MCP work through generation afbf306d1a9882be7ed8d48b2bffc744adc5d08ee54c59ee49aae76a0541e879",
+      "activation keeps the existing fixture daemon responsive",
+      "legacy bundle hooks and MCP work through generation ebc86d94ad8994bc67ca59715703a468c6852bbc3bcf5f6499efd5b9ff76520f",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "legacy bundle hooks and MCP work through generation afbf306d1a9882be7ed8d48b2bffc744adc5d08ee54c59ee49aae76a0541e879",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "private_result": "/private/tmp/agentdocker-launcher-hook-repair-install-live-2026-09-12/result.json",
+    "generations": "same binaries with distinct package metadata; not distinct-source upgrade acceptance"
+  },
+  "launch_services": {
+    "passed": true,
+    "method": "open -n -W -a <installed private bundle> with private environment and native smoke arguments",
+    "screenshot_visually_inspected": true,
+    "gui_cleanup_required": [],
+    "daemon_exit": 0,
+    "private_result": "/private/tmp/agentdocker-launcher-hook-repair-open-live-2026-09-12/result.json"
+  },
+  "live_activation": {
+    "passed": true,
+    "from_source": "e146e59dc0f662652886fe2addeedd0525fe9d02",
+    "to_source": "5610c9158eb3c08b8cb57083ce7c6830f9800148",
+    "marked_script_bundle_migrated": true,
+    "provider_configuration_unchanged": true,
+    "existing_daemon_and_agents_preserved": true,
+    "legacy_path_hook_help": [
+      "claude-code",
+      "codex"
+    ],
+    "legacy_path_mcp_tools": 41,
+    "private_result": "/private/tmp/agentdocker-launcher-hook-repair-activation-live-2026-09-12/result.json"
+  },
+  "retained_failures": [
+    {
+      "path": "/private/tmp/agentdocker-launcher-repair-targeted-2026-09-12.log",
+      "cause": "First implementation passed intentional launcher symlinks to strict payload syncing; corrected by syncing regular launcher files before creating and directory-syncing only known command links."
+    },
+    {
+      "path": "/private/tmp/agentdocker-launcher-hook-repair-activation-live-2026-09-12/initial-harness-failure.txt",
+      "cause": "Final activation harness expected pong in CLI ping text; preceding activation and process/config checks passed. Corrected read-only validation checks exit0 and agentd up output; installation not repeated."
+    }
+  ],
+  "review": {
+    "claude_read_only_source_review": "approved 5610c91; peer message 114279665dcc4794",
+    "github_ci": "pending",
+    "coderabbit_source_review": "pending"
+  },
+  "remaining": [
+    "Simplify setup and make optional lifecycle hooks unnecessary for the normal managed input connection.",
+    "Separate configured, connected, input-ready and observed activity in UI.",
+    "Application destination UX and persisted destination migration.",
+    "Signed/notarized distribution and physical Notification Center acceptance.",
+    "Earlier PRs and broader remaining-work items are not closed by this repair."
+  ]
+}
