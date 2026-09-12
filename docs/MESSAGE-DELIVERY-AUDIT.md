@@ -265,3 +265,27 @@ Finish file/permission/MCP elicitation presentation, human approval-answer queue
 receipts/cancellation, compact durable delivery and guided recovery, broader
 interruptions and sustained conversations. Final source review and CI remain
 required. The installed launcher and running daemon have not been switched.
+
+
+### September 11: provider questions use exact answer receipts
+
+PR #103 merged as `cb6e5e5` after final CI and actual CodeRabbit inspection of
+`396c460`. The [question follow-up](verification/2026-09-11-provider-question-receipts.json)
+at clean source `de9d6b2` passed 803 Rust tests, 65 Python checks and 123 native
+workflow steps. Actual Codex 0.153.4 reproduced both an approval answer becoming
+a fourth ordinary turn and a cancelled question accepting a later human reply.
+The corrected Allow, Deny and cancellation trials each retained one Codex record,
+three ordered ordinary inputs and three correlated replies. A controller crash
+with a queued answer closed the pending question and paused without replaying
+approval or consuming the three remaining messages.
+
+Durable question publication/cancellation and exact daemon answer-closure events
+now govern provider responses. Prepared responses are never automatically
+resent; lost event coverage pauses delivery. Detailed receipts retain unapplied
+extra answers, while persistent older question IDs stop late replies becoming
+new input after receipt rotation or restart. The original failed reports and the
+crash driver's corrected exited-record assertion remain in the evidence.
+
+PR #104 is in CI and source review. File/permission/MCP elicitation presentation,
+compact durable delivery status, guided recovery and sustained provider sessions
+remain open. The installed launcher, daemon and user sessions remain unchanged.

@@ -99,6 +99,12 @@ those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
 
+The [provider-question trial](verification/2026-09-11-provider-question-receipts.json)
+at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
+actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
+answers did not become extra ordinary turns, and cancellation did not authorize
+a later reply. Source review and CI for that follow-up remain pending.
+
 The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
 checks, and 123 native workflow steps. An actual

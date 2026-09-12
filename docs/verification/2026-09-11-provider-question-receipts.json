@@ -1,0 +1,605 @@
+{
+  "recorded_on": "2026-09-11 America/Los_Angeles",
+  "pr": "https://github.com/brandopakel/AgentDocker/pull/104",
+  "source": {
+    "format": 1,
+    "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+    "source_tree": "5dc8889d199ca8018335ab45935d218fce90ab88",
+    "source_input_sha256": "c1376b2903d55a5e22ed8262c9fd634e342c053ed8ca47b7d193dbf08e76d817",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 12,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "a8e4f2e33820b3145ca1f113a36fba9abf51b15e3177ced382655f5687072e94",
+      "agentd": "51afe8461cbed43bbba87ed3cacaad053e980b7a38fe11094efe2175dc2595d0",
+      "agentdocker-ui": "dd728066b0db5761911abd6dc2f3edb781828a0dd348828bcc59b1b59e3cc118"
+    }
+  },
+  "changes": [
+    "Nonblocking durable PostQuestion and asker-only CancelQuestion share the normal question/inbox lifecycle.",
+    "Persist provider question routes and prepared responses; acknowledge human answers only after exact provider request resolution.",
+    "Require the daemon closure and exact accepted answer ID; cancelled and expired replies cannot grant approval.",
+    "Keep late replies to retained questions unapplied; persist retired question IDs so older replies pause in the queue instead of becoming model input.",
+    "Blocking Ask also requires committed question closure; empty questions reject before registering a human.",
+    "Lost question events and uncertain restart outcomes pause delivery without automatic approval replay."
+  ],
+  "validation": {
+    "rust_tests_passed": 803,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 65,
+    "fmt_clippy_doctests_packaging_release": "passed",
+    "standard_gate": {
+      "path": "/private/tmp/agentdocker-codex-question-authority-retention-check-2026-09-11.log",
+      "sha256": "f12158ab4b6b5afe23c19f4a45556e83a87a2b02d8c15c1382cf27def401efeb"
+    },
+    "native_steps": 123,
+    "native_step_groups": [
+      117,
+      6
+    ],
+    "native_elapsed_seconds": 50.060880290999194,
+    "native_report": {
+      "path": "/private/tmp/agentdocker-codex-question-authority-iced-2026-09-11/result.json",
+      "sha256": "c9e4402e2e48351ce57f9c7f0acc847111f37e9f5ae7b84ba2224ac32fead61b"
+    },
+    "retired_question_failed_baseline": {
+      "path": "/private/tmp/agentdocker-codex-retired-question-baseline-2026-09-11.log",
+      "sha256": "12174e1d83f8a2913c1215d5e1e7449778d13f5b9718475aaf278f01358c1817"
+    },
+    "retired_question_correction": "The same regression passes in the 803-test gate, preserving the file across rejected late input and allowing unrelated input.",
+    "evidence_update_gate": {
+      "path": "/private/tmp/agentdocker-provider-question-evidence-check-2026-09-11.log",
+      "sha256": "6c78c6c0fd475afb26792e6d03f2576a3c52a5118327263b8dd9e308871172a5",
+      "result": "passed",
+      "rust_tests": 803,
+      "python_checks": 65
+    }
+  },
+  "actual_provider_trials": {
+    "command-approval-baseline": {
+      "path": "/private/tmp/agentdocker-codex-command-approval-baseline-2026-09-11/result.json",
+      "sha256": "8642fa1f587a48cd33b90a52a7ed6e853b1ae4220a41e15bd718298e9a960309",
+      "result": "failed",
+      "source_commit": "743c6d7b53d37dc608f1d1547c92a2c5d3e30fc5",
+      "driver_sha256_at_start": "399978de80ab37f41b7eca34a36c3b620369508f104190f0aff756b4ecae281c",
+      "error": "fixture agent disappeared before its identity was retained",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "interpretation": "Private approval_policy=untrusted was rejected by actual Codex 0.153.4 despite the installed schema listing it. The captured driver error was a PID-observation race; provider logs identify the policy failure. The initial driver was subsequently edited, so its start hash is historical."
+    },
+    "command-approval-baseline-on-request": {
+      "path": "/private/tmp/agentdocker-codex-command-approval-baseline-on-request-2026-09-11/result.json",
+      "sha256": "8f48b01cd74bd484658bc0e452be6b3ced4d39be594fa5b24b8852a45d610716",
+      "result": "failed",
+      "source_commit": "743c6d7b53d37dc608f1d1547c92a2c5d3e30fc5",
+      "driver_sha256_at_start": "358512312e5ebedeee05935c825cde4fb5ac4d79209e9929d8d2526f67ce0d50",
+      "error": "human approval answer was submitted as an extra ordinary input turn",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    "command-approval-fixed": {
+      "path": "/private/tmp/agentdocker-codex-command-approval-fixed-2026-09-11/result.json",
+      "sha256": "2a8390b01ff4a154b6150c7b58de64ae9a80f4e0f1c05956243c331b6590d0a6",
+      "result": "passed",
+      "source_commit": "981a5d575c690ac8ad5e60789fd66fd0a6fb1706",
+      "driver_sha256_at_start": "358512312e5ebedeee05935c825cde4fb5ac4d79209e9929d8d2526f67ce0d50",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [
+        {
+          "message": "590d5cbb4bbf4210",
+          "receipt": {
+            "thread": "01a093e9-4706-7293-918c-b649941c5e96",
+            "turn": "01a093e9-4955-7e62-bf78-8e2f1b549536",
+            "item": "01a093e9-4f2f-7c71-9a3e-9825335170fc"
+          }
+        },
+        {
+          "message": "12d6e78016564640",
+          "receipt": {
+            "thread": "01a093e9-4706-7293-918c-b649941c5e96",
+            "turn": "01a093e9-7e10-7c62-ae48-579e6c09468e",
+            "item": "01a093e9-7e20-79f3-b514-62893c7d3268"
+          }
+        },
+        {
+          "message": "65e437c18bae4e01",
+          "receipt": {
+            "thread": "01a093e9-4706-7293-918c-b649941c5e96",
+            "turn": "01a093e9-9f42-7a01-9f16-f81c7d9c7e58",
+            "item": "01a093e9-9f4e-7413-9c4e-f4bd0f5e32c0"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "question_resolution": {
+        "request_id": 0,
+        "thread": "01a093e9-4706-7293-918c-b649941c5e96",
+        "turn": "01a093e9-4955-7e62-bf78-8e2f1b549536",
+        "questions": [
+          {
+            "message": "aeaa421bc52842a8",
+            "closure": null,
+            "accepted_answer": "4644888637664032"
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "accept"
+          }
+        },
+        "unapplied_answer_ids": [],
+        "outcome": "resolved",
+        "acknowledged": true
+      }
+    },
+    "command-approval-authority": {
+      "path": "/private/tmp/agentdocker-codex-command-approval-authority-2026-09-11/result.json",
+      "sha256": "6716e52bd8e072f9506efa9e1517992761f3ea96bead0f33a5ac67db7f6f634d",
+      "result": "passed",
+      "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+      "driver_sha256_at_start": "358512312e5ebedeee05935c825cde4fb5ac4d79209e9929d8d2526f67ce0d50",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [
+        {
+          "message": "bd03aaa92c1d415e",
+          "receipt": {
+            "thread": "01a09407-d571-7580-b252-c40372193488",
+            "turn": "01a09407-d7b8-7a83-a329-90a3c9e49654",
+            "item": "01a09407-dc58-7731-aa53-bc50bb02bd0e"
+          }
+        },
+        {
+          "message": "804171ee4781462e",
+          "receipt": {
+            "thread": "01a09407-d571-7580-b252-c40372193488",
+            "turn": "01a09408-0a80-7771-b1cd-3bcb1091aa15",
+            "item": "01a09408-0a90-77f0-80a8-a3f7fad0182d"
+          }
+        },
+        {
+          "message": "f40585934905430e",
+          "receipt": {
+            "thread": "01a09407-d571-7580-b252-c40372193488",
+            "turn": "01a09408-319f-7711-b635-770c68f4087c",
+            "item": "01a09408-31ab-7c33-97ce-74531ddc9455"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "question_resolution": {
+        "request_id": 0,
+        "thread": "01a09407-d571-7580-b252-c40372193488",
+        "turn": "01a09407-d7b8-7a83-a329-90a3c9e49654",
+        "questions": [
+          {
+            "message": "3b118548262a49aa",
+            "closure": {
+              "state": "answered",
+              "message": "199dccbe2afd4141"
+            },
+            "accepted_answer": "199dccbe2afd4141"
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "accept"
+          }
+        },
+        "unapplied_answer_ids": [],
+        "outcome": "resolved",
+        "acknowledged": true
+      }
+    },
+    "command-denial": {
+      "path": "/private/tmp/agentdocker-codex-command-denial-2026-09-11/result.json",
+      "sha256": "5c4c982c6d5a96bc3092d7537cfd824095b55d6724cd91adfa2462c8cac3274c",
+      "result": "passed",
+      "source_commit": "981a5d575c690ac8ad5e60789fd66fd0a6fb1706",
+      "driver_sha256_at_start": "0fa6ccb9ad333a7d3b03a8f641f5074afb638519a00cd2810dabf10d9ca71d59",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [
+        {
+          "message": "491a64889b69405d",
+          "receipt": {
+            "thread": "01a093eb-4f30-7313-ad9d-dc68ebf7e3bc",
+            "turn": "01a093eb-518b-7480-b88c-1fb84e198b9c",
+            "item": "01a093eb-5564-7af3-9108-e8158c94eea4"
+          }
+        },
+        {
+          "message": "8a7e784e717a4669",
+          "receipt": {
+            "thread": "01a093eb-4f30-7313-ad9d-dc68ebf7e3bc",
+            "turn": "01a093eb-8c20-7b10-aba4-9346941ca98e",
+            "item": "01a093eb-8c31-7001-aee3-b287ee07fe2a"
+          }
+        },
+        {
+          "message": "ab36112e2f924a26",
+          "receipt": {
+            "thread": "01a093eb-4f30-7313-ad9d-dc68ebf7e3bc",
+            "turn": "01a093eb-a393-76d0-bdf4-07cf0a08460d",
+            "item": "01a093eb-a3a5-7c12-a387-3849290d8852"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "question_resolution": {
+        "request_id": 0,
+        "thread": "01a093eb-4f30-7313-ad9d-dc68ebf7e3bc",
+        "turn": "01a093eb-518b-7480-b88c-1fb84e198b9c",
+        "questions": [
+          {
+            "message": "6473493facfb4f76",
+            "closure": null,
+            "accepted_answer": "6bacad78cef74075"
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "decline"
+          }
+        },
+        "unapplied_answer_ids": [],
+        "outcome": "resolved",
+        "acknowledged": true
+      }
+    },
+    "command-denial-authority": {
+      "path": "/private/tmp/agentdocker-codex-command-denial-authority-2026-09-11/result.json",
+      "sha256": "614443499e81aa5ba424f36f64879973fd4c7c321bce73caf215c92a3f1686fc",
+      "result": "passed",
+      "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+      "driver_sha256_at_start": "0fa6ccb9ad333a7d3b03a8f641f5074afb638519a00cd2810dabf10d9ca71d59",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [
+        {
+          "message": "3c91114f59f548f4",
+          "receipt": {
+            "thread": "01a09408-a35d-7593-96cd-ecfdef18635b",
+            "turn": "01a09408-a5a1-7cd1-98c0-5ea86ffca1de",
+            "item": "01a09408-aaf5-7ce0-8a5c-c689b8b32793"
+          }
+        },
+        {
+          "message": "b799646f033e4ef2",
+          "receipt": {
+            "thread": "01a09408-a35d-7593-96cd-ecfdef18635b",
+            "turn": "01a09408-dc54-7863-8868-070272376855",
+            "item": "01a09408-dc69-77b0-ba8c-684a66c694ce"
+          }
+        },
+        {
+          "message": "22efae199d3d4530",
+          "receipt": {
+            "thread": "01a09408-a35d-7593-96cd-ecfdef18635b",
+            "turn": "01a09408-f3c2-7a80-a10d-0eaa9b687841",
+            "item": "01a09408-f3d1-7a50-8fef-8c14d12176b3"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "question_resolution": {
+        "request_id": 0,
+        "thread": "01a09408-a35d-7593-96cd-ecfdef18635b",
+        "turn": "01a09408-a5a1-7cd1-98c0-5ea86ffca1de",
+        "questions": [
+          {
+            "message": "03ebc49b7c674d9a",
+            "closure": {
+              "state": "answered",
+              "message": "2036195b0af04b17"
+            },
+            "accepted_answer": "2036195b0af04b17"
+          }
+        ],
+        "response": {
+          "id": 0,
+          "result": {
+            "decision": "decline"
+          }
+        },
+        "unapplied_answer_ids": [],
+        "outcome": "resolved",
+        "acknowledged": true
+      }
+    },
+    "approval-crash": {
+      "path": "/private/tmp/agentdocker-codex-approval-crash-2026-09-11/result.json",
+      "sha256": "544bcebd9d3877d381c8803bcae75903746187af51164f88fcda90f0704e59a5",
+      "result": "failed",
+      "source_commit": "981a5d575c690ac8ad5e60789fd66fd0a6fb1706",
+      "driver_sha256_at_start": "df4032e4710cfff8b76b817a4a9eca588e8e17738aebadd9fe054964a222971a",
+      "error": "duplicate Codex identities",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "paused_delivery": {
+        "controller": 31869,
+        "restarts": 1,
+        "retained_messages": [
+          "fa98127c52d74322",
+          "e48e67728d3a4ad6",
+          "df6cb497c8eb49e3"
+        ],
+        "question_closed": true,
+        "no_completed_turns": true,
+        "prepared_response": null,
+        "ordinary_turn_count": 0
+      },
+      "interpretation": "Crash, cancellation and preserved-queue assertions passed; the driver incorrectly searched current records for an expected exited agent. The corrected driver queries all records. This failed result is retained."
+    },
+    "approval-crash-bounded": {
+      "path": "/private/tmp/agentdocker-codex-approval-crash-bounded-2026-09-11/result.json",
+      "sha256": "44c8d7f97c8015bab33afc063275d436ba95f953cd67db1877e2711ca8d00c2a",
+      "result": "passed",
+      "source_commit": "981a5d575c690ac8ad5e60789fd66fd0a6fb1706",
+      "driver_sha256_at_start": "b0769ccf199794bbd0c98674e8398bca03ef24ff52807b6453c5d7a7bd0e9b1d",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [],
+      "reply_count": 0,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "paused_delivery": {
+        "controller": 35573,
+        "restarts": 1,
+        "retained_messages": [
+          "fee26e3d0b294d45",
+          "26ef5daeaaa045d7",
+          "68adbc5ab22d4a37"
+        ],
+        "question_closed": true,
+        "no_completed_turns": true,
+        "prepared_response": null,
+        "ordinary_turn_count": 0
+      }
+    },
+    "approval-crash-authority": {
+      "path": "/private/tmp/agentdocker-codex-approval-crash-authority-2026-09-11/result.json",
+      "sha256": "8aa7e0bc21d0caef1f31d5a492adc7184291c9b013c17890800b7a7bb77380c8",
+      "result": "passed",
+      "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+      "driver_sha256_at_start": "b0769ccf199794bbd0c98674e8398bca03ef24ff52807b6453c5d7a7bd0e9b1d",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [],
+      "reply_count": 0,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "paused_delivery": {
+        "controller": 81230,
+        "restarts": 1,
+        "retained_messages": [
+          "2989588113e84ad7",
+          "d29e2906f1d04890",
+          "2e2f9a34755445cf"
+        ],
+        "question_closed": true,
+        "no_completed_turns": true,
+        "prepared_response": null,
+        "ordinary_turn_count": 0
+      }
+    },
+    "cancelled-reply-baseline": {
+      "path": "/private/tmp/agentdocker-codex-cancelled-reply-baseline-2026-09-11/result.json",
+      "sha256": "720ed948837bb01f4af5c1fa53105e5d300d24981464346e795c50170119d077",
+      "result": "failed",
+      "source_commit": "981a5d575c690ac8ad5e60789fd66fd0a6fb1706",
+      "driver_sha256_at_start": "ca77853dba6694a7b678b2aff99eb772d76a7c9d817a30ff1110e91711d6a068",
+      "error": "a cancelled question incorrectly accepted a later human reply",
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      }
+    },
+    "cancelled-reply-fixed": {
+      "path": "/private/tmp/agentdocker-codex-cancelled-reply-fixed-2026-09-11/result.json",
+      "sha256": "d34835d928a417747651b388cb32569bfc637de74f1bca43ed2df9fafc9515d6",
+      "result": "passed",
+      "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+      "driver_sha256_at_start": "ca77853dba6694a7b678b2aff99eb772d76a7c9d817a30ff1110e91711d6a068",
+      "provider_version": "codex-cli 0.153.4",
+      "completed": [
+        {
+          "message": "04c6d93901a645e6",
+          "receipt": {
+            "thread": "01a09407-d52b-7263-85e2-a76dce990ec3",
+            "turn": "01a09407-d77b-7490-bae9-8e06d89d4a2e",
+            "item": "01a09407-ecc9-7263-a71a-b8cabf670ab3"
+          }
+        },
+        {
+          "message": "6be8101019244e10",
+          "receipt": {
+            "thread": "01a09407-d52b-7263-85e2-a76dce990ec3",
+            "turn": "01a09408-1fbe-7e41-83c3-0e973b72ef30",
+            "item": "01a09408-1fce-7042-b460-b50f056f780a"
+          }
+        },
+        {
+          "message": "5249bc1081494a28",
+          "receipt": {
+            "thread": "01a09407-d52b-7263-85e2-a76dce990ec3",
+            "turn": "01a09408-3d0b-75e2-8eff-666ee40cbc34",
+            "item": "01a09408-3d17-7822-8853-da5f1f4f4d98"
+          }
+        }
+      ],
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "question_resolution": {
+        "request_id": 0,
+        "thread": "01a09407-d52b-7263-85e2-a76dce990ec3",
+        "turn": "01a09407-d77b-7490-bae9-8e06d89d4a2e",
+        "questions": [
+          {
+            "message": "e489e42a01344898",
+            "closure": {
+              "state": "cancelled"
+            },
+            "accepted_answer": null
+          }
+        ],
+        "response": {
+          "error": {
+            "code": -32000,
+            "message": "The human question was cancelled or expired."
+          },
+          "id": 0
+        },
+        "unapplied_answer_ids": [
+          "d2f00cf6083d4d01"
+        ],
+        "outcome": "resolved",
+        "acknowledged": true
+      }
+    }
+  },
+  "fixture_policy": "Private profiles use on-request approval and read-only sandboxing. Only the exact benign Python print command, verified from the displayed question, may be answered Allow; send_message is explicitly preauthorized in that private profile. Authentication is copied privately and is not included in these reports. Fixture controllers and their descendants are tracked by process birth identity and cleaned up.",
+  "earlier_integration": {
+    "pr": 103,
+    "merged_at": "2026-09-12T04:36:29Z",
+    "merge_commit": "cb6e5e583ac8fa6dd057414b2020b9ed28324e83",
+    "final_reviewed_head": "396c4603da9492445397c5b00a9c7870e84bde93",
+    "ci": "passed before merge",
+    "review": "actual CodeRabbit source inspection and follow-up completed"
+  },
+  "limits": [
+    "Provider request resolution is not by itself proof that an approved command executed.",
+    "The Deny trial verifies a decline response, request resolution and subsequent queue ordering; it does not independently capture provider command side effects.",
+    "These approval trials use the real daemon human-answer endpoint, not a physical click in Iced.",
+    "File changes, permission profiles, MCP elicitation and secret-input presentation remain unsupported.",
+    "Compact durable delivery status, guided recovery, broader crash cuts and sustained provider conversations remain open.",
+    "The installed launcher, user daemon and active user sessions were not replaced by this change."
+  ],
+  "integration": {
+    "head": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+    "ci": "pending",
+    "source_review": "pending"
+  }
+}
