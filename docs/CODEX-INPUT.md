@@ -94,6 +94,11 @@ Reaching a bound preserves the previous record and reports an error.
 
 ## Acceptance still required
 
+The separate MCP `ask_human` tool still has an open receipt gap: an actual trial
+returned the human answer to the tool and also accepted it as another ordinary
+input. This is distinct from the native app-server question callbacks above.
+MCP tool-result receipt handling must be completed.
+
 Unknown callbacks,
 file/permission approvals without a complete review presentation, secret inputs
 and oversized requests currently return an explicit provider error. Complete

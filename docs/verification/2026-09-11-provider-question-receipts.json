@@ -595,11 +595,84 @@
     "These approval trials use the real daemon human-answer endpoint, not a physical click in Iced.",
     "File changes, permission profiles, MCP elicitation and secret-input presentation remain unsupported.",
     "Compact durable delivery status, guided recovery, broader crash cuts and sustained provider conversations remain open.",
-    "The installed launcher, user daemon and active user sessions were not replaced by this change."
+    "The installed launcher, user daemon and active user sessions were not replaced by this change.",
+    "A separate actual MCP ask_human trial confirmed the returned answer was also accepted as a fourth ordinary provider input. MCP tool-result receipts remain open."
   ],
   "integration": {
     "head": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
     "ci": "pending",
     "source_review": "pending"
+  },
+  "review_followup": {
+    "review_id": 5185393410,
+    "reviewed_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+    "addressed_comments": [
+      3995248248,
+      3995248257,
+      3995248273
+    ],
+    "source": {
+      "format": 1,
+      "source_commit": "d3fc7840af8530525bc77f509d03947af3c434cf",
+      "source_tree": "419150aa0c1e733f74e4a6b163b724c7eb3c7120",
+      "source_input_sha256": "131ee7353caf35b17dfad5927f8b26f8448f71f8f9cce15acd40f4495c14e07b",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 12,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+      "binary_sha256": {
+        "agentdocker": "3c582f581e4cf9d1eaa821d33a07cb2a666c4b1a5424849fc63b47543b3adf24",
+        "agentd": "51afe8461cbed43bbba87ed3cacaad053e980b7a38fe11094efe2175dc2595d0",
+        "agentdocker-ui": "dd728066b0db5761911abd6dc2f3edb781828a0dd348828bcc59b1b59e3cc118"
+      }
+    },
+    "changes": [
+      "Version-2 records with review history are refused without rewriting them because their older question IDs may already be lost. Version-1/2 records without question history still preserve prepared ordinary input during upgrade.",
+      "Clarify cancel-question --as help and name both blocking-Ask streams."
+    ],
+    "failed_baseline": {
+      "path": "/private/tmp/agentdocker-pr104-legacy-question-baseline-2026-09-11.log",
+      "sha256": "5c38476d28c451286163b6d6be4c2a90a709e8f9cee0a25f2c6a0e1aca3442da"
+    },
+    "standard_gate": {
+      "path": "/private/tmp/agentdocker-pr104-review-fixes-check-2026-09-11.log",
+      "sha256": "9326a1a7d436ae3854d6be047fb2a8b5c3b7fa02d4be6ee31fd9513fc9f5faac",
+      "rust_tests_passed": 804,
+      "rust_tests_skipped": 6,
+      "python_checks_passed": 65,
+      "fmt_clippy_doctests_packaging_release": "passed"
+    },
+    "native_and_provider_evidence": "The 123 native steps and actual question trials above retain source de9d6b2; they were not rerun for this legacy-record validation correction."
+  },
+  "separate_mcp_question_gap": {
+    "path": "/private/tmp/agentdocker-codex-mcp-question-baseline-2026-09-11/result.json",
+    "sha256": "6cb4a8624cb5e2143171afc906537189750d0c90c0743f6bc3f2e071f488973f",
+    "result": "failed",
+    "error": "MCP-returned human answer was submitted as an extra ordinary input turn",
+    "source_commit": "de9d6b2e8893ec3dc81efd49ef4bd92b2a9eafa0",
+    "driver_sha256_at_start": "75d2edf060c3a498f3fcd7f5bbc11d534798ae323c9e8d78156dd04c3a059753",
+    "human_answer": "551bf9b7420e49c2",
+    "extra_provider_receipt": {
+      "thread": "01a09418-3a7f-7d41-8811-5b21baa07daf",
+      "turn": "01a09418-ac1d-77f3-8287-796958d4ca50",
+      "item": "01a09418-ac2a-7861-83a4-7cb2fe706ae4"
+    },
+    "extra_input_acknowledged": true,
+    "ordinary_inputs_completed_before_extra": 3,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "source_profile_unchanged": true,
+    "status": "Open follow-up: the MCP ask_human result is separate from the native app-server callbacks handled by this change."
   }
 }
