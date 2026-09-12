@@ -83,6 +83,11 @@ def run(args):
             database = home / "state.db"
             retired = uuid.uuid4().hex
             with closing(sqlite3.connect(database)) as connection, connection:
+                # The same binaries must migrate legacy state back to the
+                # schema they create for a fresh daemon. Do not pin an old
+                # schema here when production migrations advance.
+                current_schema = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+                report["expected_schema"] = current_schema
                 row = connection.execute("SELECT json FROM agents WHERE id=?", (kept,)).fetchone()
                 duplicate = json.loads(row[0])
                 duplicate["id"] = retired
@@ -124,7 +129,9 @@ def run(args):
             assert repair("--apply", plan["plan_sha256"])["applied"]
             report["steps"].append("exact plan applies atomically and repeated apply returns the same receipt")
             with closing(sqlite3.connect(database)) as connection:
-                assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "11"
+                repaired_schema = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+                assert repaired_schema == current_schema, (repaired_schema, current_schema)
+                report["repaired_schema"] = repaired_schema
                 archive = json.loads(connection.execute("SELECT json FROM documents WHERE kind='identity_reconciliation' AND id=?", (retired,)).fetchone()[0])
                 assert archive["before"]["retired"]["id"] == retired
             daemon = start_daemon()
