@@ -104,31 +104,51 @@ enum Cmd {
 /// A bounded, read-only log snapshot. No console command is constructed, and
 /// a stalled stream cannot occupy the request worker indefinitely.
 fn read_session_log(client: &crate::client::Client, agent: &str) -> anyhow::Result<String> {
+    use anyhow::Context;
     use std::io::{BufRead, BufReader, Read};
-    let stream = client.open(&Request::Logs {
-        agent: agent.into(),
-        follow: false,
-        tail: 100,
-    })?;
+    let stream = client
+        .open_with_read_timeout(
+            &Request::Logs {
+                agent: agent.into(),
+                follow: false,
+                tail: 100,
+            },
+            Some(Duration::from_millis(100)),
+        )
+        .context("opening session log")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut reader = BufReader::new(stream);
     let mut result = String::new();
+    let mut frame = Vec::new();
     const LIMIT: usize = 128 * 1024;
     loop {
-        let remaining = deadline
-            .checked_duration_since(std::time::Instant::now())
-            .ok_or_else(|| anyhow::anyhow!("session log timed out"))?;
-        reader.get_ref().set_read_timeout(Some(remaining))?;
-        let mut line = String::new();
-        let bytes = reader
-            .by_ref()
-            .take((LIMIT + 1) as u64)
-            .read_line(&mut line)?;
         anyhow::ensure!(
-            bytes > 0 && bytes <= LIMIT,
-            "session log ended early or exceeded its size limit"
+            std::time::Instant::now() < deadline,
+            "session log timed out"
         );
-        match serde_json::from_str::<Response>(&line)? {
+        // Preserve partial bytes (including incomplete UTF-8) across the fixed
+        // read timeout. The total deadline never restarts, and no socket option
+        // is changed after the request or after a fast peer closes.
+        let received = reader
+            .by_ref()
+            .take((LIMIT + 1 - frame.len()) as u64)
+            .read_until(b'\n', &mut frame);
+        anyhow::ensure!(frame.len() <= LIMIT, "session log exceeded its size limit");
+        match received {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            other => anyhow::ensure!(
+                other.context("reading session log")? > 0 && frame.ends_with(b"\n"),
+                "session log ended early"
+            ),
+        }
+        match serde_json::from_slice::<Response>(&frame)? {
             Response::Log { line } => {
                 if result.len() + line.len() + 1 > LIMIT {
                     result.push_str("\n[Log snapshot truncated]");
@@ -141,6 +161,7 @@ fn read_session_log(client: &crate::client::Client, agent: &str) -> anyhow::Resu
             Response::Error { message, .. } => anyhow::bail!("{message}"),
             _ => anyhow::bail!("unexpected session log response"),
         }
+        frame.clear();
     }
 }
 
@@ -2459,6 +2480,50 @@ mod tests {
                     text.contains("adopted 1 process(es); failed at pid 102"),
                 _ => false,
             }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_log_reads_a_bounded_snapshot_from_a_real_socket() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        for lines in [vec![], vec!["log line".to_owned(), "日本語".to_owned()]] {
+            let temporary = tempfile::tempdir().unwrap();
+            let socket = temporary.path().join("log.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let expected = lines
+                .iter()
+                .map(|line| format!("{line}\n"))
+                .collect::<String>();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert!(
+                    matches!(serde_json::from_str::<Request>(&request).unwrap(), Request::Logs { agent, follow: false, tail: 100 } if agent == "owned-agent")
+                );
+                for line in lines {
+                    let bytes = serde_json::to_vec(&Response::Log { line }).unwrap();
+                    if let Some(index) = bytes.iter().position(|byte| *byte >= 128) {
+                        // Deliberately split a UTF-8 character across a read timeout.
+                        reader.get_mut().write_all(&bytes[..=index]).unwrap();
+                        std::thread::sleep(Duration::from_millis(150));
+                        reader.get_mut().write_all(&bytes[index + 1..]).unwrap();
+                    } else {
+                        reader.get_mut().write_all(&bytes).unwrap();
+                    }
+                    reader.get_mut().write_all(b"\n").unwrap();
+                }
+                reader.get_mut().write_all(b"{\"type\":\"end\"}\n").unwrap();
+            });
+            let result = read_session_log(&Client::isolated(socket), "owned-agent");
+            server.join().unwrap();
+            assert_eq!(result.unwrap(), expected);
         }
     }
 

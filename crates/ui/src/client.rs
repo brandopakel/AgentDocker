@@ -81,7 +81,18 @@ impl Client {
     /// Send one request and hand back the raw connection, for a caller
     /// that then speaks a duplex protocol on it — `attach`.
     pub fn open(&self, request: &Request) -> Result<Stream> {
+        self.open_with_read_timeout(request, None)
+    }
+
+    pub(crate) fn open_with_read_timeout(
+        &self,
+        request: &Request,
+        read_timeout: Option<Duration>,
+    ) -> Result<Stream> {
         let mut stream = self.connect()?;
+        // Set this before sending: on macOS a fast peer can close while its
+        // reply is buffered, after which changing SO_RCVTIMEO returns EINVAL.
+        stream.set_read_timeout(read_timeout)?;
         // The read side stays unbounded — an attach is a long silence
         // punctuated by output — but the write side must not be. Every
         // keystroke goes down this socket from a thread of its own, and a
