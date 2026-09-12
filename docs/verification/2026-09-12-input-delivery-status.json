@@ -1,6 +1,6 @@
 {
   "date": "2026-09-12",
-  "status": "Latest local validation at c116d28 passed 826 Rust tests, 65 Python checks and fresh native/provider acceptance. Final-head CI and follow-up source review remain pending.",
+  "status": "PR #108 merged as 1e2914270b59fcb6721d463999eed80229e15e5d after final 5778212 CI and actual source inspection. Runtime acceptance remains source-specific; the incomplete restored capture is retained as an unresolved visual-test finding.",
   "scope": "Durable queue/receipt/pause status for owned Codex input and Claude channel input, concise Iced review controls, and a macOS fast-close log-reader correction.",
   "previous_merge": {
     "pr": 107,
@@ -711,5 +711,54 @@
       "sha256": "be027071c2cddd1c4b7a75a5d8eee4f6aa3f739cce74212595da7a4c1d6c9758"
     },
     "limits": "This ten-minute, one-provider, eighteen-input trial used 33d52a3 before the review correction. It does not establish overnight, sleep/reboot, multiple-provider or c116d28 sustained acceptance."
+  },
+  "integration": {
+    "pr": 108,
+    "head": "5778212324facba2a47e3d823bb0b73e1ce12c68",
+    "merge": "1e2914270b59fcb6721d463999eed80229e15e5d",
+    "merged_at": "2026-09-12T19:19:35Z",
+    "source_review_comment": 5648034656,
+    "required_ci": "all passed",
+    "optional_bencher_report": "skipped"
+  },
+  "visual_follow_up": {
+    "source": "c116d287126fe742da7a85dc753765c332e79cc7",
+    "result": "/private/tmp/agentdocker-input-review-capture-diagnostic-2026-09-12/result.json",
+    "callbacks_passed": 28,
+    "physical_capture_results": [
+      {
+        "label": "before-iced-capture",
+        "exit": 0,
+        "stderr": ""
+      },
+      {
+        "label": "after-iced-capture",
+        "exit": 0,
+        "stderr": ""
+      }
+    ],
+    "finding": "The first restored Iced screenshot omits session row labels and queue/receipt text. Both actual owned-window macOS captures and both Iced captures in a fresh diagnostic display them correctly. Cause unresolved; a capture-only defect is not established. The first incomplete image is retained and is not counted as successful visual acceptance.",
+    "images": [
+      {
+        "path": "/private/tmp/agentdocker-input-review-recovery-ui-2026-09-12/restored/restored-paused-delivery.png",
+        "sha256": "bb6aa9dafa26e3ab08ab415508e2d3d1fdfb8ab7b93398a4ca625d5fd9e7e2d5"
+      },
+      {
+        "path": "/private/tmp/agentdocker-input-review-capture-diagnostic-2026-09-12/before-iced-capture.png",
+        "sha256": "fdd302a48c5a7f5ada973c6c113d8aa5486b3e45f29f61e8790f9c75d0efd5ca"
+      },
+      {
+        "path": "/private/tmp/agentdocker-input-review-capture-diagnostic-2026-09-12/restored/restored-paused-delivery.png",
+        "sha256": "8f113d201d81723f3565380ff3cdcf363fe0c13359862d4270822c5d454a27af"
+      },
+      {
+        "path": "/private/tmp/agentdocker-input-review-capture-diagnostic-2026-09-12/after-iced-capture.png",
+        "sha256": "fc50d16ae9182daabc8b5a395e02724b8013ae5b96693cc7e1a1285fdd111b50"
+      },
+      {
+        "path": "/private/tmp/agentdocker-input-review-capture-diagnostic-2026-09-12/restored/restored-after-capture.png",
+        "sha256": "b95f9314cd7926a713353dd5cdc86bc46e0cff04aa42494d1820066111c4eefc"
+      }
+    ]
   }
 }

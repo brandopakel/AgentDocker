@@ -15,6 +15,8 @@ use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+mod event_stream;
+
 /// How long the CLI waits for a daemon it started. Hooks use less: they
 /// fail open and must not stall the editor.
 const START_TIMEOUT: Duration = Duration::from_secs(3);

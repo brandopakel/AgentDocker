@@ -669,6 +669,12 @@ enum Command {
         /// Show this many stored events before streaming new ones.
         #[arg(long, default_value_t = 0)]
         replay: usize,
+        /// Emit checked JSON frames with resumable cursors and replay completion.
+        #[arg(long, conflicts_with = "replay")]
+        resumable: bool,
+        /// Resume after this complete JSON cursor from a processed frame.
+        #[arg(long, requires = "resumable")]
+        after_cursor: Option<String>,
     },
 }
 
@@ -2047,7 +2053,24 @@ async fn main() -> Result<()> {
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;
         }
-        Command::Events { replay } => {
+        Command::Events {
+            replay,
+            resumable,
+            after_cursor,
+        } => {
+            if resumable {
+                let after = after_cursor
+                    .map(|raw| serde_json::from_str(&raw))
+                    .transpose()
+                    .context("--after-cursor requires the complete JSON cursor object")?;
+                client
+                    .checked_events(after, |response| {
+                        println!("{}", serde_json::to_string(&response)?);
+                        Ok(true)
+                    })
+                    .await?;
+                return Ok(());
+            }
             client
                 .stream(
                     &Request::Events {
