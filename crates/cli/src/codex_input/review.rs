@@ -141,7 +141,8 @@ impl Pending {
         let kind = match method {
             "item/permissions/requestApproval" => {
                 ensure!(
-                    params["environmentId"].is_null(),
+                    params["environmentId"].is_null()
+                        || params["environmentId"].as_str() == Some("local"),
                     "remote permission requests need a separate review flow"
                 );
                 ensure!(
@@ -626,6 +627,9 @@ mod tests {
 
     #[test]
     fn permission_requests_refuse_wrong_turns_remote_environments_and_incomplete_presentations() {
+        let mut local = permission_event();
+        local["params"]["environmentId"] = json!("local");
+        assert!(Pending::plan(&local, "thread", Some("turn"), "human", Utc::now()).is_ok());
         for (key, value) in [
             ("turnId", json!("other")),
             ("threadId", json!("other")),
