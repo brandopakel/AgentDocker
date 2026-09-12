@@ -98,7 +98,9 @@ passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps
 Actual Codex Allow created exactly the reviewed fixture file; Deny left it absent.
 Each completed three ordered peer/human/peer inputs and retained one provider
 identity. The final compact UI rebuild has byte-identical CLI/daemon binaries to
-those provider trials. Final CI and actual source review remain required.
+those provider trials. PR #112 passed final CI and actual source review and merged
+as `dd0665a`; review corrected schema history and confirmed the intentional
+retention of uncertain approval records.
 
 Command/file approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
@@ -126,8 +128,21 @@ missing history and buffer overflow pause immediately; no fresh subscription
 replaces a lost cursor. The existing five-second connection/replay/frame bounds
 apply to each attempt, and shutdown cancels the worker and its socket.
 
-This recovery covers question-event transport only. Queue polling, question
-publication, activity/receipt writes and other failed RPCs still pause delivery;
+Read-only `provider_inbox` calls with an empty acknowledgement list now also
+retry up to three times after transient I/O failures or the existing five-second
+request timeout, with 100 ms between attempts. Retries cannot start a replacement
+daemon. Protocol errors and explicit daemon refusals stop immediately. Each retry
+reads the retained queue again; it neither submits a provider turn nor acknowledges
+a message. Socket tests verify a discarded read response, bounded exhaustion and
+no retry for an uncertain acknowledgement or malformed response. The
+[read-reconnect trial](verification/2026-09-12-queue-read-reconnect.json) passed
+850 Rust tests, 65 Python checks and an actual Codex read-response cut while file
+approval was pending. The previous controller stopped; the correction kept the
+same controller/conversation, resolved the approval once and completed three
+ordered peer/human inputs. Other connections and the daemon remained live.
+
+Queue acknowledgements, question publication, activity/receipt writes and other
+failed RPCs still pause delivery;
 a lost write response cannot prove whether the daemon accepted that operation.
 The [687e57f reconnect trial](verification/2026-09-12-provider-event-reconnect.json)
 passed 839 Rust tests, 65 Python checks and an actual Codex event-connection cut

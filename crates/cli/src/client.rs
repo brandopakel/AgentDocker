@@ -154,7 +154,11 @@ impl Client {
         let mut reader = self.connect(request).await?;
         let mut line = String::new();
         if reader.read_line(&mut line).await? == 0 {
-            bail!("agentd closed the connection without answering");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "agentd closed the connection without answering",
+            )
+            .into());
         }
         Ok(serde_json::from_str(&line)?)
     }

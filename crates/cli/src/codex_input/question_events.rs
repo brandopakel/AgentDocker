@@ -71,26 +71,7 @@ fn relevant(kind: &EventKind) -> bool {
     )
 }
 
-fn recoverable(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<tokio::time::error::Elapsed>()
-            .is_some()
-            || cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound
-                        | std::io::ErrorKind::ConnectionRefused
-                        | std::io::ErrorKind::ConnectionReset
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::UnexpectedEof
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                )
-            })
-    })
-}
+use super::daemon_io::recoverable;
 
 async fn worker(
     client: Client,
