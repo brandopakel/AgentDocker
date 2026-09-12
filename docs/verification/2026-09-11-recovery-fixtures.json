@@ -169,5 +169,49 @@
     "Docker and Podman engines were stopped locally. Fresh real engine acceptance remains a CI gate.",
     "Earlier one-hour and provider results retain their original source and driver hashes; no new overnight or provider-soak acceptance is claimed.",
     "Final-head CI and follow-up review remain required."
-  ]
+  ],
+  "process_discovery_followup": {
+    "source_commit": "8d094531357d60018585d33f3ae3cea2f24c0b43",
+    "result": "passed",
+    "review": "https://github.com/brandopakel/AgentDocker/pull/99#issuecomment-5642720286",
+    "change": "Retain failed process discovery, stop verified private fixture groups before their known leader can disappear, then continue daemon shutdown and final fixture cleanup.",
+    "cases": [
+      "Process-table timeout still cleans the owned daemon and fixture group.",
+      "Nonzero process-table exit still cleans the owned daemon and fixture group.",
+      "An undiscovered group member ignores TERM while its leader does not; both are killed before losing the verified group anchor. The strengthened baseline fails both query-error cases.",
+      "Capture errors and forced shutdown remain a failed trial; no live user process or daemon is involved."
+    ],
+    "baseline": {
+      "path": "/private/tmp/agentdocker-capture-unseen-member-baseline-2026-09-11.log",
+      "sha256": "6bd5f1a96c6ed2e02c6b2a70b08dfa50c55fe952c9f0dff27e66ebeb883b853d"
+    },
+    "regressions": {
+      "path": "/private/tmp/agentdocker-capture-unseen-member-fixed-2026-09-11.log",
+      "sha256": "3d5942fc9e27d57833b31e71d7014e68f9b6eddaea82a10f94ddf25a6089da0e"
+    },
+    "standard_gate": {
+      "rust_passed": 762,
+      "rust_skipped": 6,
+      "python_passed": 65,
+      "format": "passed",
+      "clippy": "passed",
+      "doctests": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "retries": 0,
+      "private_log": "/private/tmp/agentdocker-capture-group-recovery-check-2026-09-11.log",
+      "log_sha256": "44a1844d42e4d69ee3c96dabf7ce3428bd7ded4f8b45292dc0a3448346343a80"
+    },
+    "limits": [
+      "These are real private child process groups with injected discovery/RPC failures, not a new actual-provider or overnight run.",
+      "Fresh final-head CI and follow-up review remain required."
+    ]
+  },
+  "engine_followup": {
+    "source_commit": "2ff8f935a5bbf3754385e16f4b9313ec93cd1bd7",
+    "run": "https://github.com/brandopakel/AgentDocker/actions/runs/34666403880",
+    "docker": "passed",
+    "podman": "passed",
+    "scope": "Real-engine CI after the restart lock barrier; predates the process-discovery follow-up."
+  }
 }

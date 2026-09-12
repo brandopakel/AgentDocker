@@ -98,7 +98,9 @@ reproduces and fixes leaked known agent groups after forced soak shutdown, with
 birth-identity guards and bounded descendant cleanup. The forced outcome remains
 a failed trial. Container restart fixtures also wait for actual daemon lock
 release after a crash; permanent contention still fails. The full gate passed
-762 Rust tests and 64 Python checks. Fresh engine CI and final review remain.
+762 Rust tests and 65 Python checks, including failed process discovery and an
+undiscovered TERM-ignoring group member. Docker and Podman passed the preceding
+lock-barrier head; final-head CI and follow-up review remain.
 
 ## Engineering still open
 

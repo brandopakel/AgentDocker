@@ -744,3 +744,12 @@ is preserved. The original CI log does not identify its holder. Full verificatio
 passed 762 Rust tests and 64 Python checks, including descendant/reused-PID and
 inherited/persistent-lock regressions, with lint, doctests, packaging and release
 build. Fresh engine CI and follow-up review remain required.
+
+Follow-up review found that a timed-out process-table query could skip all
+shutdown. The correction retains query failures and continues cleanup. A stronger
+real-process regression also exposed an undiscovered TERM-ignoring group member
+surviving its leader; failed discovery now kills the verified private group
+before that anchor can disappear. Both timeout and nonzero-query cases pass,
+with their failed baseline retained. The full gate at `8d09453` passed 762 Rust
+tests and 65 Python checks. Docker and Podman passed the preceding lock-barrier
+head `2ff8f93`; final-head CI and review remain required.
