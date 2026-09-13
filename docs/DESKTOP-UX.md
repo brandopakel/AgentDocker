@@ -76,23 +76,31 @@ Project tabs provide:
 
 ## Inbox and tools
 
-Inbox presents questions addressed to you with a draft per question. Navigation,
-a failed request and disconnection preserve drafts. A pending answer cannot be
-sent twice. Delivery does not establish that the recipient consumed it. Direct
-messages remain queued until a consumer explicitly takes them.
+Inbox reads like a messenger. The left column lists one conversation per agent
+with its mark, the latest line and how many items wait; **Everyone** shows all
+of them. The conversation on the right starts with that agent's open questions
+as cards, because they carry Answer, Allow, Deny and review controls, followed
+by its messages as bubbles, newest last; long messages fold after eight lines
+behind **Show more**. Under an open conversation the composer sends to that
+agent (**Send**) or to every agent in its project (**Send to everyone**); the
+receipt or error shows under the box, and drafts survive navigation, a failed
+request and disconnection. A pending answer cannot be sent twice. Delivery
+does not establish that the recipient consumed it. **Clear** removes one
+message from your queue and **Clear shown** the visible ones; direct messages
+otherwise remain queued until a consumer explicitly takes them. The rail badge
+counts open questions and waiting messages together. Notification navigation
+opens the requested message, including an older one outside the recent window.
 
-Once a direct question leaves the pending list, its retained message appears as
-an **Earlier question** with a short preview. **Show question** opens the complete
-original text; **Hide question** collapses it again. This does not dismiss the
-message or submit an answer. Notification navigation opens the requested text
-automatically, including an older question outside the usual recent-message view.
-
-Tools starts with installed tools. **Details** reveals versions, executable
-paths and MCP/hooks configuration. **Other supported tools** expands the inventory
-of tools that are not installed. **Review
-setup** prepares a specific plan; **Apply reviewed changes** and **Undo this setup**
-use the existing checked CLI operations. Health and saved plans remain available.
-A connection failure retains the last snapshot and clearly pauses daemon actions.
+Tools shows each installed tool with one status word: **Connected** once a
+session of that tool has reported in, **Needs setup** when its configuration is
+missing (with a **Set up** button), **Configured, waiting for its first
+session** in between, and **Not installed**. **Details** holds versions,
+commands, the per-channel configuration state, **Review setup**, **Check
+connections** and **Setup history**; **Other supported tools** expands the
+inventory. A setup plan reads "Connect <tool>" with what changes as bullets,
+**Connect**, **Undo** after applying, and the plan record behind Details. The
+connection check is one line per installed tool and closes with **Close**. A
+connection failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
 
