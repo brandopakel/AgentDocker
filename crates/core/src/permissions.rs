@@ -52,15 +52,54 @@ pub enum QuestionPermissionPath {
     Path { path: String },
 }
 
-fn concrete_path(path: &str) -> bool {
+/// A lexical comparison key only: never rewrite the reviewed/wire profile or
+/// resolve filesystem aliases in core. Refuse dot segments instead of reducing
+/// them, since a preceding component could be a symlink on the provider host.
+fn concrete_path_key(path: &str) -> Option<String> {
+    if path.len() > 16_000 || path.trim() != path || path.chars().any(char::is_control) {
+        return None;
+    }
     let bytes = path.as_bytes();
-    let absolute = path.starts_with('/')
-        || path.starts_with("\\\\")
-        || (bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'/' | b'\\'));
-    absolute && path.len() <= 16_000 && path.trim() == path && !path.chars().any(char::is_control)
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\');
+    let unc = path.starts_with("\\\\");
+    if drive || unc {
+        // This portable review subset does not pretend to implement a host's
+        // Unicode case mapping, device namespaces or alternate data streams.
+        if !path.is_ascii() {
+            return None;
+        }
+        let key = path.replace('\\', "/").to_ascii_lowercase();
+        let tail = &key[if drive { 3 } else { 2 }..];
+        if drive && tail.is_empty() {
+            return Some(key);
+        }
+        let components: Vec<_> = tail.split('/').collect();
+        if unc && components.len() < 2 {
+            return None;
+        }
+        if components.iter().any(|part| {
+            let stem = part.split('.').next().unwrap_or_default();
+            let device = matches!(stem, "con" | "prn" | "aux" | "nul")
+                || ((stem.starts_with("com") || stem.starts_with("lpt"))
+                    && stem.len() == 4
+                    && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+            part.is_empty()
+                || part.ends_with(['.', ' '])
+                || device
+                || part.contains(['<', '>', ':', '"', '|', '?', '*'])
+        }) {
+            return None;
+        }
+        return Some(key);
+    }
+    let tail = path.strip_prefix('/')?;
+    if !tail.is_empty() && tail.split('/').any(|part| matches!(part, "" | "." | "..")) {
+        return None;
+    }
+    Some(path.to_owned())
 }
 
 impl QuestionPermissions {
@@ -79,7 +118,10 @@ impl QuestionPermissions {
                 (&files.write, QuestionPermissionAccess::Write),
             ] {
                 for path in values.iter().flatten() {
-                    if !concrete_path(path) || paths.insert(path, access).is_some() {
+                    let Some(key) = concrete_path_key(path) else {
+                        return false;
+                    };
+                    if paths.insert(key, access).is_some() {
                         return false;
                     }
                     grants = true;
@@ -88,13 +130,16 @@ impl QuestionPermissions {
             let mut entries = std::collections::HashSet::new();
             for entry in files.entries.iter().flatten() {
                 let QuestionPermissionPath::Path { path } = &entry.path;
-                if !concrete_path(path) || !entries.insert(path) {
+                let Some(key) = concrete_path_key(path) else {
+                    return false;
+                };
+                if !entries.insert(key.clone()) {
                     return false;
                 }
                 // Codex 0.153.4 mirrors concrete entries in legacy lists.
                 // Accept only an identical mirror, never conflicting access.
                 if paths
-                    .insert(path, entry.access)
+                    .insert(key, entry.access)
                     .is_some_and(|old| old != entry.access)
                 {
                     return false;
@@ -140,6 +185,72 @@ impl QuestionPermissions {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ambiguous_and_noncanonical_permission_paths_are_refused() {
+        for path in [
+            "/owned/../private",
+            "/owned/./file",
+            "/owned//file",
+            "/owned/",
+            r"C:\owned\..\private",
+            r"C:\owned\.\file",
+            r"C:\owned\\file",
+            r"\\server",
+            r"\\server\",
+            r"\\server\\file",
+            r"\\?\C:\file",
+            r"\\.\NUL",
+            r"C:\owned\file.",
+            r"C:\owned\file ",
+            r"C:\owned\file:stream",
+            r"C:\owned\NUL.txt",
+            r"C:\owned\COM1",
+            r"C:\owned\é",
+        ] {
+            let profile = json!({"fileSystem":{"write":[path]}});
+            assert!(
+                !serde_json::from_value::<QuestionPermissions>(profile)
+                    .unwrap()
+                    .valid(),
+                "{path}"
+            );
+        }
+        for path in [
+            "/",
+            "/owned/日本語",
+            r"C:\",
+            r"C:\owned\file",
+            r"\\server\share\file",
+        ] {
+            assert!(concrete_path_key(path).is_some(), "{path}");
+        }
+    }
+
+    #[test]
+    fn windows_equivalent_paths_share_conflict_checks_without_rewriting_grants() {
+        for (left, right) in [
+            (r"C:\Owned\File", "c:/owned/file"),
+            (r"\\Server\Share\File", r"\\server\share/file"),
+        ] {
+            for wire in [
+                json!({"fileSystem":{"read":[left],"write":[right]}}),
+                json!({"fileSystem":{"write":[left,right]}}),
+                json!({"fileSystem":{"write":[left],"entries":[{"access":"deny","path":{"type":"path","path":right}}]}}),
+                json!({"fileSystem":{"entries":[{"access":"write","path":{"type":"path","path":left}},{"access":"write","path":{"type":"path","path":right}}]}}),
+            ] {
+                assert!(
+                    !serde_json::from_value::<QuestionPermissions>(wire)
+                        .unwrap()
+                        .valid()
+                );
+            }
+            let wire = json!({"fileSystem":{"write":[left],"entries":[{"access":"write","path":{"type":"path","path":right}}]}});
+            let parsed: QuestionPermissions = serde_json::from_value(wire.clone()).unwrap();
+            assert!(parsed.valid());
+            assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+        }
+    }
 
     #[test]
     fn matching_legacy_permission_mirrors_are_preserved_but_shown_once() {

@@ -115,6 +115,13 @@ fields, conflicting or repeated selectors within one representation, relative
 paths, control characters, empty/no-op
 grants, more than 16 distinct paths and questions exceeding 16,000 bytes. Matching
 legacy/typed mirrors emitted by Codex are retained in the grant and shown once.
+Dot segments, repeated separators and trailing separators are refused rather
+than resolved against a filesystem. Windows drive/UNC comparison keys normalize
+ASCII case and separator spelling, so equivalent paths cannot bypass duplicate
+or conflicting-access checks; the approved wire profile remains unchanged.
+The portable Windows subset requires ASCII names and a complete UNC server/share,
+and refuses device namespaces, reserved device names, alternate streams and
+trailing dots/spaces. Broader host-specific path forms need a separate review.
 Glob/special selectors, scan-depth settings and remote environments require a richer review
 and remain unsupported. The omitted/null environment ID and Codex's reserved
 `local` ID select this local flow; other IDs are refused. Permission receipts
