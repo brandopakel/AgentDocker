@@ -106,6 +106,11 @@ fn plan(
         if layout.application.symlink_metadata().is_ok() {
             plan.remove.push(layout.application.clone());
         }
+        if let Some(legacy) = &layout.legacy_application
+            && legacy.symlink_metadata().is_ok()
+        {
+            plan.remove.push(legacy.clone());
+        }
         if active.is_some() {
             plan.remove.push(layout.root.join("current"));
         }
