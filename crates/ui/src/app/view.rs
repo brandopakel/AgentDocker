@@ -949,22 +949,6 @@ impl App {
                 ),
             ));
         }
-        for agent in self.agents.iter().filter(|a| {
-            self.shell.unviewed_done.contains(a.id.as_str())
-                && !self.delivery_paused(a)
-                && self.has_project(a.project.as_ref())
-        }) {
-            items.push((
-                dot(c.accent, 8.0, c),
-                format!("{} finished", agent.spec.name),
-                action(
-                    format!("needs-you-open-{}", agent.id),
-                    "Open",
-                    Some(Message::OpenSession(agent.id.to_string())),
-                    false,
-                ),
-            ));
-        }
         for agent in self
             .agents
             .iter()
@@ -981,12 +965,59 @@ impl App {
                 ),
             ));
         }
+        // Nobody waiting: on a fresh install the strip turns into the two
+        // things that get a person started, then disappears for good.
+        // Finished sessions are not in it; they are not asking for anything
+        // (the Done pill on their row is enough).
+        let guidance = items.is_empty();
+        if guidance {
+            for process in self.available_processes() {
+                items.push((
+                    dot(c.cyan, 8.0, c),
+                    format!("{} is running here, not connected", process.default_name()),
+                    action(
+                        format!("needs-you-connect-{}", process.pid),
+                        "Connect",
+                        self.connected
+                            .is_ok()
+                            .then_some(Message::Adopt(process.pid)),
+                        false,
+                    ),
+                ));
+            }
+            if self.all_projects() {
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.installed()
+                        && !self.tool_reports(&r.name)
+                        && (r.mcp == agentdocker_core::runtime::Wiring::Missing
+                            || r.hooks == agentdocker_core::runtime::Wiring::Missing)
+                }) {
+                    items.push((
+                        dot(c.faint, 8.0, c),
+                        format!("{} is installed but not connected", runtime.label),
+                        action(
+                            format!("needs-you-tool-{}", runtime.name),
+                            "Set up",
+                            (!self.setup_busy).then_some(Message::Setup(vec![
+                                runtime.name.clone(),
+                                "--preview".into(),
+                            ])),
+                            false,
+                        ),
+                    ));
+                }
+            }
+        }
         if items.is_empty() {
             return None;
         }
         let total = items.len();
-        let mut list =
-            column![row![eyebrow(format!("Needs you ({total})"), c).width(Fill),]].spacing(8);
+        let title_text = if guidance {
+            "To get started".to_owned()
+        } else {
+            format!("Needs you ({total})")
+        };
+        let mut list = column![row![eyebrow(title_text, c).width(Fill),]].spacing(8);
         let shown = if self.shell.needs_you_expanded {
             total
         } else {
@@ -1011,7 +1042,7 @@ impl App {
                 false,
             ));
         }
-        Some(attention(list, c.amber, c))
+        Some(attention(list, if guidance { c.cyan } else { c.amber }, c))
     }
 
     /// The project's one primary action, when there is a project to act in.
