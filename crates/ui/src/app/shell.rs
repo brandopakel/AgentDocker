@@ -262,10 +262,15 @@ impl App {
             && self.screen == Screen::Questions
             && self.shell.pending_notification.is_none()
         {
-            self.questions
+            let next = self
+                .questions
                 .iter()
                 .find(|q| !q.expired(Utc::now()))
-                .map(|q| q.id.clone())
+                .map(|q| (q.id.clone(), self.canonical_agent(&q.from).to_owned()));
+            if let Some((_, agent)) = &next {
+                self.shell.inbox_thread = Some(agent.clone());
+            }
+            next.map(|(id, _)| id)
         } else {
             None
         }
@@ -305,6 +310,8 @@ impl App {
         if matches!(
             &message,
             Message::Draft(..)
+                | Message::SessionDraft(..)
+                | Message::SelectThread(_)
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
                 | Message::SelectSession(_)
@@ -326,6 +333,7 @@ impl App {
         if matches!(
             &message,
             Message::Navigate(_)
+                | Message::SelectThread(_)
                 | Message::SelectProject(_)
                 | Message::Unassigned
                 | Message::AllProjects
@@ -444,11 +452,12 @@ impl App {
             }
             Message::OpenQuestion(id) => {
                 self.screen = Screen::Questions;
-                if self
+                if let Some(question) = self
                     .questions
                     .iter()
-                    .any(|q| q.id == id && !q.expired(Utc::now()))
+                    .find(|q| q.id == id && !q.expired(Utc::now()))
                 {
+                    self.shell.inbox_thread = Some(self.canonical_agent(&question.from).to_owned());
                     self.shell.message_detail = Some(id.clone());
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
@@ -1331,6 +1340,7 @@ impl App {
         self.screen = if channel.is_some() {
             Screen::Channels
         } else {
+            self.shell.inbox_thread = self.shell.selected.clone();
             Screen::Questions
         };
         if let Some(channel) = channel {
@@ -1715,6 +1725,7 @@ mod tests {
             question.clone(),
             Question {
                 id: second.clone(),
+                from: "next-asker".into(),
                 ..question.clone()
             },
         ];
@@ -1727,6 +1738,7 @@ mod tests {
         messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
         app.drain();
         assert_eq!(app.take_answer_reveal(), Some(second.clone()));
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("next-asker"));
         assert!(app.take_answer_reveal().is_none());
         assert_eq!(app.answers[&second], "Keep my draft");
         app.questions.insert(0, question);
@@ -1767,6 +1779,7 @@ mod tests {
     #[test]
     fn notification_waits_for_data_then_opens_the_question_without_submitting_drafts() {
         let (mut app, commands, messages, home, mut action) = notification_app();
+        app.shell.inbox_thread = Some("another-agent".into());
         let project = crate::catalog::resolve(home.path()).unwrap();
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
@@ -1798,6 +1811,7 @@ mod tests {
             .unwrap();
         let _ = app.update(Message::Tick);
         assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("sender-1"));
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
         assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
         assert!(app.shell.pending_notification.is_none());
@@ -1951,9 +1965,11 @@ mod tests {
         app.answers.insert(other.clone(), "other draft".into());
         app.shell.pending_answer_reveal = Some(other.clone());
         app.shell.reveal_next_question = true;
+        app.shell.inbox_thread = Some("another-agent".into());
         let _ = app.update(Message::OpenQuestion(id.clone()));
         assert_eq!(app.screen, Screen::Questions);
         assert_eq!(app.shell.message_detail, Some(id.clone()));
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("asker"));
         assert!(app.shell.pending_answer_reveal.is_none());
         assert!(!app.shell.reveal_next_question);
         assert_eq!(app.answers[&id], "target draft");

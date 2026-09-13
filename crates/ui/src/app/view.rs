@@ -1772,28 +1772,19 @@ impl App {
         }
         // Composer: reply to this agent, or to everyone in its project.
         if let Some(id) = selected {
-            let live = self
-                .agents
-                .iter()
-                .any(|a| a.id.as_str() == id && a.status.is_live());
+            let agent = self.agents.iter().find(|a| a.id.as_str() == id);
+            let live = agent.is_some_and(|a| a.status.is_live());
+            let has_project = agent.is_some_and(|a| a.project.is_some());
             let entry = self.shell.session_drafts.get(id);
             let draft = entry.map(|e| e.draft.text.clone()).unwrap_or_default();
             let sending = entry.is_some_and(|e| e.draft.sending.is_some());
             let ready = live && self.connected.is_ok() && !sending && !draft.trim().is_empty();
-            let asked = self
-                .questions
-                .iter()
-                .any(|q| self.canonical_agent(&q.from) == id && !q.expired(now));
             let owner = id.to_owned();
             let mut composer = column![
                 row![
                     input_enabled(
                         format!("reply-{id}"),
-                        if asked {
-                            "Answer or reply…"
-                        } else {
-                            "Message…"
-                        },
+                        "Message…",
                         &draft,
                         move |t| Message::SessionDraft(owner.clone(), t),
                         live && !sending,
@@ -1806,7 +1797,7 @@ impl App {
                     action(
                         format!("send-everyone-{id}"),
                         "Send to everyone",
-                        ready.then_some(Message::SendProject(id.to_owned())),
+                        (ready && has_project).then_some(Message::SendProject(id.to_owned())),
                         false,
                     )
                 ]
