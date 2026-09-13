@@ -6,7 +6,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -173,24 +173,159 @@ struct Layout {
     prefix: PathBuf,
     root: PathBuf,
     bin: PathBuf,
+    /// Where the launcher lives. On a Mac installed under the home
+    /// prefix this is `/Applications/AgentDocker.app` when that folder is
+    /// writable, because that is where people look; otherwise the
+    /// prefix's own `Applications`.
     application: PathBuf,
+    /// The per-user launcher path. When the launcher lives in the system
+    /// folder, a link stays here so absolute paths written into hook and
+    /// MCP configuration by earlier releases keep resolving.
+    legacy_application: Option<PathBuf>,
 }
 
 impl Layout {
     fn new(prefix: PathBuf) -> Result<Self> {
         let prefix = project::try_canonical(&prefix)?;
         ensure!(prefix.is_absolute(), "installation prefix must be absolute");
-        let application = if cfg!(target_os = "macos") {
-            prefix.join("Applications/AgentDocker.app")
+        let root = prefix.join(".local/share/agentdocker/desktop");
+        let user_application = prefix.join("Applications/AgentDocker.app");
+        let (application, legacy_application) = if cfg!(target_os = "macos") {
+            match Self::recorded_or_default_application(&root, &prefix, &user_application)? {
+                Some(system) => (system, Some(user_application)),
+                None => (user_application, None),
+            }
         } else {
-            prefix.join(".local/share/applications/agentdocker.desktop")
+            (
+                prefix.join(".local/share/applications/agentdocker.desktop"),
+                None,
+            )
         };
         Ok(Self {
-            root: prefix.join(".local/share/agentdocker/desktop"),
+            root,
             bin: prefix.join(".local/bin"),
             prefix,
             application,
+            legacy_application,
         })
+    }
+
+    /// The system Applications folder on this platform.
+    const SYSTEM_APPLICATIONS: &'static str = "/Applications";
+
+    /// The launcher location this installation already chose, else the
+    /// default for a fresh one. Recorded so a later change in folder
+    /// permissions cannot move the launcher out from under the Dock.
+    fn recorded_or_default_application(
+        root: &Path,
+        prefix: &Path,
+        user_application: &Path,
+    ) -> Result<Option<PathBuf>> {
+        let record = root.join("launcher.json");
+        match std::fs::read_to_string(&record) {
+            Ok(text) => {
+                // Only the two places this installer ever writes are valid.
+                // A record that says anything else is damage, not a choice.
+                let value: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("cannot read {}", record.display()))?;
+                ensure!(value["format"] == 1, "unknown launcher record format");
+                let system = Path::new(Self::SYSTEM_APPLICATIONS).join("AgentDocker.app");
+                match value["application"].as_str().map(Path::new) {
+                    Some(path) if path == user_application => Ok(None),
+                    Some(path) if path == system => Ok(Some(system)),
+                    _ => bail!(
+                        "{} names a launcher location this installer does not manage",
+                        record.display()
+                    ),
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Self::default_system_application(
+                    prefix,
+                    std::env::home_dir().as_deref(),
+                    Path::new(Self::SYSTEM_APPLICATIONS),
+                ))
+            }
+            Err(error) => Err(error).with_context(|| format!("cannot read {}", record.display())),
+        }
+    }
+
+    /// `/Applications/AgentDocker.app` for a home-prefix installation when
+    /// the folder is writable and the name is free or already ours; trial
+    /// prefixes and locked-down Macs stay under their own prefix.
+    fn default_system_application(
+        prefix: &Path,
+        home: Option<&Path>,
+        system: &Path,
+    ) -> Option<PathBuf> {
+        if home.map(|home| project::try_canonical(home).ok()) != Some(Some(prefix.to_owned())) {
+            return None;
+        }
+        // The real folder, not a link to somewhere else, and nothing is
+        // written to decide: status and previews must leave it untouched.
+        let metadata = system.symlink_metadata().ok()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return None;
+        }
+        if project::try_canonical(system).ok()? != system {
+            return None;
+        }
+        if !Self::writable(system) {
+            return None;
+        }
+        let candidate = system.join("AgentDocker.app");
+        match candidate.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(candidate),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                let marker = candidate.join("Contents/Resources/managed-launcher.json");
+                let ours = std::fs::read_to_string(marker)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .is_some_and(|value| {
+                        value["product"] == "agentdocker"
+                            && value["root"].as_str()
+                                == prefix.join(".local/share/agentdocker/desktop").to_str()
+                    });
+                ours.then_some(candidate)
+            }
+            // Somebody else's app, or a stray link: leave it alone and stay
+            // under the prefix.
+            _ => None,
+        }
+    }
+
+    /// Whether this user may create entries in `directory`, asked of the
+    /// kernel (group membership and ACLs included) without writing anything.
+    fn writable(directory: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `path` is a valid NUL-terminated C string for the call's
+        // duration, and access(2) reads it without retaining it.
+        unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+    }
+
+    /// Remember where the launcher went: written whole or not at all.
+    fn record_application(&self) -> Result<()> {
+        let record = self.root.join("launcher.json");
+        let staging = tempfile::Builder::new()
+            .prefix(".launcher.json.")
+            .tempfile_in(&self.root)?;
+        let mut file = staging.as_file();
+        serde_json::to_writer_pretty(
+            &mut file,
+            &serde_json::json!({
+                "format": 1,
+                "application": self.application.to_str().context("launcher path must be UTF-8")?,
+            }),
+        )?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o600))?;
+        staging.persist(&record)?;
+        std::fs::File::open(&self.root)?.sync_all()?;
+        Ok(())
     }
 
     fn payload(&self, release: &Release) -> PathBuf {
@@ -258,6 +393,7 @@ impl Layout {
         }))? + "\n")
     }
 
+    #[cfg(test)]
     fn launcher_is_ours(&self) -> Result<bool> {
         let marker = self
             .application
@@ -349,6 +485,34 @@ impl Layout {
             Ok(_) => std::fs::remove_dir_all(&retired)?,
             Err(_) => (),
         }
+        self.record_application()?;
+        if let Some(legacy) = &self.legacy_application {
+            // Preflight checked this path is ours. Replace whatever earlier
+            // release left with a link to the launcher, so old absolute
+            // hook and MCP command paths still run the active release.
+            std::fs::create_dir_all(legacy.parent().context("launcher has no parent")?)?;
+            let retired = legacy.with_extension(format!("app.retired-{}", uuid::Uuid::new_v4()));
+            match legacy.symlink_metadata() {
+                Ok(metadata)
+                    if metadata.file_type().is_symlink()
+                        && legacy.read_link()? == self.application => {}
+                Ok(_) => {
+                    std::fs::rename(legacy, &retired)?;
+                    symlink(&self.application, legacy)?;
+                    match retired.symlink_metadata() {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            std::fs::remove_file(&retired)?
+                        }
+                        Ok(_) => std::fs::remove_dir_all(&retired)?,
+                        Err(_) => (),
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    symlink(&self.application, legacy)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
@@ -356,13 +520,29 @@ impl Layout {
     /// replace: nothing, the symlink earlier releases installed, or our
     /// own launcher bundle.
     fn application_is_replaceable(&self) -> Result<bool> {
-        match self.application.symlink_metadata() {
+        self.path_is_replaceable(&self.application)
+    }
+
+    /// Whether `path` holds something this store may replace: nothing, the
+    /// symlink earlier releases installed, a compatibility link to our own
+    /// launcher, or our own marked launcher bundle.
+    fn path_is_replaceable(&self, path: &Path) -> Result<bool> {
+        match path.symlink_metadata() {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(error) => Err(error.into()),
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                Ok(self.application.read_link()? == self.root.join("current/payload"))
+                let target = path.read_link()?;
+                Ok(target == self.root.join("current/payload") || target == self.application)
             }
-            Ok(metadata) if metadata.is_dir() => self.launcher_is_ours(),
+            Ok(metadata) if metadata.is_dir() => {
+                let marker = path.join("Contents/Resources/managed-launcher.json");
+                let Ok(text) = std::fs::read_to_string(&marker) else {
+                    return Ok(false);
+                };
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                Ok(value["product"] == "agentdocker"
+                    && value["root"].as_str() == self.root.to_str())
+            }
             Ok(_) => Ok(false),
         }
     }
@@ -403,10 +583,18 @@ impl Layout {
 
     fn preflight(&self) -> Result<()> {
         for path in [&self.root, &self.bin, &self.application] {
+            let allowed_outside = self.legacy_application.is_some() && path == &self.application;
             ensure!(
-                project::try_canonical(path)?.starts_with(&self.prefix),
+                allowed_outside || project::try_canonical(path)?.starts_with(&self.prefix),
                 "installation path escapes its prefix through a symlink: {}",
                 path.display()
+            );
+        }
+        if let Some(legacy) = &self.legacy_application {
+            ensure!(
+                self.path_is_replaceable(legacy)?,
+                "{} already exists outside this installation; preserved",
+                legacy.display()
             );
         }
         for (path, target) in self.links() {
@@ -1234,6 +1422,99 @@ mod tests {
                     + "\n";
                 assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
             }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_applications_folder_is_chosen_only_for_the_home_prefix_when_free_or_ours() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = project::try_canonical(tmp.path()).unwrap();
+        let system = tmp.path().join("Applications");
+        std::fs::create_dir(&system).unwrap();
+        // Home prefix, writable folder, nothing there: use it.
+        assert_eq!(
+            Layout::default_system_application(&home, Some(&home), &system),
+            Some(system.join("AgentDocker.app"))
+        );
+        // A trial prefix never leaves its own tree.
+        let trial = tmp.path().join("trial");
+        std::fs::create_dir(&trial).unwrap();
+        assert_eq!(
+            Layout::default_system_application(
+                &project::try_canonical(&trial).unwrap(),
+                Some(&home),
+                &system
+            ),
+            None
+        );
+        // Somebody else's AgentDocker.app: leave it alone.
+        std::fs::create_dir_all(system.join("AgentDocker.app/Contents")).unwrap();
+        assert_eq!(
+            Layout::default_system_application(&home, Some(&home), &system),
+            None
+        );
+        // Our own marked launcher there: keep using it.
+        let resources = system.join("AgentDocker.app/Contents/Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(
+            resources.join("managed-launcher.json"),
+            serde_json::json!({
+                "format": 1,
+                "product": "agentdocker",
+                "root": home.join(".local/share/agentdocker/desktop").to_str().unwrap(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            Layout::default_system_application(&home, Some(&home), &system),
+            Some(system.join("AgentDocker.app"))
+        );
+        // A folder we cannot write to: stay under the prefix.
+        std::fs::remove_dir_all(system.join("AgentDocker.app")).unwrap();
+        std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let chosen = Layout::default_system_application(&home, Some(&home), &system);
+        std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(chosen, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_launcher_record_only_names_the_two_managed_places() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = project::try_canonical(tmp.path()).unwrap();
+        let root = prefix.join(".local/share/agentdocker/desktop");
+        std::fs::create_dir_all(&root).unwrap();
+        let user = prefix.join("Applications/AgentDocker.app");
+        let record = |value: &str| std::fs::write(root.join("launcher.json"), value).unwrap();
+        record(
+            &serde_json::json!({"format": 1, "application": user.to_str().unwrap()}).to_string(),
+        );
+        assert_eq!(
+            Layout::recorded_or_default_application(&root, &prefix, &user).unwrap(),
+            None
+        );
+        record(
+            &serde_json::json!({"format": 1, "application": "/Applications/AgentDocker.app"})
+                .to_string(),
+        );
+        assert_eq!(
+            Layout::recorded_or_default_application(&root, &prefix, &user).unwrap(),
+            Some(PathBuf::from("/Applications/AgentDocker.app"))
+        );
+        for bad in [
+            serde_json::json!({"format": 1, "application": "/tmp/elsewhere/AgentDocker.app"})
+                .to_string(),
+            serde_json::json!({"format": 2, "application": "/Applications/AgentDocker.app"})
+                .to_string(),
+            "not json".to_owned(),
+        ] {
+            record(&bad);
+            assert!(
+                Layout::recorded_or_default_application(&root, &prefix, &user).is_err(),
+                "{bad}"
+            );
         }
     }
 
