@@ -408,7 +408,7 @@ impl Layout {
         }))? + "\n")
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn launcher_is_ours(&self) -> Result<bool> {
         let marker = self
             .application
