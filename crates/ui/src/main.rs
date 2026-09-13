@@ -208,7 +208,7 @@ fn main() -> iced::Result {
         app::App::update,
         app::App::view,
     )
-    .title("agentdocker")
+    .title("AgentDocker")
     .font(include_bytes!("fonts/Inter-Regular.ttf").as_slice())
     .font(include_bytes!("fonts/Inter-Medium.ttf").as_slice())
     .font(include_bytes!("fonts/Inter-SemiBold.ttf").as_slice())

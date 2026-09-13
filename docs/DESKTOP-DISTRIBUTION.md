@@ -1,6 +1,6 @@
 # Native desktop distribution
 
-The product name is **agentdocker**. Its window, bundle display name and disk image say agentdocker. macOS uses a technical `.app` bundle extension; Finder normally hides it according to the user's display preferences. Packaging does not write FinderInfo to force hiding: that invalidates strict code-signature verification. Linux ships the same Iced native window with a desktop launcher and icon. The window connects to the per-user daemon over a Unix socket. No browser or local HTTP server is involved.
+The product name is **AgentDocker**. Its window, bundle name, Launchpad entry and disk image say AgentDocker; only the command-line tools are lowercase (`agentdocker`, `agentd`, `agentdocker-ui`). macOS uses a technical `.app` bundle extension; Finder normally hides it according to the user's display preferences. Packaging does not write FinderInfo to force hiding: that invalidates strict code-signature verification. Linux ships the same Iced native window with a desktop launcher and icon. The window connects to the per-user daemon over a Unix socket. No browser or local HTTP server is involved.
 
 ## Build and verify a local preview
 
@@ -58,7 +58,7 @@ agentdocker desktop --prefix /tmp/agentdocker-trial rollback --local-preview --p
 agentdocker desktop --prefix /tmp/agentdocker-trial rollback --local-preview
 ```
 
-Omit `--prefix` to install beneath your home. Mac launchers go into `~/Applications`, Linux launchers into `~/.local/share/applications`, and commands into `~/.local/bin`. Add that command directory to your PATH if necessary. Existing unrelated commands, apps and edited launchers are preserved: installation refuses a collision. Mac public installation requires signature verification and Gatekeeper acceptance; `--local-preview` explicitly allows an ad-hoc development build. Linux verifies package binary checksums, which establish consistency, not publisher identity. Extract the package first; this command does not fetch untrusted URLs or expand arbitrary archives.
+Omit `--prefix` to install beneath your home. On a Mac, `~/Applications/AgentDocker.app` is a real launcher bundle (Launchpad and Spotlight ignore symlinked bundles) whose `agentdocker-ui` executable link follows the managed `current` pointer. It also retains the legacy `agentdocker` and `agentd` entry paths, so existing hooks and MCP connections follow updates and rollbacks without configuration edits; installing into the home prefix also registers it with Launch Services. Linux launchers go into `~/.local/share/applications`, and commands into `~/.local/bin`. Add that command directory to your PATH if necessary. Existing unrelated commands, apps and edited launchers are preserved: installation refuses a collision. Mac public installation requires signature verification and Gatekeeper acceptance; `--local-preview` explicitly allows an ad-hoc development build. Linux verifies package binary checksums, which establish consistency, not publisher identity. Extract the package first; this command does not fetch untrusted URLs or expand arbitrary archives.
 
 Complete copied payloads are verified and synced before activation. Immutable version directories and activation records retain the previous release; one atomic pointer switches all managed launchers. A crash before that switch leaves the prior release active, although unused staging/generation files can remain. A single installer lock excludes concurrent updates. Preview and status do not create an installation. Newly configured provider connections use the stable managed CLI link. A stale running app must be reopened before setup; configurations written by earlier builds are not silently rewritten.
 
@@ -135,7 +135,7 @@ versions, newest first. It also keeps every running release and legacy releases
 that lack lifetime locking. New CLI, daemon and window processes hold shared
 version locks; cleanup requires an exclusive lock and rechecks payload hashes
 before deletion. On macOS, the kernel's loaded executable path selects the pin,
-so changing a launcher symlink cannot move a running process to another release's
+so switching the managed pointer cannot move a running process to another release's
 lock. Matching CLI/daemon/window siblings use that same loaded path, and
 `agentdocker ui` prefers its matching sibling over a separately installed app.
 A process losing the startup/removal race exits before normal
