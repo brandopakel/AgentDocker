@@ -87,9 +87,8 @@ impl Catalog {
             pinned: pin,
         });
         self.sort_projects();
-        if self.selected.is_none() && !self.unassigned {
-            self.selected = Some(self.projects[0].project.root.clone());
-        }
+        // Discovery changes the catalog, not the user's selection. None is the
+        // explicit All projects view and must survive new arrivals.
         true
     }
 
@@ -151,6 +150,28 @@ pub fn resolve(folder: &Path) -> anyhow::Result<ProjectRef> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_preserves_home_project_and_projectless_selection_across_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = |name: &str| ProjectRef::directory(dir.path().join(name));
+        let mut catalog = Catalog::default();
+        catalog.remember(project("alpha"), false);
+        catalog.remember(project("beta"), false);
+        assert!(catalog.selected.is_none());
+        assert!(!catalog.unassigned);
+        let state = dir.path().join("state");
+        catalog.save(&state).unwrap();
+        assert_eq!(Catalog::load(&state).unwrap(), catalog);
+        catalog.selected = Some(project("alpha").root);
+        catalog.remember(project("gamma"), false);
+        assert_eq!(catalog.selected, Some(project("alpha").root));
+        catalog.selected = None;
+        catalog.unassigned = true;
+        catalog.remember(project("delta"), false);
+        assert!(catalog.selected.is_none());
+        assert!(catalog.unassigned);
+    }
+
     use super::*;
     #[test]
     fn project_name_order_survives_reopening() {
