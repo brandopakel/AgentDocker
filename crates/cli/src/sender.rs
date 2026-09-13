@@ -14,8 +14,12 @@ pub async fn resolve(client: &Client, explicit: Option<String>) -> Result<Option
     }
     let table =
         procinfo::processes().context("cannot determine the CLI sender's process ancestry")?;
-    let Some((process, runtime)) = provider_ancestor(std::os::unix::process::parent_id(), &table)?
-    else {
+    let parent = table
+        .iter()
+        .find(|process| process.pid == std::process::id())
+        .context("CLI caller is missing from the process snapshot; specify the sender explicitly")?
+        .ppid;
+    let Some((process, runtime)) = provider_ancestor(parent, &table)? else {
         return Ok(None);
     };
     let born = procinfo::start_time(process.pid)

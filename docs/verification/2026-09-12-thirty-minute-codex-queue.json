@@ -387,5 +387,6 @@
     "Proxy suppresses seven complete read-only ProviderInbox responses. The daemon and event connection remain live; no uncertain write replay or process replacement is exercised.",
     "RSS observations cover daemon/controller only and are advisory under concurrent build/provider work.",
     "Thirty minutes does not establish overnight, sleep/reboot, hardware, broader provider interruptions or full live-upgrade acceptance."
-  ]
+  ],
+  "provenance_scope": "Schema-15 baseline evidence at the recorded source and binary hashes. This passed Codex trial does not validate the schema-16 release candidate."
 }

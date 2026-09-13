@@ -771,7 +771,9 @@ impl App {
             "Inbox",
             Icon::Inbox,
             {
-                let waiting = self.questions.len() + self.direct_messages().len();
+                let now = Utc::now();
+                let waiting = self.questions.iter().filter(|q| !q.expired(now)).count()
+                    + self.direct_messages().len();
                 (waiting > 0).then(|| waiting.to_string())
             },
             Message::Navigate(Screen::Questions),

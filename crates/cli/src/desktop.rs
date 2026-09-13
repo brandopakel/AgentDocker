@@ -421,11 +421,13 @@ impl Layout {
     }
 
     /// Write the macOS launcher bundle: a real `AgentDocker.app` directory
-    /// with an Info.plist naming the product, the icon of the release
-    /// being activated, and stable links to all three active executables.
+    /// with release-neutral metadata and links through the active pointer.
+    /// Preparing the launcher must not advertise a candidate before the
+    /// current-pointer switch succeeds. Bundle version 1 is the launcher format;
+    /// the payload and desktop status report the installed product version.
     /// The GUI and old absolute hook/MCP commands keep distinct entry points.
     /// Built beside its destination and swapped in with renames.
-    fn write_launcher_bundle(&self, release: &Release) -> Result<()> {
+    fn write_launcher_bundle(&self) -> Result<()> {
         let parent = self
             .application
             .parent()
@@ -437,38 +439,27 @@ impl Layout {
         let contents = staging.path().join("Contents");
         std::fs::create_dir_all(contents.join("MacOS"))?;
         std::fs::create_dir_all(contents.join("Resources"))?;
-        let version = release.version.split(['-', '+']).next().unwrap_or("0.0.0");
-        let plist = format!(
-            concat!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
-                "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
-                "<plist version=\"1.0\">\n<dict>\n",
-                "\t<key>CFBundleName</key><string>AgentDocker</string>\n",
-                "\t<key>CFBundleDisplayName</key><string>AgentDocker</string>\n",
-                "\t<key>CFBundleExecutable</key><string>agentdocker-ui</string>\n",
-                "\t<key>CFBundleIdentifier</key><string>dev.agentdocker.launcher</string>\n",
-                "\t<key>CFBundleIconFile</key><string>AgentDocker</string>\n",
-                "\t<key>CFBundlePackageType</key><string>APPL</string>\n",
-                "\t<key>CFBundleShortVersionString</key><string>{version}</string>\n",
-                "\t<key>CFBundleVersion</key><string>{version}</string>\n",
-                "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n",
-                "\t<key>LSMinimumSystemVersion</key><string>11.0</string>\n",
-                "\t<key>LSApplicationCategoryType</key>",
-                "<string>public.app-category.developer-tools</string>\n",
-                "\t<key>NSHighResolutionCapable</key><true/>\n",
-                "</dict>\n</plist>\n"
-            ),
-            version = version
+        let plist = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
+            "<plist version=\"1.0\">\n<dict>\n",
+            "\t<key>CFBundleName</key><string>AgentDocker</string>\n",
+            "\t<key>CFBundleDisplayName</key><string>AgentDocker</string>\n",
+            "\t<key>CFBundleExecutable</key><string>agentdocker-ui</string>\n",
+            "\t<key>CFBundleIdentifier</key><string>dev.agentdocker.launcher</string>\n",
+            "\t<key>CFBundleIconFile</key><string>AgentDocker</string>\n",
+            "\t<key>CFBundlePackageType</key><string>APPL</string>\n",
+            "\t<key>CFBundleVersion</key><string>1</string>\n",
+            "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n",
+            "\t<key>LSMinimumSystemVersion</key><string>11.0</string>\n",
+            "\t<key>LSApplicationCategoryType</key>",
+            "<string>public.app-category.developer-tools</string>\n",
+            "\t<key>NSHighResolutionCapable</key><true/>\n",
+            "</dict>\n</plist>\n"
         );
         std::fs::write(contents.join("Info.plist"), plist)?;
         std::fs::write(contents.join("PkgInfo"), "APPL????")?;
-        let icon = self
-            .payload(release)
-            .join("Contents/Resources/AgentDocker.icns");
-        if icon.is_file() {
-            std::fs::copy(&icon, contents.join("Resources/AgentDocker.icns"))?;
-        }
         std::fs::write(
             contents.join("Resources/managed-launcher.json"),
             self.launcher_marker()?,
@@ -484,7 +475,13 @@ impl Layout {
                 contents.join("MacOS").join(name),
             )?;
         }
+        symlink(
+            self.root
+                .join("current/payload/Contents/Resources/AgentDocker.icns"),
+            contents.join("Resources/AgentDocker.icns"),
+        )?;
         std::fs::File::open(contents.join("MacOS"))?.sync_all()?;
+        std::fs::File::open(contents.join("Resources"))?.sync_all()?;
         // Whatever is there is ours (preflight said so): a launcher from an
         // earlier activation, or the symlink earlier releases installed.
         let retired = parent.join(format!(".AgentDocker.app.retired-{}", uuid::Uuid::new_v4()));
@@ -778,7 +775,7 @@ impl Layout {
             }
         }
         if cfg!(target_os = "macos") {
-            self.write_launcher_bundle(&activation.current)?;
+            self.write_launcher_bundle()?;
         }
         if !cfg!(target_os = "macos") && !self.application.exists() {
             std::fs::create_dir_all(
@@ -1342,7 +1339,8 @@ mod tests {
         assert!(plist.contains("<key>CFBundleName</key><string>AgentDocker</string>"));
         assert!(plist.contains("<key>CFBundleDisplayName</key><string>AgentDocker</string>"));
         assert!(plist.contains("<key>CFBundleExecutable</key><string>agentdocker-ui</string>"));
-        assert!(plist.contains("<string>0.1.0</string>"));
+        assert!(plist.contains("<key>CFBundleVersion</key><string>1</string>"));
+        assert!(!plist.contains("CFBundleShortVersionString"));
         for name in BINARIES {
             assert_eq!(
                 layout
@@ -1380,6 +1378,50 @@ mod tests {
         assert!(
             error.contains("already exists outside this installation"),
             "{error}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn preparing_a_launcher_keeps_the_active_icon_and_version_until_pointer_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let first = release(&layout, "first");
+        let mut second = release(&layout, "second");
+        second.version = "9.9.9".into();
+        for (release, icon) in [(&first, "first icon"), (&second, "second icon")] {
+            let resources = layout.payload(release).join("Contents/Resources");
+            std::fs::create_dir_all(&resources).unwrap();
+            std::fs::write(resources.join("AgentDocker.icns"), icon).unwrap();
+        }
+        layout.activate(first.clone(), None).unwrap();
+        let contents = layout.application.join("Contents");
+        let plist = std::fs::read(contents.join("Info.plist")).unwrap();
+
+        // This is the state left if the later preflight or pointer switch
+        // fails: only the neutral launcher has been published.
+        layout.write_launcher_bundle().unwrap();
+        assert_eq!(layout.active().unwrap().unwrap().current, first);
+        assert_eq!(std::fs::read(contents.join("Info.plist")).unwrap(), plist);
+        assert_eq!(
+            std::fs::read_to_string(contents.join("Resources/AgentDocker.icns")).unwrap(),
+            "first icon"
+        );
+        assert_eq!(
+            std::fs::read_to_string(contents.join("MacOS/agentdocker")).unwrap(),
+            "first"
+        );
+
+        layout.activate(second, Some(first)).unwrap();
+        assert_eq!(std::fs::read(contents.join("Info.plist")).unwrap(), plist);
+        assert_eq!(
+            std::fs::read_to_string(contents.join("Resources/AgentDocker.icns")).unwrap(),
+            "second icon"
+        );
+        assert_eq!(
+            std::fs::read_to_string(contents.join("MacOS/agentdocker")).unwrap(),
+            "second"
         );
     }
 

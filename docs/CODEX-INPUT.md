@@ -112,7 +112,7 @@ Codex's configured automatic review policy.
 The bounded parser accepts concrete absolute paths in legacy `read`/`write`
 lists or typed `entries`, including explicit deny entries. It rejects unknown
 fields, conflicting or repeated selectors within one representation, relative
-paths, control characters, empty/no-op
+paths, control characters, Unicode bidirectional formatting marks, empty/no-op
 grants, more than 16 distinct paths and questions exceeding 16,000 bytes. Matching
 legacy/typed mirrors emitted by Codex are retained in the grant and shown once.
 Dot segments, repeated separators and trailing separators are refused rather

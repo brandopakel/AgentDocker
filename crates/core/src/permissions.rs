@@ -56,7 +56,13 @@ pub enum QuestionPermissionPath {
 /// resolve filesystem aliases in core. Refuse dot segments instead of reducing
 /// them, since a preceding component could be a symlink on the provider host.
 fn concrete_path_key(path: &str) -> Option<String> {
-    if path.len() > 16_000 || path.trim() != path || path.chars().any(char::is_control) {
+    if path.len() > 16_000
+        || path.trim() != path
+        || path.chars().any(|ch| {
+            ch.is_control()
+                || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+    {
         return None;
     }
     let bytes = path.as_bytes();
@@ -184,6 +190,26 @@ impl QuestionPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_paths_refuse_direction_overrides_but_keep_ordinary_unicode() {
+        for code in [0x061c, 0x200e, 0x200f]
+            .into_iter()
+            .chain(0x202a..=0x202e)
+            .chain(0x2066..=0x2069)
+        {
+            let path = format!("/tmp/review{}txt", char::from_u32(code).unwrap());
+            assert!(concrete_path_key(&path).is_none(), "U+{code:04X}");
+        }
+        for path in ["/tmp/日本語", "/tmp/العربية", "/tmp/עברית"] {
+            assert_eq!(concrete_path_key(path).as_deref(), Some(path));
+        }
+        let longest = format!("/{}", "x".repeat(15_999));
+        assert!(concrete_path_key(&longest).is_some());
+        assert!(concrete_path_key(&(longest + "x")).is_none());
+        assert!(concrete_path_key(" /tmp/review").is_none());
+        assert!(concrete_path_key("/tmp/review ").is_none());
+    }
     use serde_json::json;
 
     #[test]

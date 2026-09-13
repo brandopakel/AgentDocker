@@ -41,7 +41,7 @@ appearance preferences are read when no new appearance has been saved.
 | --- | --- |
 | Projects | All projects home with the Needs you strip; per project: Sessions, Activity, and under More (Advanced) Channels, Files in use, Command line |
 | Inbox | Questions, retained answer drafts and messages addressed to the user |
-| Tools (rail id `connections`) | Installed tools, explicit capabilities, reviewed setup, health and undo. A tool whose hooks are missing or unverified gets an explicit **Install hooks** action and one sentence on what hooks add (live working, waiting and finished states) |
+| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |
 
 Light and dark appearances share the same hierarchy and the same visual

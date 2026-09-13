@@ -10,6 +10,24 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ## Product and engineering requirements
 
+
+### Combined desktop checkpoint (September 12)
+
+PR #119 consolidates #115–#118 and Claude's messenger, minimal attention and
+Applications-folder branches. The [combined evidence](verification/2026-09-12-integrated-desktop.json)
+records 869 Rust tests, 65 Python checks and 265 native workflow steps, including
+actual Claude input through the Inbox. Twelve installation scenarios preserve
+old hook/MCP paths across activation and rollback. The new UI also passed against
+a schema15 daemon, allowing app updates during active work; the candidate daemon
+uses schema16 and is a separate later switch. Quiet 100-agent UI measurements
+were similar to the installed baseline; no performance improvement is claimed.
+
+Final source review, CI and actual installation records are attached to
+[PR #119](https://github.com/brandopakel/AgentDocker/pull/119). The older checkpoints
+below retain their dated results and pending states; use [Remaining work](REMAINING-WORK.md)
+for current open engineering. Merged branches may be deleted once their commits
+are retained on main; active worktrees remain protected.
+
 ### Installed launcher and setup regression (September 12)
 
 After the local launcher switch, the user's Claude prompts were blocked with

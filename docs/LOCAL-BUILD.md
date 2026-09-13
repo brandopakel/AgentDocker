@@ -10,8 +10,11 @@ make install
 
 Run this from your AgentDocker source checkout. Private temporary directories
 used by engineering tests are not installation prerequisites. The installed Mac
-app is at `~/Applications/AgentDocker.app`; this user Applications folder is
-different from the system `/Applications` folder shown in Finder's usual sidebar.
+app prefers `/Applications/AgentDocker.app` when that folder is writable and the
+name is available or already managed by this installation. Otherwise it uses
+`~/Applications/AgentDocker.app`. The chosen destination persists; when the app
+lives in `/Applications`, the per-user path remains as a compatibility link for
+existing hooks and MCP settings.
 
 Then quit AgentDocker and open it again. The Dock, Spotlight, the `agentdocker`
 and `agentd` commands in `~/.local/bin`, and the MCP entry your agent tools use

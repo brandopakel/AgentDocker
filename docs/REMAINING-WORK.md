@@ -4,20 +4,32 @@ Updated September 12, 2026. This is the current backlog. Dated audits and
 [verification reports](verification/) retain the implementation history,
 source-specific results and failed trials.
 
-## Delivered and awaiting integration
+## Delivered source and current desktop
 
-PRs #98–#114 have merged after final CI and actual source review; the latest
-merge is `71f2b31`. Delivered source includes compact Current/Needs input/History
-views, identity-safe discovery and offline duplicate repair, native notification
-routing, durable queues, opt-in Claude/Codex idle input, shared human/peer
-submission, structured questions and receipts, and update checking/downloads.
-The installed launcher and running daemon have not been replaced.
+PRs #98–#114 provide durable queues, notification routing, shared human/peer
+submission, structured questions, update checking, identity-safe discovery and
+offline duplicate repair. PR #119 consolidates the remaining #115–#118 changes
+and Claude's messenger, minimal-home and Applications-folder work. Its
+[combined checkpoint](verification/2026-09-12-integrated-desktop.json) records
+869 Rust tests, 65 Python checks, 265 native steps, 12 installation scenarios,
+actual Claude delivery and a quiet 100-agent UI comparison. Final CI and review
+status belong to [PR #119](https://github.com/brandopakel/AgentDocker/pull/119).
+The older per-feature checkpoints retain history rather than separate pending
+integration work.
 
-| Candidate | Verified locally | Integration still required |
-| --- | --- | --- |
-| [Turn-scoped Codex permission review](verification/2026-09-12-permission-review.json), PR #115 | 856 Rust tests, 65 Python checks, actual Allow/Deny with three ordered mixed inputs each, and 18 native review/draft/migration steps. Concrete paths and network access are shown; unknown/conflicting grants are refused. | Final CI passed at `70408ab`; actual source review remains. Broader permission forms are separate below. |
-| [Correct CLI sender identity](verification/2026-09-12-cli-sender-identity.json), PR #116 | 859 Rust tests, 65 Python checks, six prior/corrected process scenarios and actual Claude Code 2.1.270 Bash trials. Omitted send/ask/answer/cancel identities use the exact registered provider, preserving the human's question route. | Final CI passed at `359c0b6`; actual source review and integration remain. This does not add idle wake to an existing hook-only session. |
-| [Simpler home and helper filtering](verification/2026-09-12-ux-home.json) | 863 Rust tests and 65 Python checks. Home groups sessions by project, limits attention to three short previews, opens exact questions and preserves drafts/selection. The known Claude Chrome native host is excluded from discovery. Native and actual-provider reports are linked in the evidence. | Final CI, source review and integration remain. The 100-agent measurements varied; a parallel build may have overlapped them, so coordinated quiet remeasurement remains. The installed build still needs the safe switch. |
+| Delivered behavior | Evidence and limits |
+| --- | --- |
+| Simpler home, Inbox and Tools | Home groups agents by project with a short attention strip. Inbox has agent conversations, visible direct-message/question badges, folded text, draft-preserving replies and project-wide send. Setup details are available on demand. Native sends were verified against schema15 and schema16 daemons. |
+| Permission review and correct sender identity | Turn-scoped concrete paths/network grants are shown and returned exactly; ambiguous lexical paths fail closed. Implicit CLI sends use the actual registered provider. Actual Claude shell and interactive channel trials verify sender identity, queue receipts and replies. Broader review types remain below. |
+| Stable Mac launcher and Applications destination | The hook/MCP executable collision is repaired. A writable system Applications folder is preferred, destination selection persists, and the old per-user path remains compatible. Trial prefixes stay contained. Packaged activation/rollback/uninstall and Launch Services checks pass; actual activation evidence is recorded on PR #119. |
+| Notification and question navigation | Destinations select the correct conversation and retain other drafts. Existing-window and cold-window native routes pass. Physical Notification Center and signed posting remain below. |
+
+`make install` from the repository root updates the app and CLI without stopping
+active agents. `agentdocker desktop status` reports the installed source and
+application path. The running daemon keeps its existing version until an explicit
+safe restart; a successful app installation does not complete live replacement
+or activate newer daemon-only features. The earlier blocked Claude prompt was
+repaired, installed and confirmed by the user.
 
 The [30-minute actual Codex trial](verification/2026-09-12-thirty-minute-codex-queue.json)
 passed 60 ordered human/peer inputs and exact replies, seven read-response cuts,
@@ -47,7 +59,7 @@ replacement acceptance.
 | --- | --- |
 | Apple signing/notarization | Supply a Developer ID Application identity and private notary profile; run signing, notarization, stapling and Gatekeeper checks on the final app/DMG before publication. Packaging automation exists; ad-hoc signing only verifies a local preview. The September 12 identity check found no valid signing identities. |
 | Human accessibility/IME trials | Run the input trials above and record findings on the actual candidate. Automated control/accessibility checks do not replace them. |
-| Switch the old launcher after sessions finish | Verify package and installation preview, account for provider/service paths, then activate and check app/CLI/daemon versions with rollback available. A launcher update affects future launches and does not upgrade the running daemon. The old daemon lacks the live-transfer protocol. |
+| Switch the running daemon after sessions finish | App/CLI activation can preserve current sessions; restart the old daemon explicitly only when its work can safely end. Verify the successor source/schema and retained state. The old daemon lacks live transfer, so an app update does not complete this step. |
 | Independent release acceptance | Run second-Mac, Intel and target-Linux trials and sustained actual-provider sessions against the final candidate. |
 
 See [desktop distribution](DESKTOP-DISTRIBUTION.md) for signing and private
