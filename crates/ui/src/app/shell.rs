@@ -35,6 +35,8 @@ pub(super) struct State {
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
     pub message_detail: Option<MessageId>,
+    /// The conversation open in Inbox: one agent, or every agent at once.
+    pub inbox_thread: Option<String>,
     pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
@@ -179,6 +181,10 @@ pub enum Message {
     ConnectionDetails(String),
     ReviewFiles(MessageId),
     QuestionDetails(MessageId),
+    /// Open one agent's conversation in Inbox, or all of them.
+    SelectThread(Option<String>),
+    /// Send the agent's draft to everyone in its project as well.
+    SendProject(String),
     OtherTools,
     AddPath(String),
     ShowAdd,
@@ -591,6 +597,25 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::SelectThread(agent) => {
+                self.shell.inbox_thread = agent;
+                self.shell.message_detail = None;
+            }
+            Message::SendProject(id) => {
+                let project = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == self.canonical_agent(&id))
+                    .and_then(|a| a.project.as_ref().map(|p| p.id().to_string()));
+                if self.connected.is_ok()
+                    && let Some(project) = project
+                    && let Some(entry) = self.shell.session_drafts.get_mut(&id)
+                    && let Some(text) = entry.draft.begin()
+                {
+                    entry.queued = None;
+                    self.send(Cmd::ProjectSend(id, project, text));
+                }
+            }
             Message::QuestionDetails(id) => {
                 if self.inbox.iter().any(|message| message.id == id) {
                     self.shell.message_detail =
@@ -943,7 +968,10 @@ impl App {
                     self.send(Cmd::Setup(args));
                 }
             }
-            Message::SetupClose => self.setup_plan = None,
+            Message::SetupClose => {
+                self.setup_plan = None;
+                self.setup_health = None;
+            }
             Message::DesktopSource(value) => {
                 if !self.desktop.busy {
                     self.desktop.source = value;

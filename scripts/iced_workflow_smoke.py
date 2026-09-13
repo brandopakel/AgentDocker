@@ -198,7 +198,7 @@ def smoke(binary_dir, output):
                          step("click", id="connections"), step("capture", name="connections"),
                          step("click", id="connection-details-codex"), step("wait_text", text="MCP:"),
                          step("click", id="connection-details-codex"), step("click", id="setup-codex"),
-                         step("wait_text", text="Review integration changes"), step("capture", name="setup-review"),
+                         step("wait_text", text="Connect Codex"), step("capture", name="setup-review"),
                          step("click", id="apply-setup"), step("wait_text", text="Setup applied"),
                          step("click", id="undo-setup"), step("wait_text", text="Setup undone"), step("click", id="close-setup"),
                          step("click", id="add-project"), step("fill", id="project-path", text=str(pinned)),
