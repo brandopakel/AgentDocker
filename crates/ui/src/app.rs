@@ -99,6 +99,9 @@ enum Cmd {
     Launch(Box<agentdocker_core::AgentSpec>),
     ChannelSend(String, String),
     SessionSend(String, String),
+    /// Text from the person to every agent in a project, receipted under
+    /// the agent whose conversation it was typed in.
+    ProjectSend(String, String, String),
 }
 
 /// A bounded, read-only log snapshot. No console command is constructed, and
@@ -470,7 +473,7 @@ impl App {
                         .or_default()
                         .complete(Err(reason.into()));
                 }
-                Cmd::SessionSend(id, _) => {
+                Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
                         entry.draft.complete(Err(reason.into()));
                     }
@@ -1200,7 +1203,7 @@ fn spawn_worker(
                         _ => None,
                     };
                     let session = match &daemon {
-                        Cmd::SessionSend(id, _) => Some(id.clone()),
+                        Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => Some(id.clone()),
                         _ => None,
                     };
                     let outcome = run(&client, daemon);
@@ -1449,6 +1452,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),
                 to: agent.clone(),
+                kind: "message".into(),
+                payload: serde_json::Value::String(text),
+                reply_to: None,
+            })?;
+            let result = match response {
+                Response::Sent { message, .. } => Ok(message),
+                _ => Err("Unexpected message response".into()),
+            };
+            Some(Msg::SessionSent(agent, result))
+        }
+        Cmd::ProjectSend(agent, project, text) => {
+            let response = client.call(&Request::Send {
+                from: agentdocker_core::HUMAN.into(),
+                to: format!("project:{project}"),
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
