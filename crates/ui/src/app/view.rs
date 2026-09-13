@@ -1879,9 +1879,12 @@ impl App {
         const FOLD: usize = 420;
         let id = message.id.clone();
         let payload = spoken_payload(&message.payload);
-        let long = payload.chars().count() > FOLD || payload.lines().count() > 8;
+        let question = message.kind == "question";
+        let long = question || payload.chars().count() > FOLD || payload.lines().count() > 8;
         let expanded = self.shell.message_detail.as_ref() == Some(&id);
-        let shown_text = if long && !expanded {
+        let shown_text = if question && !expanded {
+            first_line(&payload, 160)
+        } else if long && !expanded {
             let head: String = payload.lines().take(8).collect::<Vec<_>>().join("\n");
             let head: String = head.chars().take(FOLD).collect();
             format!("{head}…")
@@ -1915,7 +1918,12 @@ impl App {
         if long {
             body = body.push(action(
                 format!("message-detail-{id}"),
-                if expanded { "Show less" } else { "Show more" },
+                match (question, expanded) {
+                    (true, true) => "Hide question",
+                    (true, false) => "Show question",
+                    (false, true) => "Show less",
+                    (false, false) => "Show more",
+                },
                 Some(Message::QuestionDetails(id.clone())),
                 false,
             ));

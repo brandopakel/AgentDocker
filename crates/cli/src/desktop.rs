@@ -1099,96 +1099,97 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         .context("cannot locate home; provide --prefix")?;
     let layout = Layout::new(prefix)?;
     let active = layout.active()?;
-    let (source, candidate, preview, local_preview, expect_release, expect_current) =
-        match args.command {
-            DesktopCommand::Uninstall {
-                preview,
-                expect_plan,
-            } => {
-                return maintenance::run(&layout, None, preview, expect_plan.as_deref());
-            }
-            DesktopCommand::Prune {
-                keep,
-                preview,
-                expect_plan,
-            } => {
-                return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
-            }
-            DesktopCommand::Status => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &json!({"prefix":layout.prefix,"installation":active})
-                    )?
-                );
-                return Ok(());
-            }
-            DesktopCommand::Update {
-                feed,
-                check,
-                apply,
-                local_preview,
-                socket,
-            } => {
-                return update::run(
-                    &layout,
-                    active.as_ref(),
-                    update::Options {
-                        feed,
-                        check,
-                        apply,
-                        local_preview,
-                        socket,
-                    },
-                );
-            }
-            DesktopCommand::Install {
-                from,
+    let (source, candidate, preview, local_preview, expect_release, expect_current) = match args
+        .command
+    {
+        DesktopCommand::Uninstall {
+            preview,
+            expect_plan,
+        } => {
+            return maintenance::run(&layout, None, preview, expect_plan.as_deref());
+        }
+        DesktopCommand::Prune {
+            keep,
+            preview,
+            expect_plan,
+        } => {
+            return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
+        }
+        DesktopCommand::Status => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active})
+                )?
+            );
+            return Ok(());
+        }
+        DesktopCommand::Update {
+            feed,
+            check,
+            apply,
+            local_preview,
+            socket,
+        } => {
+            return update::run(
+                &layout,
+                active.as_ref(),
+                update::Options {
+                    feed,
+                    check,
+                    apply,
+                    local_preview,
+                    socket,
+                },
+            );
+        }
+        DesktopCommand::Install {
+            from,
+            preview,
+            local_preview,
+            expect_release,
+            expect_current,
+        } => {
+            let (source, candidate) = inspect(&from, local_preview)?;
+            (
+                source,
+                candidate,
                 preview,
                 local_preview,
                 expect_release,
                 expect_current,
-            } => {
-                let (source, candidate) = inspect(&from, local_preview)?;
-                (
-                    source,
-                    candidate,
-                    preview,
-                    local_preview,
-                    expect_release,
-                    expect_current,
-                )
-            }
-            DesktopCommand::Rollback {
+            )
+        }
+        DesktopCommand::Rollback {
+            preview,
+            local_preview,
+            expect_release,
+            expect_current,
+        } => {
+            let active = active.as_ref().context("no active desktop installation")?;
+            let previous = active
+                .previous
+                .as_ref()
+                .context("no previous desktop version")?;
+            ensure!(
+                previous.state_schema == active.current.state_schema,
+                "state schema differs; binary rollback cannot roll back the database"
+            );
+            let (source, candidate) = inspect(&layout.payload(previous), local_preview)?;
+            ensure!(
+                candidate.id == previous.id,
+                "retained rollback version was modified"
+            );
+            (
+                source,
+                candidate,
                 preview,
                 local_preview,
                 expect_release,
                 expect_current,
-            } => {
-                let active = active.as_ref().context("no active desktop installation")?;
-                let previous = active
-                    .previous
-                    .as_ref()
-                    .context("no previous desktop version")?;
-                ensure!(
-                    previous.state_schema == active.current.state_schema,
-                    "state schema differs; binary rollback cannot roll back the database"
-                );
-                let (source, candidate) = inspect(&layout.payload(previous), local_preview)?;
-                ensure!(
-                    candidate.id == previous.id,
-                    "retained rollback version was modified"
-                );
-                (
-                    source,
-                    candidate,
-                    preview,
-                    local_preview,
-                    expect_release,
-                    expect_current,
-                )
-            }
-        };
+            )
+        }
+    };
     let report = perform(
         &layout,
         active,
@@ -1456,7 +1457,7 @@ mod tests {
     fn the_system_applications_folder_is_chosen_only_for_the_home_prefix_when_free_or_ours() {
         let tmp = tempfile::tempdir().unwrap();
         let home = project::try_canonical(tmp.path()).unwrap();
-        let system = tmp.path().join("Applications");
+        let system = home.join("Applications");
         std::fs::create_dir(&system).unwrap();
         // Home prefix, writable folder, nothing there: use it.
         assert_eq!(
