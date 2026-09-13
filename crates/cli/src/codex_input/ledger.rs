@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
-        for version in 1..=5 {
+        for version in 1..=6 {
             let home = tempfile::tempdir().unwrap();
             let binding = binding(home.path());
             let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
@@ -243,11 +243,69 @@ mod tests {
                 .contains("legacy input cannot supply file-change review receipts")
         );
         assert_eq!(std::fs::read(&path).unwrap(), old);
+        let mut version_six: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        version_six["version"] = serde_json::json!(6);
+        let version_six = serde_json::to_vec(&version_six).unwrap();
+        std::fs::write(&path, &version_six).unwrap();
+        let old_files = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert_eq!(
+            old_files.record().reviews[0].questions[0].presentation,
+            Some(presentation.clone())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), version_six);
+        drop(old_files);
         std::fs::write(&path, &original).unwrap();
         let reopened = Ledger::open(home.path(), binding).unwrap();
         assert_eq!(
             reopened.record().reviews[0].questions[0].presentation,
             Some(presentation)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn permission_review_history_requires_version_seven_without_rewriting_legacy_state() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        ledger.prepare(&message()).unwrap();
+        let event = serde_json::json!({"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"permissions","cwd":"/owned","permissions":{"fileSystem":{"write":["/owned/output"]}}}});
+        let pending = super::super::review::Pending::plan(
+            &event,
+            "thread",
+            Some("turn"),
+            "human",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let presentation = pending.questions[0].presentation.clone();
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews.push(pending);
+                Ok(true)
+            })
+            .unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let original = std::fs::read(&path).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        legacy["version"] = serde_json::json!(6);
+        let legacy = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &legacy).unwrap();
+        assert!(
+            Ledger::open(home.path(), binding.clone())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("legacy input cannot supply permission review receipts")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), legacy);
+        std::fs::write(&path, &original).unwrap();
+        let reopened = Ledger::open(home.path(), binding).unwrap();
+        assert_eq!(
+            reopened.record().reviews[0].questions[0].presentation,
+            presentation
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
@@ -515,6 +573,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 7
+                || (self.reviews.iter().all(|r| !r.is_permission_review())
+                    && self
+                        .closed_reviews
+                        .iter()
+                        .all(|r| !r.request.is_permission_review())),
+            "legacy input cannot supply permission review receipts"
+        );
+        ensure!(
             self.version >= 6
                 || (self.reviews.iter().all(|r| !r.is_file_review())
                     && self
@@ -531,7 +598,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=5)
+                || matches!(self.version, 3..=6)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()

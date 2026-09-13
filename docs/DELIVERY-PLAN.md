@@ -10,6 +10,57 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ## Product and engineering requirements
 
+
+### Combined desktop checkpoint (September 12)
+
+PR #119 consolidates #115–#118 and Claude's messenger, minimal attention and
+Applications-folder branches. The [combined evidence](verification/2026-09-12-integrated-desktop.json)
+records 869 Rust tests, 65 Python checks and 265 native workflow steps, including
+actual Claude input through the Inbox. Twelve installation scenarios preserve
+old hook/MCP paths across activation and rollback. The new UI also passed against
+a schema15 daemon, allowing app updates during active work; the candidate daemon
+uses schema16 and is a separate later switch. Quiet 100-agent UI measurements
+were similar to the installed baseline; no performance improvement is claimed.
+
+Final source review, CI and actual installation records are attached to
+[PR #119](https://github.com/brandopakel/AgentDocker/pull/119). The older checkpoints
+below retain their dated results and pending states; use [Remaining work](REMAINING-WORK.md)
+for current open engineering. Merged branches may be deleted once their commits
+are retained on main; active worktrees remain protected.
+
+### Installed launcher and setup regression (September 12)
+
+After the local launcher switch, the user's Claude prompts were blocked with
+`unknown argument: hook`. The real launcher named its executable `AgentDocker`;
+on a case-insensitive Mac filesystem this also answered the legacy lowercase
+`agentdocker` path, forwarding hook and MCP arguments into the GUI. Both Claude
+and Codex still had MCP entries at that older path. This is an installation
+regression, unrelated to Apple membership or account authorization.
+
+The installed launcher received a backed-up compatibility repair, and the user
+confirmed that an ordinary prompt submitted in the existing Claude session.
+The permanent candidate keeps a real app bundle, uses `agentdocker-ui` as its
+launch executable, and preserves all three legacy command paths as links through
+the managed active release. Acceptance must execute hooks and MCP through those
+paths after initial installation, upgrade and rollback; checking file contents
+or the package's direct CLI alone misses the defect. The [repair checkpoint](verification/2026-09-12-launcher-hook-repair.json)
+passed 852 Rust tests, 65 Python checks, 12 packaged installation scenarios,
+and a real Launch Services open/render/exit trial. The tested package was
+installed over the marked script launcher with provider configuration and active
+process identities preserved. Claude source review passed; GitHub CI and
+CodeRabbit review remain pending before integration.
+
+Setup follow-up requirements remain open: the normal managed Codex bridge/MCP
+flow should not require optional lifecycle hooks; show provider trust instructions
+only when the selected integration needs them. Distinguish configured, connected,
+input-ready and observed activity rather than showing an unverified green state.
+Account authorization and local integration are separate steps internally, but
+the app must guide and verify them without asking users to diagnose commands.
+Make the installed application discoverable from the app and Finder; any change
+to the default application directory must persist its destination across update,
+rollback and uninstall and preserve existing absolute integration paths. Private
+test worktrees must never become end-user installation instructions.
+
 ### Submitted-input parity and idle wake (September 10)
 
 The user requires peer messages to follow the same provider input workflow and

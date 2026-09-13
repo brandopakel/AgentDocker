@@ -1,0 +1,546 @@
+{
+  "format": 1,
+  "recorded_date": "2026-09-12",
+  "result": "local acceptance and actual Claude shell sender trial passed; final CI/source review pending",
+  "runtime_build": {
+    "format": 1,
+    "source_commit": "fc97f8b10eda2d96768da11cfecb5bae8520ac3c",
+    "source_tree": "4cacdf8400cfcf16359e54316fe3de85a99e0c90",
+    "source_input_sha256": "e208b2a7749924f9fa234d8a21c669f98e4ca842f3ca7a8dfaaac15d65001448",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 16,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "6b60293d74d47476a0b45f98232f62ae1016eb0bfcdcd1d9f8f443c31a26cc46",
+      "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+      "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+    }
+  },
+  "validation": {
+    "rust_passed": 859,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "full_gate": "passed",
+    "full_log": "/private/tmp/agentdocker-cli-sender-check-2026-09-12.log",
+    "full_log_sha256": "a630c0d9d6de394a4a75b57af823815bc75bd0ac6389223e70330eaa42dbdb16"
+  },
+  "process_trials": [
+    {
+      "result": "reproduced",
+      "scope": "Real CLI sender inference beneath an owned native provider-shaped process; this is not an actual Claude model trial.",
+      "mode": "baseline",
+      "build": {
+        "format": 1,
+        "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+        "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+        "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+          "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+          "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+        }
+      },
+      "driver_sha256": "aceccec098492b3e92c12d03b19a773f5224d5a10e70852cb58265a1cd3d6497",
+      "parent_sha256": "2f38aa62d41cec0a61e6493b9a22c5a0705c92395c72c21a904a8d02e99be9ce",
+      "cases": [
+        {
+          "case": "send",
+          "cli_exit": 0,
+          "output": [
+            "3ee28f199e484e82 (0 live subscriber(s))"
+          ],
+          "provider": "5b2573fcce3b454ea746729838ad5330",
+          "provider_pid": 1646,
+          "provider_birth": "2026-09-12T22:15:36.307805Z",
+          "message": {
+            "id": "3ee28f199e484e82",
+            "from": "6ab9a9e3f7624ff2943d3be8b7d4cb79",
+            "to": {
+              "kind": "agent",
+              "value": "68fb98748e8346e2aadc7d9f9d0d2c85"
+            },
+            "kind": "chat",
+            "payload": {
+              "text": "sender fixture"
+            },
+            "sent_at": "2026-09-12T22:15:36.573449Z"
+          },
+          "reply": "f6b48dc1c77f46b0",
+          "reply_destination": "6ab9a9e3f7624ff2943d3be8b7d4cb79"
+        },
+        {
+          "case": "explicit_user",
+          "cli_exit": 0,
+          "output": [
+            "91dbbaa785ac4a4f (0 live subscriber(s))"
+          ],
+          "provider": "9c60d4afecfe4b3a9b14091599f937e8",
+          "provider_pid": 1666,
+          "provider_birth": "2026-09-12T22:15:36.576243Z",
+          "message": {
+            "id": "91dbbaa785ac4a4f",
+            "from": "6ab9a9e3f7624ff2943d3be8b7d4cb79",
+            "to": {
+              "kind": "agent",
+              "value": "68fb98748e8346e2aadc7d9f9d0d2c85"
+            },
+            "kind": "chat",
+            "payload": {
+              "text": "explicit human"
+            },
+            "sent_at": "2026-09-12T22:15:36.613623Z"
+          },
+          "reply": "cc70f6fc2b184a6a",
+          "reply_destination": "6ab9a9e3f7624ff2943d3be8b7d4cb79"
+        },
+        {
+          "case": "ask",
+          "cli_exit": 0,
+          "output": [
+            "bccfcdd9c7814ef1"
+          ],
+          "provider": "198efeba52a94be197c697df428b3d41",
+          "provider_pid": 1687,
+          "provider_birth": "2026-09-12T22:15:36.616348Z",
+          "question": "bccfcdd9c7814ef1",
+          "asker": "6ab9a9e3f7624ff2943d3be8b7d4cb79",
+          "answer_destination": "6ab9a9e3f7624ff2943d3be8b7d4cb79"
+        },
+        {
+          "case": "answer_human",
+          "cli_exit": 0,
+          "output": [
+            "4ce8217b659c4e32"
+          ],
+          "provider": "3eb73568b03f4389960f5ed6aa8fbcd5",
+          "provider_pid": 1707,
+          "provider_birth": "2026-09-12T22:15:36.659997Z",
+          "question": "ee861902450a4326",
+          "human_route_still_open": false
+        },
+        {
+          "case": "cancel",
+          "cli_exit": 1,
+          "output": [
+            "Error: only the asker can cancel this question (Forbidden)"
+          ],
+          "provider": "3050a20b193d411ab49c9f266d669913",
+          "provider_pid": 1728,
+          "provider_birth": "2026-09-12T22:15:36.703418Z",
+          "question": "c685b6d7e2eb4d13",
+          "human_route_still_open": true
+        },
+        {
+          "case": "unregistered",
+          "cli_exit": 0,
+          "output": [
+            "47f6bca907d64fba (0 live subscriber(s))"
+          ],
+          "provider": null,
+          "provider_pid": 1748,
+          "provider_birth": null,
+          "message": {
+            "id": "47f6bca907d64fba",
+            "from": "6ab9a9e3f7624ff2943d3be8b7d4cb79",
+            "to": {
+              "kind": "agent",
+              "value": "68fb98748e8346e2aadc7d9f9d0d2c85"
+            },
+            "kind": "chat",
+            "payload": {
+              "text": "unknown provider"
+            },
+            "sent_at": "2026-09-12T22:15:36.748097Z"
+          },
+          "reply": "e5071b5efe194802",
+          "reply_destination": "6ab9a9e3f7624ff2943d3be8b7d4cb79"
+        }
+      ],
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-cli-sender-baseline-live-2026-09-12/result.json",
+        "sha256": "97daea1b11395c55d09d1efe909ce5df53860dad8e7d8090eb553226a68ec509"
+      }
+    },
+    {
+      "result": "passed",
+      "scope": "Real CLI sender inference beneath an owned native provider-shaped process; this is not an actual Claude model trial.",
+      "mode": "corrected",
+      "build": {
+        "format": 1,
+        "source_commit": "fc97f8b10eda2d96768da11cfecb5bae8520ac3c",
+        "source_tree": "4cacdf8400cfcf16359e54316fe3de85a99e0c90",
+        "source_input_sha256": "e208b2a7749924f9fa234d8a21c669f98e4ca842f3ca7a8dfaaac15d65001448",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "6b60293d74d47476a0b45f98232f62ae1016eb0bfcdcd1d9f8f443c31a26cc46",
+          "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+          "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+        }
+      },
+      "driver_sha256": "aceccec098492b3e92c12d03b19a773f5224d5a10e70852cb58265a1cd3d6497",
+      "parent_sha256": "2f38aa62d41cec0a61e6493b9a22c5a0705c92395c72c21a904a8d02e99be9ce",
+      "cases": [
+        {
+          "case": "send",
+          "cli_exit": 0,
+          "output": [
+            "41cacc0457924357 (0 live subscriber(s))"
+          ],
+          "provider": "7ca1378ac18d407292111ce74f0f6172",
+          "provider_pid": 2591,
+          "provider_birth": "2026-09-12T22:16:28.538005Z",
+          "message": {
+            "id": "41cacc0457924357",
+            "from": "7ca1378ac18d407292111ce74f0f6172",
+            "to": {
+              "kind": "agent",
+              "value": "426807573b2c44c492d6b3bcda024ff5"
+            },
+            "kind": "chat",
+            "payload": {
+              "text": "sender fixture"
+            },
+            "sent_at": "2026-09-12T22:16:28.862660Z"
+          },
+          "reply": "f25ab55794734d09",
+          "reply_destination": "7ca1378ac18d407292111ce74f0f6172"
+        },
+        {
+          "case": "explicit_user",
+          "cli_exit": 0,
+          "output": [
+            "4b6e90c4eace4be7 (0 live subscriber(s))"
+          ],
+          "provider": "ba8af7a6b82a4f588504794ae27830b5",
+          "provider_pid": 2620,
+          "provider_birth": "2026-09-12T22:16:28.865825Z",
+          "message": {
+            "id": "4b6e90c4eace4be7",
+            "from": "5be612424435433e8ab859c5dbcd398d",
+            "to": {
+              "kind": "agent",
+              "value": "426807573b2c44c492d6b3bcda024ff5"
+            },
+            "kind": "chat",
+            "payload": {
+              "text": "explicit human"
+            },
+            "sent_at": "2026-09-12T22:16:28.912894Z"
+          },
+          "reply": "2c738d2c3a074ae7",
+          "reply_destination": "5be612424435433e8ab859c5dbcd398d"
+        },
+        {
+          "case": "ask",
+          "cli_exit": 0,
+          "output": [
+            "32ffec4f27e24328"
+          ],
+          "provider": "b7706bec3ae741daa568848829208269",
+          "provider_pid": 2640,
+          "provider_birth": "2026-09-12T22:16:28.915625Z",
+          "question": "32ffec4f27e24328",
+          "asker": "b7706bec3ae741daa568848829208269",
+          "answer_destination": "b7706bec3ae741daa568848829208269"
+        },
+        {
+          "case": "answer_human",
+          "cli_exit": 1,
+          "output": [
+            "Error: this question was addressed to another recipient (Forbidden)"
+          ],
+          "provider": "82c9180e4b514a599a03e9efcdbfa123",
+          "provider_pid": 2669,
+          "provider_birth": "2026-09-12T22:16:28.988022Z",
+          "question": "d0bcc2f418de4317",
+          "human_route_still_open": true
+        },
+        {
+          "case": "cancel",
+          "cli_exit": 0,
+          "output": [],
+          "provider": "b49c68e1d9494f65902a0e9b8e26c837",
+          "provider_pid": 2698,
+          "provider_birth": "2026-09-12T22:16:29.061772Z",
+          "question": "edea5856d80047ce",
+          "human_route_still_open": false
+        },
+        {
+          "case": "unregistered",
+          "cli_exit": 1,
+          "output": [
+            "Error: provider caller has no unique live registered identity; use its bound MCP tools or specify the sender explicitly"
+          ],
+          "provider": null,
+          "provider_pid": 2727,
+          "provider_birth": null
+        }
+      ],
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-cli-sender-fixed-live-2026-09-12/result.json",
+        "sha256": "ee0a60d26dce0eec129ae9836f640c6d765b0eeff81643c63f5184816c2d5520"
+      }
+    }
+  ],
+  "live_coordination_observation": {
+    "messages": "Parallel Claude self-identification arrived under the registered human sender; replies were consequently queued for the person. Actual Claude ID was then used.",
+    "provenance": "Exact invocation from the parallel Claude session still awaiting confirmation. The omitted CLI sender path reproduces this observed pattern."
+  },
+  "scope_limits": [
+    "Process trials use an owned native executable named claude to exercise actual CLI process ancestry; they do not run a Claude model.",
+    "Separate actual Claude Code 2.1.270 print-mode trials reproduce the prior human attribution and verify the corrected provider identity using the exact same Bash command with no sender flag and AGENTDOCKER_AGENT_ID unset. The reply destination is verified after the one-shot model exits; consumption or idle wake is not claimed by this trial.",
+    "Sender flags and AGENTDOCKER_AGENT_ID remain authoritative. This prevents implicit misattribution, not an authentication boundary against explicit sender selection.",
+    "No automatic provider registration or generic wrapper merging. Ambiguous/missing provider identity is refused.",
+    "Existing hook-only sessions still require a provider input adapter for idle wake. No default daemon or installed launcher was changed."
+  ],
+  "actual_claude_shell_trials": [
+    {
+      "result": "reproduced",
+      "scope": "Actual Claude print-mode model sends through Bash with implicit CLI sender.",
+      "mode": "baseline",
+      "build": {
+        "format": 1,
+        "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+        "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+        "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+          "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+          "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+        }
+      },
+      "driver_sha256": "77379fc38f680cb5c065fda8dbca7633ecac3dca4883a972ffb65c27e307647a",
+      "authentication_scope": "Existing access token in owned child environment only; no login or refresh",
+      "provider_version": "2.1.270 (Claude Code)",
+      "provider_pid": 11297,
+      "provider_exit": 0,
+      "agent": {
+        "id": "9e3e2aeeddb74d75935fc85c7ea38f54",
+        "spec": {
+          "name": "owned-shell-trial",
+          "runtime": "claude-code",
+          "command": [],
+          "workdir": "/private/tmp/agentdocker-claude-shell-sender-baseline-live-2026-09-12/workspace",
+          "env": {},
+          "labels": {
+            "registrar": "57bbd8a6-2d71-410e-b601-a4ee51e21639",
+            "via": "mcp"
+          }
+        },
+        "status": {
+          "state": "running"
+        },
+        "host": "local",
+        "pid": 11297,
+        "process_started_at": "2026-09-12T22:26:45.696326Z",
+        "managed": false,
+        "project": {
+          "root": "/private/tmp/agentdocker-claude-shell-sender-baseline-live-2026-09-12/workspace",
+          "source": "git"
+        },
+        "vcs": {
+          "branch": "main",
+          "updated_at": "2026-09-12T22:27:04.648307Z"
+        },
+        "created_at": "2026-09-12T22:26:46.526471Z",
+        "started_at": "2026-09-12T22:26:46.526484Z",
+        "last_seen": "2026-09-12T22:26:46.526471Z"
+      },
+      "message": {
+        "id": "c1d0d56aeca34186",
+        "from": "14aca4a1f6ab49eb97f7b6c17095a487",
+        "to": {
+          "kind": "agent",
+          "value": "ddf3ad3ae88349c3916b6ff64bfd1495"
+        },
+        "kind": "chat",
+        "payload": {
+          "text": "SHELL_SENDER_83BA"
+        },
+        "sent_at": "2026-09-12T22:27:05.495432Z"
+      },
+      "reply": "c2577cac49fb4808",
+      "reply_destination": "14aca4a1f6ab49eb97f7b6c17095a487",
+      "shell_command": "env -u AGENTDOCKER_AGENT_ID /private/tmp/agentdocker-permission-mirror-binaries-2026-09-12/agentdocker send --to ddf3ad3ae88349c3916b6ff64bfd1495 SHELL_SENDER_83BA",
+      "tool_names": [
+        "mcp__agentdocker__list_agents",
+        "Bash"
+      ],
+      "limit": "One-shot Claude exits before reply; this verifies sender and reply queue destination, not reply consumption or idle wake",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "user_configuration_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-claude-shell-sender-baseline-live-2026-09-12/result.json",
+        "sha256": "ecf050e3c45ccffcc4cf34a274422a64075d67f1d8ced92510b45c899c743507"
+      }
+    },
+    {
+      "result": "passed",
+      "scope": "Actual Claude print-mode model sends through Bash with implicit CLI sender.",
+      "mode": "fixed",
+      "build": {
+        "format": 1,
+        "source_commit": "fc97f8b10eda2d96768da11cfecb5bae8520ac3c",
+        "source_tree": "4cacdf8400cfcf16359e54316fe3de85a99e0c90",
+        "source_input_sha256": "e208b2a7749924f9fa234d8a21c669f98e4ca842f3ca7a8dfaaac15d65001448",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "6b60293d74d47476a0b45f98232f62ae1016eb0bfcdcd1d9f8f443c31a26cc46",
+          "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+          "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+        }
+      },
+      "driver_sha256": "77379fc38f680cb5c065fda8dbca7633ecac3dca4883a972ffb65c27e307647a",
+      "authentication_scope": "Existing access token in owned child environment only; no login or refresh",
+      "provider_version": "2.1.270 (Claude Code)",
+      "provider_pid": 12183,
+      "provider_exit": 0,
+      "agent": {
+        "id": "622dbdaefa8240949c0514dbfa99f7d4",
+        "spec": {
+          "name": "owned-shell-trial",
+          "runtime": "claude-code",
+          "command": [],
+          "workdir": "/private/tmp/agentdocker-claude-shell-sender-fixed-live-2026-09-12/workspace",
+          "env": {},
+          "labels": {
+            "registrar": "53471b8f-bc53-4732-8db1-86ee0f32eef4",
+            "via": "mcp"
+          }
+        },
+        "status": {
+          "state": "running"
+        },
+        "host": "local",
+        "pid": 12183,
+        "process_started_at": "2026-09-12T22:27:17.648021Z",
+        "managed": false,
+        "project": {
+          "root": "/private/tmp/agentdocker-claude-shell-sender-fixed-live-2026-09-12/workspace",
+          "source": "git"
+        },
+        "vcs": {
+          "branch": "main",
+          "updated_at": "2026-09-12T22:27:31.603683Z"
+        },
+        "created_at": "2026-09-12T22:27:18.110099Z",
+        "started_at": "2026-09-12T22:27:18.110114Z",
+        "last_seen": "2026-09-12T22:27:32.913106Z"
+      },
+      "message": {
+        "id": "9c76e5f68d594e2d",
+        "from": "622dbdaefa8240949c0514dbfa99f7d4",
+        "to": {
+          "kind": "agent",
+          "value": "caae7dcf8d354f5da655a5aabaa6c8a6"
+        },
+        "kind": "chat",
+        "payload": {
+          "text": "SHELL_SENDER_83BA"
+        },
+        "sent_at": "2026-09-12T22:27:32.913087Z"
+      },
+      "reply": "87ed35dd05314e5c",
+      "reply_destination": "622dbdaefa8240949c0514dbfa99f7d4",
+      "shell_command": "env -u AGENTDOCKER_AGENT_ID /private/tmp/agentdocker-cli-sender-binaries-2026-09-12/agentdocker send --to caae7dcf8d354f5da655a5aabaa6c8a6 SHELL_SENDER_83BA",
+      "tool_names": [
+        "mcp__agentdocker__list_agents",
+        "Bash"
+      ],
+      "limit": "One-shot Claude exits before reply; this verifies sender and reply queue destination, not reply consumption or idle wake",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "user_configuration_unchanged": true,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-claude-shell-sender-fixed-live-2026-09-12/result.json",
+        "sha256": "15ee764175d7e10c8124656a2ef615cf4e0206ec28b0fb425052e7838d90f8cb"
+      }
+    }
+  ],
+  "integrated_checkpoint": {
+    "source_commit": "5e7f98dbb7a0dd394c81d4c1f9bd929685a336b2",
+    "base_permission_pr": 115,
+    "runtime_and_scripts_identical_to": "fc97f8b10eda2d96768da11cfecb5bae8520ac3c",
+    "full_gate": "passed",
+    "rust_passed": 859,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "full_log": "/private/tmp/agentdocker-cli-sender-integrated-check-2026-09-12.log",
+    "full_log_sha256": "6ea988d2bf49c81e99f64de45ed18a16453611693b022749ccf9c51abcb4d214"
+  }
+}

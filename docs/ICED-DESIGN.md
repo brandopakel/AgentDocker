@@ -19,7 +19,7 @@ repository root joins pinned folders, discovered processes and registered
 sessions. Registered project fingerprints supersede weaker discovery metadata.
 Linked worktrees stay grouped under their repository; individual sessions retain
 checkout and branch details. A launch uses the selected repository root shown
-in the header. Unassigned sessions have their own entry when a project cannot
+in the header. Other sessions have their own entry when a project cannot
 be established. An installed desktop provider alone does not reveal its projects.
 
 The app restores the last selected project and appearance on launch. Restoring
@@ -39,9 +39,9 @@ appearance preferences are read when no new appearance has been saved.
 
 | Destination | Everyday purpose |
 | --- | --- |
-| Projects | Sessions and contextual Activity, Channels, Coordination and Commands |
+| Projects | All projects home with the Needs you strip; per project: Sessions, Activity, and under More (Advanced) Channels, Files in use, Command line |
 | Inbox | Questions, retained answer drafts and messages addressed to the user |
-| Connections | Installed tools, explicit capabilities, reviewed setup, health and undo. A tool whose hooks are missing or unverified gets an explicit **Install hooks** action and one sentence on what hooks add (live working, waiting and finished states) |
+| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |
 
 Light and dark appearances share the same hierarchy and the same visual
@@ -153,7 +153,7 @@ Current sessions are the default; finished runs live in History and unanswered
 questions have a project-scoped Needs input filter. Current rows prioritize
 questions, then newest sessions, with ID as a stable tie-breaker. Search includes
 name, runtime, branch and session ID. Filter counts reflect that search.
-Coordination, Commands and project management live under More. Connections shows
+Channels, Files in use, Command line and project management live under More, the one Advanced door. Tools shows
 installed tools first and expands technical details on request. Full daemon
 records remain intact: these are view filters, not registry deletion or migration.
 Discovery suppresses known Codex Node launchers with a native child; the UI also

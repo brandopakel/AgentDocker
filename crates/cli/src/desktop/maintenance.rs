@@ -100,8 +100,16 @@ fn plan(
                 plan.remove.push(path);
             }
         }
-        if !cfg!(target_os = "macos") && layout.application.symlink_metadata().is_ok() {
+        // The Linux launcher file, or the macOS launcher bundle (or the
+        // symlink earlier releases installed); preflight has already
+        // refused anything at that path that is not ours.
+        if layout.application.symlink_metadata().is_ok() {
             plan.remove.push(layout.application.clone());
+        }
+        if let Some(legacy) = &layout.legacy_application
+            && legacy.symlink_metadata().is_ok()
+        {
+            plan.remove.push(legacy.clone());
         }
         if active.is_some() {
             plan.remove.push(layout.root.join("current"));
@@ -183,7 +191,12 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
             // preflight verifies every owned link and the exact Linux launcher.
             // Recheck while each path is still present before unlinking it.
             layout.preflight()?;
-            std::fs::remove_file(path)?;
+            if path.symlink_metadata()?.is_dir() {
+                // Only our own launcher bundle reaches here (preflight).
+                std::fs::remove_dir_all(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
             std::fs::File::open(path.parent().context("launcher has no parent")?)?.sync_all()?;
         }
     } else {

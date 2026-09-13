@@ -1,0 +1,185 @@
+{
+  "date": "2026-09-12",
+  "source_commit": "462c1b36537a7e1338c59f66b7aa64fffc81199f",
+  "source_input_sha256": "f67259342f7c0cec9efe972741eb6863dcb3756459bbd4ba8176d964d4b6f6e1",
+  "state_schema": 16,
+  "target": "aarch64-apple-darwin",
+  "binary_sha256_before_packaging": {
+    "agentdocker": "1d7e4f06652620ca21e4b5237fe8b1fff50dfcf07d83ab16020cc50ec54d7a7a",
+    "agentd": "9aa3adf676e8f6234125b34646f79c9542e84efb5507eeb0e706ff17f542e20a",
+    "agentdocker-ui": "a1b2e64e482261123c77ddf5810a32b0758d20c4f0056cce42abf32ec786f331"
+  },
+  "scope": "Combined PR119: messenger Inbox, minimal home and Tools, permission validation, sender identity, launcher compatibility and persisted Applications destination",
+  "standard_gate": {
+    "passed": true,
+    "rust_tests": 869,
+    "rust_skipped": 6,
+    "python_checks": 65,
+    "fmt": true,
+    "clippy": true,
+    "doctests": true,
+    "cargo_package": true,
+    "release_build": true,
+    "private_log": "/private/tmp/agentdocker-integrated-desktop-check-final-2026-09-13.log"
+  },
+  "native_acceptance": {
+    "passed": true,
+    "general_workflow_steps": 134,
+    "restored_window_steps": 6,
+    "notification_existing_steps": 24,
+    "notification_cold_steps": 2,
+    "permission_review_migration_steps": 18,
+    "messenger_schema15_steps": 34,
+    "messenger_schema16_steps": 34,
+    "actual_claude_messenger_steps": 13,
+    "total_steps": 265,
+    "contracts": [
+      "Direct and project sends have exact human sender and one envelope per recipient",
+      "Conversation drafts and separate formal answers remain intact",
+      "Raw question-kind messages remain visible and expandable",
+      "Notification and question destinations select the correct conversation",
+      "New UI sends and answers against the older schema15 daemon",
+      "Permission review preserves exact profile, Allow/Deny receipts and older questions through schema15-to16 migration"
+    ],
+    "private_result_prefix": "/private/tmp/agentdocker-integrated-"
+  },
+  "installation": {
+    "passed": true,
+    "scenarios": [
+      "preview without writes and pinned initial installation",
+      "legacy bundle hooks and MCP work through generation c86d1d341c95dfb8e0279ea4d22b7bb7a2b3a24f6c0d72dc4f94fb03d90cc05d",
+      "activation keeps the existing fixture daemon responsive",
+      "legacy bundle hooks and MCP work through generation 43ab65f8b47397499232ae00867e2afad23cf073d862f9e8b3cc4316a602fa53",
+      "changed preview payload and active generation are refused",
+      "compatible rollback switches all commands and retains both releases",
+      "legacy bundle hooks and MCP work through generation c86d1d341c95dfb8e0279ea4d22b7bb7a2b3a24f6c0d72dc4f94fb03d90cc05d",
+      "tampered executable is refused without changing activation",
+      "cleanup retains active, rollback and running or legacy binaries",
+      "uninstall preserves the live daemon and its state",
+      "daemon exit releases its pin and invalidates stale cleanup preview",
+      "unused payloads removed; permanent pins and daemon state retained"
+    ],
+    "generation_limit": "Second package generation changes metadata, not source",
+    "launch_services_open_render_exit": true,
+    "actual_user_preview_destination": "/Applications/AgentDocker.app",
+    "legacy_destination": "~/Applications/AgentDocker.app",
+    "live_activation_evidence": "Recorded separately on PR119 after make install; a preview is not installation proof"
+  },
+  "actual_claude": {
+    "passed": true,
+    "provider_version": "2.1.270 (Claude Code)",
+    "queued_inputs": 4,
+    "mixed_peer_human_peer": 3,
+    "native_human_inputs": 1,
+    "one_provider_identity": true,
+    "receipt_audit": "/private/tmp/agentdocker-integrated-claude-channel-2026-09-13/receipt-audit.json",
+    "private_result": "/private/tmp/agentdocker-integrated-claude-channel-2026-09-13/result.json",
+    "user_configuration_unchanged": true,
+    "cleanup": {
+      "forced": false,
+      "errors": [],
+      "exit": 0,
+      "fixtures": {
+        "signals": [],
+        "remaining": [],
+        "errors": []
+      }
+    },
+    "implicit_cli_sender_trial": {
+      "passed": true,
+      "private_result": "/private/tmp/agentdocker-integrated-claude-shell-2026-09-13/result.json",
+      "limit": "One-shot provider exits before reply; queue destination checked, not idle receipt"
+    }
+  },
+  "quiet_ui_comparison": {
+    "passed": true,
+    "agents": 100,
+    "method": "Advisory 100-session UI CPU/RSS comparison without local build or smoke polling.",
+    "limits": "Advisory same-host ABBA measurement. Kernel cumulative CPU differences over 30 seconds after 5 seconds warmup; other user/system workloads may remain. This does not explain historical socket timeouts or establish a performance guarantee.",
+    "local_cargo_campaign_active": false,
+    "trials": [
+      {
+        "label": "prior",
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 4.983220915877768,
+            "median_rss_kib": 155808.0,
+            "maximum_rss_kib": 155840
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.36062782943852256,
+            "median_rss_kib": 18448.0,
+            "maximum_rss_kib": 18512
+          }
+        }
+      },
+      {
+        "label": "current",
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 5.475243701375558,
+            "median_rss_kib": 155136.0,
+            "maximum_rss_kib": 168992
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.295073013846587,
+            "median_rss_kib": 18336.0,
+            "maximum_rss_kib": 18352
+          }
+        }
+      },
+      {
+        "label": "current",
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 4.855323212627633,
+            "median_rss_kib": 156144.0,
+            "maximum_rss_kib": 169984
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.29525614130843714,
+            "median_rss_kib": 18432.0,
+            "maximum_rss_kib": 18448
+          }
+        }
+      },
+      {
+        "label": "prior",
+        "summary": {
+          "window": {
+            "cpu_percent_from_kernel_time": 4.787311022281672,
+            "median_rss_kib": 155328.0,
+            "maximum_rss_kib": 169376
+          },
+          "daemon": {
+            "cpu_percent_from_kernel_time": 0.3278980152247721,
+            "median_rss_kib": 18384.0,
+            "maximum_rss_kib": 18384
+          }
+        }
+      }
+    ],
+    "private_result": "/private/tmp/agentdocker-integrated-quiet-ui-2026-09-13/result.json"
+  },
+  "retained_failures": [
+    {
+      "path": "/private/tmp/agentdocker-integrated-desktop-check-2026-09-13.log",
+      "cause": "Noncanonical /var fixture path rejected by strict canonical Applications validation; fixture corrected."
+    },
+    {
+      "path": "/private/tmp/agentdocker-integrated-linux-ci-2026-09-13.log",
+      "cause": "Mac-only test helper compiled unused on Linux; helper cfg restricted to macOS tests."
+    },
+    {
+      "path": "/private/tmp/agentdocker-integrated-claude-channel-2026-09-13/model-status-acceptance.json",
+      "cause": "Reused private controller mistook events_ready for replay completion. Read-only SQLite snapshot audit verified receipt order, acknowledgments and exact replies without repeating inputs."
+    }
+  ],
+  "integration": "PR119 carries final CI and source-review status. Historical PR115-118 checkpoints are superseded by this combined candidate.",
+  "remaining": [
+    "Running schema15 daemon needs a later explicit safe restart; installing GUI does not activate schema16 daemon-only functionality.",
+    "Broader permissions, MCP elicitation, optional hook setup and connection capability verification.",
+    "Signed/notarized release, physical Notification Center, accessibility/IME, independent hardware and full native Windows.",
+    "Overnight/sleep/reboot acceptance and safe live daemon replacement. Sustained trial results are separate from the quiet measurement."
+  ]
+}

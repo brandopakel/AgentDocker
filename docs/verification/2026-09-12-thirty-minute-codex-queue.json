@@ -1,0 +1,392 @@
+{
+  "result": "passed",
+  "scope": "Thirty-minute actual Codex queue trial: 60 mixed human/peer inputs, 20 separated batches and seven dropped read responses.",
+  "build": {
+    "format": 1,
+    "source_commit": "3ceaa4a34962a08ec8559dd88448db2d947b2155",
+    "source_tree": "eaea0b33b91aba63370b43aa1f0e90f285620662",
+    "source_input_sha256": "7331edeaaa0975edb953db0d4fb7626c398806eb96a4cd60d30ea9039392e6a3",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 15,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+      "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+      "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+    }
+  },
+  "driver_sha256": "6ee8687b495b5b5cf9d8ca9d5f7afcc8a62cf0850adc42c8bf44533ea12facbb",
+  "proxy_sha256": "532784f577092c11fb50c4c18b536e98b7d629f190ab5021ff3fcb5edf8f7f52",
+  "rounds": [
+    {
+      "cycle": 1,
+      "inputs_completed": 3,
+      "read_cut": true,
+      "elapsed_seconds": 27.86723229101335,
+      "rss_kib": {
+        "daemon": 16992,
+        "controller": 12080
+      }
+    },
+    {
+      "cycle": 2,
+      "inputs_completed": 6,
+      "read_cut": false,
+      "elapsed_seconds": 109.30992475000676,
+      "rss_kib": {
+        "daemon": 17104,
+        "controller": 12176
+      }
+    },
+    {
+      "cycle": 3,
+      "inputs_completed": 9,
+      "read_cut": false,
+      "elapsed_seconds": 200.60192954100785,
+      "rss_kib": {
+        "daemon": 17104,
+        "controller": 12240
+      }
+    },
+    {
+      "cycle": 4,
+      "inputs_completed": 12,
+      "read_cut": true,
+      "elapsed_seconds": 291.7384535410092,
+      "rss_kib": {
+        "daemon": 17136,
+        "controller": 12304
+      }
+    },
+    {
+      "cycle": 5,
+      "inputs_completed": 15,
+      "read_cut": false,
+      "elapsed_seconds": 382.9165595000086,
+      "rss_kib": {
+        "daemon": 17168,
+        "controller": 12336
+      }
+    },
+    {
+      "cycle": 6,
+      "inputs_completed": 18,
+      "read_cut": false,
+      "elapsed_seconds": 473.62535333300184,
+      "rss_kib": {
+        "daemon": 17184,
+        "controller": 12384
+      }
+    },
+    {
+      "cycle": 7,
+      "inputs_completed": 21,
+      "read_cut": true,
+      "elapsed_seconds": 569.2410981660069,
+      "rss_kib": {
+        "daemon": 17184,
+        "controller": 12400
+      }
+    },
+    {
+      "cycle": 8,
+      "inputs_completed": 24,
+      "read_cut": false,
+      "elapsed_seconds": 655.8271162500023,
+      "rss_kib": {
+        "daemon": 17200,
+        "controller": 12416
+      }
+    },
+    {
+      "cycle": 9,
+      "inputs_completed": 27,
+      "read_cut": false,
+      "elapsed_seconds": 742.4563228750048,
+      "rss_kib": {
+        "daemon": 17248,
+        "controller": 12416
+      }
+    },
+    {
+      "cycle": 10,
+      "inputs_completed": 30,
+      "read_cut": true,
+      "elapsed_seconds": 830.8271640830062,
+      "rss_kib": {
+        "daemon": 17280,
+        "controller": 12400
+      }
+    },
+    {
+      "cycle": 11,
+      "inputs_completed": 33,
+      "read_cut": false,
+      "elapsed_seconds": 923.1887368750031,
+      "rss_kib": {
+        "daemon": 17776,
+        "controller": 12400
+      }
+    },
+    {
+      "cycle": 12,
+      "inputs_completed": 36,
+      "read_cut": false,
+      "elapsed_seconds": 1012.0022388750076,
+      "rss_kib": {
+        "daemon": 17792,
+        "controller": 12432
+      }
+    },
+    {
+      "cycle": 13,
+      "inputs_completed": 39,
+      "read_cut": true,
+      "elapsed_seconds": 1099.9548498330114,
+      "rss_kib": {
+        "daemon": 17824,
+        "controller": 12448
+      }
+    },
+    {
+      "cycle": 14,
+      "inputs_completed": 42,
+      "read_cut": false,
+      "elapsed_seconds": 1191.635748041008,
+      "rss_kib": {
+        "daemon": 17824,
+        "controller": 12464
+      }
+    },
+    {
+      "cycle": 15,
+      "inputs_completed": 45,
+      "read_cut": false,
+      "elapsed_seconds": 1282.242757125001,
+      "rss_kib": {
+        "daemon": 17840,
+        "controller": 12480
+      }
+    },
+    {
+      "cycle": 16,
+      "inputs_completed": 48,
+      "read_cut": true,
+      "elapsed_seconds": 1373.8690472080052,
+      "rss_kib": {
+        "daemon": 17872,
+        "controller": 12480
+      }
+    },
+    {
+      "cycle": 17,
+      "inputs_completed": 51,
+      "read_cut": false,
+      "elapsed_seconds": 1466.2286011250108,
+      "rss_kib": {
+        "daemon": 18176,
+        "controller": 12480
+      }
+    },
+    {
+      "cycle": 18,
+      "inputs_completed": 54,
+      "read_cut": false,
+      "elapsed_seconds": 1551.3031217500102,
+      "rss_kib": {
+        "daemon": 16432,
+        "controller": 10800
+      }
+    },
+    {
+      "cycle": 19,
+      "inputs_completed": 57,
+      "read_cut": true,
+      "elapsed_seconds": 1643.4380931660125,
+      "rss_kib": {
+        "daemon": 16464,
+        "controller": 10832
+      }
+    },
+    {
+      "cycle": 20,
+      "inputs_completed": 60,
+      "read_cut": false,
+      "elapsed_seconds": 1732.1600032080023,
+      "rss_kib": {
+        "daemon": 16496,
+        "controller": 10832
+      }
+    }
+  ],
+  "elapsed_seconds": 1800.024392791005,
+  "same_controller": true,
+  "reply_count": 60,
+  "codex_records": 1,
+  "same_queue": true,
+  "source_profile_unchanged": true,
+  "provider_version": "codex-cli 0.153.4",
+  "cleanup": {
+    "forced": false,
+    "errors": [],
+    "exit": 0,
+    "fixtures": {
+      "signals": [],
+      "remaining": [],
+      "errors": []
+    }
+  },
+  "binary_hashes_unchanged": true,
+  "remaining_owned_processes": {},
+  "format": 1,
+  "recorded_date": "2026-09-12",
+  "raw_result": {
+    "path": "/private/tmp/agentdocker-codex-thirty-minute-queue-live-2026-09-12/result.json",
+    "sha256": "765b6b5a7fc5fe3a35843f705992562ef9ea8cda5ce89a6107e6e038d599cb20"
+  },
+  "proxy": {
+    "read_requests": 3670,
+    "read_responses_cut": 7,
+    "event_connections": 1,
+    "errors": [],
+    "remaining_threads": 0
+  },
+  "fifo_input_ids": [
+    "22ddc6470e864bb0",
+    "d174dfa9710b4971",
+    "aeb2167ea9e84c1c",
+    "c86286399cd64dca",
+    "f427e0aedefd4bc7",
+    "138f340fe9d140de",
+    "ae577e3b2c374b37",
+    "5cc75ee91e7943b1",
+    "3bb4b05c927f4490",
+    "cbb4149b4ec54b5b",
+    "9049336225d24dbb",
+    "b948487c065a4702",
+    "9afef0e000f24cd8",
+    "b6c22b56502e44f5",
+    "f936e61473f14d28",
+    "e8043d8e66e64665",
+    "aa095d8a251f4a64",
+    "bf41bad28d634477",
+    "5b55f560ca6d42af",
+    "24003f1b94814086",
+    "ef88cfb330614711",
+    "f6bac1ddc7ed4efe",
+    "6be007f770d54d38",
+    "1c62f2c73d5b4f4f",
+    "56dc1cb2e22c45e4",
+    "f27ed3c0e7a34d50",
+    "c24db48c10d545d3",
+    "bdbe007ba2a145af",
+    "36ba347c484544fc",
+    "f35f71c4dcae4ac9",
+    "f7b580c6f7a648c6",
+    "c7ac56483a4c4ad6",
+    "f452ab7726d04e31",
+    "3d10c04fd4664310",
+    "41fe025c5b1c47ca",
+    "580f99a22a574105",
+    "e0b26e6408f14b48",
+    "0e665bdca349475a",
+    "04d4ef5676114a84",
+    "127c4d0a3f0c40d2",
+    "7167edd5e2884baf",
+    "1951e78fcb8f4025",
+    "86026369abe4414b",
+    "8cb2360516504035",
+    "266a8694781a4f89",
+    "bde4d9da18c248ca",
+    "54427f9e8e5740e3",
+    "890e6f3eb30547ae",
+    "2c4a0a14c55f4de0",
+    "92e64e426d4b465a",
+    "477cf5404ea540aa",
+    "573ef23ea86a4bb7",
+    "210364de2d174e9d",
+    "852ab2e40d684a44",
+    "3d0f3ffdb4bf4a83",
+    "fcdeca6b40874f91",
+    "0aa4d021aa834dc4",
+    "8fe3aaa798684897",
+    "c5a68f349d1245a4",
+    "2b7cb6b25de54a2e"
+  ],
+  "fifo_completed_ids": [
+    "22ddc6470e864bb0",
+    "d174dfa9710b4971",
+    "aeb2167ea9e84c1c",
+    "c86286399cd64dca",
+    "f427e0aedefd4bc7",
+    "138f340fe9d140de",
+    "ae577e3b2c374b37",
+    "5cc75ee91e7943b1",
+    "3bb4b05c927f4490",
+    "cbb4149b4ec54b5b",
+    "9049336225d24dbb",
+    "b948487c065a4702",
+    "9afef0e000f24cd8",
+    "b6c22b56502e44f5",
+    "f936e61473f14d28",
+    "e8043d8e66e64665",
+    "aa095d8a251f4a64",
+    "bf41bad28d634477",
+    "5b55f560ca6d42af",
+    "24003f1b94814086",
+    "ef88cfb330614711",
+    "f6bac1ddc7ed4efe",
+    "6be007f770d54d38",
+    "1c62f2c73d5b4f4f",
+    "56dc1cb2e22c45e4",
+    "f27ed3c0e7a34d50",
+    "c24db48c10d545d3",
+    "bdbe007ba2a145af",
+    "36ba347c484544fc",
+    "f35f71c4dcae4ac9",
+    "f7b580c6f7a648c6",
+    "c7ac56483a4c4ad6",
+    "f452ab7726d04e31",
+    "3d10c04fd4664310",
+    "41fe025c5b1c47ca",
+    "580f99a22a574105",
+    "e0b26e6408f14b48",
+    "0e665bdca349475a",
+    "04d4ef5676114a84",
+    "127c4d0a3f0c40d2",
+    "7167edd5e2884baf",
+    "1951e78fcb8f4025",
+    "86026369abe4414b",
+    "8cb2360516504035",
+    "266a8694781a4f89",
+    "bde4d9da18c248ca",
+    "54427f9e8e5740e3",
+    "890e6f3eb30547ae",
+    "2c4a0a14c55f4de0",
+    "92e64e426d4b465a",
+    "477cf5404ea540aa",
+    "573ef23ea86a4bb7",
+    "210364de2d174e9d",
+    "852ab2e40d684a44",
+    "3d0f3ffdb4bf4a83",
+    "fcdeca6b40874f91",
+    "0aa4d021aa834dc4",
+    "8fe3aaa798684897",
+    "c5a68f349d1245a4",
+    "2b7cb6b25de54a2e"
+  ],
+  "one_thread": true,
+  "exact_correlated_replies": true,
+  "scope_limits": [
+    "Private state and owned Codex0.153.4 read-only/on-request profile with only AgentDocker send_message; original auth/config/hooks and immutable binaries unchanged.",
+    "20 batches of peer/human/peer inputs at90-second intervals, with busy arrivals behind each first input and idle intervals between batches.",
+    "Proxy suppresses seven complete read-only ProviderInbox responses. The daemon and event connection remain live; no uncertain write replay or process replacement is exercised.",
+    "RSS observations cover daemon/controller only and are advisory under concurrent build/provider work.",
+    "Thirty minutes does not establish overnight, sleep/reboot, hardware, broader provider interruptions or full live-upgrade acceptance."
+  ],
+  "provenance_scope": "Schema-15 baseline evidence at the recorded source and binary hashes. This passed Codex trial does not validate the schema-16 release candidate."
+}

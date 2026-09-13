@@ -35,6 +35,9 @@ pub(super) struct State {
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
     pub message_detail: Option<MessageId>,
+    /// The conversation open in Inbox: one agent, or every agent at once.
+    pub inbox_thread: Option<String>,
+    pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
@@ -157,9 +160,15 @@ pub enum Message {
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
     SelectProject(PathBuf),
+    /// Every project at once: the home view.
+    AllProjects,
+    OpenQuestion(MessageId),
+    ToggleNeedsYou,
     Unassigned,
     RetryProject,
     SelectSession(String),
+    /// Jump to one session from anywhere: its project first, then the row.
+    OpenSession(String),
     CloseSession,
     Search(String),
     SessionFilter(super::sessions::Filter),
@@ -172,6 +181,10 @@ pub enum Message {
     ConnectionDetails(String),
     ReviewFiles(MessageId),
     QuestionDetails(MessageId),
+    /// Open one agent's conversation in Inbox, or all of them.
+    SelectThread(Option<String>),
+    /// Send the agent's draft to everyone in its project as well.
+    SendProject(String),
     OtherTools,
     AddPath(String),
     ShowAdd,
@@ -249,10 +262,15 @@ impl App {
             && self.screen == Screen::Questions
             && self.shell.pending_notification.is_none()
         {
-            self.questions
+            let next = self
+                .questions
                 .iter()
                 .find(|q| !q.expired(Utc::now()))
-                .map(|q| q.id.clone())
+                .map(|q| (q.id.clone(), self.canonical_agent(&q.from).to_owned()));
+            if let Some((_, agent)) = &next {
+                self.shell.inbox_thread = Some(agent.clone());
+            }
+            next.map(|(id, _)| id)
         } else {
             None
         }
@@ -292,10 +310,15 @@ impl App {
         if matches!(
             &message,
             Message::Draft(..)
+                | Message::SessionDraft(..)
+                | Message::SelectThread(_)
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
                 | Message::SelectSession(_)
                 | Message::Unassigned
+                | Message::AllProjects
+                | Message::OpenSession(_)
+                | Message::OpenQuestion(_)
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
                 | Message::ReviewFiles(_)
@@ -310,8 +333,12 @@ impl App {
         if matches!(
             &message,
             Message::Navigate(_)
+                | Message::SelectThread(_)
                 | Message::SelectProject(_)
                 | Message::Unassigned
+                | Message::AllProjects
+                | Message::OpenSession(_)
+                | Message::OpenQuestion(_)
                 | Message::SelectSession(_)
                 | Message::Search(_)
         ) {
@@ -420,6 +447,35 @@ impl App {
                 }
             }
             Message::RetryProject => self.shell.checked_project = None,
+            Message::ToggleNeedsYou => {
+                self.shell.needs_you_expanded = !self.shell.needs_you_expanded;
+            }
+            Message::OpenQuestion(id) => {
+                self.screen = Screen::Questions;
+                if let Some(question) = self
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id && !q.expired(Utc::now()))
+                {
+                    self.shell.inbox_thread = Some(self.canonical_agent(&question.from).to_owned());
+                    self.shell.message_detail = Some(id.clone());
+                    tasks.push(crate::controls::reveal(format!(
+                        "notification-question-{id}"
+                    )));
+                } else {
+                    self.say("This question is no longer waiting for an answer.");
+                }
+            }
+            Message::AllProjects => {
+                self.shell.catalog.unassigned = false;
+                self.shell.catalog.selected = None;
+                self.shell.selected = None;
+                self.shell.search.clear();
+                self.reset_session_view();
+                self.screen = Screen::Agents;
+                self.shell.changed();
+                self.refresh_project_context();
+            }
             Message::Unassigned => {
                 self.shell.catalog.unassigned = true;
                 self.shell.catalog.selected = None;
@@ -448,6 +504,36 @@ impl App {
                     self.shell.changed();
                     self.refresh_project_context();
                 }
+            }
+            Message::OpenSession(id) => {
+                let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
+                    self.say("This session is no longer available.");
+                    return Task::none();
+                };
+                let project = agent.project.clone();
+                let root = project.as_ref().map(|p| p.root.clone());
+                if let Some(project) = project {
+                    self.shell.catalog.remember(project, false);
+                    if !self
+                        .shell
+                        .catalog
+                        .projects
+                        .iter()
+                        .any(|entry| Some(&entry.project.root) == root.as_ref())
+                    {
+                        self.say("The project list is full. Forget an old project before opening this session.");
+                        return Task::none();
+                    }
+                }
+                match root {
+                    Some(root) => {
+                        tasks.push(self.update(Message::SelectProject(root)));
+                    }
+                    None => {
+                        tasks.push(self.update(Message::Unassigned));
+                    }
+                }
+                tasks.push(self.update(Message::SelectSession(id)));
             }
             Message::SelectSession(id) => {
                 self.shell.unviewed_done.remove(&id);
@@ -520,6 +606,25 @@ impl App {
                 }
             }
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
+            Message::SelectThread(agent) => {
+                self.shell.inbox_thread = agent;
+                self.shell.message_detail = None;
+            }
+            Message::SendProject(id) => {
+                let project = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == self.canonical_agent(&id))
+                    .and_then(|a| a.project.as_ref().map(|p| p.id().to_string()));
+                if self.connected.is_ok()
+                    && let Some(project) = project
+                    && let Some(entry) = self.shell.session_drafts.get_mut(&id)
+                    && let Some(text) = entry.draft.begin()
+                {
+                    entry.queued = None;
+                    self.send(Cmd::ProjectSend(id, project, text));
+                }
+            }
             Message::QuestionDetails(id) => {
                 if self.inbox.iter().any(|message| message.id == id) {
                     self.shell.message_detail =
@@ -867,12 +972,16 @@ impl App {
             }
             Message::Setup(args) => {
                 if !self.setup_busy {
+                    self.screen = Screen::Runtimes;
                     self.shell.setup_error = None;
                     self.setup_busy = true;
                     self.send(Cmd::Setup(args));
                 }
             }
-            Message::SetupClose => self.setup_plan = None,
+            Message::SetupClose => {
+                self.setup_plan = None;
+                self.setup_health = None;
+            }
             Message::DesktopSource(value) => {
                 if !self.desktop.busy {
                     self.desktop.source = value;
@@ -1232,6 +1341,7 @@ impl App {
         self.screen = if channel.is_some() {
             Screen::Channels
         } else {
+            self.shell.inbox_thread = self.shell.selected.clone();
             Screen::Questions
         };
         if let Some(channel) = channel {
@@ -1616,6 +1726,7 @@ mod tests {
             question.clone(),
             Question {
                 id: second.clone(),
+                from: "next-asker".into(),
                 ..question.clone()
             },
         ];
@@ -1628,6 +1739,7 @@ mod tests {
         messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
         app.drain();
         assert_eq!(app.take_answer_reveal(), Some(second.clone()));
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("next-asker"));
         assert!(app.take_answer_reveal().is_none());
         assert_eq!(app.answers[&second], "Keep my draft");
         app.questions.insert(0, question);
@@ -1668,6 +1780,7 @@ mod tests {
     #[test]
     fn notification_waits_for_data_then_opens_the_question_without_submitting_drafts() {
         let (mut app, commands, messages, home, mut action) = notification_app();
+        app.shell.inbox_thread = Some("another-agent".into());
         let project = crate::catalog::resolve(home.path()).unwrap();
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
@@ -1699,6 +1812,7 @@ mod tests {
             .unwrap();
         let _ = app.update(Message::Tick);
         assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("sender-1"));
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
         assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
         assert!(app.shell.pending_notification.is_none());
@@ -1835,6 +1949,129 @@ mod tests {
     }
 
     #[test]
+    fn home_navigation_cancels_pending_reveals_and_preserves_answer_drafts() {
+        let (mut app, commands, _) = app();
+        let id = MessageId::from("target".to_owned());
+        let other = MessageId::from("other".to_owned());
+        app.questions.push(Question {
+            presentation: None,
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Review this exact question".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        });
+        app.answers.insert(id.clone(), "target draft".into());
+        app.answers.insert(other.clone(), "other draft".into());
+        app.shell.pending_answer_reveal = Some(other.clone());
+        app.shell.reveal_next_question = true;
+        app.shell.inbox_thread = Some("another-agent".into());
+        let _ = app.update(Message::OpenQuestion(id.clone()));
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(app.shell.message_detail, Some(id.clone()));
+        assert_eq!(app.shell.inbox_thread.as_deref(), Some("asker"));
+        assert!(app.shell.pending_answer_reveal.is_none());
+        assert!(!app.shell.reveal_next_question);
+        assert_eq!(app.answers[&id], "target draft");
+        assert_eq!(app.answers[&other], "other draft");
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "opening a question never answers it"
+        );
+        let _ = app.update(Message::AllProjects);
+        let _ = app.update(Message::ToggleNeedsYou);
+        assert!(app.shell.needs_you_expanded);
+        let _ = app.update(Message::AllProjects);
+        assert!(!app.shell.needs_you_expanded);
+        let _ = app.update(Message::OpenSession("removed-session".into()));
+        assert!(app.all_projects());
+        assert!(app.shell.selected.is_none());
+        assert_eq!(app.screen, Screen::Agents);
+        app.questions.clear();
+        let _ = app.update(Message::OpenQuestion(id.clone()));
+        assert_eq!(app.answers[&id], "target draft");
+        assert_eq!(app.screen, Screen::Questions);
+    }
+
+    #[test]
+    fn the_home_view_shows_every_project_until_one_is_chosen() {
+        use agentdocker_core::AgentSpec;
+        let (mut app, _, _) = app();
+        let mut agents = Vec::new();
+        for (name, root) in [
+            ("a-worker", "/fixture/alpha"),
+            ("b-worker", "/fixture/beta"),
+        ] {
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            agent.status = agentdocker_core::AgentStatus::Running;
+            let mut project = ProjectRef::directory(root);
+            project.fingerprint = Some(name.into());
+            agent.project = Some(project.clone());
+            app.shell.catalog.remember(project, false);
+            agents.push(agent);
+        }
+        let mut homeless = AgentRecord::new(
+            AgentSpec {
+                name: "nowhere".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        homeless.status = agentdocker_core::AgentStatus::Running;
+        agents.push(homeless.clone());
+        app.agents = agents.clone();
+
+        // Home: everything, projectless included.
+        let _ = app.update(Message::AllProjects);
+        assert!(app.all_projects());
+        assert_eq!(app.shell.catalog.selected, None);
+        assert_eq!(
+            app.session_records(sessions::Filter::Current).len(),
+            3,
+            "the home view lists every live agent"
+        );
+        // A project narrows it.
+        let _ = app.update(Message::SelectProject("/fixture/alpha".into()));
+        assert!(!app.all_projects());
+        let names: Vec<_> = app
+            .session_records(sessions::Filter::Current)
+            .iter()
+            .map(|a| a.spec.name.clone())
+            .collect();
+        assert_eq!(names, ["a-worker"]);
+        // Other sessions: only the projectless.
+        let _ = app.update(Message::Unassigned);
+        assert!(!app.all_projects());
+        let names: Vec<_> = app
+            .session_records(sessions::Filter::Current)
+            .iter()
+            .map(|a| a.spec.name.clone())
+            .collect();
+        assert_eq!(names, ["nowhere"]);
+        // Opening a session from anywhere lands in its project with it selected.
+        let _ = app.update(Message::OpenSession(agents[1].id.to_string()));
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/fixture/beta"))
+        );
+        assert_eq!(app.shell.selected.as_deref(), Some(agents[1].id.as_str()));
+        assert_eq!(app.screen, Screen::Agents);
+        let _ = app.update(Message::OpenSession(homeless.id.to_string()));
+        assert!(app.shell.catalog.unassigned);
+        assert_eq!(app.shell.selected.as_deref(), Some(homeless.id.as_str()));
+    }
+
+    #[test]
     fn notification_cannot_hijack_manual_navigation_or_a_different_daemon() {
         let (mut app, _, _, _home, action) = notification_app();
         let _ = app.update(Message::Notification(
@@ -1843,6 +2080,16 @@ mod tests {
         assert!(app.shell.pending_notification.is_some());
         let _ = app.update(Message::Navigate(Screen::Settings));
         assert!(app.shell.pending_notification.is_none());
+        for navigation in [
+            Message::AllProjects,
+            Message::OpenSession("removed".into()),
+            Message::OpenQuestion(MessageId::from("removed".to_owned())),
+        ] {
+            app.shell.pending_notification = Some((action.clone(), Instant::now()));
+            let _ = app.update(navigation);
+            assert!(app.shell.pending_notification.is_none());
+        }
+        let _ = app.update(Message::Navigate(Screen::Settings));
         let mut foreign = action.clone();
         foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
         let _ = app.update(Message::Notification(

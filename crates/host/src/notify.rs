@@ -131,8 +131,15 @@ fn desktop_app() -> Option<PathBuf> {
         .map(PathBuf::from)
         .into_iter()
         .chain(std::iter::once(PathBuf::from("/")));
+    // The managed store first: the Applications entry is a launcher bundle
+    // whose executable is a script, and earlier releases left a symlink.
     roots
-        .map(|root| root.join("Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui"))
+        .flat_map(|root| {
+            [
+                root.join(".local/share/agentdocker/desktop/current/payload/Contents/MacOS/agentdocker-ui"),
+                root.join("Applications/AgentDocker.app/Contents/MacOS/agentdocker-ui"),
+            ]
+        })
         .find(|inner| inner.is_file())
 }
 

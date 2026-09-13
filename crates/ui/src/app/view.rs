@@ -230,6 +230,19 @@ fn remaining_fraction(
     let left = (end - now).num_milliseconds();
     (left as f64 / total as f64).clamp(0.0, 1.0) as f32
 }
+/// The first non-empty line of a text, cut to `limit` characters.
+fn first_line(text: &str, limit: usize) -> String {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let mut out: String = line.chars().take(limit).collect();
+    if line.chars().count() > limit {
+        out.push('…');
+    }
+    out
+}
 /// What a message says. Agents and the CLI send `{"text": ...}`, channel
 /// notices add a title and room around it; only a payload with no text at
 /// all is shown as its JSON.
@@ -309,11 +322,19 @@ impl App {
     pub(super) fn selected_root(&self) -> Option<&std::path::Path> {
         self.shell.catalog.selected.as_deref()
     }
+    /// Whether a record belongs on the current sessions view: the selected
+    /// project's, the projectless ones under Other sessions, or every one
+    /// of them on the home view when nothing is selected.
     pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
         match self.selected_root() {
             Some(root) => project.is_some_and(|p| p.root == root),
-            None => project.is_none(),
+            None if self.shell.catalog.unassigned => project.is_none(),
+            None => true,
         }
+    }
+    /// The home view: no project chosen, everything shown.
+    pub(super) fn all_projects(&self) -> bool {
+        self.selected_root().is_none() && !self.shell.catalog.unassigned
     }
     fn narrow(&self) -> bool {
         self.shell.width / self.scale_factor() < 900.0
@@ -332,11 +353,10 @@ impl App {
         } else if self.delivery_paused(agent) {
             "delivery paused".to_owned()
         } else if agent.status.is_live() {
-            self.activity
-                .get(&id)
-                .map(Activity::label)
-                .unwrap_or("activity unknown")
-                .to_owned()
+            match self.activity.get(&id) {
+                None | Some(Activity::Unknown) => "running, no signal yet".to_owned(),
+                Some(activity) => activity.label().to_owned(),
+            }
         } else {
             agent.status.to_string()
         }
@@ -346,10 +366,28 @@ impl App {
         if self.needs_input(&agent.id.to_string()) || self.delivery_paused(agent) {
             c.amber
         } else if agent.status.is_live() {
-            c.green
+            // Green is a report, not a heartbeat: a process we only know is
+            // alive has no signal to show green for.
+            match self.activity.get(&agent.id.to_string()) {
+                None | Some(Activity::Unknown | Activity::Starting) => c.faint,
+                Some(_) => c.green,
+            }
         } else {
             c.faint
         }
+    }
+
+    /// Whether any live session of this tool has reported activity: the
+    /// only proof that its connection works, whatever its config says.
+    fn tool_reports(&self, runtime: &str) -> bool {
+        self.agents.iter().any(|a| {
+            a.spec.runtime == runtime
+                && a.status.is_live()
+                && !matches!(
+                    self.activity.get(&a.id.to_string()),
+                    None | Some(Activity::Unknown | Activity::Starting)
+                )
+        })
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -363,16 +401,16 @@ impl App {
                 .map(|e| e.project.name())
                 .unwrap_or_else(|| {
                     if self.shell.catalog.unassigned {
-                        "Unassigned sessions"
+                        "Other sessions"
                     } else {
-                        "Projects"
+                        "All projects"
                     }
                     .into()
                 })
         } else {
             match self.screen {
                 Screen::Questions => "Inbox",
-                Screen::Runtimes => "Connections",
+                Screen::Runtimes => "Tools",
                 _ => "Settings",
             }
             .into()
@@ -396,11 +434,13 @@ impl App {
         let mut header_left = column![heading_row].spacing(6).width(Fill);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
             header_left = header_left.push(mono(entry.project.root.display().to_string(), c));
+        } else if in_project && self.shell.catalog.unassigned {
+            header_left = header_left.push(note("Sessions without a known project", c));
         } else if !in_project {
             header_left = header_left.push(note(
                 match self.screen {
-                    Screen::Questions => "Questions and messages addressed to you",
-                    Screen::Runtimes => "Installed agent tools and how they connect",
+                    Screen::Questions => "Questions and messages waiting for you",
+                    Screen::Runtimes => "Connect and configure your agent tools",
                     _ => "Appearance, terminal, installation and diagnostics",
                 },
                 c,
@@ -459,12 +499,11 @@ impl App {
                 .align_y(Center),
             );
         }
-        if in_project {
+        if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
                 (Screen::Agents, "Sessions", Icon::Sessions),
                 (Screen::Journal, "Activity", Icon::Activity),
-                (Screen::Channels, "Channels", Icon::Channels),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -480,8 +519,11 @@ impl App {
                     selected,
                 ));
             }
-            let more_selected =
-                self.shell.more || matches!(self.screen, Screen::Leases | Screen::Console);
+            let more_selected = self.shell.more
+                || matches!(
+                    self.screen,
+                    Screen::Channels | Screen::Leases | Screen::Console
+                );
             tabs = tabs.push(tab(
                 "project-more",
                 "More",
@@ -506,16 +548,32 @@ impl App {
             content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if in_project && self.shell.more {
+            let queued = self.queued_channel_messages();
             let mut more = row![
+                row![
+                    icon(Icon::Channels, c.muted, 14.0),
+                    action(
+                        "project-tab-Channels",
+                        if queued > 0 {
+                            format!("Channels ({queued} waiting)")
+                        } else {
+                            "Channels".to_owned()
+                        },
+                        Some(Message::Navigate(Screen::Channels)),
+                        self.screen == Screen::Channels
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
                 action(
                     "project-tab-Leases",
-                    "Coordination",
+                    "Files in use",
                     Some(Message::Navigate(Screen::Leases)),
                     self.screen == Screen::Leases
                 ),
                 action(
                     "project-tab-Console",
-                    "Commands",
+                    "Command line",
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
                 ),
@@ -541,7 +599,7 @@ impl App {
                     ));
             }
             content = content.push(card(
-                column![eyebrow("More in this project", c), more.wrap()].spacing(10),
+                column![eyebrow("Advanced", c), more.wrap()].spacing(10),
                 c,
             ));
         }
@@ -705,20 +763,25 @@ impl App {
             "Projects",
             Icon::Projects,
             (unviewed > 0).then(|| unviewed.to_string()),
-            Message::Navigate(Screen::Agents),
+            Message::AllProjects,
             project_page,
         ));
         nav = nav.push(self.nav_item(
             "inbox",
             "Inbox",
             Icon::Inbox,
-            (!self.questions.is_empty()).then(|| self.questions.len().to_string()),
+            {
+                let now = Utc::now();
+                let waiting = self.questions.iter().filter(|q| !q.expired(now)).count()
+                    + self.direct_messages().len();
+                (waiting > 0).then(|| waiting.to_string())
+            },
             Message::Navigate(Screen::Questions),
             self.screen == Screen::Questions,
         ));
         nav = nav.push(self.nav_item(
             "connections",
-            "Connections",
+            "Tools",
             Icon::Connections,
             None,
             Message::Navigate(Screen::Runtimes),
@@ -788,7 +851,7 @@ impl App {
         {
             projects = projects.push(block_button(
                 "unassigned",
-                "Unassigned sessions",
+                "Other sessions",
                 Some(Message::Unassigned),
                 self.shell.catalog.unassigned && project_page,
             ));
@@ -824,6 +887,164 @@ impl App {
             .height(Fill)
             .style(move |_| c.surface(c.sidebar, false))
             .into()
+    }
+
+    /// Channel messages still queued for this person, in the projects on view.
+    fn queued_channel_messages(&self) -> usize {
+        let rooms: BTreeSet<_> = self
+            .channels
+            .iter()
+            .filter(|ch| {
+                self.selected_root().is_none()
+                    || self
+                        .shell
+                        .catalog
+                        .selected()
+                        .is_some_and(|e| e.project.id() == ch.project)
+            })
+            .map(|ch| ch.id.clone())
+            .collect();
+        self.inbox
+            .iter()
+            .filter(|m| match &m.to {
+                agentdocker_core::Destination::Channel(ch) => rooms.contains(ch),
+                _ => false,
+            })
+            .count()
+    }
+
+    /// Whether an agent id belongs to the projects on view.
+    fn agent_on_view(&self, id: &str) -> bool {
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .is_some_and(|a| self.has_project(a.project.as_ref()))
+    }
+
+    /// Who is waiting on the person, in one strip with one action each:
+    /// unanswered questions, paused delivery and sessions that finished unseen.
+    /// Discovery stays in the sessions list; optional setup lives in Tools.
+    /// Nothing here is new information; it is the same facts the deeper
+    /// screens hold, brought to the first screen so nobody has to know
+    /// where to look. Empty when nothing is waiting.
+    fn needs_you(&self, c: Colors) -> Option<Element<'_, Message>> {
+        const SHOWN: usize = 3;
+        let now = Utc::now();
+        let mut items: Vec<(Element<'_, Message>, String, Element<'_, Message>)> = Vec::new();
+        for question in self
+            .questions
+            .iter()
+            .filter(|q| !q.expired(now) && self.agent_on_view(&q.from))
+        {
+            items.push((
+                dot(c.amber, 8.0, c),
+                format!(
+                    "{} asks: {}",
+                    self.name_of(&question.from),
+                    compact_question(&question.text)
+                ),
+                action(
+                    format!("needs-you-answer-{}", question.id),
+                    "Answer",
+                    Some(Message::OpenQuestion(question.id.clone())),
+                    false,
+                ),
+            ));
+        }
+        for agent in self
+            .agents
+            .iter()
+            .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
+        {
+            items.push((
+                dot(c.amber, 8.0, c),
+                format!("{}: message delivery needs review", agent.spec.name),
+                action(
+                    format!("needs-you-review-{}", agent.id),
+                    "Review",
+                    Some(Message::OpenSession(agent.id.to_string())),
+                    false,
+                ),
+            ));
+        }
+        // Nobody waiting: on a fresh install the strip turns into the two
+        // things that get a person started, then disappears for good.
+        // Finished sessions are not in it; they are not asking for anything
+        // (the Done pill on their row is enough).
+        let guidance = items.is_empty();
+        if guidance {
+            for process in self.available_processes() {
+                items.push((
+                    dot(c.cyan, 8.0, c),
+                    format!("{} is running here, not connected", process.default_name()),
+                    action(
+                        format!("needs-you-connect-{}", process.pid),
+                        "Connect",
+                        self.connected
+                            .is_ok()
+                            .then_some(Message::Adopt(process.pid)),
+                        false,
+                    ),
+                ));
+            }
+            if self.all_projects() {
+                for runtime in self.runtimes.iter().filter(|r| {
+                    r.installed()
+                        && !self.tool_reports(&r.name)
+                        && (r.mcp == agentdocker_core::runtime::Wiring::Missing
+                            || r.hooks == agentdocker_core::runtime::Wiring::Missing)
+                }) {
+                    items.push((
+                        dot(c.faint, 8.0, c),
+                        format!("{} is installed but not connected", runtime.label),
+                        action(
+                            format!("needs-you-tool-{}", runtime.name),
+                            "Set up",
+                            (!self.setup_busy).then_some(Message::Setup(vec![
+                                runtime.name.clone(),
+                                "--preview".into(),
+                            ])),
+                            false,
+                        ),
+                    ));
+                }
+            }
+        }
+        if items.is_empty() {
+            return None;
+        }
+        let total = items.len();
+        let title_text = if guidance {
+            "To get started".to_owned()
+        } else {
+            format!("Needs you ({total})")
+        };
+        let mut list = column![row![eyebrow(title_text, c).width(Fill),]].spacing(8);
+        let shown = if self.shell.needs_you_expanded {
+            total
+        } else {
+            SHOWN
+        };
+        for (mark, words, act) in items.into_iter().take(shown) {
+            list = list.push(
+                row![mark, text(words).size(14).width(Fill), act]
+                    .spacing(12)
+                    .align_y(Center),
+            );
+        }
+        if total > SHOWN {
+            list = list.push(action(
+                "needs-you-more",
+                if self.shell.needs_you_expanded {
+                    "Show fewer".to_owned()
+                } else {
+                    format!("Show {} more", total - SHOWN)
+                },
+                Some(Message::ToggleNeedsYou),
+                false,
+            ));
+        }
+        Some(attention(list, if guidance { c.cyan } else { c.amber }, c))
     }
 
     /// The project's one primary action, when there is a project to act in.
@@ -898,6 +1119,9 @@ impl App {
                     .align_y(Center),
             );
         }
+        if let Some(strip) = self.needs_you(c) {
+            panel_col = panel_col.push(strip);
+        }
         if self.shell.project_available == Some(false) {
             panel_col = panel_col.push(attention(
                 column![
@@ -930,7 +1154,23 @@ impl App {
                 0
             };
         let mut rows = column![].spacing(if self.settings.roomy { 6 } else { 2 });
-        for agent in &records {
+        let mut previous_project = None;
+        for (index, agent) in records.iter().enumerate() {
+            let project_root = agent.project.as_ref().map(|p| &p.root);
+            if self.all_projects() && (index == 0 || previous_project != project_root) {
+                rows = rows.push(
+                    container(eyebrow(
+                        agent
+                            .project
+                            .as_ref()
+                            .map(|p| p.name())
+                            .unwrap_or_else(|| "Other sessions".into()),
+                        c,
+                    ))
+                    .padding([12, 12]),
+                );
+                previous_project = project_root;
+            }
             let id = agent.id.to_string();
             let activity = self.activity_label(agent);
             let branch = agent.vcs.as_ref().and_then(|v| v.branch.as_deref());
@@ -955,25 +1195,25 @@ impl App {
                         .padding([3, 0]),
                 );
             }
-            let mut content = row![dot(self.activity_color(agent, c), 8.0, c), lines]
+            let mut content = row![dot(self.activity_color(agent, c), 8.0, c)]
                 .spacing(12)
                 .align_y(Center);
+            content = content.push(lines);
             if self.shell.unviewed_done.contains(&id) {
                 // Finished since you last looked. The observed state stays
                 // in the meta line; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
-            content = content
-                .push(small(
-                    format!("started {}", ago(Utc::now(), agent.created_at)),
-                    c,
-                ))
-                .push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
             rows = rows.push(custom(
                 format!("session-{id}"),
                 spoken,
                 content,
-                Some(Message::SelectSession(id.clone())),
+                Some(if self.all_projects() {
+                    Message::OpenSession(id.clone())
+                } else {
+                    Message::SelectSession(id.clone())
+                }),
                 self.shell.selected.as_deref() == Some(id.as_str()),
                 Kind::Quiet,
                 [if self.settings.roomy { 13 } else { 10 }, 12],
@@ -984,8 +1224,11 @@ impl App {
         }
         if filter == Filter::Current && !available.is_empty() {
             let mut discovered = column![
-                eyebrow("Available to connect", c),
-                note("Running in this folder outside AgentDocker", c)
+                eyebrow("Running here, not connected", c),
+                note(
+                    "Started outside AgentDocker. Connect one to see what it is doing and message it.",
+                    c
+                )
             ]
             .spacing(6);
             for process in available {
@@ -1018,13 +1261,19 @@ impl App {
                 ("No matching sessions", "Try another name, tool, or branch.")
             } else {
                 match filter {
+                    Filter::Current if self.all_projects() => (
+                        "No agents running",
+                        "Start Claude Code or Codex in any folder and it appears here, \
+                         or choose a project on the left and launch one.",
+                    ),
                     Filter::Current => (
-                        "No current sessions",
-                        "Launch an agent here, or start one in this folder.",
+                        "No agents in this project",
+                        "Press Launch agent, or start Claude Code or Codex in this folder \
+                         and it appears here.",
                     ),
                     Filter::NeedsInput => (
                         "Nothing needs your input",
-                        "Questions from this project will appear here.",
+                        "When an agent asks you something, it appears here and in Inbox.",
                     ),
                     Filter::History => (
                         "No finished sessions",
@@ -1377,17 +1626,331 @@ impl App {
         card(tools, c)
     }
 
+    /// Messages sent to the person directly, oldest first, minus the ones
+    /// that are questions (those have their own cards).
+    fn direct_messages(&self) -> Vec<&agentdocker_core::Envelope> {
+        let (_, mut direct) = by_room(&self.inbox);
+        direct.retain(|message| !self.questions.iter().any(|q| q.id == message.id));
+        direct
+    }
+
+    /// Inbox as a messenger: a conversation per agent on the left, the
+    /// chosen conversation as bubbles on the right, a composer under it.
+    /// Questions keep their cards, at the top of the agent's conversation,
+    /// because they carry controls a bubble cannot.
     fn questions(&self, c: Colors) -> Element<'_, Message> {
-        let mut list = column![].spacing(16).width(Fill);
-        if self.questions.is_empty() {
-            list = list.push(empty(
+        let now = Utc::now();
+        let direct = self.direct_messages();
+        // Conversations, newest activity first.
+        let mut threads: Vec<(String, chrono::DateTime<Utc>, usize)> = Vec::new();
+        let mut note_thread = |who: &str, at: chrono::DateTime<Utc>, waiting: bool| {
+            let who = self.canonical_agent(who).to_owned();
+            match threads.iter_mut().find(|(id, _, _)| *id == who) {
+                Some(entry) => {
+                    entry.1 = entry.1.max(at);
+                    entry.2 += usize::from(waiting);
+                }
+                None => threads.push((who, at, usize::from(waiting))),
+            }
+        };
+        for message in &direct {
+            note_thread(&message.from, message.sent_at, true);
+        }
+        for question in &self.questions {
+            note_thread(&question.from, question.asked_at, !question.expired(now));
+        }
+        threads.sort_by_key(|thread| std::cmp::Reverse(thread.1));
+        let selected = self
+            .shell
+            .inbox_thread
+            .as_deref()
+            .filter(|id| threads.iter().any(|(t, _, _)| t == id));
+
+        if threads.is_empty() {
+            return empty(
                 "You're all caught up",
-                "Questions from your agents will appear here.",
+                "Questions and messages from your agents appear here, one conversation per agent.",
                 None,
+                c,
+            );
+        }
+
+        // Left: who is talking to you.
+        let mut list = column![].spacing(2);
+        let total_waiting: usize = threads.iter().map(|t| t.2).sum();
+        let mut everyone = row![
+            monogram("Everyone", "everyone", 28.0, c),
+            column![
+                text("Everyone")
+                    .size(14)
+                    .font(weight(iced::font::Weight::Medium)),
+                small(
+                    format!(
+                        "{} conversation{}",
+                        threads.len(),
+                        if threads.len() == 1 { "" } else { "s" }
+                    ),
+                    c
+                )
+            ]
+            .spacing(1)
+            .width(Fill)
+        ]
+        .spacing(10)
+        .align_y(Center);
+        if total_waiting > 0 {
+            everyone = everyone.push(pill(
+                total_waiting.to_string(),
+                c.accent_soft,
+                c.accent_ink,
                 c,
             ));
         }
-        for question in &self.questions {
+        list = list.push(custom(
+            "thread-everyone",
+            "Everyone",
+            everyone,
+            Some(Message::SelectThread(None)),
+            selected.is_none(),
+            Kind::Quiet,
+            [8, 10],
+        ));
+        for (id, at, waiting) in &threads {
+            let name = self.name_of(id);
+            let preview = direct
+                .iter()
+                .rev()
+                .find(|m| self.canonical_agent(&m.from) == id)
+                .map(|m| first_line(&spoken_payload(&m.payload), 48))
+                .or_else(|| {
+                    self.questions
+                        .iter()
+                        .rev()
+                        .find(|q| self.canonical_agent(&q.from) == id)
+                        .map(|q| first_line(&q.text, 48))
+                })
+                .unwrap_or_default();
+            let mut row_content = row![
+                monogram(&name, id, 28.0, c),
+                column![
+                    row![
+                        text(name.clone())
+                            .size(14)
+                            .font(weight(iced::font::Weight::Medium))
+                            .width(Fill),
+                        small(ago(now, *at), c)
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                    small(preview, c)
+                ]
+                .spacing(1)
+                .width(Fill)
+            ]
+            .spacing(10)
+            .align_y(Center);
+            if *waiting > 0 {
+                row_content =
+                    row_content.push(pill(waiting.to_string(), c.accent_soft, c.accent_ink, c));
+            }
+            list = list.push(custom(
+                format!("thread-{id}"),
+                name,
+                row_content,
+                Some(Message::SelectThread(Some(id.clone()))),
+                selected == Some(id.as_str()),
+                Kind::Quiet,
+                [8, 10],
+            ));
+        }
+
+        // Right: the conversation.
+        let mut convo = column![].spacing(10).width(Fill);
+        for question in self
+            .questions
+            .iter()
+            .filter(|q| selected.is_none_or(|id| self.canonical_agent(&q.from) == id))
+        {
+            convo = convo.push(self.question_card(question, c));
+        }
+        let shown: Vec<_> = direct
+            .iter()
+            .copied()
+            .filter(|m| selected.is_none_or(|id| self.canonical_agent(&m.from) == id))
+            .collect();
+        let shown = self.recent_window(&shown, 30);
+        if shown.is_empty() && self.questions.is_empty() {
+            convo = convo.push(note("No messages yet.", c));
+        }
+        let ids: Vec<_> = shown.iter().map(|m| m.id.clone()).collect();
+        if ids.len() > 1 {
+            let enabled =
+                self.connected.is_ok() && ids.iter().all(|id| !self.dismissing.contains(id));
+            convo = convo.push(row![
+                Space::new().width(Fill),
+                action(
+                    format!("dismiss-shown-{}", ids[0]),
+                    "Clear shown",
+                    enabled.then_some(Message::DismissInbox(ids.clone())),
+                    false,
+                )
+            ]);
+        }
+        let mut last_from: Option<String> = None;
+        for message in shown {
+            let from = self.canonical_agent(&message.from).to_owned();
+            let show_name = last_from.as_deref() != Some(from.as_str()) || selected.is_none();
+            last_from = Some(from.clone());
+            convo = convo.push(self.bubble(message, show_name, c));
+        }
+        // Composer: reply to this agent, or to everyone in its project.
+        if let Some(id) = selected {
+            let agent = self.agents.iter().find(|a| a.id.as_str() == id);
+            let live = agent.is_some_and(|a| a.status.is_live());
+            let has_project = agent.is_some_and(|a| a.project.is_some());
+            let entry = self.shell.session_drafts.get(id);
+            let draft = entry.map(|e| e.draft.text.clone()).unwrap_or_default();
+            let sending = entry.is_some_and(|e| e.draft.sending.is_some());
+            let ready = live && self.connected.is_ok() && !sending && !draft.trim().is_empty();
+            let owner = id.to_owned();
+            let mut composer = column![
+                row![
+                    input_enabled(
+                        format!("reply-{id}"),
+                        "Message…",
+                        &draft,
+                        move |t| Message::SessionDraft(owner.clone(), t),
+                        live && !sending,
+                    ),
+                    primary(
+                        format!("send-reply-{id}"),
+                        if sending { "Sending…" } else { "Send" },
+                        ready.then_some(Message::SendSession(id.to_owned())),
+                    ),
+                    action(
+                        format!("send-everyone-{id}"),
+                        "Send to everyone",
+                        (ready && has_project).then_some(Message::SendProject(id.to_owned())),
+                        false,
+                    )
+                ]
+                .spacing(8)
+                .align_y(Center)
+            ]
+            .spacing(6);
+            if !live {
+                composer = composer.push(small(
+                    "This agent is not running, so it cannot receive a message.",
+                    c,
+                ));
+            } else if let Some(error) = entry.and_then(|e| e.draft.error.as_ref()) {
+                composer = composer.push(text(error.clone()).size(13).color(c.amber));
+            } else if entry.is_some_and(|e| e.queued.is_some()) && !sending {
+                composer = composer.push(small("Delivered to the agent's queue.", c));
+            } else {
+                composer = composer.push(small(
+                    "Send goes to this agent. Send to everyone reaches every agent in its project.",
+                    c,
+                ));
+            }
+            convo = convo.push(composer);
+        } else {
+            convo = convo.push(small("Choose a conversation to reply.", c));
+        }
+
+        if self.narrow() {
+            column![panel(list, c), convo].spacing(14).into()
+        } else {
+            row![
+                container(panel(list, c)).width(300),
+                container(convo).width(Fill)
+            ]
+            .spacing(16)
+            .into()
+        }
+    }
+
+    /// One message as a chat bubble: sender and time on top, the text
+    /// beneath, long texts folded until asked for.
+    fn bubble(
+        &self,
+        message: &agentdocker_core::Envelope,
+        show_name: bool,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        const FOLD: usize = 420;
+        let id = message.id.clone();
+        let payload = spoken_payload(&message.payload);
+        let question = message.kind == "question";
+        let long = question || payload.chars().count() > FOLD || payload.lines().count() > 8;
+        let expanded = self.shell.message_detail.as_ref() == Some(&id);
+        let shown_text = if question && !expanded {
+            first_line(&payload, 160)
+        } else if long && !expanded {
+            let head: String = payload.lines().take(8).collect::<Vec<_>>().join("\n");
+            let head: String = head.chars().take(FOLD).collect();
+            format!("{head}…")
+        } else {
+            payload
+        };
+        let mut head = row![].spacing(8).align_y(Center);
+        if show_name {
+            head = head.push(
+                text(self.name_of(&message.from))
+                    .size(13)
+                    .font(weight(iced::font::Weight::Semibold)),
+            );
+        }
+        if message.kind != "chat" && message.kind != "message" {
+            head = head.push(pill(message.kind.to_string(), c.raised, c.muted, c));
+        }
+        head = head.push(small(ago(Utc::now(), message.sent_at), c));
+        head = head.push(Space::new().width(Fill));
+        if self.inbox.iter().any(|m| m.id == id) {
+            let busy = self.dismissing.contains(&id);
+            head = head.push(action(
+                format!("dismiss-message-{id}"),
+                if busy { "…" } else { "Clear" },
+                (!busy && self.connected.is_ok())
+                    .then_some(Message::DismissInbox(vec![id.clone()])),
+                false,
+            ));
+        }
+        let mut body = column![head, text(shown_text).size(14)].spacing(4);
+        if long {
+            body = body.push(action(
+                format!("message-detail-{id}"),
+                match (question, expanded) {
+                    (true, true) => "Hide question",
+                    (true, false) => "Show question",
+                    (false, true) => "Show less",
+                    (false, false) => "Show more",
+                },
+                Some(Message::QuestionDetails(id.clone())),
+                false,
+            ));
+        }
+        container(
+            container(body)
+                .padding([10, 14])
+                .max_width(760)
+                .style(move |_| container::Style {
+                    background: Some(c.raised.into()),
+                    border: iced::Border {
+                        radius: 14.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        )
+        .width(Fill)
+        .id(format!("notification-message-{id}"))
+        .into()
+    }
+
+    /// One question with its controls.
+    fn question_card(&self, question: &Question, c: Colors) -> Element<'_, Message> {
+        {
             let id = question.id.clone();
             let draft_id = id.clone();
             let busy = self.sending.contains(&id);
@@ -1415,6 +1978,42 @@ impl App {
                 .filter(|p| p.valid_for(&question.text));
             let enabled = !busy && !expired && self.connected.is_ok();
             match presentation {
+                Some(agentdocker_core::QuestionPresentation::CodexPermissions {
+                    cwd,
+                    reason,
+                    permissions,
+                }) => {
+                    body = body
+                        .push(heading("Allow additional access?", 18))
+                        .push(mono(format!("Folder: {cwd}"), c));
+                    if !reason.trim().is_empty() && reason != "Requested by Codex" {
+                        body = body.push(note(reason.clone(), c));
+                    }
+                    for line in permissions.lines() {
+                        body = body.push(mono(line, c));
+                    }
+                    body = body.push(self.answer_window(question, c)).push(
+                        row![
+                            primary(
+                                format!("answer-allow-{id}"),
+                                if busy {
+                                    "Sending…"
+                                } else {
+                                    "Allow for this turn"
+                                },
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Allow".into()))
+                            ),
+                            action(
+                                format!("answer-deny-{id}"),
+                                "Deny",
+                                enabled.then(|| Message::AnswerChoice(id.clone(), "Deny".into())),
+                                false
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    );
+                }
                 Some(agentdocker_core::QuestionPresentation::CodexFiles {
                     cwd,
                     reason,
@@ -1563,31 +2162,14 @@ impl App {
             if let Some(error) = self.shell.answer_errors.get(&id) {
                 body = body.push(text(error.clone()).size(13).color(c.amber));
             }
-            list = list.push(
-                container(if expired {
-                    card(body, c)
-                } else {
-                    attention(body, c.amber, c)
-                })
-                .id(format!("notification-question-{id}")),
-            );
+            container(if expired {
+                card(body, c)
+            } else {
+                attention(body, c.amber, c)
+            })
+            .id(format!("notification-question-{id}"))
+            .into()
         }
-        let (_, mut direct) = by_room(&self.inbox);
-        direct.retain(|message| {
-            !self
-                .questions
-                .iter()
-                .any(|question| question.id == message.id)
-        });
-        if !direct.is_empty() {
-            list = list
-                .push(eyebrow("Messages addressed to you", c))
-                .push(panel(
-                    self.transcript(self.recent_window(&direct, 30).into_iter(), c),
-                    c,
-                ));
-        }
-        list.into()
     }
 
     /// The least time left among this agent's unanswered questions, as a
@@ -2131,35 +2713,9 @@ impl App {
     }
 
     fn connections(&self, c: Colors) -> Element<'_, Message> {
-        let mut list = column![
-            row![
-                action(
-                    "connection-health",
-                    "Check connections",
-                    (!self.setup_busy).then_some(Message::Setup(vec!["--health".into()])),
-                    false
-                ),
-                action(
-                    "saved-setups",
-                    "Saved setup plans",
-                    (!self.setup_busy).then_some(Message::Setup(vec!["--list".into()])),
-                    false
-                )
-            ]
-            .spacing(8)
-            .wrap()
-        ]
-        .spacing(14);
-        if !self.discovered.is_empty() {
-            list = list.push(action(
-                "register-all-discovered",
-                "Connect all discovered sessions",
-                self.connected.is_ok().then_some(Message::AdoptAll),
-                false,
-            ));
-        }
+        let mut list = column![].spacing(14);
         if self.setup_busy {
-            list = list.push(note("Checking setup…", c));
+            list = list.push(note("Checking…", c));
         }
         if let Some(error) = &self.shell.setup_error {
             list = list.push(text(error.clone()).size(13).color(c.amber));
@@ -2167,46 +2723,8 @@ impl App {
         if let Some(plan) = &self.setup_plan {
             list = list.push(self.setup_view(plan, c));
         }
-        for plan in &self.setup_history {
-            let id = value(plan, "id");
-            list = list.push(action(
-                format!("saved-setup-{id}"),
-                format!("{} · {id}", value(plan, "phase")),
-                (!self.setup_busy).then_some(Message::Setup(vec!["--show".into(), id])),
-                false,
-            ));
-        }
         if let Some(health) = &self.setup_health {
-            let mut report = column![
-                heading("Connection checks", 16),
-                note(value(health, "daemon"), c)
-            ]
-            .spacing(8);
-            for runtime in health["runtimes"].as_array().into_iter().flatten() {
-                for check in runtime["checks"].as_array().into_iter().flatten() {
-                    let ok = value(check, "status") == "ok";
-                    report = report.push(
-                        row![
-                            column![
-                                Space::new().height(4),
-                                dot(if ok { c.green } else { c.amber }, 7.0, c)
-                            ],
-                            note(
-                                format!(
-                                    "{} · {} · {}\n{}",
-                                    value(runtime, "name"),
-                                    value(check, "channel"),
-                                    value(check, "status"),
-                                    value(check, "detail")
-                                ),
-                                c,
-                            )
-                        ]
-                        .spacing(10),
-                    );
-                }
-            }
-            list = list.push(card(report, c));
+            list = list.push(self.health_view(health, c));
         }
         let mut runtimes: Vec<_> = self
             .runtimes
@@ -2217,7 +2735,7 @@ impl App {
         if runtimes.is_empty() {
             list = list.push(empty(
                 "No supported tools found",
-                "Install an agent tool, then check connections.",
+                "Install Claude Code or Codex, then come back here.",
                 None,
                 c,
             ));
@@ -2225,25 +2743,35 @@ impl App {
         for runtime in runtimes {
             let expanded = self.shell.connection_details.as_deref() == Some(runtime.name.as_str());
             let installed = runtime.installed();
-            let supported =
-                installed && (runtime.mcp.needs_review() || runtime.hooks.needs_review());
+            let reporting = self.tool_reports(&runtime.name);
+            let missing = installed
+                && (runtime.mcp == agentdocker_core::runtime::Wiring::Missing
+                    || runtime.hooks == agentdocker_core::runtime::Wiring::Missing);
+            // One word a person can act on. Green only for a tool that has
+            // actually reported through its connection; configuration on
+            // disk is a promise, not proof.
+            let (mark, word) = if !installed {
+                (c.faint, "Not installed")
+            } else if reporting {
+                (c.green, "Connected")
+            } else if missing {
+                (c.amber, "Needs setup")
+            } else {
+                (c.cyan, "Configured, waiting for its first session")
+            };
             let mut actions = row![
-                dot(if installed { c.green } else { c.faint }, 9.0, c),
+                dot(mark, 9.0, c),
                 column![
                     heading(runtime.label.clone(), 16),
                     small(
-                        if installed {
-                            format!(
-                                "Installed{}",
-                                runtime
-                                    .version
-                                    .as_deref()
-                                    .map(|v| format!(" · {v}"))
-                                    .unwrap_or_default()
-                            )
-                        } else {
-                            "Not installed".to_owned()
-                        },
+                        format!(
+                            "{word}{}",
+                            runtime
+                                .version
+                                .as_deref()
+                                .map(|v| format!(" · {v}"))
+                                .unwrap_or_default()
+                        ),
                         c
                     )
                 ]
@@ -2252,14 +2780,10 @@ impl App {
             ]
             .spacing(12)
             .align_y(Center);
-            if supported {
+            if missing && !reporting {
                 actions = actions.push(primary(
                     format!("setup-{}", runtime.name),
-                    if runtime.hooks.needs_review() {
-                        "Install hooks"
-                    } else {
-                        "Review setup"
-                    },
+                    "Set up",
                     (!self.setup_busy).then_some(Message::Setup(vec![
                         runtime.name.clone(),
                         "--preview".into(),
@@ -2273,16 +2797,13 @@ impl App {
                 expanded,
             ));
             let mut details = column![actions].spacing(10);
-            if installed && runtime.hooks.needs_review() {
-                // Why the button matters, in the words of what changes.
-                details = details.push(note(
-                    "Hooks tell AgentDocker what this tool is doing as it happens: working, \
-                     waiting on you, finished. Without them only the process is visible, \
-                     so activity can lag and questions can go unnoticed.",
-                    c,
-                ));
-            }
             if expanded {
+                let wiring = |w: agentdocker_core::runtime::Wiring| match w {
+                    agentdocker_core::runtime::Wiring::Wired => "configured",
+                    agentdocker_core::runtime::Wiring::Unverified => "configured, unverified",
+                    agentdocker_core::runtime::Wiring::Missing => "not configured",
+                    agentdocker_core::runtime::Wiring::Unsupported => "not available",
+                };
                 let mut facts = column![
                     kv("Vendor", runtime.vendor.to_string(), c),
                     kv(
@@ -2291,27 +2812,75 @@ impl App {
                         c
                     ),
                     kv(
-                        "CLI",
+                        "Command",
                         runtime
                             .cli
                             .as_ref()
                             .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "No CLI found".into()),
+                            .unwrap_or_else(|| "No command-line tool found".into()),
                         c
                     ),
-                    kv(
-                        "Integration",
-                        format!("MCP: {:?} · Hooks: {:?}", runtime.mcp, runtime.hooks),
-                        c
-                    ),
+                    kv("Tools (MCP)", wiring(runtime.mcp), c),
+                    kv("Live activity (hooks)", wiring(runtime.hooks), c),
                 ]
                 .spacing(6);
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
                 }
+                if installed && !missing && !reporting {
+                    facts = facts.push(note(
+                        "Configured. It shows as connected the first time a session of this tool \
+                         reports in.",
+                        c,
+                    ));
+                }
+                facts = facts.push(
+                    row![
+                        action(
+                            format!("setup-review-{}", runtime.name),
+                            "Review setup",
+                            (!self.setup_busy).then_some(Message::Setup(vec![
+                                runtime.name.clone(),
+                                "--preview".into(),
+                            ])),
+                            false
+                        ),
+                        action(
+                            "connection-health",
+                            "Check connections",
+                            (!self.setup_busy).then_some(Message::Setup(vec!["--health".into()])),
+                            false
+                        ),
+                        action(
+                            "saved-setups",
+                            "Setup history",
+                            (!self.setup_busy).then_some(Message::Setup(vec!["--list".into()])),
+                            false
+                        )
+                    ]
+                    .spacing(6)
+                    .wrap(),
+                );
                 details = details.push(rule(c)).push(facts);
             }
             list = list.push(card(details, c));
+        }
+        if !self.discovered.is_empty() {
+            list = list.push(action(
+                "register-all-discovered",
+                format!("Connect all {} running sessions", self.discovered.len()),
+                self.connected.is_ok().then_some(Message::AdoptAll),
+                false,
+            ));
+        }
+        for plan in &self.setup_history {
+            let id = value(plan, "id");
+            list = list.push(action(
+                format!("saved-setup-{id}"),
+                format!("{} · {id}", value(plan, "phase")),
+                (!self.setup_busy).then_some(Message::Setup(vec!["--show".into(), id])),
+                false,
+            ));
         }
         let other_count = self.runtimes.iter().filter(|r| !r.installed()).count();
         if other_count > 0 {
@@ -2329,77 +2898,95 @@ impl App {
         list.into()
     }
 
+    /// The connection check, in words: one line per installed tool, and a
+    /// way to put it away.
+    fn health_view(&self, health: &serde_json::Value, c: Colors) -> Element<'_, Message> {
+        let mut report = column![
+            row![
+                heading("Connection check", 16).width(Fill),
+                action("close-health", "Close", Some(Message::SetupClose), false)
+            ]
+            .spacing(10)
+            .align_y(Center),
+            small(value(health, "daemon"), c)
+        ]
+        .spacing(8);
+        let installed: BTreeSet<&str> = self
+            .runtimes
+            .iter()
+            .filter(|r| r.installed())
+            .map(|r| r.name.as_str())
+            .collect();
+        for runtime in health["runtimes"].as_array().into_iter().flatten() {
+            let name = value(runtime, "name");
+            if !installed.contains(name.as_str()) {
+                continue;
+            }
+            let label = self
+                .runtimes
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.label.clone())
+                .unwrap_or(name);
+            let checks = runtime["checks"].as_array().into_iter().flatten();
+            let mut problems = Vec::new();
+            for check in checks {
+                let status = value(check, "status");
+                if matches!(
+                    status.as_str(),
+                    "ok" | "executable_available" | "unsupported"
+                ) {
+                    continue;
+                }
+                problems.push(format!(
+                    "{}: {}",
+                    value(check, "channel"),
+                    value(check, "detail")
+                ));
+            }
+            let ok = problems.is_empty();
+            let mut line = column![
+                row![
+                    dot(if ok { c.green } else { c.amber }, 7.0, c),
+                    text(label).size(14).width(Fill),
+                    small(if ok { "Ready" } else { "Needs attention" }, c)
+                ]
+                .spacing(10)
+                .align_y(Center)
+            ]
+            .spacing(2);
+            for problem in problems {
+                line = line.push(container(small(problem, c)).padding([0, 17]));
+            }
+            report = report.push(line);
+        }
+        card(report, c)
+    }
+
+    /// One setup plan, said plainly: what will change, one button to do it,
+    /// the technical record behind Details.
     fn setup_view(&self, plan: &serde_json::Value, c: Colors) -> Element<'_, Message> {
         let plan_id = plan["id"].as_str().filter(|id| !id.is_empty());
         let id = plan_id.unwrap_or("unknown").to_owned();
         let phase = value(plan, "phase");
-        let mut body = column![
-            row![
-                heading("Review integration changes", 18).width(Fill),
-                pill(phase.clone(), c.accent_soft, c.accent_ink, c)
-            ]
-            .spacing(10)
-            .align_y(Center),
-            mono(id.clone(), c)
-        ]
-        .spacing(10);
-        if let Some(executable) = plan["executable"].as_str() {
-            body = body.push(note(format!("Connect through {executable}"), c));
-        }
         let changes = plan["changes"].as_array();
-        for change in changes.into_iter().flatten() {
-            body = body.push(
-                container(
-                    column![
-                        text(format!(
-                            "{} · {}",
-                            value(change, "runtime"),
-                            value(change, "channel")
-                        ))
-                        .size(14)
-                        .font(weight(iced::font::Weight::Medium)),
-                        mono(value(change, "path"), c),
-                        small(value(change, "action"), c)
-                    ]
-                    .spacing(3),
-                )
-                .padding([10, 12])
-                .width(Fill)
-                .style(move |_| c.surface(c.raised, false)),
-            );
-        }
-        if changes.is_none_or(|c| c.is_empty()) {
-            body = body.push(note(
-                "Nothing to change; these connections are already configured.",
-                c,
-            ));
-        }
-        for note_text in plan["notes"]
-            .as_array()
+        let tool = changes
             .into_iter()
             .flatten()
-            .filter_map(|s| s.as_str())
-        {
-            body = body.push(note(note_text, c));
-        }
-        let applicable = !self.setup_busy
-            && matches!(phase.as_str(), "prepared" | "applying")
-            && changes.is_some_and(|c| !c.is_empty())
-            && plan_id.is_some();
-        body = body.push(
+            .next()
+            .map(|change| value(change, "runtime"))
+            .and_then(|name| self.runtimes.iter().find(|r| r.name == name))
+            .map(|r| r.label.clone());
+        let title_text = match (&tool, phase.as_str()) {
+            (Some(tool), "applied") => format!("{tool} connected"),
+            (Some(tool), "undone") => format!("{tool} setup undone"),
+            (Some(tool), _) => format!("Connect {tool}"),
+            (None, "applied") => "Connected".to_owned(),
+            (None, _) => "Nothing to connect".to_owned(),
+        };
+        let mut body = column![
             row![
-                primary(
-                    "apply-setup",
-                    "Apply reviewed changes",
-                    applicable.then_some(Message::Setup(vec!["--apply".into(), id.clone()])),
-                ),
-                action(
-                    "undo-setup",
-                    "Undo this setup",
-                    (!self.setup_busy && phase != "undone" && plan_id.is_some())
-                        .then_some(Message::Setup(vec!["--undo".into(), id])),
-                    false
-                ),
+                heading(title_text, 18).width(Fill),
                 action(
                     "close-setup",
                     "Close",
@@ -2407,9 +2994,77 @@ impl App {
                     false
                 )
             ]
-            .spacing(6)
-            .wrap(),
-        );
+            .spacing(10)
+            .align_y(Center)
+        ]
+        .spacing(10);
+        let mut any = false;
+        for change in changes.into_iter().flatten() {
+            any = true;
+            let what = match value(change, "channel").as_str() {
+                "mcp" => "Tools (MCP)".to_owned(),
+                "activity hooks" | "hooks" => "Live activity (hooks)".to_owned(),
+                other => other.to_owned(),
+            };
+            body = body.push(
+                row![
+                    dot(c.accent, 7.0, c),
+                    text(format!("{what}: {}", value(change, "action"))).size(14)
+                ]
+                .spacing(10)
+                .align_y(Center),
+            );
+        }
+        if !any {
+            body = body.push(note("Everything this tool needs is already in place.", c));
+        }
+        let applicable = !self.setup_busy
+            && matches!(phase.as_str(), "prepared" | "applying")
+            && any
+            && plan_id.is_some();
+        let expanded = self.shell.connection_details.as_deref() == Some("setup-plan");
+        let mut buttons = row![].spacing(6);
+        if applicable {
+            buttons = buttons.push(primary(
+                "apply-setup",
+                "Connect",
+                Some(Message::Setup(vec!["--apply".into(), id.clone()])),
+            ));
+        }
+        if phase == "applied" && plan_id.is_some() {
+            buttons = buttons.push(action(
+                "undo-setup",
+                "Undo",
+                (!self.setup_busy).then_some(Message::Setup(vec!["--undo".into(), id.clone()])),
+                false,
+            ));
+        }
+        buttons = buttons.push(action(
+            "setup-details",
+            if expanded { "Hide details" } else { "Details" },
+            Some(Message::ConnectionDetails("setup-plan".into())),
+            expanded,
+        ));
+        body = body.push(buttons.wrap());
+        if expanded {
+            let mut facts =
+                column![kv("Plan", id.clone(), c), kv("State", phase.clone(), c)].spacing(6);
+            if let Some(executable) = plan["executable"].as_str() {
+                facts = facts.push(kv("Command", executable, c));
+            }
+            for change in changes.into_iter().flatten() {
+                facts = facts.push(kv("File", value(change, "path"), c));
+            }
+            for note_text in plan["notes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str())
+            {
+                facts = facts.push(small(note_text, c));
+            }
+            body = body.push(rule(c)).push(facts);
+        }
         card(body, c)
     }
 
@@ -2779,6 +3434,16 @@ impl App {
         }
         screen.into()
     }
+}
+
+/// Keep full question bodies in the review screen, with a bounded first line here.
+fn compact_question(value: &str) -> String {
+    let first = value.lines().next().unwrap_or_default();
+    let mut preview: String = first.chars().take(80).collect();
+    if first.chars().count() > 80 || value.lines().count() > 1 {
+        preview.push('…');
+    }
+    preview
 }
 
 #[cfg(test)]

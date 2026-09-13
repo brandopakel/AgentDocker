@@ -189,18 +189,18 @@ def smoke(binary_dir, output):
                          step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="terminal"),
                          step("focus", id="detach-terminal"), step("wait_focus", id="detach-terminal"), step("click", id="detach-terminal"),
-                         step("click", id="project-tab-Channels"), step("click", id=f"reply-channel-{room['id']}"),
+                         step("click", id="project-more"), step("click", id="project-tab-Channels"), step("click", id=f"reply-channel-{room['id']}"),
                          step("fill", id="channel-message", text="Fixture channel message"), step("click", id="send-channel"),
                          step("wait_text", text="Message sent"), step("wait_text", text="Fixture channel message"), step("capture", name="channels"),
                          step("click", id="project-tab-Journal"), step("capture", name="activity"),
-                         step("click", id="project-tab-Channels"), step("wait_text", text="Fixture channel message"),
+                         step("click", id="project-more"), step("click", id="project-tab-Channels"), step("wait_text", text="Fixture channel message"),
                          step("click", id="project-more"), step("click", id="project-tab-Leases"), step("capture", name="coordination"),
                          step("click", id="connections"), step("capture", name="connections"),
-                         step("click", id="connection-details-codex"), step("wait_text", text="MCP:"),
-                         step("click", id="connection-details-codex"), step("click", id="setup-codex"),
-                         step("wait_text", text="Review integration changes"), step("capture", name="setup-review"),
-                         step("click", id="apply-setup"), step("wait_text", text="Setup applied"),
-                         step("click", id="undo-setup"), step("wait_text", text="Setup undone"), step("click", id="close-setup"),
+                         step("click", id="connection-details-codex"), step("wait_text", text="Tools (MCP)"),
+                         step("click", id="setup-review-codex"),
+                         step("wait_text", text="Connect Codex"), step("capture", name="setup-review"),
+                         step("click", id="apply-setup"), step("wait_text", text="Codex connected"),
+                         step("click", id="undo-setup"), step("wait_text", text="Codex setup undone"), step("click", id="close-setup"),
                          step("click", id="add-project"), step("fill", id="project-path", text=str(pinned)),
                          step("click", id="pin-folder"), step("wait_text", text="pinned-api"), step("capture", name="pinned-empty-project"),
                          step("click", id="launch-agent"), step("click", id="launch-tool-codex"),
@@ -214,6 +214,7 @@ def smoke(binary_dir, output):
                          step("resize", width=720, height=540), step("click", id="larger-ui"), step("click", id="larger-ui"),
                          step("focus", id="installation"), step("wait_focus", id="installation"), step("capture", name="compact-zoom-focus"),
                          step("click", id="installation"), step("capture", name="installation"), step("click", id="projects"),
+                         step("wait_text", text="All projects"), step("click", id=f"project-{pinned}"),
                          step("pause", millis=400)]
                 def launch(name, scenario):
                     nonlocal window
@@ -263,7 +264,7 @@ def smoke(binary_dir, output):
             assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No current sessions"), step("capture", name="restored-last-project"), step("click", id="sessions-history"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-history")])
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-history"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-history")])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"

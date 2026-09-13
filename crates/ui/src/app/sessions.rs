@@ -13,6 +13,7 @@ impl App {
     pub(super) fn reset_session_view(&mut self) {
         self.shell.session_filter = Filter::Current;
         self.shell.session_details = false;
+        self.shell.needs_you_expanded = false;
         self.shell.more = false;
         self.shell.launch = false;
         self.confirm_stop = None;
@@ -60,10 +61,17 @@ impl App {
             })
             .collect();
         records.sort_by(|a, b| {
-            (!self.needs_attention(a))
-                .cmp(&!self.needs_attention(b))
-                .then_with(|| b.created_at.cmp(&a.created_at))
-                .then_with(|| a.id.cmp(&b.id))
+            (if self.all_projects() {
+                a.project
+                    .as_ref()
+                    .map(|p| &p.root)
+                    .cmp(&b.project.as_ref().map(|p| &p.root))
+            } else {
+                std::cmp::Ordering::Equal
+            })
+            .then_with(|| (!self.needs_attention(a)).cmp(&!self.needs_attention(b)))
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.id.cmp(&b.id))
         });
         records
     }
@@ -201,6 +209,9 @@ mod tests {
     #[test]
     fn attention_is_scoped_to_the_project_and_keeps_unanswered_finished_sessions() {
         let mut app = app();
+        // Other sessions: the projectless view. With nothing selected and
+        // this flag off, the home view would show every project at once.
+        app.shell.catalog.unassigned = true;
         let first = record("needs-input");
         let quiet = record("quiet");
         let mut finished = record("finished-but-unanswered");

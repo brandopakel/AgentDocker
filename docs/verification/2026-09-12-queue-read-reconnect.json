@@ -272,7 +272,7 @@
     "The actual corrected trial retains the controller PID/start identity, one provider conversation/record, one event connection, exact human approval closure and three ordered peer/human inputs. It creates only the reviewed private fixture file.",
     "Queue acknowledgement, question publication, activity/input-receipt reports and other mutations still pause on failure; no generic write retries or full daemon handover are introduced.",
     "The daemon and UI binaries are unchanged from the compact file-review build. This trial checkpoint predates integration of the independently accepted Inbox history PR; the queue-retry change itself makes no native visual changes.",
-    "Private state, immutable binaries and owned fixture processes only; existing provider profiles and active user sessions are unchanged. Final CI and actual source inspection remain required before integration."
+    "Private state, immutable binaries and owned fixture processes only; existing provider profiles and active user sessions are unchanged. Final CI and actual source inspection subsequently passed; see integration below."
   ],
   "integrated_checkpoint": {
     "source": {
@@ -298,5 +298,17 @@
     "provider_binary_equivalence": "CLI and daemon match the actual 80fe790 provider trial byte-for-byte.",
     "native_binary_equivalence": "UI matches the accepted 9525145 Inbox history trial byte-for-byte.",
     "integrated_main": "b257bcb48f0af29417d38e08a5b8c73d34f14c05"
+  },
+  "integration": {
+    "pull_request": 114,
+    "final_head": "d22fdba6d85be8296c4431190413a20e430e127c",
+    "final_ci": "passed",
+    "actual_source_review": 5188251079,
+    "finding": 3997788730,
+    "response": 3997792121,
+    "withdrawn_and_resolved": 3997793252,
+    "review_result": "Only autostart finding withdrawn after reviewer inspected run -> run_owned -> queue and verified autostart was already disabled at entry.",
+    "merged_at": "2026-09-12T22:06:36Z",
+    "merge_commit": "71f2b31ea161bb55d86d80f90dada228a0108e85"
   }
 }

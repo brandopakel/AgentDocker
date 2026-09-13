@@ -8,7 +8,7 @@ agentdocker run --runtime codex --codex-input --tty -- codex
 ```
 
 This starts an owned Codex app-server conversation under the native supervisor.
-It needs a matching schema-15 daemon and CLI, and a Codex version supporting
+It needs a matching schema-16 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
 TUI. The option is off by default and applies only to the new session. Codex's
 app-server interface remains experimental.
@@ -102,7 +102,42 @@ those provider trials. PR #112 passed final CI and actual source review and merg
 as `dd0665a`; review corrected schema history and confirmed the intentional
 retention of uncertain approval records.
 
-Command/file approvals and nonsecret provider questions use AgentDocker's registered
+Schema 16 adds concrete permission requests to the same Inbox review. The card
+shows the directory, reason, each read/write/excluded path and requested network
+access. **Allow for this turn** sends exactly the reviewed permission profile with
+`scope: "turn"`; **Deny** sends an empty profile with the same scope. Only exact
+human `Allow` grants access. Neither choice requests session scope or overrides
+Codex's configured automatic review policy.
+
+The bounded parser accepts concrete absolute paths in legacy `read`/`write`
+lists or typed `entries`, including explicit deny entries. It rejects unknown
+fields, conflicting or repeated selectors within one representation, relative
+paths, control characters, Unicode bidirectional formatting marks, empty/no-op
+grants, more than 16 distinct paths and questions exceeding 16,000 bytes. Matching
+legacy/typed mirrors emitted by Codex are retained in the grant and shown once.
+Dot segments, repeated separators and trailing separators are refused rather
+than resolved against a filesystem. Windows drive/UNC comparison keys normalize
+ASCII case and separator spelling, so equivalent paths cannot bypass duplicate
+or conflicting-access checks; the approved wire profile remains unchanged.
+The portable Windows subset requires ASCII names and a complete UNC server/share,
+and refuses device namespaces, reserved device names, alternate streams and
+trailing dots/spaces. Broader host-specific path forms need a separate review.
+Glob/special selectors, scan-depth settings and remote environments require a richer review
+and remain unsupported. The omitted/null environment ID and Codex's reserved
+`local` ID select this local flow; other IDs are refused. Permission receipts
+require delivery-record version 7;
+older records cannot claim this review meaning. Installed Codex 0.153.4 exposes
+the request-permissions tool as a disabled feature under development. The
+[permission trial](verification/2026-09-12-permission-review.json) at `7051471`
+passed 856 Rust tests, 65 Python checks and actual Codex Allow/Deny with three
+ordered peer/human/peer inputs each,
+one exact human/provider resolution and one controller/conversation. Allow
+created the expected private fixture file; Deny left it absent. The corresponding
+native trial passed 18 review/draft/schema-upgrade/restart steps, including
+matching permission mirrors shown once. Initial environment/mirror failures and
+diagnostic setup failures are retained. Final CI/source review remain required.
+
+Command/file/permission approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller
 records the provider request before publishing its questions. Only the exact
 answer accepted by the daemon for that question can resolve it; an explicit
@@ -150,7 +185,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-6 record preserves version-3/4/5 records and accepts version-1/2 records only without recorded question
+version-7 record preserves version-3/4/5/6 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
@@ -178,7 +213,7 @@ actual source inspection of `1d76a88`; its parent integration gate passed
 814 Rust tests and 65 Python checks.
 
 Unknown callbacks,
-session-wide file grants, permission approvals, MCP elicitation, secret inputs
+session-wide file grants, unsupported permission selectors, MCP elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy

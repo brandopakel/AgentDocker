@@ -1,0 +1,834 @@
+{
+  "format": 1,
+  "recorded_date": "2026-09-12",
+  "result": "local acceptance passed; final CI/source review pending",
+  "runtime_build": {
+    "format": 1,
+    "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+    "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+    "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 16,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+    "binary_sha256": {
+      "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+      "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+      "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+    }
+  },
+  "implementation": [
+    "Schema16 stores concrete codex_permissions presentations with exact complete fallback text; upgrades1..15 and older builds refuse newer state before changes.",
+    "Typed network and concrete filesystem read/write/deny entries, at most16 distinct paths and16000-byte fallback. Matching legacy/typed mirrors survive serialization and appear once; conflicting/repeated selectors, unknown fields, glob/special selectors, remote IDs and no-op profiles are refused.",
+    "Human Allow sends exactly the reviewed profile with scope turn; other answers grant an empty profile. Neither scope session nor strictAutoReview is sent. Existing exact human closure/queued answer/provider resolution receipts apply.",
+    "Delivery record7 accepts compatible3..6 and safe1/2; older records cannot invent permission receipts, and version6 file review still reopens without changes."
+  ],
+  "provider_trials": [
+    {
+      "result": "passed",
+      "mode": "Allow",
+      "provider_version": "codex-cli 0.153.4",
+      "driver_sha256": "b5a13d6259ca54dfe47ffed8d63c6eb06714813ff0799ae4d89b3f3b668db775",
+      "same_controller": true,
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "file_result": {
+        "name": "review-file.txt",
+        "exists": true,
+        "sha256": "60acb114d260e17a3078f524f3a92710a4756e8debfc3bdc6f792005af0880e8"
+      },
+      "question": {
+        "id": "9647f8c8a04d4671",
+        "from": "1201a3b582e847d1bc1976a38115e67f",
+        "to": {
+          "kind": "agent",
+          "value": "0e6b578d48334265bbe87fa8794ce05c"
+        },
+        "text": "Allow Codex this access for the current turn?\n\nDirectory: /private/tmp/ad-cb-b57pwjfm/repo\nReason: Allow creation of review-file.txt in the specified trial directory?\n\nWrite: /private/tmp/ad-cb-b57pwjfm/permission-output\n\nReply Allow or Deny.",
+        "presentation": {
+          "kind": "codex_permissions",
+          "cwd": "/private/tmp/ad-cb-b57pwjfm/repo",
+          "reason": "Allow creation of review-file.txt in the specified trial directory?",
+          "permissions": {
+            "fileSystem": {
+              "write": [
+                "/private/tmp/ad-cb-b57pwjfm/permission-output"
+              ],
+              "entries": [
+                {
+                  "access": "write",
+                  "path": {
+                    "type": "path",
+                    "path": "/private/tmp/ad-cb-b57pwjfm/permission-output"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "asked_at": "2026-09-12T21:55:16.083558Z",
+        "expires_at": "2026-09-12T22:00:16.083558Z"
+      },
+      "question_resolution": {
+        "request": {
+          "id": 0,
+          "thread": "01a0979d-f907-7dc2-a8b5-e58c628b2e3c",
+          "turn": "01a0979d-fb62-7653-a75f-f6438161afd8",
+          "human": "0e6b578d48334265bbe87fa8794ce05c",
+          "kind": "permissions",
+          "expires_at": "2026-09-12T22:00:16.076822Z",
+          "questions": [
+            {
+              "field": "permissions",
+              "text": "Allow Codex this access for the current turn?\n\nDirectory: /private/tmp/ad-cb-b57pwjfm/repo\nReason: Allow creation of review-file.txt in the specified trial directory?\n\nWrite: /private/tmp/ad-cb-b57pwjfm/permission-output\n\nReply Allow or Deny.",
+              "message": "9647f8c8a04d4671",
+              "presentation": {
+                "kind": "codex_permissions",
+                "cwd": "/private/tmp/ad-cb-b57pwjfm/repo",
+                "reason": "Allow creation of review-file.txt in the specified trial directory?",
+                "permissions": {
+                  "fileSystem": {
+                    "write": [
+                      "/private/tmp/ad-cb-b57pwjfm/permission-output"
+                    ],
+                    "entries": [
+                      {
+                        "access": "write",
+                        "path": {
+                          "type": "path",
+                          "path": "/private/tmp/ad-cb-b57pwjfm/permission-output"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "answer": {
+                "id": "0c2e4842d75c4f1d",
+                "from": "0e6b578d48334265bbe87fa8794ce05c",
+                "to": {
+                  "kind": "agent",
+                  "value": "1201a3b582e847d1bc1976a38115e67f"
+                },
+                "kind": "answer",
+                "payload": {
+                  "text": "Allow"
+                },
+                "reply_to": "9647f8c8a04d4671",
+                "sent_at": "2026-09-12T21:55:16.109622Z"
+              },
+              "closure": {
+                "state": "answered",
+                "message": "0c2e4842d75c4f1d"
+              }
+            }
+          ],
+          "response": {
+            "id": 0,
+            "result": {
+              "permissions": {
+                "fileSystem": {
+                  "entries": [
+                    {
+                      "access": "write",
+                      "path": {
+                        "path": "/private/tmp/ad-cb-b57pwjfm/permission-output",
+                        "type": "path"
+                      }
+                    }
+                  ],
+                  "write": [
+                    "/private/tmp/ad-cb-b57pwjfm/permission-output"
+                  ]
+                }
+              },
+              "scope": "turn"
+            }
+          },
+          "extra_answers": []
+        },
+        "outcome": "resolved",
+        "acknowledged": true
+      },
+      "completed": [
+        {
+          "message": "df6c9a86bbfa424a",
+          "receipt": {
+            "thread": "01a0979d-f907-7dc2-a8b5-e58c628b2e3c",
+            "turn": "01a0979d-fb62-7653-a75f-f6438161afd8",
+            "item": "01a0979d-ff7a-7342-b007-db86cbb424c4"
+          }
+        },
+        {
+          "message": "fc1de0d136f443fb",
+          "receipt": {
+            "thread": "01a0979d-f907-7dc2-a8b5-e58c628b2e3c",
+            "turn": "01a0979e-5345-7151-92bc-5a827db10d90",
+            "item": "01a0979e-535c-7811-8bfb-fe97db715ba6"
+          }
+        },
+        {
+          "message": "d26af063fa9949e3",
+          "receipt": {
+            "thread": "01a0979d-f907-7dc2-a8b5-e58c628b2e3c",
+            "turn": "01a0979e-6e9e-72a1-805b-0b6e1f398614",
+            "item": "01a0979e-6eae-74d2-b719-8ee1fbad90f3"
+          }
+        }
+      ],
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-mirror-allow-live-2026-09-12/result.json",
+        "sha256": "9cfffc7ab240c4c54178848ae7b7d599c7365c19c5194e7217a108d337bfd857"
+      },
+      "input_ids": [
+        "df6c9a86bbfa424a",
+        "fc1de0d136f443fb",
+        "d26af063fa9949e3"
+      ],
+      "exact_correlated_replies": true
+    },
+    {
+      "result": "passed",
+      "mode": "Deny",
+      "provider_version": "codex-cli 0.153.4",
+      "driver_sha256": "b5a13d6259ca54dfe47ffed8d63c6eb06714813ff0799ae4d89b3f3b668db775",
+      "same_controller": true,
+      "reply_count": 3,
+      "codex_records": 1,
+      "same_queue": true,
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "file_result": {
+        "name": "review-file.txt",
+        "exists": false,
+        "sha256": null
+      },
+      "question": {
+        "id": "b77b6d37b9b74250",
+        "from": "0acf0b65658c401bba42da3c8e59e5c2",
+        "to": {
+          "kind": "agent",
+          "value": "8be71a33c8bd474b93d18506050c77cb"
+        },
+        "text": "Allow Codex this access for the current turn?\n\nDirectory: /private/tmp/ad-cb-nie15cva/repo\nReason: Allow creating review-file.txt with exactly PERMIT_72CE and one newline for the permission approval trial?\n\nWrite: /private/tmp/ad-cb-nie15cva/permission-output\n\nReply Allow or Deny.",
+        "presentation": {
+          "kind": "codex_permissions",
+          "cwd": "/private/tmp/ad-cb-nie15cva/repo",
+          "reason": "Allow creating review-file.txt with exactly PERMIT_72CE and one newline for the permission approval trial?",
+          "permissions": {
+            "fileSystem": {
+              "write": [
+                "/private/tmp/ad-cb-nie15cva/permission-output"
+              ],
+              "entries": [
+                {
+                  "access": "write",
+                  "path": {
+                    "type": "path",
+                    "path": "/private/tmp/ad-cb-nie15cva/permission-output"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "asked_at": "2026-09-12T21:56:16.811052Z",
+        "expires_at": "2026-09-12T22:01:16.811052Z"
+      },
+      "question_resolution": {
+        "request": {
+          "id": 0,
+          "thread": "01a0979e-eb1e-7b82-b48b-f90a57ec8a68",
+          "turn": "01a0979e-ed6b-7012-8dd5-9d600dc5ffb5",
+          "human": "8be71a33c8bd474b93d18506050c77cb",
+          "kind": "permissions",
+          "expires_at": "2026-09-12T22:01:16.804635Z",
+          "questions": [
+            {
+              "field": "permissions",
+              "text": "Allow Codex this access for the current turn?\n\nDirectory: /private/tmp/ad-cb-nie15cva/repo\nReason: Allow creating review-file.txt with exactly PERMIT_72CE and one newline for the permission approval trial?\n\nWrite: /private/tmp/ad-cb-nie15cva/permission-output\n\nReply Allow or Deny.",
+              "message": "b77b6d37b9b74250",
+              "presentation": {
+                "kind": "codex_permissions",
+                "cwd": "/private/tmp/ad-cb-nie15cva/repo",
+                "reason": "Allow creating review-file.txt with exactly PERMIT_72CE and one newline for the permission approval trial?",
+                "permissions": {
+                  "fileSystem": {
+                    "write": [
+                      "/private/tmp/ad-cb-nie15cva/permission-output"
+                    ],
+                    "entries": [
+                      {
+                        "access": "write",
+                        "path": {
+                          "type": "path",
+                          "path": "/private/tmp/ad-cb-nie15cva/permission-output"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "answer": {
+                "id": "14ba9cda26094cd4",
+                "from": "8be71a33c8bd474b93d18506050c77cb",
+                "to": {
+                  "kind": "agent",
+                  "value": "0acf0b65658c401bba42da3c8e59e5c2"
+                },
+                "kind": "answer",
+                "payload": {
+                  "text": "Deny"
+                },
+                "reply_to": "b77b6d37b9b74250",
+                "sent_at": "2026-09-12T21:56:16.813499Z"
+              },
+              "closure": {
+                "state": "answered",
+                "message": "14ba9cda26094cd4"
+              }
+            }
+          ],
+          "response": {
+            "id": 0,
+            "result": {
+              "permissions": {},
+              "scope": "turn"
+            }
+          },
+          "extra_answers": []
+        },
+        "outcome": "resolved",
+        "acknowledged": true
+      },
+      "completed": [
+        {
+          "message": "41b8266480124e78",
+          "receipt": {
+            "thread": "01a0979e-eb1e-7b82-b48b-f90a57ec8a68",
+            "turn": "01a0979e-ed6b-7012-8dd5-9d600dc5ffb5",
+            "item": "01a0979e-f260-7193-94b6-6ef0424be263"
+          }
+        },
+        {
+          "message": "0459efcaccc1429c",
+          "receipt": {
+            "thread": "01a0979e-eb1e-7b82-b48b-f90a57ec8a68",
+            "turn": "01a0979f-2be8-7542-bc5a-228e14e0d413",
+            "item": "01a0979f-2bf9-71a3-81e6-ecf73ed95750"
+          }
+        },
+        {
+          "message": "a3911a3eddee4979",
+          "receipt": {
+            "thread": "01a0979e-eb1e-7b82-b48b-f90a57ec8a68",
+            "turn": "01a0979f-4743-7a51-b314-b4bfe3aca0d5",
+            "item": "01a0979f-4751-70a3-a2b7-06d61faa7c3a"
+          }
+        }
+      ],
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-mirror-deny-live-2026-09-12/result.json",
+        "sha256": "9d09e37e12b10c9505b1c5b110c53e00c686df028e747d2d33384cb93d633215"
+      },
+      "input_ids": [
+        "41b8266480124e78",
+        "0459efcaccc1429c",
+        "a3911a3eddee4979"
+      ],
+      "exact_correlated_replies": true
+    }
+  ],
+  "native_trials": [
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-permission-ui-live-2026-09-12/result.json",
+        "sha256": "5c58df78b7d2cf9f00669a0c6505a9f7c9a2a8b8030a17f96ff11d160c738814"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "37789b70a1eff34d96c65a6eeda4828724c16412",
+        "source_tree": "9ad88939a896ed7814cbd12fd12adecbb379fd06",
+        "source_input_sha256": "fbff992b922b1a47ad8dc1e9a6ff0649e8ce318444f3f0888e4f84bad202c25f",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "f3a875e85f380f40a8481d79baf971e90b02954c798ef3c46973aad25a35f062",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "prior_build": {
+        "format": 1,
+        "source_commit": "3ceaa4a34962a08ec8559dd88448db2d947b2155",
+        "source_tree": "eaea0b33b91aba63370b43aa1f0e90f285620662",
+        "source_input_sha256": "7331edeaaa0975edb953db0d4fb7626c398806eb96a4cd60d30ea9039392e6a3",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 15,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+          "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+          "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+        }
+      },
+      "driver_sha256": "9b0eda8bd03127ffa42edc400cf61dce19be134fe392e89ea2fbc46819a6b040",
+      "native": {
+        "capture_attempts": 1,
+        "connected": true,
+        "elapsed_seconds": 5.083623916,
+        "error": null,
+        "fixture_discovered": true,
+        "native_accessibility_nodes": null,
+        "renderer": "iced tiny-skia",
+        "result": "passed",
+        "runtime_rows": 14,
+        "scenario_steps_completed": 18,
+        "scenario_steps_total": 18,
+        "screenshot_requested": true,
+        "ticks": 111
+      },
+      "cleanups": [
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      ],
+      "question_presentations_survived_restart": true,
+      "legacy_question_survived_schema_upgrade": true,
+      "native_answer_receipts": [
+        {
+          "question": "8f26bca99df546b4",
+          "decision": "Deny",
+          "count": 1,
+          "human": "2e444debca984fa48c399b1916ef2df4"
+        },
+        {
+          "question": "324c9dd61deb4f9f",
+          "decision": "Allow",
+          "count": 1,
+          "human": "2e444debca984fa48c399b1916ef2df4"
+        }
+      ],
+      "old_schema_refused_without_database_changes": true,
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "screenshots_viewed": [
+        "permissions-full-review.png",
+        "permissions-resolved-draft-retained.png"
+      ]
+    },
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-permission-mirror-ui-live-2026-09-12/result.json",
+        "sha256": "5d7bd9454df41656e773273d6eed218319fcb14edc76dc2107255da2de6593e6"
+      },
+      "result": "passed",
+      "build": {
+        "format": 1,
+        "source_commit": "70514715c0c76201badf9b40a41439b76caa1e87",
+        "source_tree": "035565f4d0f2e80c3722f50ef4059e7d90b0a035",
+        "source_input_sha256": "7a9abe82c3a266ab89306b3de1cfdd4577f900ad8656b4e6de30b1ab8e83c0c8",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "0398be6ce12c2128a9f3799159d233c24b4c87e3f73b1491ef695290a3ee4b06",
+          "agentd": "616018796947579d54f3f3885638c7d1560bdd31ede37f7190e1c75b81da8569",
+          "agentdocker-ui": "9f971e3f70803d5429a7cf39595603b61d94ca597d282d9b79ccdc46b54fbf3b"
+        }
+      },
+      "prior_build": {
+        "format": 1,
+        "source_commit": "3ceaa4a34962a08ec8559dd88448db2d947b2155",
+        "source_tree": "eaea0b33b91aba63370b43aa1f0e90f285620662",
+        "source_input_sha256": "7331edeaaa0975edb953db0d4fb7626c398806eb96a4cd60d30ea9039392e6a3",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 15,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "95821646c6db86e8d895e183ed73f06e7ba9326a96ab7606120af86de8e29ce0",
+          "agentd": "9576e2040fdf77cc37e49734528901ef064be0bd159a777db8875a7e536be0d1",
+          "agentdocker-ui": "eaedc35f06349620b4ee7c6a3bf15f625b57e7ee98e5ca654b948ce84f303886"
+        }
+      },
+      "driver_sha256": "4e446f487451803aba60c5dfb568d565f1f1fe6c17b0c2e8d6a5e2e512aebe62",
+      "native": {
+        "capture_attempts": 1,
+        "connected": true,
+        "elapsed_seconds": 4.987369958,
+        "error": null,
+        "fixture_discovered": true,
+        "native_accessibility_nodes": null,
+        "renderer": "iced tiny-skia",
+        "result": "passed",
+        "runtime_rows": 14,
+        "scenario_steps_completed": 18,
+        "scenario_steps_total": 18,
+        "screenshot_requested": true,
+        "ticks": 110
+      },
+      "cleanups": [
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      ],
+      "question_presentations_survived_restart": true,
+      "legacy_question_survived_schema_upgrade": true,
+      "native_answer_receipts": [
+        {
+          "question": "5f87e2ede377449f",
+          "decision": "Deny",
+          "count": 1,
+          "human": "7187ef6d484d4fe68498efc5f5d1b600"
+        },
+        {
+          "question": "95dafd6f6902442b",
+          "decision": "Allow",
+          "count": 1,
+          "human": "7187ef6d484d4fe68498efc5f5d1b600"
+        }
+      ],
+      "old_schema_refused_without_database_changes": true,
+      "remaining_owned_processes": {},
+      "binary_hashes_unchanged": true,
+      "screenshots_viewed": [
+        "permissions-full-review.png",
+        "permissions-resolved-draft-retained.png"
+      ]
+    }
+  ],
+  "retained_attempts": [
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-allow-live-2026-09-12/result.json",
+        "sha256": "a25ed249db22ab729ac0973a3d515124756c23cba605f3b0d75bd264a438e3d6"
+      },
+      "explanation": "Initial guard refused a non-null environment ID; corrected to accept the reserved local ID.",
+      "result": "failed",
+      "error": "Codex completed the input without requesting the expected permission approval",
+      "build": {
+        "format": 1,
+        "source_commit": "37789b70a1eff34d96c65a6eeda4828724c16412",
+        "source_tree": "9ad88939a896ed7814cbd12fd12adecbb379fd06",
+        "source_input_sha256": "fbff992b922b1a47ad8dc1e9a6ff0649e8ce318444f3f0888e4f84bad202c25f",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "f3a875e85f380f40a8481d79baf971e90b02954c798ef3c46973aad25a35f062",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "driver_sha256": "b5a13d6259ca54dfe47ffed8d63c6eb06714813ff0799ae4d89b3f3b668db775",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true
+    },
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-diagnostic-live-2026-09-12/result.json",
+        "sha256": "5dc6785edaa7b63126427b5f4974783d68803ecb1bb08e4d1a61b434b7823098"
+      },
+      "explanation": "Diagnostic wrapper launch arguments were refused before an agent launched.",
+      "result": "failed",
+      "error": "Error: Codex input does not support launch argument /private/tmp/agentdocker-permission-provider-tap-2026-09-12.py; use provider configuration and send the first message through AgentDocker\n",
+      "build": {
+        "format": 1,
+        "source_commit": "37789b70a1eff34d96c65a6eeda4828724c16412",
+        "source_tree": "9ad88939a896ed7814cbd12fd12adecbb379fd06",
+        "source_input_sha256": "fbff992b922b1a47ad8dc1e9a6ff0649e8ce318444f3f0888e4f84bad202c25f",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "f3a875e85f380f40a8481d79baf971e90b02954c798ef3c46973aad25a35f062",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "driver_sha256": "4413e54d80fe1332a8ef8f3845650d3d40af5544dc1176302950111995ec3e35",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true
+    },
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-diagnostic-fixed-live-2026-09-12/result.json",
+        "sha256": "df5f54a8ef0a2f28c981c543f362b5b00881afb778c521fb6c3318d94bc984e6"
+      },
+      "explanation": "Extra diagnostic provider parent broke required MCP initialization; no provider thread was bound.",
+      "result": "failed",
+      "error": "bridge never bound a provider thread",
+      "build": {
+        "format": 1,
+        "source_commit": "37789b70a1eff34d96c65a6eeda4828724c16412",
+        "source_tree": "9ad88939a896ed7814cbd12fd12adecbb379fd06",
+        "source_input_sha256": "fbff992b922b1a47ad8dc1e9a6ff0649e8ce318444f3f0888e4f84bad202c25f",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "f3a875e85f380f40a8481d79baf971e90b02954c798ef3c46973aad25a35f062",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "driver_sha256": "8dff5d252dcfed77e11910197cdb29a32e046474bb397ebfd3640222001deb1b",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true
+    },
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-local-allow-live-2026-09-12/result.json",
+        "sha256": "a62a33492b20fa73fd1842f331453117250da39a2998208cd9ed5ec66b55d30c"
+      },
+      "explanation": "Local ID accepted, but matching legacy/typed permission mirrors were initially treated as duplicates.",
+      "result": "failed",
+      "error": "Codex completed the input without requesting the expected permission approval",
+      "build": {
+        "format": 1,
+        "source_commit": "a42141a6468eb4ec7d79c90abda16be97fd757d9",
+        "source_tree": "e74b166f5cc95cfb8325e270bfa9d6cafeee3443",
+        "source_input_sha256": "4289126a79171705a841ec9b8950f689ab10cd6814ac2ae58a174184560b13db",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "7ff6eab177ac5cd3d9b5585bb56ab5be3db35fffa281d592b9f07ad4967dec49",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "driver_sha256": "b5a13d6259ca54dfe47ffed8d63c6eb06714813ff0799ae4d89b3f3b668db775",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true
+    },
+    {
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-codex-permission-diagnostic-optional-live-2026-09-12/result.json",
+        "sha256": "d541e6025268224c3c25bf7b8447303110d1ebf5a5537b38416beaee1b868431"
+      },
+      "explanation": "Diagnostic wrapper used optional MCP only to capture the local approval callback; this failed queue trial is schema evidence only, not provider acceptance.",
+      "result": "failed",
+      "error": "Codex completed the input without requesting the expected permission approval",
+      "build": {
+        "format": 1,
+        "source_commit": "a42141a6468eb4ec7d79c90abda16be97fd757d9",
+        "source_tree": "e74b166f5cc95cfb8325e270bfa9d6cafeee3443",
+        "source_input_sha256": "4289126a79171705a841ec9b8950f689ab10cd6814ac2ae58a174184560b13db",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 16,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-5e8c3db08e7e/release",
+        "binary_sha256": {
+          "agentdocker": "7ff6eab177ac5cd3d9b5585bb56ab5be3db35fffa281d592b9f07ad4967dec49",
+          "agentd": "1166b1fae6c75266a939ae6b14845fdfd88bfe51ab54b6c423f4ccc4e7f6e667",
+          "agentdocker-ui": "6b4b3c93629879387726a24f005131ab458ff2508b48ca281b148cb92e4c422f"
+        }
+      },
+      "driver_sha256": "99fbf3300f6b6fff4d90e455aab940712ca2eb0c5ae6d4696c0103277d9dc133",
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
+      "remaining_owned_processes": {},
+      "source_profile_unchanged": true,
+      "binary_hashes_unchanged": true
+    }
+  ],
+  "validation": {
+    "targeted_log": "/private/tmp/agentdocker-permission-mirror-targeted-2026-09-12.log",
+    "full_gate_log": "/private/tmp/agentdocker-permission-release-check-2026-09-12.log",
+    "full_gate": "passed",
+    "rust_passed": 856,
+    "rust_skipped": 6,
+    "python_passed": 65,
+    "fmt_clippy_doctests_package_release": "passed",
+    "full_gate_sha256": "9063c75a6af4891a554496c116c0711067cd9220418a243f9499e9d739e3d38e"
+  },
+  "diagnostic_callback": {
+    "path": "/private/tmp/agentdocker-permission-local-callbacks-2026-09-12.jsonl",
+    "sha256": "5691afff9d9f64f71e8cbd8f5cf258de71d5b2898509441fab59a2827f68a6b2",
+    "finding": "Installed0.153.4 emitted environmentId local and the identical concrete write path in fileSystem.write and fileSystem.entries."
+  },
+  "sources": [
+    "https://developers.openai.com/codex/app-server#permission-requests",
+    "https://github.com/openai/codex/blob/main/codex-rs/exec-server/src/environment.rs",
+    "Installed codex0.153.4 app-server generated PermissionsRequestApprovalParams/Response JSON schemas under /private/tmp/agentdocker-file-review-schema-2026-09-12"
+  ],
+  "scope_limits": [
+    "Private owned daemon/provider and native fixture state. The original auth/config/hooks and binaries were unchanged; owned processes were normally cleaned up. No installed launcher/default daemon was replaced.",
+    "Request-permissions feature enabled only in private provider profiles. The installed feature is disabled by default and marked under development.",
+    "Actual provider trials exercise one concrete filesystem write path and Allow/Deny. Native fixture shows network and mirrored filesystem grants; broader actual network/restriction semantics and remote/glob/special selectors remain separate.",
+    "One current-turn grant does not establish session grants, MCP elicitation, secret-input presentation, arbitrary policies, overnight use or live replacement.",
+    "Native automation is not physical accessibility/IME or Notification Center acceptance."
+  ]
+}

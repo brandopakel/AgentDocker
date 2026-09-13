@@ -113,16 +113,17 @@ def smoke(binary_dir, output):
             sequence = [step("click", id="inbox"), step("fill", id=f"answer-{questions[0]['id']}", text="Keep this answer draft"),
                         step("click", id=f"project-{first}"), step("click", id="connections")]
             gates = [(len(sequence), action(questions[1]["id"], agents[1]))]
-            sequence += [step("wait_text", text=questions[1]["text"]), step("wait_text", text="Keep this answer draft"),
-                         step("capture", name="question-route"), step("click", id="connections")]
+            sequence += [step("wait_text", text=questions[1]["text"]), step("capture", name="question-route"),
+                         step("click", id="thread-everyone"), step("wait_text", text="Keep this answer draft"),
+                         step("click", id="connections")]
             gates.append((len(sequence), action(direct, agents[1])))
             sequence += [step("wait_text", text="OLD DIRECT NOTIFICATION TARGET"), step("capture", name="direct-route"),
-                         step("click", id=f"project-{second}"), step("click", id="project-tab-Channels"),
+                         step("click", id=f"project-{second}"), step("click", id="project-more"), step("click", id="project-tab-Channels"),
                          step("click", id=f"reply-channel-{room['id']}"), step("fill", id="channel-message", text="Keep this channel draft"),
                          step("click", id="connections")]
             gates.append((len(sequence), action(channel_message, agents[1], room)))
             sequence += [step("wait_text", text="OLD CHANNEL NOTIFICATION TARGET"), step("wait_text", text="Keep this channel draft"),
-                         step("capture", name="channel-route"), step("click", id="inbox"),
+                         step("capture", name="channel-route"), step("click", id="inbox"), step("click", id="thread-everyone"),
                          step("wait_text", text="Keep this answer draft"), step("capture", name="retained-answer-draft")]
             window = launch("existing", sequence)
             primary = window.pid

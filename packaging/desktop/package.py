@@ -154,12 +154,12 @@ def macos(args, stage, info):
             Path(scratch) / "AgentDocker.iconset", "-o", resources / "AgentDocker.icns")
     version = re.split(r"[-+]", args.version)[0]
     plist = {
-        "CFBundleIdentifier": "dev.agentdocker.desktop", "CFBundleName": "agentdocker",
-        "CFBundleDisplayName": "agentdocker", "CFBundleExecutable": "agentdocker-ui",
+        "CFBundleIdentifier": "dev.agentdocker.desktop", "CFBundleName": "AgentDocker",
+        "CFBundleDisplayName": "AgentDocker", "CFBundleExecutable": "agentdocker-ui",
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
         "CFBundleVersion": str(args.build_number), "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleIconFile": "AgentDocker.icns", "NSHighResolutionCapable": True,
-        "CFBundleGetInfoString": f"agentdocker {args.version} ({args.source[:12]})",
+        "CFBundleGetInfoString": f"AgentDocker {args.version} ({args.source[:12]})",
         "AgentDockerSourceCommit": args.source,
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
@@ -196,7 +196,7 @@ def macos(args, stage, info):
             run("/usr/bin/ditto", app, image_root / "AgentDocker.app")
             (image_root / "Applications").symlink_to("/Applications", target_is_directory=True)
             dmg = stage / f"agentdocker-desktop-{args.target}.dmg"
-            run("/usr/bin/hdiutil", "create", "-volname", "agentdocker", "-srcfolder", image_root,
+            run("/usr/bin/hdiutil", "create", "-volname", "AgentDocker", "-srcfolder", image_root,
                 "-format", "UDZO", "-ov", dmg)
             if identity != "-":
                 run("/usr/bin/codesign", "--force", "--sign", identity, "--timestamp", dmg)

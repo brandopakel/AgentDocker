@@ -10,6 +10,7 @@ mod hooks;
 mod input_status;
 mod mcp;
 mod rtk;
+mod sender;
 mod service;
 mod setup;
 mod teams;
@@ -519,9 +520,9 @@ enum Command {
         /// Who to ask: an agent id/name, or `user` for the person here.
         #[arg(long)]
         to: String,
-        /// Asker; defaults to this agent's id, or `user`.
-        #[arg(long, env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
-        from: String,
+        /// Asker; defaults to this agent's identity, or `user` in a human terminal.
+        #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
         /// How long to wait before giving up.
         #[arg(long, default_value_t = 300)]
         timeout: u64,
@@ -533,14 +534,14 @@ enum Command {
     },
     /// Close a question you asked; existing messages and answers are retained.
     CancelQuestion {
-        /// Asker; defaults to AGENTDOCKER_AGENT_ID, or user.
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
-        agent: String,
+        /// Asker; defaults to this agent's identity, or user in a human terminal.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
         message: String,
     },
     /// Answer a question somebody is waiting on, by its message id.
     Answer {
-        /// Answerer; defaults to `user`.
+        /// Answerer; defaults to this agent's identity, or `user` in a human terminal.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
         /// The question's message id, as `ask` and `questions` print it.
@@ -877,9 +878,9 @@ enum JournalAction {
 
 #[derive(Args)]
 struct SendArgs {
-    /// Sender; defaults to this agent's id, or `user`.
-    #[arg(long, env = "AGENTDOCKER_AGENT_ID", default_value = "user")]
-    from: String,
+    /// Sender; defaults to this agent's identity, or `user` in a human terminal.
+    #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+    from: Option<String>,
     /// Agent id/name, `project` (everyone working in this directory's
     /// project) or `project:<id|path>`, `topic:<name>`, or `all`.
     #[arg(long)]
@@ -1806,7 +1807,9 @@ async fn main() -> Result<()> {
                 (None, None) => bail!("give message text or --json"),
             };
             let request = Request::Send {
-                from: args.from,
+                from: sender::resolve(&client, args.from)
+                    .await?
+                    .unwrap_or_else(|| HUMAN.into()),
                 to: destination(&args.to),
                 kind: args.kind,
                 payload,
@@ -1835,6 +1838,9 @@ async fn main() -> Result<()> {
             no_wait,
             question,
         } => {
+            let from = sender::resolve(&client, from)
+                .await?
+                .unwrap_or_else(|| HUMAN.into());
             let request = if no_wait {
                 Request::PostQuestion {
                     from,
@@ -1860,7 +1866,9 @@ async fn main() -> Result<()> {
         Command::CancelQuestion { agent, message } => {
             client
                 .call(&Request::CancelQuestion {
-                    agent,
+                    agent: sender::resolve(&client, agent)
+                        .await?
+                        .unwrap_or_else(|| HUMAN.into()),
                     message: message.into(),
                 })
                 .await?;
@@ -1871,7 +1879,7 @@ async fn main() -> Result<()> {
             text,
         } => {
             let request = Request::Answer {
-                from: agent,
+                from: sender::resolve(&client, agent).await?,
                 message: MessageId::from(message),
                 text,
             };

@@ -170,16 +170,7 @@ fn interpreter(exe: &str) -> bool {
 
 pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     match executable(argv)?.as_ref() {
-        // Claude Code runs helper processes under the same binary; only the
-        // interactive session is an agent.
-        "claude"
-            if argv
-                .get(1)
-                .is_some_and(|sub| sub.starts_with("bg-") || sub == "daemon") =>
-        {
-            None
-        }
-        "claude" => Some("claude-code"),
+        "claude" => claude_runtime(&argv[1..]),
         "codex" => Some("codex"),
         "gemini" => Some("gemini-cli"),
         "cursor-agent" => Some("cursor"),
@@ -200,10 +191,25 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
             ]
             .into_iter()
             .find(|(marker, _)| script.contains(marker))
-            .map(|(_, runtime)| runtime)
+            .and_then(|(_, runtime)| {
+                if runtime == "claude-code" {
+                    claude_runtime(&argv[2..])
+                } else {
+                    Some(runtime)
+                }
+            })
         }
         _ => None,
     }
+}
+
+/// Known service entry points use the same executable as actual sessions.
+/// Only inspect the first mode argument; a prompt can mention these strings.
+fn claude_runtime(arguments: &[String]) -> Option<&'static str> {
+    (!arguments.first().is_some_and(|mode| {
+        mode.starts_with("bg-") || matches!(mode.as_str(), "daemon" | "--chrome-native-host")
+    }))
+    .then_some("claude-code")
 }
 
 /// Codex's interpreter launcher starts a native child and then waits for it. Only
@@ -393,6 +399,33 @@ mod windows_identity_tests {
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
+    #[test]
+    fn claude_browser_hosts_are_not_sessions_or_duplicate_discovery_candidates() {
+        let argv = |command: &str| {
+            command
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        for command in [
+            "claude --chrome-native-host",
+            "node /x/@anthropic-ai/claude-code/cli.js --chrome-native-host",
+            "node /x/@anthropic-ai/claude-code/cli.js daemon run",
+            "node /x/@anthropic-ai/claude-code/cli.js bg-spare",
+        ] {
+            assert_eq!(runtime_of(&argv(command)), None, "{command}");
+        }
+        for command in [
+            "claude --chrome",
+            "claude -- --chrome-native-host",
+            "claude --resume session",
+            "node /x/@anthropic-ai/claude-code/cli.js --chrome",
+            "node /x/@anthropic-ai/claude-code/cli.js -- --chrome-native-host",
+        ] {
+            assert_eq!(runtime_of(&argv(command)), Some("claude-code"), "{command}");
+        }
+    }
+
     use super::*;
 
     #[test]

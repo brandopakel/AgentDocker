@@ -20,6 +20,42 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
+The [September 12 sender audit](verification/2026-09-12-cli-sender-identity.json)
+reproduces a separate routing problem: CLI sends and questions without an
+explicit sender could silently use the human record inside an agent's shell.
+Replies then queued for the person. An omitted answer identity could also close
+a question addressed to the human, and an agent could not cancel its own question.
+Messages from the user's live parallel Claude session arrived under the human
+record; its exact sending invocation still needs confirmation. Replies have been
+redirected to Claude's actual registered ID.
+
+At `fc97f8b`, implicit send/ask/answer/cancel identities use the nearest recognized
+provider ancestor and one exact live PID/birth registry owner. Managed Codex
+app-server processes reuse their verified controller identity. Missing,
+ambiguous or changed provider ownership returns an error instead of becoming
+the human. Explicit flags/environment identities remain authoritative, and
+ordinary human terminals retain their default. This prevents accidental sender
+confusion within the cooperative protocol; explicit sender selection is not a
+new authentication boundary.
+
+The local gate passed 859 Rust tests and 65 Python checks. Six actual CLI
+scenarios under an owned native provider-shaped parent reproduce the old behavior
+and pass with the correction, including reply routing and preserving a human
+question against an implicit peer answer. This process fixture does not run a
+Claude model. Separate actual Claude Code 2.1.270 trials also reproduce the old
+human attribution and pass with the corrected build: the model initializes MCP,
+runs one exact Bash send with no sender flag and `AGENTDOCKER_AGENT_ID` unset,
+and its reply is queued under its registered identity. Both private trials
+exited normally with unchanged monitored user configuration and binary hashes.
+They verify reply destination after the one-shot model exits, not subsequent
+consumption or idle wake. Final CI/source review remain.
+
+The managed Codex bridge separately has an actual
+[30-minute trial](verification/2026-09-12-thirty-minute-codex-queue.json): 60 ordered
+human/peer inputs and exact replies, seven lost read responses and one retained
+controller/conversation. [Concrete permission review](verification/2026-09-12-permission-review.json)
+also passes actual Allow/Deny with shared queued input and exact human receipts.
+
 The opt-in [Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) now has
 [actual-provider evidence](verification/2026-09-11-claude-channel-input.json)
 at `c9677ab`: idle wake without prompt input; queued peer/user messages and a
@@ -39,8 +75,8 @@ model prompt, then received canonical-user input while preserving a draft. Both
 receipts and replies used the original managed identity, with one Claude record.
 This bounded trial passed without changes to monitored user configuration files.
 
-The following lifecycle-only gap still applies to Codex and ordinary hook/MCP
-configurations without the enabled Claude channel adapter.
+The following lifecycle-only gap applies to ordinary hook/MCP configurations
+without the managed Codex bridge or enabled Claude channel adapter.
 
 The daemon has inbox queues and live subscriptions. A successful send establishes
 routing/queue acceptance, not provider input acceptance or model consumption.
