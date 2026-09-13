@@ -972,6 +972,7 @@ impl App {
             }
             Message::Setup(args) => {
                 if !self.setup_busy {
+                    self.screen = Screen::Runtimes;
                     self.shell.setup_error = None;
                     self.setup_busy = true;
                     self.send(Cmd::Setup(args));

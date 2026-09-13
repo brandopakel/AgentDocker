@@ -232,7 +232,22 @@ impl Layout {
                 let system = Path::new(Self::SYSTEM_APPLICATIONS).join("AgentDocker.app");
                 match value["application"].as_str().map(Path::new) {
                     Some(path) if path == user_application => Ok(None),
-                    Some(path) if path == system => Ok(Some(system)),
+                    Some(path) if path == system => {
+                        ensure!(
+                            std::env::home_dir()
+                                .and_then(|home| project::try_canonical(&home).ok())
+                                .as_deref()
+                                == Some(prefix),
+                            "a trial installation cannot use the system Applications folder"
+                        );
+                        let directory = Path::new(Self::SYSTEM_APPLICATIONS);
+                        ensure!(
+                            directory.symlink_metadata()?.is_dir()
+                                && project::try_canonical(directory)? == directory,
+                            "system Applications folder changed to an unsupported location"
+                        );
+                        Ok(Some(system))
+                    }
                     _ => bail!(
                         "{} names a launcher location this installer does not manage",
                         record.display()
@@ -584,6 +599,17 @@ impl Layout {
     fn preflight(&self) -> Result<()> {
         for path in [&self.root, &self.bin, &self.application] {
             let allowed_outside = self.legacy_application.is_some() && path == &self.application;
+            if allowed_outside {
+                let directory = self
+                    .application
+                    .parent()
+                    .context("launcher has no parent")?;
+                ensure!(
+                    directory.symlink_metadata()?.is_dir()
+                        && project::try_canonical(directory)? == directory,
+                    "system Applications folder changed during installation"
+                );
+            }
             ensure!(
                 allowed_outside || project::try_canonical(path)?.starts_with(&self.prefix),
                 "installation path escapes its prefix through a symlink: {}",
@@ -1499,9 +1525,9 @@ mod tests {
             &serde_json::json!({"format": 1, "application": "/Applications/AgentDocker.app"})
                 .to_string(),
         );
-        assert_eq!(
-            Layout::recorded_or_default_application(&root, &prefix, &user).unwrap(),
-            Some(PathBuf::from("/Applications/AgentDocker.app"))
+        assert!(
+            Layout::recorded_or_default_application(&root, &prefix, &user).is_err(),
+            "a recorded path cannot let a trial prefix write outside its tree"
         );
         for bad in [
             serde_json::json!({"format": 1, "application": "/tmp/elsewhere/AgentDocker.app"})
