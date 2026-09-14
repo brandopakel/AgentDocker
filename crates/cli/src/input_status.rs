@@ -30,6 +30,22 @@ pub async fn adapter_contact<B: Backend>(
     .await;
 }
 
+/// A periodic readiness observation is diagnostic, unlike a receipt that must
+/// commit before ACK. A lost/refused refresh expires naturally in the UI and
+/// must not stop an otherwise functioning provider transport.
+pub async fn refresh<B: Backend>(
+    backend: &B,
+    agent: &str,
+    process_started_at: Option<DateTime<Utc>>,
+) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        report(backend, agent, process_started_at, InputReport::Ready),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
 /// Preserve the outer error context, without embedding a full provider error
 /// chain or terminal control sequences in the durable session summary.
 pub fn paused(error: &anyhow::Error) -> InputReport {

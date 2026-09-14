@@ -412,7 +412,7 @@ impl App {
         if !delivery.current_for(agent.process_started_at, now) {
             return "No recent receiver signal";
         }
-        if delivery.received_for_current_process(now) {
+        if delivery.received_for(agent.process_started_at, now) {
             "Delivery verified"
         } else {
             "Receiver active, awaiting first receipt"
@@ -2917,6 +2917,11 @@ impl App {
                 if !sessions.is_empty()
                     && !ready
                     && matches!(runtime.name.as_str(), "codex" | "claude-code")
+                    && sessions.iter().any(|agent| {
+                        agent.input_delivery.as_ref().is_none_or(|delivery| {
+                            Some(delivery.process_started_at) != agent.process_started_at
+                        })
+                    })
                 {
                     facts = facts.push(note("Hooks deliver at prompt and tool boundaries. For idle delivery, launch a new session with Receive messages while idle enabled.", c));
                 }

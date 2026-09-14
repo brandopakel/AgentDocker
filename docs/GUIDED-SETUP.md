@@ -67,7 +67,7 @@ not establish contact. Details lists the evidence for each live session, so a
 different session's callback cannot establish that session's readiness.
 
 The managed Codex receiver and Claude channel refresh input readiness every
-30 seconds while their input loop is working. Reports expire after 90 seconds;
+30 seconds while their input loop is working. Periodic refresh attempts are bounded to 250 ms; a refusal or timeout does not end the input transport. Receipts still must persist before ACK. Reports expire after 90 seconds;
 an older process's report or receipt cannot make a replacement ready. Before
 the first exact receipt the session says **Receiver active, awaiting first
 receipt**. **Delivery verified** requires that receipt and current receiver
@@ -85,6 +85,8 @@ MCP diagnostics recognize a direct `agentdocker mcp` launch and the `mcp --runti
 An available executable is not a successful adapter call. Checks never execute configured commands or contact a model, and do not prove provider message consumption. Bare commands are checked against the inspecting process's PATH; relative paths need an explicit working directory. Claude user settings that disable hooks are reported, while project/managed settings may override them. Claude Code can use its complete hooks adapter without an optional MCP registration. These checks do not resolve every provider setting layer or certify that an available executable will run correctly. MCP approval remains controlled by the provider; setup does not preapprove tools.
 
 The [local trial](LOCAL-TRIAL.md) requires a fresh real-provider round trip. During the native delivery work, a disposable Claude Code session received a token through hooks and wrote it to its fixture file; a fresh Codex session received a different token through MCP, echoed it to its fixture peer and recorded it in the journal. Both used private fixture IPC and left the monitored provider settings unchanged. This is bounded acceptance of those installed CLI versions, not certification of every provider/version or sustained use. The first Codex run correctly failed consumption assertions because tool approval was not configured; the passing run explicitly approved only its five fixture tools for that invocation.
+
+The September 14 readiness candidate in [PR #125](https://github.com/brandopakel/AgentDocker/pull/125) passed 882 Rust tests, 65 Python checks and 165 native workflow steps at `0dedf24`. Native controls distinguished activity-only, adapter contact, an active receiver awaiting its first receipt, verified receipt and paused delivery. A 90-second actual Codex 0.154.0 conversation completed six ordered human/peer inputs and replies, survived a dropped read response, retained one controller/conversation and refreshed readiness after the last receipt. The separate Claude channel transport trial refreshed while idle without duplicating its outstanding offer or acknowledging any input. Provider settings were unchanged and fixture processes exited. These are bounded source-specific trials; installed-candidate and broader platform acceptance remain separate.
 
 Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in [DESKTOP-DISTRIBUTION.md](DESKTOP-DISTRIBUTION.md).
 

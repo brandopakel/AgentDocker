@@ -125,7 +125,9 @@ impl State {
             || record.spec.runtime == agentdocker_core::HUMAN_RUNTIME
             || !contact.current_for(record.process_started_at, now)
             || (adapter == agentdocker_core::AdapterKind::Hooks
-                && !matches!(record.spec.runtime.as_str(), "codex" | "claude-code"))
+                && !agentdocker_core::runtime::RUNTIMES
+                    .iter()
+                    .any(|runtime| runtime.name == record.spec.runtime && runtime.hooks))
         {
             return Response::error(
                 ErrorCode::Invalid,

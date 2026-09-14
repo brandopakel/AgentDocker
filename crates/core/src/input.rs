@@ -105,8 +105,9 @@ impl InputDelivery {
             && now - self.reported_at < chrono::Duration::seconds(90)
     }
 
-    pub fn received_for_current_process(&self, now: DateTime<Utc>) -> bool {
-        self.received.is_some()
+    pub fn received_for(&self, generation: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        generation == Some(self.process_started_at)
+            && self.received.is_some()
             && self
                 .received_at
                 .is_some_and(|at| at >= self.process_started_at && at <= now)
@@ -144,22 +145,24 @@ mod tests {
         assert!(!delivery.current_for(Some(birth), birth + chrono::Duration::seconds(90)));
         assert!(!delivery.current_for(Some(birth), birth - chrono::Duration::seconds(1)));
         assert!(!delivery.current_for(None, birth));
-        assert!(!delivery.received_for_current_process(birth));
+        assert!(!delivery.received_for(Some(birth), birth));
         delivery.received = Some(ReceivedInput {
             messages: vec!["receipt".to_owned().into()],
             receipt: InputReceipt::ClaudeChannel,
         });
         delivery.received_at = Some(birth - chrono::Duration::seconds(1));
         assert!(
-            !delivery.received_for_current_process(birth),
+            !delivery.received_for(Some(birth), birth),
             "historical receipt is not current-process evidence"
         );
         delivery.received_at = Some(birth);
-        assert!(delivery.received_for_current_process(birth));
+        assert!(delivery.received_for(Some(birth), birth));
+        assert!(!delivery.received_for(Some(birth + chrono::Duration::seconds(1)), birth));
+        assert!(!delivery.received_for(None, birth));
         delivery.paused = true;
         assert!(!delivery.current_for(Some(birth), birth));
         assert!(
-            delivery.received_for_current_process(birth),
+            delivery.received_for(Some(birth), birth),
             "pausing retains the receipt as history"
         );
     }
