@@ -68,7 +68,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Identity repair](IDENTITY-REPAIR.md) | Partial: offline preview/apply implemented and tested; production reconciliation and live transfer not done. |
 | [Live daemon upgrades](LIVE-DAEMON-UPGRADES.md) | Partial: event continuation, reconnect and output drain implemented; process/I/O transfer and successor fencing/readiness unbuilt. |
 | [Native delivery](NATIVE-DELIVERY.md) | Partial: merged implementation record; installation complete on this Mac, broader release acceptance incomplete. |
-| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths and rollback implemented; running-daemon switch remains operational work. |
+| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths, rollback and the two-way `install.sh`/managed-install protection implemented; running-daemon switch remains operational work. |
 | [Desktop distribution](DESKTOP-DISTRIBUTION.md) | Partial: packaging, installer, update consumer and retention implemented; signing and final distribution acceptance remain. |
 | [Distribution setup](DISTRIBUTION-SETUP.md) | Partial: tap/formula and automation exist; Developer ID, notarization and published app cask remain. |
 | [Release automation](RELEASE-AUTOMATION.md) | Partial: archives/feed workflow implemented; protected-tag execution, hosted update and clean-Mac acceptance remain. |
