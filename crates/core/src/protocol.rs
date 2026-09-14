@@ -245,6 +245,13 @@ pub enum Request {
         agent: String,
         observation: crate::ActivityObservation,
     },
+    /// Actual adapter contact, bound to a live provider process generation.
+    /// It does not establish idle wake or provider message consumption.
+    ReportAdapter {
+        agent: String,
+        adapter: crate::AdapterKind,
+        contact: crate::AdapterContact,
+    },
     /// Provider evidence, bound to the exact live process generation.
     /// Receipt reports persist before the existing explicit queue ACK.
     ReportInput {

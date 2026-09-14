@@ -109,6 +109,62 @@ impl Drop for Waiting<'_> {
 }
 
 impl State {
+    pub(super) fn report_adapter(
+        &mut self,
+        reference: &str,
+        adapter: agentdocker_core::AdapterKind,
+        contact: agentdocker_core::AdapterContact,
+        now: DateTime<Utc>,
+    ) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        if !record.status.is_live()
+            || record.spec.runtime == agentdocker_core::HUMAN_RUNTIME
+            || !contact.current_for(record.process_started_at, now)
+            || (adapter == agentdocker_core::AdapterKind::Hooks
+                && !agentdocker_core::runtime::RUNTIMES
+                    .iter()
+                    .any(|runtime| runtime.name == record.spec.runtime && runtime.hooks))
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "adapter contact has no matching live process or is stale",
+            );
+        }
+        if record
+            .adapter_contacts
+            .get(&adapter)
+            .is_some_and(|previous| {
+                previous.process_started_at == contact.process_started_at
+                    && contact.observed_at - previous.observed_at < Duration::seconds(30)
+            })
+        {
+            return Response::Ok;
+        }
+        record.adapter_contacts.insert(adapter, contact.clone());
+        let mut event = agentdocker_core::Event::new(
+            agentdocker_core::EventKind::AdapterContactReported {
+                agent: id.clone(),
+                adapter,
+                contact,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        self.persist("adapter contact", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if self.storage_error.is_none() {
+            *self.registry.get_mut(&id).expect("resolved agent") = record;
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        self.storage_failure().unwrap_or(Response::Ok)
+    }
+
     pub(super) fn report_input(
         &mut self,
         reference: &str,

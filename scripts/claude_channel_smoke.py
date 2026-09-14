@@ -147,6 +147,18 @@ def run(args):
             assert json.loads(first["content"])["text"] == "ordinal 0"
             assert queued() == accepted
             assert connection.read(0.35) is None, "advanced without receipt"
+            initial_ready = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert initial_ready.get("received") is None
+            heartbeat_deadline = time.monotonic() + 36
+            while True:
+                refreshed = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+                if refreshed["reported_at"] > initial_ready["reported_at"]:
+                    break
+                assert time.monotonic() < heartbeat_deadline, "idle receiver did not refresh readiness"
+                assert connection.read(0.25) is None, "heartbeat duplicated an unacknowledged offer"
+            assert refreshed["paused"] is False and refreshed.get("received") is None
+            assert queued() == accepted
+            report["steps"].append("idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption")
             duplicate = spawn(command, channel_env)
             assert duplicate.wait(timeout=5) != 0 and queued() == accepted
             report["steps"].append("channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner")

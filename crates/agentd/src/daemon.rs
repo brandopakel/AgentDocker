@@ -1243,6 +1243,11 @@ impl Daemon {
             Request::ReportActivity { agent, observation } => {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
+            Request::ReportAdapter {
+                agent,
+                adapter,
+                contact,
+            } => lock(&self.state).report_adapter(&agent, adapter, contact, Utc::now()),
             Request::ReportInput {
                 agent,
                 process_started_at,
@@ -6912,6 +6917,106 @@ mod tests {
                 }
             ));
         }
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn adapter_contact_is_generation_bound_ordered_and_atomic() {
+        use agentdocker_core::{AdapterContact, AdapterKind};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut agent = register(&daemon, "adapter-fixture", None).await;
+        let birth = Utc::now() - Duration::seconds(10);
+        let now = birth + Duration::seconds(10);
+        agent.spec.runtime = "codex".into();
+        agent.process_started_at = Some(birth);
+        let mut events = daemon.subscribe_events();
+        let mut state = lock(&daemon.state);
+        state.store.upsert_agent(&agent).unwrap();
+        *state.registry.get_mut(&agent.id).unwrap() = agent.clone();
+        let contact = AdapterContact {
+            process_started_at: birth,
+            observed_at: now - Duration::seconds(1),
+        };
+        for kind in [AdapterKind::Mcp, AdapterKind::Hooks] {
+            assert!(matches!(
+                state.report_adapter(agent.id.as_str(), kind, contact.clone(), now),
+                Response::Ok
+            ));
+            assert!(
+                matches!(events.try_recv().unwrap().kind, EventKind::AdapterContactReported { adapter, .. } if adapter == kind)
+            );
+        }
+        let saved = state.registry.get(&agent.id).unwrap().clone();
+        assert_eq!(saved.adapter_contacts.len(), 2);
+        assert_eq!(state.store.load_agents().unwrap()[0], saved);
+        assert!(
+            saved.reported_activity.is_none(),
+            "contact is not a working/idle observation"
+        );
+        assert!(
+            saved.input_delivery.is_none(),
+            "MCP and hooks do not establish idle input delivery"
+        );
+        assert!(matches!(
+            state.report_adapter(agent.id.as_str(), AdapterKind::Mcp, contact.clone(), now),
+            Response::Ok
+        ));
+        assert!(events.try_recv().is_err());
+        assert!(matches!(
+            state.report_adapter(
+                agent.id.as_str(),
+                AdapterKind::Mcp,
+                AdapterContact {
+                    observed_at: now + Duration::seconds(28),
+                    ..contact.clone()
+                },
+                now + Duration::seconds(28)
+            ),
+            Response::Ok
+        ));
+        assert_eq!(state.registry.get(&agent.id).unwrap(), &saved);
+        assert!(events.try_recv().is_err(), "nearby callbacks are coalesced");
+        for invalid in [
+            AdapterContact {
+                process_started_at: now,
+                ..contact.clone()
+            },
+            AdapterContact {
+                observed_at: now + Duration::seconds(1),
+                ..contact.clone()
+            },
+            AdapterContact {
+                observed_at: now - Duration::minutes(5),
+                ..contact.clone()
+            },
+        ] {
+            assert!(matches!(
+                state.report_adapter(agent.id.as_str(), AdapterKind::Mcp, invalid, now),
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+        }
+        state.store.reject_agent_writes_for_test();
+        assert!(matches!(
+            state.report_adapter(
+                agent.id.as_str(),
+                AdapterKind::Mcp,
+                AdapterContact {
+                    observed_at: now + Duration::seconds(31),
+                    ..contact
+                },
+                now + Duration::seconds(31)
+            ),
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(state.registry.get(&agent.id).unwrap(), &saved);
+        assert_eq!(state.store.load_agents().unwrap()[0], saved);
         assert!(events.try_recv().is_err());
     }
 

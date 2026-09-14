@@ -84,6 +84,8 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
     let mut unavailable = false;
+    let mut last_ready = tokio::time::Instant::now();
+    let mut readiness_unavailable = false;
     loop {
         tokio::select! {
             incoming = read_frame(&mut input, &mut frame) => {
@@ -102,6 +104,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             agentdocker_core::InputReport::Ready).await?;
                     }
                     initialized = true;
+                    last_ready = tokio::time::Instant::now();
                     continue;
                 }
                 // A channel always reserves service for handshake, ping and
@@ -150,6 +153,17 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                         continue;
                     }
                 };
+                // Refresh only while the queue is reachable. Missing receipt
+                // remains visible separately; an offer is not consumption.
+                if last_ready.elapsed() >= Duration::from_secs(30) {
+                    let refreshed = crate::input_status::refresh(&server.backend, &server.identity.id,
+                        server.identity.host_started_at).await;
+                    if !refreshed && !readiness_unavailable {
+                        eprintln!("agentdocker channel: readiness refresh unavailable; current status will expire without changing the message queue");
+                    }
+                    readiness_unavailable = !refreshed;
+                    last_ready = tokio::time::Instant::now();
+                }
                 if let Some((id, since, warned)) = &mut offered {
                     if messages.iter().any(|message| &message.id == id) {
                         if !*warned && since.elapsed() >= Duration::from_secs(30) {
@@ -289,7 +303,7 @@ mod tests {
                         .retain(|message| !messages.contains(&message.id));
                     Ok(Response::Ok)
                 }
-                Request::ReportInput { .. } => Ok(Response::Ok),
+                Request::ReportInput { .. } | Request::ReportAdapter { .. } => Ok(Response::Ok),
                 Request::Claim { .. } => std::future::pending().await,
                 other => panic!("unexpected channel request {other:?}"),
             }
@@ -332,6 +346,96 @@ mod tests {
             .unwrap()
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_refusal_and_timeout_preserve_the_channel_and_exact_receipts() {
+        use std::cell::Cell;
+        struct Heartbeat {
+            queue: Queue,
+            reports: Cell<usize>,
+        }
+        impl Backend for Heartbeat {
+            async fn call(&self, request: Request) -> Result<Response> {
+                if matches!(
+                    request,
+                    Request::ReportInput {
+                        report: agentdocker_core::InputReport::Ready,
+                        ..
+                    }
+                ) {
+                    let count = self.reports.get() + 1;
+                    self.reports.set(count);
+                    return match count {
+                        2 => Ok(Response::error(
+                            agentdocker_core::ErrorCode::StorageUnavailable,
+                            "fixture refusal",
+                        )),
+                        3 => std::future::pending().await,
+                        _ => Ok(Response::Ok),
+                    };
+                }
+                self.queue.call(request).await
+            }
+        }
+        let fixture = server();
+        let mut server = McpServer::new(
+            Heartbeat {
+                queue: fixture.backend,
+                reports: Cell::new(0),
+            },
+            fixture.identity,
+        );
+        server.claude_channel = true;
+        let head = server.backend.queue.0.borrow()[0].id.clone();
+        let (transport, client) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(transport);
+        let trial = async {
+            let (reader, mut writer) = tokio::io::split(client);
+            let mut reader = BufReader::new(reader);
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                receive(&mut reader).await["params"]["meta"]["message_id"],
+                head.as_str()
+            );
+            assert_eq!(server.backend.reports.get(), 1);
+            // Refusal, a stalled write and recovery must all preserve the
+            // outstanding offer and leave ordinary requests serviceable.
+            for expected in 2..=4 {
+                tokio::time::advance(Duration::from_secs(31)).await;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                write_line(
+                    &mut writer,
+                    &json!({"jsonrpc":"2.0","id":expected,"method":"ping"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(receive(&mut reader).await["id"], expected);
+                assert_eq!(server.backend.reports.get(), expected);
+                assert_eq!(server.backend.queue.0.borrow().len(), 2);
+            }
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","id":9,"method":"tools/call",
+                "params":{"name":"acknowledge_messages","arguments":{"messages":[head]}}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(receive(&mut reader).await["id"], 9);
+            assert_eq!(server.backend.queue.0.borrow().len(), 1);
+            writer.shutdown().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            trial
+        );
+        result.unwrap();
+        assert_eq!(server.backend.reports.get(), 4);
     }
 
     #[tokio::test]

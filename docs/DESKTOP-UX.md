@@ -92,20 +92,24 @@ otherwise remain queued until a consumer explicitly takes them. The rail badge
 counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
 
-Tools shows **Connected** when a live session has non-unknown activity,
-**Needs setup** when configuration is missing, **Configured, waiting for its
-first session** in between, and **Not installed**. Activity can come from
-coordination as well as provider reports; it does not independently verify a
-transport or input capability. The [setup verification gap](REMAINING-WORK.md)
-remains open. Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md)
-and [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing setup offers
-**Set up**. **Details** holds versions,
-commands, the per-channel configuration state, **Review setup**, **Check
-connections** and **Setup history**; **Other supported tools** expands the
-inventory. A setup plan reads "Connect <tool>" with what changes as bullets,
-**Connect**, **Undo** after applying, and the plan record behind Details. The
-connection check is one line per installed tool and closes with **Close**. A
-connection failure retains the last snapshot and clearly pauses daemon actions.
+Tools shows **Input receiver active** only with a fresh report from a receiver
+bound to a live session. **Connected · idle delivery not verified** requires
+recent MCP or hook contact; activity and configuration alone cannot establish
+it. Other states distinguish **Needs setup**, **Setup needs review**,
+**Configured · waiting for contact**, unavailable integration and **Not installed**.
+Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
+[CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
+**Set up**. **Details** holds versions, commands, per-channel configuration and
+each live session's contact and delivery evidence, plus **Review setup**,
+**Check connections** and **Setup history**; **Other supported tools** expands
+the inventory. Delivery distinguishes an active receiver awaiting its first
+receipt, verified delivery, paused delivery and stale evidence. The session
+inspector shows the same readiness alongside the queue and latest receipt.
+Applying a plan says **Setup saved**, with **Undo** available afterwards. Fresh
+sessions load saved setup; only the provider can request its required approval.
+The connection check is one line per installed tool, says **Configuration
+checked** when configuration passes, and closes with **Close**. A connection
+failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
 

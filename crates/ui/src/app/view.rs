@@ -377,17 +377,46 @@ impl App {
         }
     }
 
-    /// Whether any live session of this tool has reported activity: the
-    /// only proof that its connection works, whatever its config says.
+    /// Recent, generation-bound adapter contact; general activity, leases
+    /// and saved configuration cannot establish a connection.
     fn tool_reports(&self, runtime: &str) -> bool {
-        self.agents.iter().any(|a| {
-            a.spec.runtime == runtime
-                && a.status.is_live()
-                && !matches!(
-                    self.activity.get(&a.id.to_string()),
-                    None | Some(Activity::Unknown | Activity::Starting)
-                )
-        })
+        let now = Utc::now();
+        self.connected.is_ok()
+            && self.agents.iter().any(|a| {
+                a.spec.runtime == runtime
+                    && a.status.is_live()
+                    && (a
+                        .adapter_contacts
+                        .values()
+                        .any(|contact| contact.current_for(a.process_started_at, now))
+                        || a.input_delivery.as_ref().is_some_and(|delivery| {
+                            delivery.current_for(a.process_started_at, now)
+                        }))
+            })
+    }
+
+    fn input_readiness(&self, agent: &AgentRecord) -> &'static str {
+        if !agent.status.is_live() {
+            return "Session ended";
+        }
+        if self.connected.is_err() {
+            return "Readiness unavailable";
+        }
+        let Some(delivery) = agent.input_delivery.as_ref() else {
+            return "Idle delivery not verified";
+        };
+        if delivery.paused_for(agent.process_started_at) {
+            return "Delivery paused";
+        }
+        let now = Utc::now();
+        if !delivery.current_for(agent.process_started_at, now) {
+            return "No recent receiver signal";
+        }
+        if delivery.received_for(agent.process_started_at, now) {
+            "Delivery verified"
+        } else {
+            "Receiver active, awaiting first receipt"
+        }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -996,7 +1025,7 @@ impl App {
                 }) {
                     items.push((
                         dot(c.faint, 8.0, c),
-                        format!("{} is installed but not connected", runtime.label),
+                        format!("{} needs setup", runtime.label),
                         action(
                             format!("needs-you-tool-{}", runtime.name),
                             "Set up",
@@ -1334,6 +1363,8 @@ impl App {
             }
             if paused {
                 status.push("Delivery paused".to_owned());
+            } else if agent.status.is_live() {
+                status.push(self.input_readiness(agent).to_owned());
             }
             if let Some(queue) = queue {
                 status.push(queue);
@@ -2744,20 +2775,40 @@ impl App {
             let expanded = self.shell.connection_details.as_deref() == Some(runtime.name.as_str());
             let installed = runtime.installed();
             let reporting = self.tool_reports(&runtime.name);
+            let supported = runtime.mcp != agentdocker_core::runtime::Wiring::Unsupported
+                || runtime.hooks != agentdocker_core::runtime::Wiring::Unsupported;
+            let unverified = runtime.mcp == agentdocker_core::runtime::Wiring::Unverified
+                || runtime.hooks == agentdocker_core::runtime::Wiring::Unverified;
+            let sessions: Vec<_> = self
+                .agents
+                .iter()
+                .filter(|agent| agent.spec.runtime == runtime.name && agent.status.is_live())
+                .collect();
+            let ready = self.connected.is_ok()
+                && sessions.iter().any(|agent| {
+                    agent.input_delivery.as_ref().is_some_and(|delivery| {
+                        delivery.current_for(agent.process_started_at, Utc::now())
+                    })
+                });
             let missing = installed
                 && (runtime.mcp == agentdocker_core::runtime::Wiring::Missing
                     || runtime.hooks == agentdocker_core::runtime::Wiring::Missing);
-            // One word a person can act on. Green only for a tool that has
-            // actually reported through its connection; configuration on
-            // disk is a promise, not proof.
-            let (mark, word) = if !installed {
-                (c.faint, "Not installed")
+            // Keep the overview compact; individual sessions and receipts
+            // remain in Details. Saved configuration is not contact evidence.
+            let (mark, word) = if ready {
+                (c.green, "Input receiver active")
             } else if reporting {
-                (c.green, "Connected")
+                (c.cyan, "Connected · idle delivery not verified")
+            } else if !installed {
+                (c.faint, "Not installed")
+            } else if !supported {
+                (c.faint, "Installed · integration unavailable")
+            } else if unverified {
+                (c.amber, "Setup needs review")
             } else if missing {
                 (c.amber, "Needs setup")
             } else {
-                (c.cyan, "Configured, waiting for its first session")
+                (c.cyan, "Configured · waiting for contact")
             };
             let mut actions = row![
                 dot(mark, 9.0, c),
@@ -2780,7 +2831,7 @@ impl App {
             ]
             .spacing(12)
             .align_y(Center);
-            if missing && !reporting {
+            if installed && supported && (missing || unverified) && !reporting {
                 actions = actions.push(primary(
                     format!("setup-{}", runtime.name),
                     "Set up",
@@ -2827,19 +2878,59 @@ impl App {
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
                 }
-                if installed && !missing && !reporting {
+                if installed && supported && !missing && !unverified && !reporting {
                     facts = facts.push(note(
-                        "Configured. It shows as connected the first time a session of this tool \
-                         reports in.",
+                        "Setup is saved. Start a fresh session to load it. Approve only the \
+                         integration prompts shown by the provider.",
                         c,
                     ));
+                }
+                for agent in &sessions {
+                    let now = Utc::now();
+                    let seen = |kind| {
+                        agent.adapter_contacts.get(&kind).is_some_and(|contact| {
+                            self.connected.is_ok()
+                                && contact.current_for(agent.process_started_at, now)
+                        })
+                    };
+                    facts = facts
+                        .push(rule(c))
+                        .push(heading(agent.spec.name.clone(), 14))
+                        .push(small(self.input_readiness(agent), c))
+                        .push(small(
+                            format!(
+                                "MCP: {} · Hooks: {}",
+                                if seen(agentdocker_core::AdapterKind::Mcp) {
+                                    "recent contact"
+                                } else {
+                                    "no recent contact"
+                                },
+                                if seen(agentdocker_core::AdapterKind::Hooks) {
+                                    "recent contact"
+                                } else {
+                                    "no recent contact"
+                                }
+                            ),
+                            c,
+                        ));
+                }
+                if !sessions.is_empty()
+                    && !ready
+                    && matches!(runtime.name.as_str(), "codex" | "claude-code")
+                    && sessions.iter().any(|agent| {
+                        agent.input_delivery.as_ref().is_none_or(|delivery| {
+                            Some(delivery.process_started_at) != agent.process_started_at
+                        })
+                    })
+                {
+                    facts = facts.push(note("Hooks deliver at prompt and tool boundaries. For idle delivery, launch a new session with Receive messages while idle enabled.", c));
                 }
                 facts = facts.push(
                     row![
                         action(
                             format!("setup-review-{}", runtime.name),
                             "Review setup",
-                            (!self.setup_busy).then_some(Message::Setup(vec![
+                            (!self.setup_busy && supported).then_some(Message::Setup(vec![
                                 runtime.name.clone(),
                                 "--preview".into(),
                             ])),
@@ -2949,7 +3040,14 @@ impl App {
                 row![
                     dot(if ok { c.green } else { c.amber }, 7.0, c),
                     text(label).size(14).width(Fill),
-                    small(if ok { "Ready" } else { "Needs attention" }, c)
+                    small(
+                        if ok {
+                            "Configuration checked"
+                        } else {
+                            "Needs attention"
+                        },
+                        c
+                    )
                 ]
                 .spacing(10)
                 .align_y(Center)
@@ -2978,10 +3076,10 @@ impl App {
             .and_then(|name| self.runtimes.iter().find(|r| r.name == name))
             .map(|r| r.label.clone());
         let title_text = match (&tool, phase.as_str()) {
-            (Some(tool), "applied") => format!("{tool} connected"),
+            (Some(tool), "applied") => format!("{tool} setup saved"),
             (Some(tool), "undone") => format!("{tool} setup undone"),
             (Some(tool), _) => format!("Connect {tool}"),
-            (None, "applied") => "Connected".to_owned(),
+            (None, "applied") => "Setup saved".to_owned(),
             (None, _) => "Nothing to connect".to_owned(),
         };
         let mut body = column![
@@ -3451,6 +3549,81 @@ mod tests {
     use super::{remaining_fraction, spoken_payload};
     use chrono::{Duration, Utc};
     use serde_json::json;
+
+    #[test]
+    fn tools_require_session_contact_and_never_infer_input_from_general_activity() {
+        use agentdocker_core::{
+            AdapterContact, AdapterKind, AgentRecord, AgentSpec, AgentStatus, InputDelivery,
+        };
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let now = Utc::now();
+        let birth = now - Duration::seconds(10);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            birth,
+        );
+        agent.status = AgentStatus::Running;
+        agent.process_started_at = Some(birth);
+        app.activity.insert(
+            agent.id.to_string(),
+            agentdocker_core::Activity::Working { since: now },
+        );
+        app.agents.push(agent.clone());
+        assert!(
+            !app.tool_reports("codex"),
+            "leases and coordination are not adapter contact"
+        );
+        assert_eq!(app.input_readiness(&agent), "Idle delivery not verified");
+        agent.adapter_contacts.insert(
+            AdapterKind::Mcp,
+            AdapterContact {
+                process_started_at: birth,
+                observed_at: now,
+            },
+        );
+        app.agents[0] = agent.clone();
+        assert!(app.tool_reports("codex"));
+        assert!(
+            !app.tool_reports("claude-code"),
+            "contact is specific to the runtime"
+        );
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Idle delivery not verified",
+            "MCP contact does not prove idle wake"
+        );
+        agent.input_delivery = Some(InputDelivery {
+            process_started_at: birth,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Receiver active, awaiting first receipt"
+        );
+        agent.process_started_at = Some(now);
+        app.agents[0] = agent.clone();
+        assert!(
+            !app.tool_reports("codex"),
+            "a new process cannot inherit contact"
+        );
+        assert_eq!(app.input_readiness(&agent), "No recent receiver signal");
+        agent.process_started_at = Some(birth);
+        agent.input_delivery.as_mut().unwrap().paused = true;
+        assert_eq!(app.input_readiness(&agent), "Delivery paused");
+        app.connected = Err("offline".into());
+        assert!(!app.tool_reports("codex"));
+        assert_eq!(app.input_readiness(&agent), "Readiness unavailable");
+    }
 
     #[test]
     fn a_window_drains_from_one_to_zero_and_never_beyond() {

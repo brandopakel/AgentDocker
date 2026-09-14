@@ -162,6 +162,9 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::AdapterContactReported { agent, adapter, .. } => {
+            format!("adapter contact   {} {:?}", agent.short(), adapter)
+        }
         EventKind::InputDeliveryReported { agent, delivery } => {
             format!(
                 "input delivery   {} {}",

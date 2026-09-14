@@ -819,7 +819,8 @@ impl App {
             | EventKind::AgentExited { .. }
             | EventKind::AgentRemoved { .. }
             | EventKind::AgentReconciled { .. }
-            | EventKind::AgentVcsChanged { .. } => self.send(Cmd::Agents),
+            | EventKind::AgentVcsChanged { .. }
+            | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
             EventKind::InputDeliveryReported { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);

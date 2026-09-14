@@ -152,6 +152,13 @@ pub(super) async fn report<B: Backend>(
             && agent.spec.labels.get("session_id") == Some(&input.session_id),
         "Codex activity requires an exact verified session binding"
     );
+    crate::input_status::adapter_contact(
+        backend,
+        agent.id.as_str(),
+        agent.process_started_at,
+        agentdocker_core::AdapterKind::Hooks,
+    )
+    .await;
     match backend
         .call(Request::ReportActivity {
             agent: agent.id.to_string(),
@@ -207,6 +214,13 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             agentdocker_host::provider_input::owns_codex_process(&agent, pid, &table),
             "Codex bridge hook does not belong to the managed provider"
         );
+        crate::input_status::adapter_contact(
+            client,
+            agent.id.as_str(),
+            agent.process_started_at,
+            agentdocker_core::AdapterKind::Hooks,
+        )
+        .await;
         // The bridge reports activity and supplies the next ordinary input turn.
         // Running legacy stop continuations here would compete with that queue.
         return Ok(());
@@ -571,7 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adopted_codex_keeps_its_identity_and_reports_only_activity() {
+    async fn adopted_codex_keeps_its_identity_and_reports_activity_and_bound_contact() {
         let checkout = tempfile::tempdir().unwrap();
         let now = Utc::now();
         let mut agent = agentdocker_core::AgentRecord::new(
@@ -593,34 +607,52 @@ mod tests {
             .spec
             .labels
             .insert("session_id".into(), "test-session".into());
-        let backend = Mock::with(vec![
-            Response::Agent { agent },
-            Response::Agent { agent: bound },
-            Response::Ok,
-        ]);
-        report(
-            &backend,
-            &Input {
-                hook_event_name: "PreToolUse".into(),
-                session_id: "test-session".into(),
-                cwd: checkout.path().to_owned(),
-                stop_hook_active: false,
-            },
-            42,
-            now,
-            now,
-        )
-        .await
-        .unwrap();
-        let calls = backend.requests();
-        assert_eq!(calls.len(), 3);
-        assert!(
-            matches!(&calls[1], Request::Register { spec, pid: Some(42), .. }
+        for refused in [false, true] {
+            let backend = Mock::with(vec![
+                Response::Agent {
+                    agent: agent.clone(),
+                },
+                Response::Agent {
+                    agent: bound.clone(),
+                },
+                Response::Ok,
+                if refused {
+                    Response::error(
+                        agentdocker_core::ErrorCode::StorageUnavailable,
+                        "activity refused",
+                    )
+                } else {
+                    Response::Ok
+                },
+            ]);
+            let result = report(
+                &backend,
+                &Input {
+                    hook_event_name: "PreToolUse".into(),
+                    session_id: "test-session".into(),
+                    cwd: checkout.path().to_owned(),
+                    stop_hook_active: false,
+                },
+                42,
+                now,
+                now,
+            )
+            .await;
+            assert_eq!(result.is_err(), refused);
+            let calls = backend.requests();
+            assert_eq!(calls.len(), 4);
+            assert!(
+                matches!(&calls[1], Request::Register { spec, pid: Some(42), .. }
             if spec.labels.get("session_id").is_some_and(|s| s == "test-session"))
-        );
-        assert!(
-            matches!(&calls[2], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
-        );
+            );
+            assert!(
+                matches!(&calls[3], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
+            );
+            assert!(
+                matches!(&calls[2], Request::ReportAdapter { agent, adapter: agentdocker_core::AdapterKind::Hooks, contact }
+            if agent == &id && contact.process_started_at == now)
+            );
+        }
     }
 
     #[tokio::test]
@@ -665,6 +697,10 @@ mod tests {
         report(&backend, &input, 42, now, now).await.unwrap();
         assert!(matches!(
             &backend.requests()[1],
+            Request::ReportAdapter { .. }
+        ));
+        assert!(matches!(
+            &backend.requests()[2],
             Request::ReportActivity { .. }
         ));
         input.cwd = different;

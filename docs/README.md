@@ -59,7 +59,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Partial: simplified home/Inbox/Tools implemented; capability verification and human input acceptance remain. |
 | [Iced design](ICED-DESIGN.md) | Partial: native migration and automated interactions implemented; VoiceOver/IME and other-platform hands-on acceptance remain. |
-| [Guided setup](GUIDED-SETUP.md) | Partial: preview/apply/undo and configuration locks implemented; verified input readiness and required-trust guidance remain. |
+| [Guided setup](GUIDED-SETUP.md) | Implemented preview/apply/undo, configuration locks and per-session contact/input evidence; native and bounded actual-provider readiness checks pass in PR #125; final review and installed-candidate acceptance pending. |
 | [Activity and messaging](ACTIVITY-AND-MESSAGING.md) | Partial: activity/hooks and opt-in input adapters exist; ordinary hooks alone cannot wake idle models. |
 | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md) | Partial: durable shared queue, exact receipts and bounded actual-provider trials pass; broader reviews, interruption and sustained acceptance remain. |
 | [Codex input](CODEX-INPUT.md) | Partial: managed bridge, question/MCP receipts and supported review forms implemented; broader elicitation/secret input and recovery remain. |

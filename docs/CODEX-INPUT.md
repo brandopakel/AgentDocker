@@ -176,6 +176,8 @@ approval was pending. The previous controller stopped; the correction kept the
 same controller/conversation, resolved the approval once and completed three
 ordered peer/human inputs. Other connections and the daemon remained live.
 
+Periodic readiness refresh is bounded diagnostic metadata: a refused or timed-out refresh leaves the receiver running and its UI evidence expires after 90 seconds. This does not relax receipt or acknowledgement durability.
+
 Queue acknowledgements, question publication, activity/receipt writes and other
 failed RPCs still pause delivery;
 a lost write response cannot prove whether the daemon accepted that operation.

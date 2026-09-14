@@ -10,7 +10,9 @@ pub mod config;
 pub mod event;
 pub mod identity;
 pub mod input;
-pub use input::{InputDelivery, InputReceipt, InputReport, ReceivedInput};
+pub use input::{
+    AdapterContact, AdapterKind, InputDelivery, InputReceipt, InputReport, ReceivedInput,
+};
 pub mod journal;
 pub mod lease;
 pub mod message;

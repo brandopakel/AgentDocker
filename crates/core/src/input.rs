@@ -5,6 +5,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::MessageId;
 
+/// Contact with a particular adapter is separate from generic agent activity.
+/// These observations contain no provider configuration or message contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterKind {
+    Mcp,
+    Hooks,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterContact {
+    pub process_started_at: DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
+}
+
+impl AdapterContact {
+    pub fn current_for(&self, generation: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        generation == Some(self.process_started_at)
+            && self.observed_at >= self.process_started_at
+            && self.observed_at <= now
+            && now - self.observed_at < chrono::Duration::minutes(5)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputReceipt {
@@ -70,11 +94,78 @@ impl InputDelivery {
     pub fn paused_for(&self, process_started_at: Option<DateTime<Utc>>) -> bool {
         self.paused && process_started_at == Some(self.process_started_at)
     }
+
+    /// A receiver refreshes its report while servicing input. An old receipt,
+    /// a reused PID or a silent/stopped controller cannot establish readiness.
+    pub fn current_for(&self, generation: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        !self.paused
+            && generation == Some(self.process_started_at)
+            && self.reported_at >= self.process_started_at
+            && self.reported_at <= now
+            && now - self.reported_at < chrono::Duration::seconds(90)
+    }
+
+    pub fn received_for(&self, generation: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        generation == Some(self.process_started_at)
+            && self.received.is_some()
+            && self
+                .received_at
+                .is_some_and(|at| at >= self.process_started_at && at <= now)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_and_receiver_readiness_require_fresh_generation_bound_evidence() {
+        let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let contact = AdapterContact {
+            process_started_at: birth,
+            observed_at: birth,
+        };
+        for age in [0, 299] {
+            assert!(contact.current_for(Some(birth), birth + chrono::Duration::seconds(age)));
+        }
+        for age in [-1, 300] {
+            assert!(!contact.current_for(Some(birth), birth + chrono::Duration::seconds(age)));
+        }
+        assert!(!contact.current_for(None, birth));
+        assert!(!contact.current_for(Some(birth + chrono::Duration::seconds(1)), birth));
+        let mut delivery = InputDelivery {
+            process_started_at: birth,
+            paused: false,
+            pause_reason: None,
+            reported_at: birth,
+            received: None,
+            received_at: None,
+        };
+        assert!(delivery.current_for(Some(birth), birth + chrono::Duration::seconds(89)));
+        assert!(!delivery.current_for(Some(birth), birth + chrono::Duration::seconds(90)));
+        assert!(!delivery.current_for(Some(birth), birth - chrono::Duration::seconds(1)));
+        assert!(!delivery.current_for(None, birth));
+        assert!(!delivery.received_for(Some(birth), birth));
+        delivery.received = Some(ReceivedInput {
+            messages: vec!["receipt".to_owned().into()],
+            receipt: InputReceipt::ClaudeChannel,
+        });
+        delivery.received_at = Some(birth - chrono::Duration::seconds(1));
+        assert!(
+            !delivery.received_for(Some(birth), birth),
+            "historical receipt is not current-process evidence"
+        );
+        delivery.received_at = Some(birth);
+        assert!(delivery.received_for(Some(birth), birth));
+        assert!(!delivery.received_for(Some(birth + chrono::Duration::seconds(1)), birth));
+        assert!(!delivery.received_for(None, birth));
+        delivery.paused = true;
+        assert!(!delivery.current_for(Some(birth), birth));
+        assert!(
+            delivery.received_for(Some(birth), birth),
+            "pausing retains the receipt as history"
+        );
+    }
 
     #[test]
     fn receipts_require_bounded_unique_ids_and_one_codex_item() {

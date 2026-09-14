@@ -489,6 +489,18 @@ enum Command {
         #[arg(value_parser = ["working", "idle"])]
         activity: String,
     },
+    /// Adapter-only contact observation, bound to an exact process birth.
+    #[command(hide = true)]
+    ReportAdapter {
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        /// Exact process birth timestamp in RFC 3339 format.
+        #[arg(long)]
+        process_started_at: chrono::DateTime<chrono::Utc>,
+        #[arg(value_parser = ["mcp", "hooks"])]
+        adapter: String,
+    },
     /// Adapter-only durable input evidence, bound to an exact process birth.
     #[command(hide = true)]
     ReportInput {
@@ -1838,6 +1850,26 @@ async fn main() -> Result<()> {
                         } else {
                             agentdocker_core::ReportedActivity::Idle
                         },
+                        observed_at: chrono::Utc::now(),
+                    },
+                })
+                .await?;
+        }
+        Command::ReportAdapter {
+            agent,
+            process_started_at,
+            adapter,
+        } => {
+            client
+                .call(&Request::ReportAdapter {
+                    agent,
+                    adapter: if adapter == "mcp" {
+                        agentdocker_core::AdapterKind::Mcp
+                    } else {
+                        agentdocker_core::AdapterKind::Hooks
+                    },
+                    contact: agentdocker_core::AdapterContact {
+                        process_started_at,
                         observed_at: chrono::Utc::now(),
                     },
                 })

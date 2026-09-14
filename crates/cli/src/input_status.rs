@@ -5,6 +5,47 @@ use chrono::{DateTime, Utc};
 
 use crate::client::Backend;
 
+/// Best-effort, bounded diagnostics must never block a provider prompt or
+/// tool on an older daemon. Only a verified process identity can report.
+pub async fn adapter_contact<B: Backend>(
+    backend: &B,
+    agent: &str,
+    process_started_at: Option<DateTime<Utc>>,
+    adapter: agentdocker_core::AdapterKind,
+) {
+    let Some(process_started_at) = process_started_at else {
+        return;
+    };
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        backend.call(Request::ReportAdapter {
+            agent: agent.into(),
+            adapter,
+            contact: agentdocker_core::AdapterContact {
+                process_started_at,
+                observed_at: Utc::now(),
+            },
+        }),
+    )
+    .await;
+}
+
+/// A periodic readiness observation is diagnostic, unlike a receipt that must
+/// commit before ACK. A lost/refused refresh expires naturally in the UI and
+/// must not stop an otherwise functioning provider transport.
+pub async fn refresh<B: Backend>(
+    backend: &B,
+    agent: &str,
+    process_started_at: Option<DateTime<Utc>>,
+) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        report(backend, agent, process_started_at, InputReport::Ready),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
 /// Preserve the outer error context, without embedding a full provider error
 /// chain or terminal control sequences in the durable session summary.
 pub fn paused(error: &anyhow::Error) -> InputReport {
@@ -55,6 +96,53 @@ pub async fn report<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn contact_diagnostics_skip_unknown_identity_and_cancel_stalled_calls() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Stalled {
+            called: AtomicBool,
+            cancelled: AtomicBool,
+        }
+        struct Guard<'a>(&'a AtomicBool);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        impl Backend for Stalled {
+            async fn call(&self, _: Request) -> Result<Response> {
+                self.called.store(true, Ordering::SeqCst);
+                let _guard = Guard(&self.cancelled);
+                std::future::pending().await
+            }
+        }
+        let backend = Stalled {
+            called: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+        };
+        adapter_contact(
+            &backend,
+            "session",
+            None,
+            agentdocker_core::AdapterKind::Hooks,
+        )
+        .await;
+        assert!(!backend.called.load(Ordering::SeqCst));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            adapter_contact(
+                &backend,
+                "session",
+                Some(Utc::now()),
+                agentdocker_core::AdapterKind::Hooks,
+            ),
+        )
+        .await
+        .expect("contact diagnostics blocked the provider request");
+        assert!(backend.called.load(Ordering::SeqCst));
+        assert!(backend.cancelled.load(Ordering::SeqCst));
+    }
 
     #[tokio::test]
     async fn report_propagates_transport_errors_and_cancels_a_timed_out_call() {

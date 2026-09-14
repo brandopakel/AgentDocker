@@ -6,6 +6,7 @@ native rendering and action wiring; it is not physical keyboard or screen-reader
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -99,6 +100,9 @@ def smoke(binary_dir, output):
         runtime = tools / "codex"
         runtime.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex fixture 1"; exit 0; fi\nexec ' + shutil.which("python3") + ' -u ' + str(fixture) + '\n')
         runtime.chmod(0o700)
+        claude_runtime = tools / "claude"
+        claude_runtime.write_text('#!/bin/sh\necho "Claude Code fixture 1"\n')
+        claude_runtime.chmod(0o700)
         env = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
                "CODEX_HOME": str(home / ".codex"), "CLAUDE_CONFIG_DIR": str(home / ".claude"),
                "PATH": f"{tools}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
@@ -199,7 +203,7 @@ def smoke(binary_dir, output):
                          step("click", id="connection-details-codex"), step("wait_text", text="Tools (MCP)"),
                          step("click", id="setup-review-codex"),
                          step("wait_text", text="Connect Codex"), step("capture", name="setup-review"),
-                         step("click", id="apply-setup"), step("wait_text", text="Codex connected"),
+                         step("click", id="apply-setup"), step("wait_text", text="Codex setup saved"),
                          step("click", id="undo-setup"), step("wait_text", text="Codex setup undone"), step("click", id="close-setup"),
                          step("click", id="add-project"), step("fill", id="project-path", text=str(pinned)),
                          step("click", id="pin-folder"), step("wait_text", text="pinned-api"), step("capture", name="pinned-empty-project"),
@@ -266,6 +270,37 @@ def smoke(binary_dir, output):
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
             report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-history"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-history")])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
+            # Private metadata fixture, not a model or idle-wake assertion.
+            receiver = rpc(endpoint, {"op": "register", "spec": {
+                "name": "readiness-fixture", "runtime": "claude-code", "workdir": str(project)},
+                "pid": os.getpid()})["agent"]
+            def now():
+                return datetime.now(timezone.utc).isoformat()
+            def readiness_window(name, expected):
+                return launch(name, [step("click", id="connections"),
+                                     step("click", id="connection-details-claude-code"),
+                                     step("wait_text", text="readiness-fixture"),
+                                     step("wait_text", text=expected), step("capture", name=name)])
+            rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
+                           "observation": {"activity": "working", "observed_at": now()}})
+            report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
+            rpc(endpoint, {"op": "report_adapter", "agent": receiver["id"], "adapter": "mcp",
+                           "contact": {"process_started_at": receiver["process_started_at"], "observed_at": now()}})
+            report["contact_window"] = readiness_window("readiness-contact", "Connected · idle delivery not verified")
+            def input_report(value):
+                rpc(endpoint, {"op": "report_input", "agent": receiver["id"],
+                               "process_started_at": receiver["process_started_at"],
+                               "observed_at": now(), "report": value})
+            input_report({"state": "ready"})
+            report["ready_window"] = readiness_window("readiness-ready", "Receiver active, awaiting first receipt")
+            message = rpc(endpoint, {"op": "send", "from": human["id"], "to": receiver["id"],
+                                     "kind": "chat", "payload": {"text": "readiness fixture"}})["message"]
+            input_report({"state": "received", "input": {"messages": [message], "receipt": {"provider": "claude_channel"}}})
+            report["received_window"] = readiness_window("readiness-received", "Delivery verified")
+            input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
+            report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
+            checks.append("rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause")
+            rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"
         finally:
