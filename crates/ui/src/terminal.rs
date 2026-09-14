@@ -320,22 +320,57 @@ fn write_input(mut writer: impl std::io::Write, input: &Input) -> std::io::Resul
     Ok(())
 }
 
-fn read_frame(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io::Result<usize> {
-    use std::io::{BufRead, Read};
-    line.clear();
-    let read = reader.take((MAX_FRAME_BYTES + 1) as u64).read_line(line)?;
-    if read > MAX_FRAME_BYTES {
-        return Err(std::io::Error::other(
-            "terminal output frame exceeds 256 KiB",
-        ));
+/// Periodically observe closure even if shutting down another handle did not
+/// wake a blocked read. Partial frames survive each read deadline.
+const READ_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn read_frame(
+    reader: &mut impl std::io::BufRead,
+    line: &mut Vec<u8>,
+    closed: impl Fn() -> bool,
+) -> std::io::Result<usize> {
+    // Retain bytes, not a String: read_line can discard an incomplete UTF-8
+    // character when the underlying read returns a timeout error. Observe
+    // closure between chunks too, so a continuous partial frame cannot hide it.
+    loop {
+        if closed() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "the connection closed",
+            ));
+        }
+        if line.len() > MAX_FRAME_BYTES {
+            return Err(std::io::Error::other(
+                "terminal output frame exceeds 256 KiB",
+            ));
+        }
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(0)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "incomplete terminal output frame",
+                ))
+            };
+        }
+        let available = &available[..available.len().min(MAX_FRAME_BYTES + 1 - line.len())];
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if line.len() > MAX_FRAME_BYTES {
+            return Err(std::io::Error::other(
+                "terminal output frame exceeds 256 KiB",
+            ));
+        }
+        if line.ends_with(b"\n") {
+            return Ok(line.len());
+        }
     }
-    if read > 0 && !line.ends_with('\n') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "incomplete terminal output frame",
-        ));
-    }
-    Ok(read)
 }
 
 fn read_output(
@@ -343,16 +378,32 @@ fn read_output(
     shared: &Shared,
     ctx: &Wake,
 ) -> String {
+    if let Err(error) = stream.set_read_timeout(Some(READ_POLL)) {
+        return format!("cannot bound terminal reads: {error}");
+    }
     let mut reader = std::io::BufReader::new(stream);
-    let mut line = String::new();
+    let mut line = Vec::new();
     let mut control = control::ControlBudget::default();
     loop {
-        match read_frame(&mut reader, &mut line) {
-            Ok(0) => return "the connection closed".to_owned(),
-            Ok(_) => {}
-            Err(error) => return error.to_string(),
+        line.clear();
+        loop {
+            match read_frame(&mut reader, &mut line, || lock(&shared.connection).closed) {
+                Ok(0) => return "the connection closed".to_owned(),
+                Ok(_) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if lock(&shared.connection).closed {
+                        return "the connection closed".to_owned();
+                    }
+                }
+                Err(error) => return error.to_string(),
+            }
         }
-        match serde_json::from_str::<Response>(&line) {
+        match serde_json::from_slice::<Response>(&line) {
             Ok(Response::Output { data }) => {
                 if let Some(bytes) = protocol::decode_bytes(&data) {
                     if let Err(reason) = control.check(&bytes) {
@@ -583,26 +634,126 @@ mod tests {
         };
         let replay = serde_json::to_string(&response).unwrap() + "\n";
         let mut reader = BufReader::new(Cursor::new(replay.clone() + "{\"type\":\"end\"}\n"));
-        let mut line = String::new();
-        assert_eq!(read_frame(&mut reader, &mut line).unwrap(), replay.len());
-        assert_eq!(line, replay);
-        read_frame(&mut reader, &mut line).unwrap();
+        let mut line = Vec::new();
         assert_eq!(
-            serde_json::from_str::<Response>(&line).unwrap(),
+            read_frame(&mut reader, &mut line, || false).unwrap(),
+            replay.len()
+        );
+        assert_eq!(line, replay.as_bytes());
+        line.clear();
+        read_frame(&mut reader, &mut line, || false).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Response>(&line).unwrap(),
             Response::End
         );
         let mut huge = BufReader::new(Cursor::new(vec![b'x'; MAX_FRAME_BYTES * 2]));
+        line.clear();
         assert!(
-            read_frame(&mut huge, &mut line)
+            read_frame(&mut huge, &mut line, || false)
                 .unwrap_err()
                 .to_string()
                 .contains("256 KiB")
         );
         assert_eq!(line.len(), MAX_FRAME_BYTES + 1);
         let mut incomplete = Cursor::new(b"{\"type\":\"end\"}");
+        line.clear();
         assert_eq!(
-            read_frame(&mut incomplete, &mut line).unwrap_err().kind(),
+            read_frame(&mut incomplete, &mut line, || false)
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn terminal_close_interrupts_a_continuously_available_partial_frame() {
+        use std::cell::Cell;
+        use std::io::{BufReader, Cursor, ErrorKind};
+        let mut reader = BufReader::with_capacity(8, Cursor::new(vec![b'x'; MAX_FRAME_BYTES]));
+        let observations = Cell::new(0);
+        let mut line = Vec::new();
+        let error = read_frame(&mut reader, &mut line, || {
+            observations.set(observations.get() + 1);
+            observations.get() > 1
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConnectionAborted);
+        assert_eq!(line, b"xxxxxxxx");
+        assert_eq!(reader.get_ref().position(), 8);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_read_deadlines_preserve_every_utf8_split_and_the_following_frame() {
+        use std::io::{BufReader, ErrorKind, Write};
+        use std::time::Duration;
+        let response = Response::Error {
+            code: agentdocker_core::ErrorCode::Internal,
+            message: "終わり 😀".into(),
+            details: None,
+        };
+        let mut frame = serde_json::to_vec(&response).unwrap();
+        frame.push(b'\n');
+        // Include ASCII boundaries and every byte of each multi-byte character.
+        for split in 0..frame.len() {
+            let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            peer.write_all(&frame[..split]).unwrap();
+            let error = read_frame(&mut reader, &mut line, || false).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::WouldBlock | ErrorKind::TimedOut
+            ));
+            assert_eq!(line, frame[..split]);
+            peer.write_all(&frame[split..]).unwrap();
+            peer.write_all(b"{\"type\":\"end\"}\n").unwrap();
+            assert_eq!(
+                read_frame(&mut reader, &mut line, || false).unwrap(),
+                frame.len()
+            );
+            assert_eq!(serde_json::from_slice::<Response>(&line).unwrap(), response);
+            line.clear();
+            read_frame(&mut reader, &mut line, || false).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Response>(&line).unwrap(),
+                Response::End
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_closure_without_socket_wakeup_is_bounded_and_keeps_the_first_error() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let terminal = unserved_terminal();
+        let shared = terminal.shared.clone();
+        let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        // Deliberately omit a shutdown handle: exercise the fallback when
+        // closure cannot wake the reader through the socket itself.
+        let (finished, done) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let ctx = Wake::default();
+            let reason = read_output(stream, &shared, &ctx);
+            shared.ended(reason, &ctx);
+            finished.send(()).unwrap();
+        });
+        terminal
+            .shared
+            .ended("original writer failure".into(), &Wake::default());
+        let observed = done.recv_timeout(READ_POLL + Duration::from_secs(2));
+        // Keep the peer open until after the deadline observation. Always
+        // close it before joining so an old implementation cleans up too.
+        close_peer(&peer);
+        reader.join().unwrap();
+        observed.unwrap();
+        assert_eq!(
+            terminal.status(),
+            Status::Ended("original writer failure".into())
         );
     }
 

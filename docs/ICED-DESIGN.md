@@ -182,7 +182,12 @@ database remains a manual step.
   and a managed PTY. It does not restart on window launch. Stop requires a second
   explicit activation within five seconds; detaching leaves the agent running.
 - Terminal transport retains bounded input/output, resize coalescing, scrollback,
-  replay and shutdown behavior. The Iced widget draws the real VT grid, including
+  replay and shutdown behavior. Read deadlines bound a stalled reader's closure
+  check; partial frames retain their bytes across deadlines, including splits
+  inside UTF-8 characters. Closure is also checked between chunks so continuous
+  unterminated output cannot hide it. Frames remain limited to 256 KiB and only
+  complete JSON is decoded. The first input/output failure remains visible.
+  The Iced widget draws the real VT grid, including
   ANSI/true colors, styles, wide Unicode cells and a cursor. Input supports native
   IME, Unicode, clipboard paste and application cursor mode. Drag to select a
   cell range, then use Command+C or Control+Shift+C to copy it. Selection holds
