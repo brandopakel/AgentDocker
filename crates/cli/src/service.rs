@@ -48,6 +48,13 @@ pub enum DaemonCommand {
     Restart,
     /// Request live replacement (currently unavailable; leaves agents running).
     Reload,
+    /// Reclaim disk freed by pruning: SQLite `VACUUM` on the state database.
+    /// Refused while sessions are live, since nothing is answered meanwhile.
+    Vacuum {
+        /// Accept pausing live sessions for the rewrite.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show whether the service is installed and the daemon answering.
     Status,
 }
@@ -535,6 +542,23 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     .await?;
             }
             wait_for_daemon(&client).await?;
+        }
+        DaemonCommand::Vacuum { force } => {
+            let response = client
+                .with_start_timeout(None)
+                .call(&Request::Vacuum { force })
+                .await
+                .context("vacuum failed")?;
+            if let Response::Vacuumed {
+                before_bytes,
+                after_bytes,
+            } = response
+            {
+                println!(
+                    "vacuumed: {before_bytes} -> {after_bytes} bytes ({} reclaimed)",
+                    before_bytes.saturating_sub(after_bytes)
+                );
+            }
         }
         DaemonCommand::Reload => {
             // A refused reload does not start a daemon or imply a completed upgrade.

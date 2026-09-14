@@ -23,6 +23,78 @@ impl Daemon {
         }
     }
 
+    /// Forget checkpoints older than `older_than_secs`, and the handoff
+    /// bundles that carry them. A checkpoint stays while anyone who could
+    /// still act on it is live: its author, the agent that accepted it, or
+    /// the agent a handoff of it is addressed to.
+    pub(super) fn checkpoint_prune(
+        &self,
+        reference: Option<&str>,
+        older_than_secs: u64,
+    ) -> Response {
+        let mut state = lock(&self.state);
+        let agent = match reference.map(|r| state.resolve(r)).transpose() {
+            Ok(a) => a,
+            Err(e) => return *e,
+        };
+        let Some(cutoff) = cutoff_before(older_than_secs) else {
+            return Response::Pruned { removed: 0 };
+        };
+        let checkpoints = match state
+            .store
+            .documents::<Checkpoint>("checkpoint", agent.as_ref())
+        {
+            Ok(checkpoints) => checkpoints,
+            Err(e) => return internal(e),
+        };
+        let handoffs = match state
+            .store
+            .documents::<agentdocker_core::HandoffBundle>("handoff", None)
+        {
+            Ok(handoffs) => handoffs,
+            Err(e) => return internal(e),
+        };
+        let addressed: HashMap<&str, &AgentId> = handoffs
+            .iter()
+            .filter_map(|bundle| Some((bundle.id.as_str(), bundle.to.as_ref()?)))
+            .collect();
+        let gone: Vec<String> = checkpoints
+            .iter()
+            .filter(|c| c.created_at <= cutoff)
+            .filter(|c| {
+                let mut parties = vec![&c.from];
+                parties.extend(c.accepted_by.iter());
+                parties.extend(addressed.get(c.id.as_str()).copied());
+                !parties.into_iter().any(|party| state.is_live(party))
+            })
+            .map(|c| c.id.clone())
+            .collect();
+        if gone.is_empty() {
+            return Response::Pruned { removed: 0 };
+        }
+        // The rows and their announcement are one transaction, so memory
+        // never believes a deletion the store did not keep.
+        let mut event = Event::new(
+            EventKind::CheckpointsPruned {
+                checkpoints: gone.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        state.persist("checkpoint prune", |store| {
+            store.delete_checkpoints_with_event(&gone, &event)
+        });
+        if let Some(error) = state.storage_failure() {
+            return error;
+        }
+        state.next_seq += 1;
+        let _ = state.events.send(event);
+        info!(removed = gone.len(), "pruned checkpoints");
+        Response::Pruned {
+            removed: gone.len(),
+        }
+    }
+
     pub(super) async fn checkpoint(
         &self,
         reference: &str,
@@ -683,6 +755,136 @@ mod tests {
             matches!(daemon.reads("replacement"), Response::Reads { reads } if reads.len() == 1)
         );
     }
+    #[tokio::test]
+    async fn checkpoint_prune_spares_live_parties_and_removes_their_bundles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Checkpoint { checkpoint } = daemon
+            .handle(Request::Checkpoint {
+                agent: "original".into(),
+                key: "step1".into(),
+                task: "fix parser".into(),
+                assumptions: vec![],
+                next_steps: vec![],
+                release_leases: false,
+            })
+            .await
+        else {
+            panic!()
+        };
+        let Response::Handoff { bundle, .. } = daemon
+            .handle(Request::Handoff {
+                agent: "original".into(),
+                to: Some("replacement".into()),
+                task: Some("carry on".into()),
+                note: None,
+                transfer_leases: false,
+                key: Some("step2".into()),
+            })
+            .await
+        else {
+            panic!()
+        };
+        let prune = |agent: Option<&str>| Request::CheckpointPrune {
+            agent: agent.map(str::to_owned),
+            older_than_secs: 0,
+        };
+        // Everyone involved is live: nothing goes.
+        assert_eq!(
+            daemon.handle(prune(None)).await,
+            Response::Pruned { removed: 0 }
+        );
+        let original = daemon.resolve("original").unwrap();
+        daemon.mark_exited(&original, AgentStatus::Exited { code: Some(0) });
+        // The plain checkpoint's author is gone; the handoff is still
+        // addressed to a live replacement, so only the plain one goes.
+        assert_eq!(
+            daemon.handle(prune(None)).await,
+            Response::Pruned { removed: 1 }
+        );
+        let Response::Checkpoints { checkpoints } =
+            daemon.handle(Request::Checkpoints { agent: None }).await
+        else {
+            panic!()
+        };
+        assert_eq!(
+            checkpoints
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            [bundle.id.as_str()]
+        );
+        assert!(!checkpoints.iter().any(|c| c.id == checkpoint.id));
+        let replacement = daemon.resolve("replacement").unwrap();
+        daemon.mark_exited(&replacement, AgentStatus::Exited { code: Some(0) });
+        assert_eq!(
+            daemon.handle(prune(Some("original"))).await,
+            Response::Pruned { removed: 1 }
+        );
+        assert!(matches!(
+            daemon.handle(Request::Handoffs { agent: None }).await,
+            Response::Handoffs { bundles } if bundles.is_empty()
+        ));
+        let kinds: Vec<usize> = daemon
+            .recent_events(50)
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                EventKind::CheckpointsPruned { checkpoints } => Some(checkpoints.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, [1, 1]);
+
+        // A deletion whose announcement cannot be written is no deletion:
+        // the rows survive the failed transaction and the restart.
+        let Response::Checkpoint { checkpoint: kept } = daemon
+            .handle(Request::Checkpoint {
+                agent: "other".into(),
+                key: "step3".into(),
+                task: "later".into(),
+                assumptions: vec![],
+                next_steps: vec![],
+                release_leases: false,
+            })
+            .await
+        else {
+            panic!()
+        };
+        let other = daemon.resolve("other").unwrap();
+        daemon.mark_exited(&other, AgentStatus::Exited { code: Some(0) });
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("checkpoints_pruned");
+        assert!(matches!(
+            daemon.handle(prune(None)).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        let Response::Checkpoints { checkpoints } =
+            daemon.handle(Request::Checkpoints { agent: None }).await
+        else {
+            panic!()
+        };
+        assert_eq!(
+            checkpoints
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            [kept.id.as_str()]
+        );
+        assert!(
+            !daemon
+                .recent_events(50)
+                .iter()
+                .any(|e| matches!(&e.kind, EventKind::CheckpointsPruned { checkpoints } if checkpoints.contains(&kept.id)))
+        );
+    }
+
     #[tokio::test]
     async fn validation_binds_success_to_unchanged_content_and_timeout() {
         let tmp = tempfile::tempdir().unwrap();

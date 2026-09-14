@@ -171,6 +171,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             if ticks.is_multiple_of(60) {
                 daemon.prune_events();
                 daemon.prune_changes();
+                daemon.apply_journal_retention();
                 daemon.evict_journal_rings();
             }
         }

@@ -214,7 +214,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `journal` | What changed and why, one line per entry; `add` appends a note |
+| `journal` | What changed and why, one line per entry; `add` appends a note; `prune --before <seq\|duration>` trims (or set `[journal] retention` in `~/.agentdocker/agentd.toml`) |
 | `changes` | The ledger: file changes seen in a project, with who held each file |
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
@@ -235,7 +235,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `checkpoint` / `checkpoints` | Persist task context and content identity |
+| `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
 | `handoff` / `handoffs` | Hand an agent's work to another, with everything around it |
 | `resume` | Inspect or accept a verified handoff |
 | `export` / `import` | Carry a bundle to another host |
@@ -263,7 +263,7 @@ the flags.
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
-| `daemon` | Install, start, stop, reload or inspect `agentd` |
+| `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
 | `desktop` | Install, inspect or roll back the native desktop for this user |
 | `identity-repair` | Preview a legacy identity repair; apply it only with daemon and sessions stopped |
 | `report-activity` | Report an observed provider turn state (expires after five minutes) |

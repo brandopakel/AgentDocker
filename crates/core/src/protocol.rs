@@ -598,10 +598,29 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
-    /// Drop journal entries of a project below `before_seq`.
+    /// Drop journal entries of a project below `before_seq`, or older than
+    /// `older_than_secs`; at least one is required.
     JournalPrune {
         project: String,
-        before_seq: u64,
+        #[serde(default)]
+        before_seq: Option<u64>,
+        #[serde(default)]
+        older_than_secs: Option<u64>,
+    },
+    /// Delete checkpoints older than `older_than_secs` whose sessions have
+    /// finished, with any handoff bundle carrying them. Live sessions'
+    /// checkpoints are never touched.
+    CheckpointPrune {
+        #[serde(default)]
+        agent: Option<String>,
+        older_than_secs: u64,
+    },
+    /// Reclaim disk freed by pruning: SQLite `VACUUM` on the state database.
+    /// The daemon answers nothing else while it runs, so it is refused while
+    /// sessions are live unless `force` says their pause is acceptable.
+    Vacuum {
+        #[serde(default)]
+        force: bool,
     },
     Leases {
         #[serde(default)]
@@ -886,6 +905,11 @@ pub enum Response {
     },
     Pruned {
         removed: usize,
+    },
+    /// The state database's size before and after `vacuum`.
+    Vacuumed {
+        before_bytes: u64,
+        after_bytes: u64,
     },
     /// The requested events subscription is active; a snapshot can now begin.
     EventsReady,

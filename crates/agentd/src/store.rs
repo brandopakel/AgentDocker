@@ -394,6 +394,20 @@ impl Store {
             params![kind,id,serde_json::to_string(value)?])?;
         Ok(())
     }
+    /// Forget checkpoints and the handoff bundles carrying them, with the
+    /// event that says so, in one transaction: either the rows and the
+    /// announcement both land, or neither does.
+    pub fn delete_checkpoints_with_event(&self, ids: &[String], event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            self.delete_document("checkpoint", id)?;
+            self.delete_document("handoff", id)?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Forget one document.
     pub fn delete_document(&self, kind: &str, id: &str) -> Result<()> {
         self.conn.execute(
@@ -1220,6 +1234,76 @@ impl Store {
         Ok(removed)
     }
 
+    /// The boundary one retention pass may prune to for a project: walking
+    /// the oldest `batch` entries in sequence order, one past the last entry
+    /// before the first one written at or after `cutoff`. Stopping at the
+    /// first fresh entry, rather than taking the highest expired sequence,
+    /// means a clock that moved backwards can never make an unexpired entry
+    /// disappear with the expired ones around it. `None` when the oldest
+    /// entry is still inside the window, which costs one index probe.
+    pub fn journal_retention_boundary(
+        &self,
+        project: &ProjectId,
+        cutoff: DateTime<Utc>,
+        batch: usize,
+    ) -> Result<Option<u64>> {
+        let cutoff = cutoff.to_rfc3339();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, at FROM journal WHERE project = ?1 ORDER BY seq LIMIT ?2")?;
+        let rows = stmt.query_map(
+            params![project.as_str(), i64::try_from(batch).unwrap_or(i64::MAX)],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut boundary = None;
+        for row in rows {
+            let (seq, at) = row?;
+            if at >= cutoff {
+                break;
+            }
+            boundary = u64::try_from(seq).ok().map(|seq| seq + 1);
+        }
+        Ok(boundary)
+    }
+
+    /// Every project that has journal entries, in a stable order so a
+    /// retention pass visits each exactly once per tick.
+    pub fn journal_projects(&self) -> Result<Vec<ProjectId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT project FROM journal_heads ORDER BY project")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(ProjectId::from(row?.as_str()))).collect()
+    }
+
+    /// Backdate an entry so retention tests need not wait for real time.
+    #[cfg(test)]
+    pub fn age_journal_for_test(&self, project: &ProjectId, seq: u64, at: DateTime<Utc>) {
+        self.conn
+            .execute(
+                "UPDATE journal SET at = ?3 WHERE project = ?1 AND seq = ?2",
+                params![
+                    project.as_str(),
+                    i64::try_from(seq).unwrap_or(i64::MAX),
+                    at.to_rfc3339()
+                ],
+            )
+            .unwrap();
+    }
+
+    /// Give freed pages back to the filesystem. Returns the database size
+    /// before and after. Runs outside any transaction, as SQLite requires.
+    pub fn vacuum(&self) -> Result<(u64, u64)> {
+        let size = || -> Result<u64> {
+            let pages: i64 = self.conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            let page: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+            Ok(u64::try_from(pages.saturating_mul(page)).unwrap_or(0))
+        };
+        let before = size()?;
+        self.conn.execute_batch("VACUUM")?;
+        Ok((before, size()?))
+    }
+
     // ----- journal cursors -----------------------------------------------
 
     /// The last entry a reader was shown in a project; `None` for a reader
@@ -2004,6 +2088,101 @@ mod tests {
             "kind":"note", "summary":summary, "summary_source":"explicit"
         }))
         .unwrap()
+    }
+
+    fn aged_entry(project: &str, seq: u64, age: Duration) -> JournalEntry {
+        serde_json::from_value(serde_json::json!({
+            "project":project, "seq":seq, "at":Utc::now() - age, "agent_name":"writer",
+            "kind":"note", "summary":format!("entry {seq}"), "summary_source":"explicit"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn retention_boundary_is_batched_and_skips_fresh_projects() {
+        let store = Store::in_memory().unwrap();
+        let old = ProjectId::from("old");
+        let fresh = ProjectId::from("fresh");
+        // Ten expired entries, then two inside the window.
+        for seq in 1..=10 {
+            store
+                .append_journal(&aged_entry("old", seq, Duration::days(20 - seq as i64)))
+                .unwrap();
+        }
+        store
+            .append_journal(&aged_entry("old", 11, Duration::hours(1)))
+            .unwrap();
+        store
+            .append_journal(&aged_entry("old", 12, Duration::minutes(1)))
+            .unwrap();
+        store
+            .append_journal(&aged_entry("fresh", 1, Duration::hours(2)))
+            .unwrap();
+        let cutoff = Utc::now() - Duration::days(7);
+        assert_eq!(
+            store.journal_projects().unwrap(),
+            vec![fresh.clone(), old.clone()]
+        );
+        assert_eq!(
+            store
+                .journal_retention_boundary(&fresh, cutoff, 1_000)
+                .unwrap(),
+            None
+        );
+        // A batch of four takes the four oldest; the rest wait for the next tick.
+        assert_eq!(
+            store.journal_retention_boundary(&old, cutoff, 4).unwrap(),
+            Some(5)
+        );
+        assert_eq!(store.prune_journal(&old, 5).unwrap(), 4);
+        // An unbounded batch stops at the window, never at a fresh entry.
+        assert_eq!(
+            store
+                .journal_retention_boundary(&old, cutoff, 1_000)
+                .unwrap(),
+            Some(11)
+        );
+        assert_eq!(store.prune_journal(&old, 11).unwrap(), 6);
+        assert_eq!(
+            store
+                .journal_retention_boundary(&old, cutoff, 1_000)
+                .unwrap(),
+            None
+        );
+        // A clock that went backwards: an expired entry behind a fresh one
+        // does not drag the fresh one out. Retention stops at the fresh row.
+        let skew = ProjectId::from("skew");
+        store
+            .append_journal(&aged_entry("skew", 1, Duration::days(30)))
+            .unwrap();
+        store
+            .append_journal(&aged_entry("skew", 2, Duration::hours(1)))
+            .unwrap();
+        store
+            .append_journal(&aged_entry("skew", 3, Duration::days(30)))
+            .unwrap();
+        assert_eq!(
+            store
+                .journal_retention_boundary(&skew, cutoff, 1_000)
+                .unwrap(),
+            Some(2)
+        );
+        let mut query = JournalQuery::new(old.clone(), 50);
+        query.since_seq = None;
+        let left: Vec<u64> = store
+            .journal(&query)
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(left, [11, 12]);
+        // The head survives pruning, so seqs keep counting up after a restart.
+        assert_eq!(store.max_journal_seq(&old).unwrap(), 12);
+        let (before, after) = store.vacuum().unwrap();
+        assert!(
+            before > 0 && after > 0 && after <= before,
+            "{before} -> {after}"
+        );
     }
 
     #[test]

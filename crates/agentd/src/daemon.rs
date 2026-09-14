@@ -75,6 +75,14 @@ const EVENT_HISTORY: usize = 10_000;
 const CHANGE_HISTORY: usize = 100_000;
 /// Longest a claim may wait for a conflicting lease to clear.
 const MAX_WAIT_SECS: u64 = 600;
+
+/// `now - secs` when that is representable. An age beyond what the clock can
+/// express is older than anything stored, so `None` means "nothing is that
+/// old" rather than a panic.
+fn cutoff_before(secs: u64) -> Option<DateTime<Utc>> {
+    let age = Duration::try_seconds(i64::try_from(secs).ok()?)?;
+    Utc::now().checked_sub_signed(age)
+}
 /// How long `git` may take to find a repository's root commit before the
 /// project falls back to grouping by path for this daemon run.
 const FINGERPRINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -204,6 +212,9 @@ struct State {
     journal_seq: HashMap<ProjectId, u64>,
     /// Newest entries per active project, so digests never touch SQLite.
     journal_rings: HashMap<ProjectId, JournalRing>,
+    /// The last `agentd.toml` problem reported, so a broken file is logged
+    /// once when it breaks and once when it is fixed, not every minute.
+    config_notice: Option<String>,
     /// The last HEAD a commit entry was written for, per checkout, so a
     /// move seen through several agents is journaled once.
     last_head: HashMap<PathBuf, String>,
@@ -996,6 +1007,7 @@ impl Daemon {
                 events,
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
+                config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
                 project_checkouts: HashMap::new(),
@@ -1437,10 +1449,16 @@ impl Daemon {
             Request::JournalPrune {
                 project,
                 before_seq,
-            } => match self.resolve_project(&project).await {
-                Ok(id) => lock(&self.state).journal_prune(&id, before_seq),
-                Err(response) => *response,
-            },
+                older_than_secs,
+            } => {
+                self.journal_prune_request(&project, before_seq, older_than_secs)
+                    .await
+            }
+            Request::CheckpointPrune {
+                agent,
+                older_than_secs,
+            } => self.checkpoint_prune(agent.as_deref(), older_than_secs),
+            Request::Vacuum { force } => self.vacuum(force),
             Request::Leases { agent, resource } => self.leases(agent.as_deref(), resource).await,
             Request::Subscribe { .. }
             | Request::Events { .. }
@@ -2809,6 +2827,137 @@ impl Daemon {
             Ok(0) => {}
             Ok(removed) => info!(removed, "pruned the ledger"),
             Err(err) => error!(%err, "failed to prune the ledger"),
+        }
+    }
+
+    /// Prune a project's journal on request: below a sequence number, older
+    /// than an age, or both (whichever keeps more).
+    async fn journal_prune_request(
+        &self,
+        project: &str,
+        before_seq: Option<u64>,
+        older_than_secs: Option<u64>,
+    ) -> Response {
+        if before_seq.is_none() && older_than_secs.is_none() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "say what to prune: before_seq, older_than_secs, or both",
+            );
+        }
+        let id = match self.resolve_project(project).await {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut state = lock(&self.state);
+        let by_age = match older_than_secs {
+            None => None,
+            Some(secs) => {
+                let Some(cutoff) = cutoff_before(secs) else {
+                    return Response::Pruned { removed: 0 };
+                };
+                match state.store_op("journal", |store| {
+                    store.journal_retention_boundary(&id, cutoff, usize::MAX)
+                }) {
+                    Some(Some(seq)) => Some(seq),
+                    Some(None) => return Response::Pruned { removed: 0 },
+                    None => {
+                        return state.storage_failure().unwrap_or_else(|| {
+                            Response::error(ErrorCode::Internal, "journal prune failed")
+                        });
+                    }
+                }
+            }
+        };
+        let before = match (before_seq, by_age) {
+            (Some(seq), Some(age)) => seq.min(age),
+            (Some(seq), None) => seq,
+            (None, age) => age.unwrap_or(0),
+        };
+        state.journal_prune(&id, before, "request")
+    }
+
+    /// Give freed pages back to the filesystem. Holds the state lock for the
+    /// duration, so nothing else is answered while SQLite rewrites the file:
+    /// a live provider bridge waiting on the daemon could time out. Refused
+    /// while sessions are live unless the caller accepts that with `force`.
+    fn vacuum(&self, force: bool) -> Response {
+        let state = lock(&self.state);
+        let live = state
+            .registry
+            .live()
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
+            .count();
+        if live > 0 && !force {
+            return Response::error(
+                ErrorCode::Conflict,
+                format!(
+                    "{live} live session(s) would be paused while the database is rewritten; wait for them to finish, or pass force to accept that"
+                ),
+            );
+        }
+        match state.store.vacuum() {
+            Ok((before_bytes, after_bytes)) => {
+                info!(before_bytes, after_bytes, "vacuumed the state database");
+                Response::Vacuumed {
+                    before_bytes,
+                    after_bytes,
+                }
+            }
+            Err(err) => Response::error(ErrorCode::Internal, format!("vacuum failed: {err}")),
+        }
+    }
+
+    /// Apply `[journal] retention` from `agentd.toml`, one batch per project
+    /// per call, so a long backlog drains over several ticks instead of
+    /// holding the state lock for one long delete. The file is read outside
+    /// the lock; absence means keep everything.
+    pub fn apply_journal_retention(&self) {
+        use agentdocker_core::config::{DaemonConfig, FILE_NAME, RETENTION_BATCH};
+        use agentdocker_host::policy_file::{self, ReadPolicy};
+        let path = self.home.join(FILE_NAME);
+        let read = policy_file::read_changed(&path, None)
+            .map_err(|error| format!("cannot read {}: {}", path.display(), error.kind()))
+            .and_then(|read| match read {
+                ReadPolicy::Absent | ReadPolicy::Unchanged => Ok(None),
+                ReadPolicy::Text { text, .. } => toml::from_str::<DaemonConfig>(&text)
+                    .map_err(|error| error.to_string())
+                    .and_then(|config| config.journal_retention())
+                    .map_err(|error| format!("{}: {error}", path.display())),
+            });
+        let mut state = lock(&self.state);
+        let window = match read {
+            Ok(window) => {
+                if state.config_notice.take().is_some() {
+                    info!(path = %path.display(), "daemon configuration is readable again");
+                }
+                window
+            }
+            Err(notice) => {
+                if state.config_notice.as_ref() != Some(&notice) {
+                    warn!(%notice, "daemon configuration ignored");
+                    state.config_notice = Some(notice);
+                }
+                return;
+            }
+        };
+        let Some(cutoff) = window.and_then(|window| Utc::now().checked_sub_signed(window)) else {
+            return;
+        };
+        let projects = match state.store_op("journal", |store| store.journal_projects()) {
+            Some(projects) => projects,
+            None => return,
+        };
+        for project in projects {
+            let boundary = state.store_op("journal", |store| {
+                store.journal_retention_boundary(&project, cutoff, RETENTION_BATCH)
+            });
+            match boundary {
+                Some(Some(before_seq)) => {
+                    state.journal_prune(&project, before_seq, "retention");
+                }
+                Some(None) => {}
+                None => return,
+            }
         }
     }
 
@@ -4412,18 +4561,26 @@ impl State {
             .retain(|project, ring| active.contains(project) || ring.touched.elapsed() < RING_IDLE);
     }
 
-    fn journal_prune(&mut self, project: &ProjectId, before_seq: u64) -> Response {
+    fn journal_prune(&mut self, project: &ProjectId, before_seq: u64, reason: &str) -> Response {
         match self.store_op("journal", |store| store.prune_journal(project, before_seq)) {
             Some(removed) => {
                 if let Some(ring) = self.journal_rings.get_mut(project) {
                     ring.entries.retain(|e| e.seq >= before_seq);
                 }
                 if removed > 0 {
-                    info!(project = %project.short(), removed, "pruned the journal");
+                    info!(project = %project.short(), removed, reason, "pruned the journal");
+                    self.emit(EventKind::JournalPruned {
+                        project: project.clone(),
+                        before_seq,
+                        removed,
+                        reason: reason.to_owned(),
+                    });
                 }
                 Response::Pruned { removed }
             }
-            None => Response::error(ErrorCode::Internal, "journal prune failed"),
+            None => self
+                .storage_failure()
+                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "journal prune failed")),
         }
     }
 
@@ -12505,7 +12662,8 @@ deny = ["send:all"]
         let Response::Pruned { removed } = daemon
             .handle(Request::JournalPrune {
                 project: repo.to_string_lossy().into_owned(),
-                before_seq: 3,
+                before_seq: Some(3),
+                older_than_secs: None,
             })
             .await
         else {
@@ -12521,6 +12679,131 @@ deny = ["send:all"]
         let after = journal_of(&daemon, &repo, None, None, None).await;
         assert_eq!(after.last().map(|e| e.kind), Some(JournalKind::Join));
         assert_eq!(after.last().map(|e| e.seq), Some(seqs.len() as u64 + 1));
+    }
+
+    #[tokio::test]
+    async fn retention_prunes_in_batches_from_the_daemon_config() {
+        if !have_git() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("README"), "x\n").unwrap();
+        assert!(git(dir.path(), &repo, &["init", "-q"]));
+        assert!(git(dir.path(), &repo, &["add", "."]));
+        assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+        let daemon = open(&dir);
+        let a = register_in(&daemon, "a", &repo).await;
+        let project = a.project.as_ref().expect("registered in a repo").id();
+        // Ages fall as seqs rise, as they do in a real journal: the join is
+        // 40 days old, then twelve notes from 37 days old down to 4, then
+        // one fresh note.
+        let head = journal_of(&daemon, &repo, None, None, None).await[0].seq;
+        for i in 1..=12u64 {
+            daemon
+                .handle(Request::JournalAdd {
+                    agent: a.id.to_string(),
+                    summary: format!("old {i}"),
+                })
+                .await;
+        }
+        {
+            let state = lock(&daemon.state);
+            state
+                .store
+                .age_journal_for_test(&project, head, Utc::now() - Duration::days(40));
+            for i in 1..=12u64 {
+                state.store.age_journal_for_test(
+                    &project,
+                    head + i,
+                    Utc::now() - Duration::days(40 - 3 * i as i64),
+                );
+            }
+        }
+        daemon
+            .handle(Request::JournalAdd {
+                agent: a.id.to_string(),
+                summary: "fresh".into(),
+            })
+            .await;
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await.len(), 14);
+
+        // No file: nothing is touched. A broken file: nothing is touched either.
+        daemon.apply_journal_retention();
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await.len(), 14);
+        let config = daemon.home.join("agentd.toml");
+        std::fs::write(&config, "[journal]\nretention = \"soon\"\n").unwrap();
+        daemon.apply_journal_retention();
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await.len(), 14);
+        assert!(lock(&daemon.state).config_notice.is_some());
+
+        // One tick prunes everything older than the window (the batch is
+        // larger than the backlog), the ring agrees, and the event says why.
+        std::fs::write(&config, "[journal]\nretention = \"20d\"\n").unwrap();
+        daemon.apply_journal_retention();
+        assert!(lock(&daemon.state).config_notice.is_none());
+        let left = journal_of(&daemon, &repo, None, None, None).await;
+        let seqs: Vec<u64> = left.iter().map(|e| e.seq).collect();
+        // The join and notes 1..=6 (37..22 days) go; 7..=12 (19..4) and the
+        // fresh note stay.
+        assert_eq!(seqs, (head + 7..=head + 13).collect::<Vec<_>>());
+        let pruned = daemon
+            .recent_events(50)
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                EventKind::JournalPruned {
+                    removed, reason, ..
+                } => Some((removed, reason)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pruned, vec![(7, "retention".to_owned())]);
+        // A second tick finds nothing older and emits nothing.
+        daemon.apply_journal_retention();
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await.len(), 7);
+
+        // A request by age uses the same boundary and says so.
+        let Response::Pruned { removed } = daemon
+            .handle(Request::JournalPrune {
+                project: repo.to_string_lossy().into_owned(),
+                before_seq: None,
+                older_than_secs: Some(18 * 24 * 3600 + 3600),
+            })
+            .await
+        else {
+            panic!("prune failed");
+        };
+        assert_eq!(
+            removed, 1,
+            "only the 19-day note is older than 18 days and an hour"
+        );
+        assert_eq!(journal_of(&daemon, &repo, None, None, None).await.len(), 6);
+        assert!(matches!(
+            daemon
+                .handle(Request::JournalPrune {
+                    project: repo.to_string_lossy().into_owned(),
+                    before_seq: None,
+                    older_than_secs: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // Agent `a` is live: vacuum waits for a quiet daemon unless forced.
+        assert!(matches!(
+            daemon.handle(Request::Vacuum { force: false }).await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon.handle(Request::Vacuum { force: true }).await,
+            Response::Vacuumed { before_bytes, after_bytes } if before_bytes > 0 && after_bytes > 0
+        ));
     }
 
     async fn digest_for(
@@ -13187,7 +13470,7 @@ deny = ["send:all"]
         {
             let mut state = lock(&daemon.state);
             state.move_cursor("user", &project, last);
-            state.journal_prune(&project, last + 1);
+            state.journal_prune(&project, last + 1, "test");
             for filtered in [false, true] {
                 let mut query = JournalQuery::new(project.clone(), 200);
                 if filtered {

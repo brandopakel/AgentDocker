@@ -54,7 +54,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Remaining work](REMAINING-WORK.md) | Partial: current disposition of existing engineering, acceptance and release requirements. |
 | [Delivery plan](DELIVERY-PLAN.md) | Partial: current sequence and T01–T12/L01–L15 status; old checkpoints are historical. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists; release/platform delivery remains, federation deferred. |
-| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory exists; retention/maintenance, pure-core cleanup, live replacement and Windows are incomplete. Optional protocol proposals remain deferred. |
+| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory and journal/checkpoint maintenance exist; pure-core cleanup, live replacement and Windows are incomplete. Optional protocol proposals remain deferred. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Partial: simplified home/Inbox/Tools implemented; capability verification and human input acceptance remain. |

@@ -454,7 +454,9 @@ impl Daemon {
                 Err(response) => return *response,
             }
         };
-        let cutoff = Utc::now() - Duration::seconds(i64::try_from(before_secs).unwrap_or(i64::MAX));
+        let Some(cutoff) = cutoff_before(before_secs) else {
+            return Response::Pruned { removed: 0 };
+        };
         let mut state = lock(&self.state);
         let gone: Vec<ChannelId> = state
             .channels
