@@ -646,7 +646,7 @@ remain ordinary inbox messages, but cannot change the accepted answer or satisfy
 a cancelled blocking wait. Blocking waits require the exact `question_closed`
 answer ID. Losing the answer message stream or the question event stream returns
 an error with retained inbox state.
-The [managed Codex adapter](CODEX-INPUT.md#questions-and-command-approvals) records
+The [managed Codex adapter](CODEX-INPUT.md#questions-and-approvals) records
 question routes and separates their responses from ordinary provider input.
 
 The daemon raises desktop notifications for messages addressed to a `human` agent, throttled to one per sender per minute. macOS uses the app bundle's `agentdocker-ui --notify-json JSON` entry point and no AppleScript fallback. The JSON carries display text and an optional action `{home, socket, target: {message, agent, project, channel}}`; identifiers and absolute origin paths are validated separately from message text. Native content stores the action in `userInfo["agentdocker.action"]`. Posting failures leave the inbox intact and emit a bounded diagnostic. Linux still uses `notify-send` without destination activation. `AGENTDOCKER_NO_NOTIFICATIONS=1` suppresses posting in ordinary fixtures. Notices are built under the state lock and posted by a separate worker.
