@@ -92,6 +92,16 @@ credential handling, and [local trial](LOCAL-TRIAL.md) for the operational seque
 
 ## Retained evidence and release configuration
 
+The September 14 terminal follow-up bounds read-side shutdown and preserves
+partial frame bytes across read deadlines. A deterministic reproduction found
+that the first timeout draft's `read_line` could discard a split UTF-8 character;
+the correction retains bytes and checks closure between chunks. Focused tests
+cover actual socket deadlines at every split, following frames, continuous
+unterminated input and closure without a usable shutdown handle. Final validation,
+review and integration remain pending. The earlier macOS CI writer-failure test
+timeout remains recorded; these checks do not establish its original OS-level
+cause or explain the separate historical benchmark socket timeout.
+
 The [delivery plan](DELIVERY-PLAN.md), [message audit](MESSAGE-DELIVERY-AUDIT.md)
 and [verification directory](verification/) retain the full history. In
 particular, [delivery-status evidence](verification/2026-09-12-input-delivery-status.json)
