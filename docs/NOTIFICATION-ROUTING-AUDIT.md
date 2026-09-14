@@ -84,6 +84,14 @@ No native click could be tested from the refused post. Signed builds and old/new
 bundle registration remain open; the installed launcher and daemon are unchanged.
 [Exact-source verification](verification/2026-09-10-notification-routing.json).
 
+The September 14 installed-app check at `aaa1b61` again refused one explicitly
+owned native post through `/Applications/AgentDocker.app`: exit 1,
+`notifications are not permitted`, `UNErrorDomain error 1`. Accessibility
+automation was available, but no notification appeared to click. The private
+trial retained the installation identity and poster hash; no production message,
+draft or provider state changed. This confirms the posting prerequisite is still
+unmet, without identifying signing or membership as its sole cause.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version
