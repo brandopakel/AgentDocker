@@ -25,7 +25,7 @@ These changes do not provide a preserved terminal across daemon replacement, ven
 
 ## Delivery work still required
 
-1. Complete final review and platform acceptance of the current packaging/installer stack; public signing/notarization, download/update feed and Linux distribution packages remain.
+1. Local packaging/installation and updater/feed implementation are complete. Public signing/notarization, hosted update acceptance and target Linux distribution acceptance remain.
 2. Expand per-tool capabilities, executable health checks, broader installation paths and distinct desktop-host identities beyond the implemented guided preview/apply/undo flow.
 3. Extend the [completed bounded Claude Code hooks and Codex MCP trials](INTEGRATION-ACCEPTANCE.md) across supported versions and longer sessions; no bulk adoption of active user work.
 4. Windows IPC, access control, process/terminal/service/path adapters, installers and native Windows CI/runtime acceptance.
@@ -35,7 +35,7 @@ The development Mac currently has no Developer ID Application signing identity i
 
 ## Desktop and onboarding follow-up
 
-[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. A per-user desktop installer now implements explicit local-package activation and compatible rollback, with native Installation controls and stable setup command paths. Its isolated acceptance is tracked separately from public release. `agentdocker desktop update` and the release feed generator exist ([RELEASE-AUTOMATION.md](RELEASE-AUTOMATION.md)); signed public distribution, hosted feed publication, Windows parity and sustained upgrade crash boundaries remain.
+[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features are merged and passed the PR #119 integrated gate; public v0.1.0 is unchanged. A per-user desktop installer now implements explicit local-package activation and compatible rollback, with native Installation controls and stable setup command paths. Its isolated acceptance is tracked separately from public release. `agentdocker desktop update` and the release feed generator exist ([RELEASE-AUTOMATION.md](RELEASE-AUTOMATION.md)); signed public distribution, hosted feed publication, Windows parity and sustained upgrade crash boundaries remain.
 
 ## September 7: native launch and exit durability follow-up
 
@@ -56,5 +56,6 @@ explicit service removal. Settings and running agents are preserved.
 
 Focused fixture checks cover active/rollback/running/legacy retention, startup
 versus cleanup locking, foreign files, changed plans and service references.
-Packaged process trials, final-source verification and platform review remain
-required; this is not a signed public update or live daemon replacement.
+PR #119 completed local packaged process trials and final source review. Hosted
+updates and independent-platform acceptance remain; this is not a signed public
+update or live daemon replacement.

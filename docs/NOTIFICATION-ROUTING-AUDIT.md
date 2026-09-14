@@ -86,7 +86,7 @@ bundle registration remain open; the installed launcher and daemon are unchanged
 
 ## Work and acceptance
 
-1. (Done.) Identify the actual daemon, app bundle, notification sender and source version
+1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version
    used by the installed launcher. Capture bounded native-post failure reasons
    without logging private message text. Check authorization, bundle registration
    and signing independently; reproduce with an explicitly owned notification.

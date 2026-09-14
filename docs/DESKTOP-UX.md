@@ -11,13 +11,14 @@ under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects; choosing a project narrows
 the list. Opening a session takes you to its project and selects that session.
 
-**Needs you** shows unanswered questions (**Answer**), unviewed completions
-(**Open**) and paused message delivery (**Review**). Question previews use at
+**Needs you** shows unanswered questions (**Answer**) and paused message
+delivery (**Review**). Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
-**Show fewer** collapses it. Optional setup stays in Tools, and discovered
-processes appear once under Running here, not connected.
+**Show fewer** collapses it. When nobody needs an answer or delivery review, **To get started** can offer
+**Connect** for discovered processes and **Set up** for installed tools. Tools
+also keeps the full setup controls.
 
 The sidebar remembers projects found through agents and folders you add yourself.
 **Add project…** lets you browse or enter an existing folder. It pins the project
@@ -91,13 +92,14 @@ otherwise remain queued until a consumer explicitly takes them. The rail badge
 counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
 
-Tools shows each installed tool with one status word: **Connected** once a
-session of that tool has reported in (proof that its hooks or MCP reach the
-daemon, not that peer messages can enter its input queue, which needs the
-opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
-[CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md)), **Needs setup** when its configuration is
-missing (with a **Set up** button), **Configured, waiting for its first
-session** in between, and **Not installed**. **Details** holds versions,
+Tools shows **Connected** when a live session has non-unknown activity,
+**Needs setup** when configuration is missing, **Configured, waiting for its
+first session** in between, and **Not installed**. Activity can come from
+coordination as well as provider reports; it does not independently verify a
+transport or input capability. The [setup verification gap](REMAINING-WORK.md)
+remains open. Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md)
+and [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing setup offers
+**Set up**. **Details** holds versions,
 commands, the per-channel configuration state, **Review setup**, **Check
 connections** and **Setup history**; **Other supported tools** expands the
 inventory. A setup plan reads "Connect <tool>" with what changes as bullets,

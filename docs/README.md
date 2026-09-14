@@ -56,7 +56,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists; release/platform delivery remains, federation deferred. |
 | [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory exists; retention/maintenance, pure-core cleanup, live replacement and Windows are incomplete. Optional protocol proposals remain deferred. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
-| [Guide](GUIDE.md) | Reference: current command/workflow reference; missing command/tool entries need reconciliation with CLI/MCP. |
+| [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Partial: simplified home/Inbox/Tools implemented; capability verification and human input acceptance remain. |
 | [Iced design](ICED-DESIGN.md) | Partial: native migration and automated interactions implemented; VoiceOver/IME and other-platform hands-on acceptance remain. |
 | [Guided setup](GUIDED-SETUP.md) | Partial: preview/apply/undo and configuration locks implemented; verified input readiness and required-trust guidance remain. |
@@ -86,7 +86,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research: adopted UI ideas implemented; remaining suggestions are optional, not a new release checklist. |
 | [herdr bridge](HERDR-BRIDGE.md) | Deferred beyond implemented pane identity: focus/prompt bridge and reported-blocked mirror are proposals, not delivered features. |
 
-Verification reports are immutable descriptions of their original trials, not
+Verification reports preserve the original trials, rather than representing
 61 independent tasks to rerun or close. A later reviewed merge resolves a report's
 old integration status without changing its source, failed result or acceptance
 scope. New evidence can extend an existing report or the relevant PR; do not

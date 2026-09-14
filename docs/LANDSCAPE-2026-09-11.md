@@ -81,7 +81,7 @@ From Dax:
    ([Vibe History](https://docs.getdax.app/tools/vibe-history.md)).
 3. A per-project visual identity derived from the path hash, for dense lists (present: `crates/ui/src/app/style.rs`).
 4. An optional "install hooks" action framed as faster and more reliable (present: Tools **Set up**).
-5. An honest online/offline badge per tool (present: Connected / Configured / Needs setup / Not installed).
+5. Per-tool status badges (present: Connected / Configured / Needs setup / Not installed; independent input-capability verification remains open).
 
 ## Where AgentDocker is different, and should say so
 

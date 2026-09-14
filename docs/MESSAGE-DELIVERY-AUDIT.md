@@ -337,9 +337,9 @@ ordinary-input records still upgrade with their prepared input intact.
 A separate actual Codex trial then found that MCP `ask_human` returns its human
 answer to the tool while the same message is also accepted as a fourth ordinary
 provider input. The [retained failure](verification/2026-09-11-provider-question-receipts.json)
-was an open follow-up for MCP tool-result receipts, closed by the September 12 fix below. The native app-server question
+was an open follow-up for MCP tool-result receipts, closed by the MCP receipt fix below. The native app-server question
 callback fixes above do not cover that path. Structured Iced approval/choice
-controls landed with PR #119.
+controls landed with PR #105 and are included in PR #119.
 
 
 ### September 11: structured native question controls
