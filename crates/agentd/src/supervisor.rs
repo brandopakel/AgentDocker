@@ -27,7 +27,7 @@ use anyhow::Context;
 use chrono::Utc;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -72,9 +72,18 @@ enum OwnerLink {
     Detached,
 }
 
+/// Longest report line accepted from an owner: a scrollback replay is at
+/// most 64 KiB of bytes rendered as JSON numbers, well under this.
+const MAX_REPORT_BYTES: usize = 1024 * 1024;
+/// How long one write to an owner may block before the link is dead.
+const WRITE_WITHIN: Duration = Duration::from_secs(5);
+
 struct Controller {
-    lines: Lines<BufReader<OwnedReadHalf>>,
+    reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
+    /// A report read so far: kept across a cancelled read, so a frame split
+    /// by another select branch winning resumes where it stopped.
+    partial: Vec<u8>,
 }
 
 impl Controller {
@@ -93,25 +102,33 @@ impl Controller {
         };
         let (reader, writer) = stream.into_split();
         Ok(Self {
-            lines: BufReader::new(reader).lines(),
+            reader: BufReader::new(reader),
             writer,
+            partial: Vec::new(),
         })
     }
 
     async fn send(&mut self, command: &OwnerCommand) -> anyhow::Result<()> {
         let mut line = serde_json::to_vec(command)?;
         line.push(b'\n');
-        self.writer
-            .write_all(&line)
+        tokio::time::timeout(WRITE_WITHIN, self.writer.write_all(&line))
             .await
+            .context("session owner stopped reading")?
             .context("session owner connection closed")
     }
 
+    /// One line, bounded; `None` at EOF. Cancel-safe: bytes already read
+    /// stay in `partial` until a whole frame is parsed.
+    async fn line(&mut self) -> anyhow::Result<Option<String>> {
+        read_frame(&mut self.reader, &mut self.partial, MAX_REPORT_BYTES)
+            .await
+            .context("session owner report")
+    }
+
     async fn hello(&mut self) -> anyhow::Result<OwnerHello> {
-        let line = self
-            .lines
-            .next_line()
-            .await?
+        let line = tokio::time::timeout(WRITE_WITHIN, self.line())
+            .await
+            .context("session owner did not say hello in time")??
             .context("session owner closed before its hello")?;
         let hello: OwnerHello = serde_json::from_str(&line).context("malformed owner hello")?;
         anyhow::ensure!(hello.format == FORMAT, "unknown session owner format");
@@ -120,7 +137,7 @@ impl Controller {
 
     async fn next(&mut self) -> anyhow::Result<Option<OwnerReport>> {
         loop {
-            let Some(line) = self.lines.next_line().await? else {
+            let Some(line) = self.line().await? else {
                 return Ok(None);
             };
             match serde_json::from_str::<OwnerReport>(&line) {
@@ -290,31 +307,91 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     Ok(spawned)
 }
 
+/// One newline-delimited frame from `reader`, accumulating into `partial`
+/// so a read cancelled mid-frame loses nothing: the next call continues.
+/// `None` at a clean EOF; an EOF mid-frame or a frame past `max` is an
+/// error. Shared by both ends of the owner wire.
+pub(crate) async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    partial: &mut Vec<u8>,
+    max: usize,
+) -> anyhow::Result<Option<String>> {
+    loop {
+        if let Some(end) = partial.iter().position(|b| *b == b'\n') {
+            let frame = partial.drain(..=end).collect::<Vec<u8>>();
+            let text = String::from_utf8(frame[..frame.len() - 1].to_vec())
+                .context("frame is not UTF-8")?;
+            return Ok(Some(text));
+        }
+        anyhow::ensure!(partial.len() <= max, "frame exceeds {max} bytes");
+        let budget = (max + 1 - partial.len()) as u64;
+        let read = reader.take(budget).read_until(b'\n', partial).await?;
+        if read == 0 {
+            anyhow::ensure!(partial.is_empty(), "connection closed mid-frame");
+            return Ok(None);
+        }
+    }
+}
+
+/// Whether the recorded owner process is still the one that was recorded:
+/// same pid, same birth. A recycled pid is not an owner.
+fn owner_alive(owner: &SessionOwner) -> bool {
+    agentdocker_host::procinfo::start_time(owner.pid) == Some(owner.started_at)
+}
+
+fn read_exit_file(path: &Path) -> Option<ExitReport> {
+    let text = std::fs::read(path).ok()?;
+    serde_json::from_slice(&text).ok()
+}
+
+/// Check that the owner answering on the socket is the one on the record,
+/// holding the child on the record. Anything else is a stranger.
+fn validate_identity(
+    hello: &OwnerHello,
+    owner: &SessionOwner,
+    child_pid: u32,
+    child_started_at: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        hello.owner_pid == owner.pid && hello.owner_started_at == owner.started_at,
+        "session owner identity differs from the record"
+    );
+    let child = hello.child.as_ref().context("owner has no child")?;
+    anyhow::ensure!(
+        child.pid == child_pid && child.started_at == child_started_at,
+        "session owner holds a different child than the record"
+    );
+    Ok(())
+}
+
 /// Find an owner that outlived the previous daemon and take its child
 /// back under supervision. The exit file answers for an owner that has
-/// already finished.
+/// already finished. Identities are checked against the record: a
+/// recycled owner pid or a different child is refused.
 pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Reattached> {
     let socket = socket_path(&daemon.home, &record.id);
     let exit = exit_path(&daemon.home, &record.id);
-    let mut controller = match Controller::connect(&socket, Duration::from_millis(500)).await {
-        Ok(controller) => controller,
-        Err(error) => {
-            if let Ok(text) = std::fs::read(&exit)
-                && let Ok(report) = serde_json::from_slice::<ExitReport>(&text)
-            {
-                let _ = std::fs::remove_file(&exit);
-                let _ = std::fs::remove_file(&socket);
-                return Ok(Reattached::Exited(report));
-            }
-            return Err(error);
-        }
-    };
+    let owner = record
+        .owner
+        .clone()
+        .context("record has no session owner")?;
+    let child_pid = record.pid.context("record has no child pid")?;
+    let child_started_at = record
+        .process_started_at
+        .context("record has no child birth")?;
+    if let Some(report) = read_exit_file(&exit) {
+        // Finished while nobody watched; the owner may still be waiting to
+        // hear that this was recorded.
+        return Ok(Reattached::Exited(report));
+    }
+    anyhow::ensure!(
+        owner_alive(&owner),
+        "session owner process is gone without an exit report"
+    );
+    let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
     let hello = controller.hello().await?;
-    let child = hello.child.clone().context("owner has no child")?;
-    let owner = SessionOwner {
-        pid: hello.owner_pid,
-        started_at: hello.owner_started_at,
-    };
+    validate_identity(&hello, &owner, child_pid, child_started_at)?;
+    let child = hello.child.clone().expect("validated");
     let (control, stop) = watch::channel(None);
     let mut spawned = Spawned {
         pid: child.pid,
@@ -429,12 +506,147 @@ impl Spawned {
         let skip = usize::try_from(self.relayed.saturating_sub(offset)).unwrap_or(0);
         let fresh = &bytes[skip.min(bytes.len())..];
         self.relayed = end;
+        self.show(fresh);
+    }
+
+    /// Bytes `..to` scrolled out of the owner's retention while nobody was
+    /// attached: say so on the screen, and resume counting at `to` so the
+    /// bytes that follow are not mistaken for already shown.
+    fn note_gap(&mut self, to: u64) {
+        if to > self.relayed {
+            self.show(b"\r\n[agentdocker: output gap; see logs]\r\n");
+            self.relayed = to;
+        }
+    }
+
+    fn show(&self, bytes: &[u8]) {
         if let (Some(scrollback), Some(output)) = (&self.scrollback, &self.output) {
             let mut history = lock_scrollback(scrollback);
-            history.extend(fresh.iter().copied());
+            history.extend(bytes.iter().copied());
             let excess = history.len().saturating_sub(SCROLLBACK);
             history.drain(..excess);
-            let _ = output.send(fresh.to_vec());
+            let _ = output.send(bytes.to_vec());
+        }
+    }
+
+    /// Reconnect to the same owner after the transport dropped: the owner
+    /// and child must be the ones this supervision started with, and the
+    /// screen resumes from the last byte shown.
+    async fn reconnect(&mut self, home: &Path, id: &AgentId) -> anyhow::Result<()> {
+        let socket = socket_path(home, id);
+        let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
+        let hello = controller.hello().await?;
+        validate_identity(&hello, &self.owner, self.pid, self.process_started_at)?;
+        if self.session.is_some() {
+            controller
+                .send(&OwnerCommand::Attach {
+                    after: self.relayed,
+                })
+                .await?;
+        }
+        self.controller = controller;
+        Ok(())
+    }
+}
+
+/// How supervision ended: with the owner's exit report, or without one.
+enum Outcome {
+    Exited(ExitReport),
+    Failed(String),
+}
+
+/// Relay until the owner reports the exit or is gone for good. A dropped
+/// transport is not an exit: while the owner process lives, reconnect and
+/// carry on, so a daemon hiccup never releases a running agent's leases.
+async fn relay_until_exit(
+    daemon: &Daemon,
+    id: &AgentId,
+    spawned: &mut Spawned,
+    keystrokes: &mut Option<mpsc::Receiver<Vec<u8>>>,
+    resizes: &mut Option<mpsc::Receiver<(u16, u16)>>,
+) -> Outcome {
+    let exit_file = exit_path(&daemon.home, id);
+    loop {
+        let dropped = loop {
+            tokio::select! {
+                biased;
+                report = spawned.controller.next() => match report {
+                    Ok(Some(OwnerReport::Output { offset, bytes })) => spawned.relay(offset, &bytes),
+                    Ok(Some(OwnerReport::Gap { from, to })) => {
+                        tracing::info!(agent = %id, from, to, "terminal output skipped ahead after a gap");
+                        spawned.note_gap(to);
+                    }
+                    Ok(Some(OwnerReport::InputDropped)) => {
+                        // Said on the screen and in the event stream: bytes
+                        // the client saw accepted were not typed, and nothing
+                        // replays them.
+                        tracing::warn!(agent = %id, "terminal input was dropped: the agent is not reading its terminal");
+                        spawned.show(b"\r\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\r\n");
+                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped { agent: id.clone() });
+                    }
+                    Ok(Some(OwnerReport::OutputFailed { reason })) => {
+                        tracing::warn!(agent = %id, %reason, "agent output capture failed");
+                        daemon.emit(agentdocker_core::EventKind::AgentOutputFailed {
+                            agent: id.clone(),
+                            reason,
+                        });
+                    }
+                    Ok(Some(OwnerReport::Exited { status })) => return Outcome::Exited(status),
+                    Ok(Some(_)) => {}
+                    Ok(None) => break None,
+                    Err(error) => break Some(error),
+                },
+                Some(bytes) = async { keystrokes.as_mut().expect("guarded").recv().await }, if keystrokes.is_some() => {
+                    if spawned.controller.send(&OwnerCommand::Input { bytes }).await.is_err() {
+                        *keystrokes = None;
+                    }
+                }
+                Some((cols, rows)) = async { resizes.as_mut().expect("guarded").recv().await }, if resizes.is_some() => {
+                    if spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await.is_err() {
+                        *resizes = None;
+                    }
+                }
+                Ok(()) = spawned.stop.changed() => {
+                    let pending = *spawned.stop.borrow_and_update();
+                    if let Some(force) = pending {
+                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
+                    }
+                }
+            }
+        };
+        // The transport went away. The exit file, if any, is the truth;
+        // otherwise a living owner is reconnected and a dead one is lost.
+        if let Some(report) = read_exit_file(&exit_file) {
+            return Outcome::Exited(report);
+        }
+        if let Some(error) = &dropped {
+            tracing::warn!(agent = %id, %error, "session owner link failed");
+        }
+        // Transport unavailable is not the agent gone: keep trying for as
+        // long as the owner process lives, and only its death, or its exit
+        // report, ends supervision.
+        loop {
+            if let Some(report) = read_exit_file(&exit_file) {
+                return Outcome::Exited(report);
+            }
+            if !owner_alive(&spawned.owner) {
+                return Outcome::Failed("session owner lost".into());
+            }
+            match spawned.reconnect(&daemon.home, id).await {
+                Ok(()) => {
+                    tracing::info!(agent = %id, "reconnected to the session owner");
+                    // A stop asked for during the outage is still owed.
+                    let pending = *spawned.stop.borrow();
+                    if let Some(force) = pending {
+                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
+                    }
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %id, %error, "session owner unreachable; retrying while it lives");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -446,9 +658,10 @@ pub fn supervise(
     mut spawned: Spawned,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let status = if !spawned.activated {
+        let outcome = if !spawned.activated {
             // The launch record never became durable: tell the owner to deny
-            // exec now rather than at its own deadline, and wait for it to go.
+            // exec now rather than at its own deadline; reaping the link
+            // below waits for it to go.
             let reason = spawned
                 .launch_error
                 .take()
@@ -457,70 +670,30 @@ pub fn supervise(
                 .controller
                 .send(&OwnerCommand::Stop { force: true })
                 .await;
-            // The owner ends on its own once told; reaping the link below
-            // waits for that, so no fixed pause here.
-            AgentStatus::Failed { reason }
+            Outcome::Failed(reason)
         } else {
             let mut keystrokes = spawned.keystrokes.take();
             let mut resizes = spawned.resizes.take();
-            loop {
-                tokio::select! {
-                    biased;
-                    report = spawned.controller.next() => match report {
-                        Ok(Some(OwnerReport::Output { offset, bytes })) => spawned.relay(offset, &bytes),
-                        Ok(Some(OwnerReport::InputDropped)) => {
-                            tracing::warn!(agent = %id, "terminal input was dropped: the agent is not reading its terminal");
-                        }
-                        Ok(Some(OwnerReport::Gap { from, to })) => {
-                            // Said, not hidden: the screen skips ahead and
-                            // the log keeps the bytes.
-                            tracing::info!(agent = %id, from, to, "terminal output skipped ahead after a gap");
-                            spawned.relay(to, b"\r\n[agentdocker: output gap; see logs]\r\n");
-                        }
-                        Ok(Some(OwnerReport::OutputFailed { reason })) => {
-                            tracing::warn!(agent = %id, %reason, "agent output capture failed");
-                            daemon.emit(agentdocker_core::EventKind::AgentOutputFailed {
-                                agent: id.clone(),
-                                reason,
-                            });
-                        }
-                        Ok(Some(OwnerReport::Exited { status })) => {
-                            let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
-                            let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
-                            break exit_status(&status);
-                        }
-                        Ok(Some(_)) => {}
-                        Ok(None) | Err(_) => {
-                            // The owner went away without an exit report. Its
-                            // exit file, if any, is the truth; otherwise the
-                            // child is lost with it.
-                            let exit = exit_path(&daemon.home, &id);
-                            match std::fs::read(&exit).ok().and_then(|text| serde_json::from_slice::<ExitReport>(&text).ok()) {
-                                Some(report) => {
-                                    let _ = std::fs::remove_file(&exit);
-                                    break exit_status(&report);
-                                }
-                                None => break AgentStatus::Failed { reason: "session owner lost".into() },
-                            }
-                        }
-                    },
-                    Some(bytes) = async { keystrokes.as_mut().expect("guarded").recv().await }, if keystrokes.is_some() => {
-                        if spawned.controller.send(&OwnerCommand::Input { bytes }).await.is_err() {
-                            keystrokes = None;
-                        }
-                    }
-                    Some((cols, rows)) = async { resizes.as_mut().expect("guarded").recv().await }, if resizes.is_some() => {
-                        if spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await.is_err() {
-                            resizes = None;
-                        }
-                    }
-                    Ok(()) = spawned.stop.changed() => {
-                        let pending = *spawned.stop.borrow_and_update();
-                        if let Some(force) = pending {
-                            let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
-                        }
-                    }
+            relay_until_exit(&daemon, &id, &mut spawned, &mut keystrokes, &mut resizes).await
+        };
+        daemon.end_session(&id);
+        let status = match outcome {
+            Outcome::Exited(report) => {
+                let status = exit_status(&report);
+                // Durable first, then acknowledged: an exit the store did not
+                // keep stays in the exit file for a daemon that can keep it.
+                if daemon.mark_exited(&id, status.clone()).is_some() {
+                    let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                    let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
+                } else {
+                    tracing::warn!(agent = %id, "exit not recorded durably; the owner's exit report is kept");
                 }
+                status
+            }
+            Outcome::Failed(reason) => {
+                let status = AgentStatus::Failed { reason };
+                daemon.mark_exited(&id, status.clone());
+                status
             }
         };
         // The owner finishes on its own once acknowledged; reap it here so
@@ -549,10 +722,6 @@ pub fn supervise(
             OwnerLink::Detached => {}
         }
         let _ = std::fs::remove_file(socket_path(&daemon.home, &id));
-        // Publish completion only after the owner has flushed the log, so
-        // shutdown/restart cannot abandon the tail of the log.
-        daemon.end_session(&id);
-        daemon.mark_exited(&id, status.clone());
         // After the exit is recorded, so a reader of the event stream
         // sees the agent end before it sees it start again.
         daemon.consider_restart(&id, &status);
@@ -579,4 +748,69 @@ pub(crate) fn group_exists(group: u32) -> bool {
             kill(Pid::from_raw(-group), None),
             Ok(()) | Err(nix::errno::Errno::EPERM)
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame split across reads, with the read cancelled between the
+    /// halves as another select branch winning would cancel it, still
+    /// arrives whole: the partial bytes are the connection's, not the
+    /// call's. Split UTF-8 and a following frame are included.
+    #[tokio::test]
+    async fn a_cancelled_read_keeps_the_partial_frame() {
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, _writer) = server.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut partial = Vec::new();
+        let whole = "{\"event\":\"output\",\"offset\":0,\"bytes\":[195,169]} caf\u{e9}\n{\"event\":\"activated\"}\n";
+        let bytes = whole.as_bytes();
+        // Cut inside the two-byte é.
+        let cut = whole.find("caf").unwrap() + 4;
+        client.write_all(&bytes[..cut]).await.unwrap();
+        // The first read sees no newline yet and is cancelled by a deadline.
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_frame(&mut reader, &mut partial, 1024),
+        )
+        .await;
+        assert!(cancelled.is_err(), "no whole frame yet");
+        assert_eq!(partial, &bytes[..cut], "the half read stays");
+        client.write_all(&bytes[cut..]).await.unwrap();
+        let first = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.ends_with("caf\u{e9}"), "{first}");
+        let second = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second, "{\"event\":\"activated\"}");
+        assert!(partial.is_empty());
+        // An oversized frame is refused, never buffered without bound.
+        client.write_all(&vec![b'x'; 2048]).await.unwrap();
+        let error = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // EOF mid-frame is an error, EOF between frames is the end.
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, _writer) = server.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut partial = Vec::new();
+        client
+            .write_all(b"{\"event\":\"activated\"}\nhalf")
+            .await
+            .unwrap();
+        drop(client);
+        assert!(
+            read_frame(&mut reader, &mut partial, 1024)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(read_frame(&mut reader, &mut partial, 1024).await.is_err());
+    }
 }

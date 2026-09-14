@@ -49,6 +49,10 @@ event continuity, not just a new socket or a readiness marker.
    its group, terminal, pipes, log and pending I/O. It must report exact exit
    status once and accept identity-bound stop/resize/input commands after the
    coordinator changes. A crash or failed handover must not disarm ownership.
+   *In source:* the session owner (`agentd --session-owner`, see
+   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); actual
+   distinct-binary acceptance of batch and PTY continuity through a daemon
+   restart is still to be recorded.
 3. **Coordinator fencing.** Quiesce mutations and background writers before
    releasing database authority. Exclude an unrelated autostart during transfer.
    Only one coordinator may write. New requests must either complete under a

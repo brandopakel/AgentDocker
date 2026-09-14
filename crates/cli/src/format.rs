@@ -576,6 +576,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentOwnerReattached { agent, owner_pid } => {
             format!("owner reattached {} (owner pid {owner_pid})", agent.short())
         }
+        EventKind::AgentInputDropped { agent } => {
+            format!("input dropped    {}", agent.short())
+        }
         EventKind::AgentOwnerLost { agent, reason } => {
             format!("owner lost       {} {reason}", agent.short())
         }

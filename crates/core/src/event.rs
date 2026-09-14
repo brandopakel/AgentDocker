@@ -440,6 +440,12 @@ pub enum EventKind {
         agent: AgentId,
         owner_pid: u32,
     },
+    /// Keystrokes an attached client sent were refused by the agent's
+    /// session owner because its terminal queue was full; nothing was
+    /// typed and nothing is replayed.
+    AgentInputDropped {
+        agent: AgentId,
+    },
     /// A managed agent's session owner could not be found after a daemon
     /// restart and left no exit report; the agent is recorded as failed.
     AgentOwnerLost {
