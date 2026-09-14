@@ -6,8 +6,22 @@ the same known PID and process birth, runtime, project and physical checkout;
 at least one must identify the provider session. A third matching candidate,
 conflicting session labels or incompatible ownership stops the repair.
 
+Known `via: hook` and `via: mcp` labels describe the adapter that registered the
+record. They may differ for an otherwise proven pair. The canonical record keeps
+its selected provenance and the repair archive retains both complete original
+records. Unknown provenance and every other conflicting label still refuse
+repair; this exception does not replace PID, process birth or session evidence.
+
 The implementation merged with PR #98 on September 11 after CI and review.
 Production records have not been migrated.
+The September 14 read-only inventory used a consistent private SQLite snapshot:
+25 records, 21 ended and four running. Two historical pairs produced safe previews
+covering 489 moved inbox rows and 70 duplicate message copies. A third pair was
+blocked solely by the known hook/MCP provenance difference corrected above. The
+current Claude process also has records for two distinct provider sessions;
+their conflicting session IDs correctly prevent reconciliation. Neither preview
+changed the snapshot or production state. Apply still requires a fresh plan and
+the quiescence checks below.
 It does not start, stop or signal a daemon or provider. Live/managed sessions,
 restorable ownership, containers, scoped credentials and ambiguous identities
 need separate resolution; they are not silently retired.

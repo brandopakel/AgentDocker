@@ -69,7 +69,7 @@ def run(args):
             processes.append(host)
             canonical = request(endpoint, {"op": "register", "pid": host.pid, "spec": {
                 "name": "canonical-fixture", "runtime": "claude-code", "workdir": str(root),
-                "labels": {"session_id": "owned-legacy-session"}}})["agent"]
+                "labels": {"session_id": "owned-legacy-session", "via": "hook"}}})["agent"]
             kept = canonical["id"]
             assert canonical.get("process_started_at"), "missing actual process birth evidence"
             request(endpoint, {"op": "send", "from": "user", "to": kept,
@@ -93,6 +93,7 @@ def run(args):
                 duplicate["id"] = retired
                 duplicate["spec"]["name"] = "legacy-transport-fixture"
                 duplicate["spec"]["labels"].pop("session_id", None)
+                duplicate["spec"]["labels"]["via"] = "mcp"
                 assert duplicate["status"]["state"] not in ["created", "running", "stopping"]
                 connection.execute("INSERT INTO agents VALUES(?,?,?,?,?)",
                                    (retired, duplicate["spec"]["name"], 0,
@@ -134,6 +135,9 @@ def run(args):
                 report["repaired_schema"] = repaired_schema
                 archive = json.loads(connection.execute("SELECT json FROM documents WHERE kind='identity_reconciliation' AND id=?", (retired,)).fetchone()[0])
                 assert archive["before"]["retired"]["id"] == retired
+                assert archive["before"]["canonical"]["spec"]["labels"]["via"] == "hook"
+                assert archive["before"]["retired"]["spec"]["labels"]["via"] == "mcp"
+                report["steps"].append("hook/MCP provenance differs only in the preserved original records")
             daemon = start_daemon()
             listing = request(endpoint, {"op": "list", "all": True})
             assert listing["aliases"][retired] == kept
