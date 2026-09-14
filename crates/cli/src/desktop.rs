@@ -17,6 +17,44 @@ use agentdocker_host::{command, dirs, project};
 mod maintenance;
 mod update;
 
+/// Where Homebrew keeps the cask's record when it installed the app. The
+/// app in `/Applications` is then Homebrew's copy: this installer must
+/// neither update it nor put a second one beside it.
+fn homebrew_caskrooms() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::var_os("HOMEBREW_PREFIX")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    roots.extend(["/opt/homebrew", "/usr/local"].map(PathBuf::from));
+    roots
+        .into_iter()
+        .map(|prefix| prefix.join("Caskroom/agentdocker-app"))
+        .collect()
+}
+
+/// The Homebrew cask record that owns an AgentDocker app on this machine:
+/// present when the cask is installed and there is no managed activation.
+/// The app itself may sit anywhere (`brew --appdir`), so the record, not
+/// the application path, is the evidence.
+fn homebrew_owner(active: Option<&Activation>, caskrooms: &[PathBuf]) -> Option<PathBuf> {
+    if active.is_some() {
+        return None;
+    }
+    caskrooms.iter().find(|room| room.is_dir()).cloned()
+}
+
+/// Refuse to install or update beside Homebrew's copy: one installation
+/// per machine, maintained by the tool that made it.
+fn refuse_homebrew_copy(active: Option<&Activation>) -> Result<()> {
+    if let Some(room) = homebrew_owner(active, &homebrew_caskrooms()) {
+        bail!(
+            "AgentDocker is installed by Homebrew ({}); update it with `brew upgrade --cask agentdocker-app` or remove it with `brew uninstall --cask agentdocker-app` rather than installing a second copy beside it",
+            room.display()
+        );
+    }
+    Ok(())
+}
+
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
 
 /// How many times to re-follow the `current` pointer when a read of it
@@ -1113,10 +1151,11 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
         }
         DesktopCommand::Status => {
+            let homebrew = homebrew_owner(active.as_ref(), &homebrew_caskrooms());
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active})
+                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew})
                 )?
             );
             return Ok(());
@@ -1128,6 +1167,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             local_preview,
             socket,
         } => {
+            refuse_homebrew_copy(active.as_ref())?;
             return update::run(
                 &layout,
                 active.as_ref(),
@@ -1147,6 +1187,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             expect_release,
             expect_current,
         } => {
+            refuse_homebrew_copy(active.as_ref())?;
             let (source, candidate) = inspect(&from, local_preview)?;
             (
                 source,
@@ -1585,6 +1626,28 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn homebrew_owns_the_app_when_its_record_exists_and_nothing_is_activated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = tmp.path().join("Caskroom/agentdocker-app");
+        let rooms = std::slice::from_ref(&room);
+        // No cask record: not Homebrew's, wherever an app may sit.
+        assert_eq!(homebrew_owner(None, rooms), None);
+        std::fs::create_dir_all(&room).unwrap();
+        // A cask record with no activation is Homebrew's, whatever
+        // --appdir put the app; a managed activation wins.
+        assert_eq!(homebrew_owner(None, rooms), Some(room.clone()));
+        let active: Activation = serde_json::from_value(serde_json::json!({
+            "format": 1,
+            "current": {"id": "a".repeat(64), "version": "0.1.0", "source_commit": "b".repeat(40),
+                         "state_schema": 16, "target": "aarch64-apple-darwin", "payload": "AgentDocker.app",
+                         "tree_sha256": "a".repeat(64), "installation_lock": 1},
+            "previous": null
+        }))
+        .unwrap();
+        assert_eq!(homebrew_owner(Some(&active), rooms), None);
     }
 
     #[test]

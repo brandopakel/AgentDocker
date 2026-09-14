@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,15 +18,28 @@ ROOT = Path(__file__).resolve().parents[1]
 # Stands in for the download: serves the checksum file and the archive
 # from whatever the environment points at.
 CURL_STUB = """#!/bin/sh
+# Serves the fixture for any URL; with -w it also prints an HTTP status the
+# way curl does, and a failing status writes no file.
+wants_status=""
 for arg in "$@"; do
-  case "$arg" in https://*) url="$arg";; esac
+  case "$arg" in https://*) url="$arg";; -w) wants_status=1;; esac
   if [ "${previous:-}" = "-o" ]; then output="$arg"; fi
   previous="$arg"
 done
+status=200
 case "$url" in
   *.sha256) [ "$TEST_MODE" != missing ] || exit 22; cp "$TEST_CHECKSUM" "$output" ;;
+  *desktop*)
+    case "$TEST_MODE" in
+      nodesktop) status=404 ;;
+      forbidden) status=403 ;;
+      *) cp "$TEST_ARCHIVE" "$output" ;;
+    esac ;;
   *) cp "$TEST_ARCHIVE" "$output" ;;
 esac
+[ -n "$wants_status" ] && printf '%s' "$status"
+[ "$status" = 200 ] || [ -n "$wants_status" ] || exit 22
+exit 0
 """
 
 
@@ -86,7 +100,7 @@ class InstallerTests(unittest.TestCase):
                 home.mkdir()
                 env = dict(os.environ, PATH=str(mock) + ":" + os.environ["PATH"], TEST_MODE=mode,
                            TEST_CHECKSUM=str(checksums), TEST_ARCHIVE=str(archive), AGENTDOCKER_INSTALL_DIR=str(install),
-                           HOME=str(home))
+                           AGENTDOCKER_INSTALL="cli", HOME=str(home))
                 result = subprocess.run(["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, mode == "valid", result.stderr)
                 self.assertEqual((install / "agentd").read_text(), "#!/bin/sh\nexit 0\n" if mode == "valid" else "existing")
@@ -136,6 +150,7 @@ class InstallerTests(unittest.TestCase):
                     TEST_CHECKSUM=str(checksums),
                     TEST_ARCHIVE=str(archive),
                     AGENTDOCKER_INSTALL_DIR=str(install),
+                    AGENTDOCKER_INSTALL="cli",
                     HOME=str(home),
                 )
                 result = subprocess.run(
@@ -180,9 +195,137 @@ class InstallerTests(unittest.TestCase):
             TEST_CHECKSUM=str(checksums),
             TEST_ARCHIVE=str(archive),
             AGENTDOCKER_INSTALL_DIR=str(install),
+            AGENTDOCKER_INSTALL="cli",
             HOME=str(home),
         )
         return env, install, home
+
+    def _desktop_fixture(self, root, platform, with_payload=True):
+        """A desktop archive whose `agentdocker` is a stub that records how
+        it was invoked, plus a curl stub serving it and, for Linux, a uname
+        stub so the macOS test host takes the Linux path."""
+        record = root / "record"
+        stub = f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {record}\nexit 0\n".encode()
+        if platform == "Darwin":
+            archive = root / "fixture.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                for name, data, mode in [
+                    ("AgentDocker.app/Contents/Info.plist", b"<plist></plist>\n", 0o644),
+                    ("AgentDocker.app/Contents/MacOS/agentdocker", stub, 0o755),
+                    ("AgentDocker.app/Contents/MacOS/agentd", stub, 0o755),
+                    ("AgentDocker.app/Contents/Resources/build.json", b"{}\n", 0o644),
+                ]:
+                    info = zipfile.ZipInfo(name)
+                    info.create_system = 3  # Unix, so the mode below is honoured
+                    info.external_attr = (0o100000 | mode) << 16  # a regular file with this mode
+                    zf.writestr(info, data)
+        else:
+            archive = root / "fixture.tar.gz"
+            entries = [
+                ("agentdocker-desktop/bin/agentdocker", stub, 0o755),
+                ("agentdocker-desktop/bin/agentd", stub, 0o755),
+                ("agentdocker-desktop/build.json", b"{}\n", 0o644),
+            ]
+            if not with_payload:
+                entries = [("agentdocker", stub, 0o755), ("agentd", stub, 0o755)]
+            with tarfile.open(archive, "w:gz") as tar:
+                for name, data, mode in entries:
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    info.mode = mode
+                    tar.addfile(info, io.BytesIO(data))
+        checksums = root / "checksum"
+        checksums.write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n")
+        mock = root / "mock"
+        mock.mkdir()
+        curl = mock / "curl"
+        curl.write_text(CURL_STUB)
+        curl.chmod(0o755)
+        # The route is chosen from uname, so the test host's own answer
+        # must not decide which platform is being exercised.
+        machine = "arm64" if platform == "Darwin" else "x86_64"
+        uname = mock / "uname"
+        uname.write_text(f"#!/bin/sh\ncase \"$1\" in -s) echo {platform} ;; -m) echo {machine} ;; esac\n")
+        uname.chmod(0o755)
+        home = root / "home"
+        home.mkdir()
+        env = dict(
+            os.environ,
+            PATH=str(mock) + ":" + os.environ["PATH"],
+            TEST_MODE="valid",
+            TEST_CHECKSUM=str(checksums),
+            TEST_ARCHIVE=str(archive),
+            HOME=str(home),
+        )
+        return env, record
+
+    def test_desktop_route_delegates_to_the_managed_installer(self):
+        """The default route on a Mac, and the opt-in route on Linux, never
+        copies files by hand: it downloads the desktop archive, verifies
+        it, and runs the app's own installer from inside the payload, so
+        rollback and in-app updates work from the first install."""
+        for platform, force in [("Darwin", None), ("Linux", "desktop")]:
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env, record = self._desktop_fixture(root, platform)
+                if force:
+                    env["AGENTDOCKER_INSTALL"] = force
+                result = subprocess.run(
+                    ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = record.read_text().splitlines()
+                self.assertEqual(argv[:3], ["desktop", "install", "--from"])
+                payload = Path(argv[3])
+                self.assertEqual(payload.name, "AgentDocker.app" if platform == "Darwin" else "agentdocker-desktop")
+                self.assertEqual(argv[4:], ["--local-preview"])
+                self.assertIn("desktop update", result.stdout)
+                self.assertFalse((root / "home/Applications").exists(), "nothing copied by hand")
+                self.assertFalse((root / "home/.local/bin").exists(), "nothing copied by hand")
+
+    def test_desktop_route_falls_back_to_the_commands_when_a_release_has_none(self):
+        """v0.1.0 predates the desktop archives. The default Mac route must
+        still install something useful from it, and say why."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, install, home = self._valid_fixture(root, carries_bundle=False)
+            env["AGENTDOCKER_INSTALL"] = "desktop"
+            env["TEST_MODE"] = "nodesktop"
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("no desktop archive", result.stdout)
+            self.assertEqual((install / "agentd").read_text(), "#!/bin/sh\nexit 0\n")
+            # A pinned version is not second-guessed.
+            env["AGENTDOCKER_VERSION"] = "v0.9.9"
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("download failed (HTTP 404)", result.stderr)
+            # Any failure other than a definite 404 never changes the route.
+            del env["AGENTDOCKER_VERSION"]
+            env["TEST_MODE"] = "forbidden"
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("download failed (HTTP 403)", result.stderr)
+            self.assertNotIn("installing the commands", result.stdout)
+
+    def test_desktop_route_refuses_an_archive_without_the_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, record = self._desktop_fixture(root, "Linux", with_payload=False)
+            env["AGENTDOCKER_INSTALL"] = "desktop"
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not carry the desktop payload", result.stderr)
+            self.assertFalse(record.exists(), "the stub was never run")
+            self.assertFalse((root / "home/.local").exists())
 
     def test_refuses_to_overwrite_a_managed_installation(self):
         """`agentdocker desktop install` owns its launchers through links into
