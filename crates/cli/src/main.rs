@@ -817,9 +817,10 @@ struct JournalArgs {
     /// Project: an id prefix or a path inside it (default: current directory).
     #[arg(long, value_name = "ID|PATH")]
     project: Option<String>,
-    /// Only entries after this sequence number.
-    #[arg(long)]
-    since: Option<u64>,
+    /// Only entries after this sequence number (`120`), or within this
+    /// long (`2h`, `7d`).
+    #[arg(long, value_name = "SEQ|DURATION")]
+    since: Option<String>,
     /// Only entries up to this sequence number.
     #[arg(long)]
     until: Option<u64>,
@@ -871,6 +872,22 @@ enum CheckpointAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
     },
+}
+
+/// `--since 120` is a sequence bound the daemon applies; `--since 2h` is a
+/// time the CLI applies to what comes back.
+fn since_bounds(
+    text: Option<&str>,
+) -> Result<(Option<u64>, Option<chrono::DateTime<chrono::Utc>>)> {
+    let Some(text) = text else {
+        return Ok((None, None));
+    };
+    let (seq, secs) = seq_or_duration(text)?;
+    let at = secs.and_then(|secs| {
+        chrono::Duration::try_seconds(i64::try_from(secs).ok()?)
+            .and_then(|age| chrono::Utc::now().checked_sub_signed(age))
+    });
+    Ok((seq, at))
 }
 
 /// `--before 30d` is an age; `--before 120` is a sequence number.
@@ -2193,9 +2210,10 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             }
         }
         None if args.new => {
+            let (since_seq, _) = since_bounds(args.since.as_deref())?;
             let request = Request::Journal {
                 project: project_selector(args.project.as_deref().unwrap_or(".")),
-                since_seq: args.since,
+                since_seq,
                 until_seq: None,
                 agent: None,
                 branch: None,
@@ -2224,9 +2242,12 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
         }
         None => {
             let path = args.path.as_deref().map(absolute_path);
+            // A duration keeps the newest `limit` entries and shows those
+            // inside the window; the daemon filters by sequence only.
+            let (since_seq, since_at) = since_bounds(args.since.as_deref())?;
             let request = Request::Journal {
                 project: project_selector(args.project.as_deref().unwrap_or(".")),
-                since_seq: args.since,
+                since_seq,
                 until_seq: args.until,
                 agent: args.agent.clone(),
                 branch: args.branch.clone(),
@@ -2254,10 +2275,13 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                 else {
                     return Ok(None);
                 };
-                entries.iter().for_each(print);
+                entries
+                    .iter()
+                    .filter(|e| since_at.is_none_or(|cutoff| e.at >= cutoff))
+                    .for_each(print);
                 let last = head_seq
-                    .unwrap_or_else(|| entries.last().map_or(args.since.unwrap_or(0), |e| e.seq))
-                    .max(args.since.unwrap_or(0));
+                    .unwrap_or_else(|| entries.last().map_or(since_seq.unwrap_or(0), |e| e.seq))
+                    .max(since_seq.unwrap_or(0));
                 Ok(Some((project, last)))
             };
             if !args.follow {
