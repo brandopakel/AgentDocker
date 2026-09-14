@@ -561,6 +561,18 @@ pub fn event_line(event: &Event) -> String {
             project.short(),
             reader.get(..12).unwrap_or(reader)
         ),
+        EventKind::JournalPruned {
+            project,
+            before_seq,
+            removed,
+            reason,
+        } => format!(
+            "journal pruned   {} below #{before_seq}: {removed} entries ({reason})",
+            project.short()
+        ),
+        EventKind::CheckpointsPruned { checkpoints } => {
+            format!("checkpoints pruned {}", checkpoints.len())
+        }
         EventKind::AgentVcsChanged { agent, vcs } => {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }

@@ -27,7 +27,7 @@ use agentdocker_core::{
     protocol::DEFAULT_LEASE_TTL_SECS,
 };
 use agentdocker_core::{Change, ProjectRef};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
 
@@ -178,11 +178,13 @@ enum Command {
         #[arg(help = "Accept this handoff after verifying unchanged content.")]
         acknowledge: bool,
     },
-    /// List persisted checkpoints, including finished sessions.
+    /// List persisted checkpoints, including finished sessions; `prune` forgets old ones.
     Checkpoints {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
+        #[command(subcommand)]
+        action: Option<CheckpointAction>,
     },
     /// Hand this agent's work to another: a checkpoint addressed to it, with leases, reads, changes, diff, unread messages and journal bundled around it.
     Handoff {
@@ -858,6 +860,32 @@ struct JournalArgs {
 }
 
 #[derive(Subcommand)]
+enum CheckpointAction {
+    /// Forget checkpoints older than this whose sessions have finished, with
+    /// the handoff bundles carrying them. Live sessions' checkpoints stay.
+    Prune {
+        /// Age, as `30m`, `12h`, `30d`, or seconds.
+        #[arg(long, value_name = "DURATION")]
+        older_than: String,
+        /// Only this agent's checkpoints (default: every finished session's).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+    },
+}
+
+/// `--before 30d` is an age; `--before 120` is a sequence number.
+fn seq_or_duration(text: &str) -> Result<(Option<u64>, Option<u64>)> {
+    if let Ok(seq) = text.trim().parse::<u64>() {
+        return Ok((Some(seq), None));
+    }
+    let age = agentdocker_core::config::parse_duration(text).map_err(|error| anyhow!(error))?;
+    Ok((
+        None,
+        Some(u64::try_from(age.num_seconds()).unwrap_or(u64::MAX)),
+    ))
+}
+
+#[derive(Subcommand)]
 enum JournalAction {
     /// Append a note to the journal of the agent's project.
     Add {
@@ -865,11 +893,11 @@ enum JournalAction {
         agent: String,
         summary: String,
     },
-    /// Drop entries below a sequence number.
+    /// Drop entries below a sequence number, or older than an age.
     Prune {
-        /// Delete every entry whose sequence number is below this.
-        #[arg(long)]
-        before: u64,
+        /// A sequence number (`120`) or an age (`30d`, `12h`, `45m`).
+        #[arg(long, value_name = "SEQ|DURATION")]
+        before: String,
         /// Project: an id prefix or a path inside it (default: current directory).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
@@ -1097,9 +1125,20 @@ async fn main() -> Result<()> {
                 })
                 .await?,
         )?,
-        Command::Checkpoints { agent } => {
-            print_json(&client.call(&Request::Checkpoints { agent }).await?)?
-        }
+        Command::Checkpoints { agent, action } => match action {
+            None => print_json(&client.call(&Request::Checkpoints { agent }).await?)?,
+            Some(CheckpointAction::Prune { older_than, agent }) => {
+                let age = agentdocker_core::config::parse_duration(&older_than)
+                    .map_err(|error| anyhow!(error))?;
+                let request = Request::CheckpointPrune {
+                    agent,
+                    older_than_secs: u64::try_from(age.num_seconds()).unwrap_or(u64::MAX),
+                };
+                if let Response::Pruned { removed } = client.call(&request).await? {
+                    println!("removed {removed} checkpoints");
+                }
+            }
+        },
         Command::Handoff {
             agent,
             to,
@@ -2143,9 +2182,11 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
             }
         }
         Some(JournalAction::Prune { before, project }) => {
+            let (before_seq, older_than_secs) = seq_or_duration(&before)?;
             let request = Request::JournalPrune {
                 project: project_selector(project.as_deref().unwrap_or(".")),
-                before_seq: before,
+                before_seq,
+                older_than_secs,
             };
             if let Response::Pruned { removed } = client.call(&request).await? {
                 println!("removed {removed} entries");

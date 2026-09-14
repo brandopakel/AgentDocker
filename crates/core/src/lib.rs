@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod change;
+pub mod config;
 pub mod event;
 pub mod identity;
 pub mod input;

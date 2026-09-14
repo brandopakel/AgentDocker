@@ -557,7 +557,8 @@ mod tests {
                     &token,
                     Request::JournalPrune {
                         project: "/workspace".into(),
-                        before_seq: 10,
+                        before_seq: Some(10),
+                        older_than_secs: None,
                     }
                 )
                 .is_err()

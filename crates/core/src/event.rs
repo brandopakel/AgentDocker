@@ -421,6 +421,19 @@ pub enum EventKind {
         project: ProjectId,
         seq: u64,
     },
+    /// A project's journal entries below `before_seq` were deleted, on
+    /// request or by the configured retention window (`reason`).
+    JournalPruned {
+        project: ProjectId,
+        before_seq: u64,
+        removed: usize,
+        reason: String,
+    },
+    /// Checkpoints (and the handoff bundles carrying them) older than a
+    /// requested age were deleted; only finished sessions' are eligible.
+    CheckpointsPruned {
+        checkpoints: Vec<String>,
+    },
     /// An agent's checkout moved to another branch or commit.
     AgentVcsChanged {
         agent: AgentId,
