@@ -90,7 +90,7 @@ impl Daemon {
                 }
                 Ok(supervisor::Reattached::Exited(report)) => {
                     info!(agent = %id.short(), "the agent finished while no daemon was watching");
-                    self.mark_exited(&id, supervisor::exit_status(&report));
+                    self.recover_owner_exit(report);
                 }
                 Err(error) => {
                     let owner = record.owner.clone().expect("candidates have owners");
@@ -156,7 +156,7 @@ impl Daemon {
                 }
                 Ok(supervisor::Reattached::Exited(report)) => {
                     info!(agent = %id.short(), "the agent finished while no daemon was watching");
-                    self.mark_exited(&id, supervisor::exit_status(&report));
+                    self.recover_owner_exit(report);
                     return;
                 }
                 Err(error) if supervisor::owner_alive(&owner) => {
@@ -173,6 +173,31 @@ impl Daemon {
                     return;
                 }
             }
+        }
+    }
+
+    /// Persist a recovered exit before acknowledging its owner. Check the
+    /// current generation under the same lock as the write: recovery must not
+    /// retire an agent that was restarted while attachment was pending.
+    fn recover_owner_exit(&self, report: agentdocker_core::session::ExitReport) {
+        let durable = {
+            let mut state = lock(&self.state);
+            if !state.registry.get(&report.agent).is_some_and(|record| {
+                record.owner.as_ref() == Some(&report.owner)
+                    && record.pid == Some(report.child.pid)
+                    && record.process_started_at == Some(report.child.started_at)
+            }) {
+                return;
+            }
+            state.mark_exited_durably(&report.agent, supervisor::exit_status(&report))
+        };
+        if durable {
+            tokio::spawn(supervisor::acknowledge_recovered_exit(
+                self.home.clone(),
+                report,
+            ));
+        } else {
+            warn!(agent = %report.agent, "recovered exit not durable; owner report kept without acknowledgement");
         }
     }
 
@@ -726,11 +751,19 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// A store that is already unavailable cannot keep an exit: the exit
-    /// is retired in memory, but the owner's report is neither acknowledged
-    /// nor removed, so a daemon that can write finds it.
     #[tokio::test]
     async fn an_exit_the_store_cannot_keep_leaves_the_owner_report_in_place() {
+        failed_live_exit(false).await;
+    }
+
+    #[tokio::test]
+    async fn an_already_failed_store_never_acknowledges_a_live_owner_exit() {
+        failed_live_exit(true).await;
+    }
+
+    /// Hold the child until storage is poisoned. Test both failure during the
+    /// exit write and a previous failure that takes mark_exited's early return.
+    async fn failed_live_exit(already_failed: bool) {
         let dir = TempDir::new().unwrap();
         let daemon =
             Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
@@ -738,7 +771,11 @@ mod tests {
             .handle(Request::Run {
                 spec: AgentSpec {
                     name: "poisoned".into(),
-                    command: vec!["sh".into(), "-c".into(), "exit 5".into()],
+                    command: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "while [ ! -e finish ]; do sleep 0.02; done; exit 5".into(),
+                    ],
                     workdir: Some(dir.path().to_path_buf()),
                     ..Default::default()
                 },
@@ -747,8 +784,15 @@ mod tests {
         else {
             panic!("launch failed")
         };
-        // Poison before the exit lands: any write from here on fails.
-        lock(&daemon.state).store.reject_writes_for_test();
+        {
+            let mut state = lock(&daemon.state);
+            state.store.reject_writes_for_test();
+            if already_failed {
+                state.persist("prior failure", |store| store.upsert_agent(&agent));
+            }
+            assert_eq!(state.storage_error.is_some(), already_failed);
+        }
+        std::fs::write(dir.path().join("finish"), b"exit now").unwrap();
         let exit = agentdocker_core::session::exit_path(&daemon.home, &agent.id);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -771,6 +815,184 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&exit).unwrap()).unwrap();
         assert_eq!(report.agent, agent.id);
         assert_eq!(report.code, Some(5));
+    }
+
+    #[tokio::test]
+    async fn recovered_disk_exit_is_durable_before_acknowledgement_and_cleanup() {
+        recovered_exit(0, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn failed_recovered_exit_write_keeps_the_report_without_acknowledgement() {
+        recovered_exit(1, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn previously_failed_store_keeps_recovered_exit_without_acknowledgement() {
+        recovered_exit(2, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn recovered_exit_does_not_acknowledge_another_agent_on_the_socket() {
+        recovered_exit(0, true, false).await;
+    }
+
+    #[tokio::test]
+    async fn recovered_exit_cleanup_preserves_another_generations_report() {
+        recovered_exit(0, false, true).await;
+    }
+
+    async fn recovered_exit(storage_failure: u8, wrong_agent: bool, replace_report: bool) {
+        use agentdocker_core::session::{
+            ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, SessionOwner, exit_path,
+            socket_path,
+        };
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let dir = TempDir::new().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let Response::Agent { mut agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "disk-exit".into(),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed")
+        };
+        let owner = SessionOwner {
+            pid: std::process::id(),
+            started_at: agentdocker_host::procinfo::start_time(std::process::id()).unwrap(),
+        };
+        let child = ChildIdentity {
+            pid: 1234,
+            started_at: Utc::now(),
+            tty: false,
+        };
+        agent.managed = true;
+        agent.pid = Some(child.pid);
+        agent.process_started_at = Some(child.started_at);
+        agent.owner = Some(owner.clone());
+        agent.status = AgentStatus::Running;
+        {
+            let mut state = lock(&daemon.state);
+            *state.registry.get_mut(&agent.id).unwrap() = agent.clone();
+            state.store.upsert_agent(&agent).unwrap();
+            if storage_failure != 0 {
+                state.store.reject_writes_for_test();
+            }
+            if storage_failure == 2 {
+                state.persist("previous failure", |store| store.upsert_agent(&agent));
+            }
+            assert_eq!(state.storage_error.is_some(), storage_failure == 2);
+        }
+        let report = ExitReport {
+            agent: agent.id.clone(),
+            owner: owner.clone(),
+            child: child.clone(),
+            code: Some(7),
+            signal: None,
+            log_flushed: true,
+            at: Utc::now(),
+        };
+        let socket = socket_path(&daemon.home, &agent.id);
+        let exit = exit_path(&daemon.home, &agent.id);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        std::fs::write(&exit, serde_json::to_vec(&report).unwrap()).unwrap();
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let held = agentdocker_host::lock::try_exclusive(&socket.with_extension("lock"))
+            .unwrap()
+            .unwrap();
+        daemon.reattach_owners().await;
+        if storage_failure != 0 {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "no connection or ACK before durable exit"
+            );
+            let state = lock(&daemon.state);
+            assert!(state.storage_error.is_some());
+            assert_eq!(
+                state.store.load_agents().unwrap()[0].status,
+                AgentStatus::Running
+            );
+            assert_eq!(
+                std::fs::read(&exit).unwrap(),
+                serde_json::to_vec(&report).unwrap()
+            );
+            return;
+        }
+        let (stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let hello = OwnerHello {
+            format: FORMAT,
+            agent: if wrong_agent {
+                AgentId::from("stranger")
+            } else {
+                agent.id.clone()
+            },
+            owner_pid: owner.pid,
+            owner_started_at: owner.started_at,
+            child: Some(child),
+            activated: true,
+            output_offset: 0,
+        };
+        let mut line = serde_json::to_vec(&hello).unwrap();
+        line.push(b'\n');
+        writer.write_all(&line).await.unwrap();
+        let mut lines = BufReader::new(reader).lines();
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap();
+        if wrong_agent {
+            assert!(received.is_none(), "a different agent must receive no ACK");
+            assert!(exit.exists());
+            return;
+        }
+        assert_eq!(
+            serde_json::from_str::<OwnerCommand>(&received.unwrap()).unwrap(),
+            OwnerCommand::Acknowledge
+        );
+        assert_eq!(
+            lock(&daemon.state).store.load_agents().unwrap()[0].status,
+            AgentStatus::Exited { code: Some(7) },
+            "the exit is already durable at ACK"
+        );
+        let replacement = if replace_report {
+            let mut changed = report.clone();
+            changed.child.started_at += Duration::seconds(1);
+            let bytes = serde_json::to_vec(&changed).unwrap();
+            std::fs::write(&exit, &bytes).unwrap();
+            Some(bytes)
+        } else {
+            None
+        };
+        drop(held);
+        // Successful cleanup releases the stable lock and removes only this
+        // generation's exit. A replacement must survive the same cleanup path.
+        if let Some(bytes) = replacement {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert_eq!(std::fs::read(&exit).unwrap(), bytes);
+        } else {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while exit.exists() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "exit report was not cleaned up"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
     }
 
     /// An owner that is alive but slow to answer at daemon startup keeps its

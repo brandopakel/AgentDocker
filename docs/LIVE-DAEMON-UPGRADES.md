@@ -53,6 +53,12 @@ event continuity, not just a new socket or a readiness marker.
    [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); actual
    distinct-binary acceptance of batch and PTY continuity through a daemon
    restart is still to be recorded.
+   Disk exit recovery now requires a durable record before acknowledgement,
+   validates the responding agent/owner/child, and cleans the matching report
+   under the stable owner lock after retirement. Regression cases cover both
+   earlier storage failure and failure during the exit write, a different agent
+   answering on the socket, and a newer generation's report. Actual restart and
+   final integration checks remain required; this does not enable reload.
 3. **Coordinator fencing.** Quiesce mutations and background writers before
    releasing database authority. Exclude an unrelated autostart during transfer.
    Only one coordinator may write. New requests must either complete under a

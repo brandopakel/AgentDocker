@@ -370,10 +370,15 @@ fn read_exit_file(
 /// holding the child on the record. Anything else is a stranger.
 fn validate_identity(
     hello: &OwnerHello,
+    agent: &AgentId,
     owner: &SessionOwner,
     child_pid: u32,
     child_started_at: chrono::DateTime<Utc>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        hello.agent == *agent,
+        "session owner serves a different agent"
+    );
     anyhow::ensure!(
         hello.owner_pid == owner.pid && hello.owner_started_at == owner.started_at,
         "session owner identity differs from the record"
@@ -412,7 +417,7 @@ pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<R
     );
     let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
     let hello = controller.hello().await?;
-    validate_identity(&hello, &owner, child_pid, child_started_at)?;
+    validate_identity(&hello, &record.id, &owner, child_pid, child_started_at)?;
     let child = hello.child.clone().expect("validated");
     let (control, stop) = watch::channel(None);
     let mut spawned = Spawned {
@@ -455,6 +460,58 @@ pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<R
 pub enum Reattached {
     Running(Box<Spawned>),
     Exited(ExitReport),
+}
+
+/// A recovered exit is already durable before this runs. An available owner
+/// can retire immediately; a slow owner must not delay recovery of other agents.
+/// Keep the report if acknowledgement or cleanup cannot be completed safely.
+pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report: ExitReport) {
+    let socket = socket_path(&home, &report.agent);
+    if owner_alive(&report.owner) {
+        let acknowledged = async {
+            let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
+            let hello = controller.hello().await?;
+            validate_identity(
+                &hello,
+                &report.agent,
+                &report.owner,
+                report.child.pid,
+                report.child.started_at,
+            )?;
+            controller.send(&OwnerCommand::Acknowledge).await
+        }
+        .await;
+        if let Err(error) = acknowledged {
+            tracing::warn!(agent = %report.agent, %error, "recovered exit is durable but owner acknowledgement failed; report kept");
+            return;
+        }
+    }
+    // The owner holds this stable lock through socket cleanup. Acquiring it
+    // both waits for retirement and excludes a newer owner while comparing
+    // and removing the old generation's report. Never unlink the lock itself.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match agentdocker_host::lock::try_exclusive(&socket.with_extension("lock")) {
+            Ok(Some(_held)) => {
+                let exit = exit_path(&home, &report.agent);
+                if read_exit_file(
+                    &exit,
+                    &report.agent,
+                    &report.owner,
+                    report.child.pid,
+                    report.child.started_at,
+                ) == Some(report.clone())
+                {
+                    let _ = std::fs::remove_file(exit);
+                }
+                return;
+            }
+            Ok(None) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            _ => return,
+        }
+    }
 }
 
 impl Spawned {
@@ -558,7 +615,7 @@ impl Spawned {
         let socket = socket_path(home, id);
         let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
         let hello = controller.hello().await?;
-        validate_identity(&hello, &self.owner, self.pid, self.process_started_at)?;
+        validate_identity(&hello, id, &self.owner, self.pid, self.process_started_at)?;
         if self.session.is_some() {
             controller
                 .send(&OwnerCommand::Attach {
@@ -635,7 +692,7 @@ async fn relay_until_exit(
                         // The frame may or may not have reached the owner. Say
                         // so, never replay it, keep typing possible, and let
                         // the reconnect below bring a fresh stream.
-                        spawned.show(b"\r\n[agentdocker: input delivery uncertain; retype it]\r\n");
+                        spawned.show(b"\r\n[agentdocker: input delivery uncertain; check the terminal before retrying]\r\n");
                         daemon.emit(agentdocker_core::EventKind::AgentInputDropped {
                             agent: id.clone(),
                             reason: format!("delivery uncertain: {error:#}"),

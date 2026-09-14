@@ -521,13 +521,7 @@ impl Daemon {
     /// supervision in memory but answers false, so the caller keeps whatever
     /// external evidence of the exit it holds.
     pub fn mark_exited_durably(&self, id: &AgentId, status: AgentStatus) -> bool {
-        let mut state = lock(&self.state);
-        if state.storage_error.is_some() {
-            state.mark_exited(id, status);
-            return false;
-        }
-        state.mark_exited(id, status);
-        state.storage_error.is_none()
+        lock(&self.state).mark_exited_durably(id, status)
     }
     /// Report a duplicate record left over from before one process was
     /// one agent. Report, not repair.
@@ -3677,6 +3671,14 @@ impl State {
             },
             Err(response) => *response,
         }
+    }
+
+    fn mark_exited_durably(&mut self, id: &AgentId, status: AgentStatus) -> bool {
+        let was_available = self.storage_error.is_none();
+        let recorded = self.mark_exited(id, status);
+        was_available
+            && self.storage_error.is_none()
+            && recorded.is_some_and(|record| !record.status.is_live())
     }
 
     pub fn mark_exited(&mut self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {

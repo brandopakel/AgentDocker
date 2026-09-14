@@ -204,6 +204,11 @@ mod tests {
             PathBuf::from("/tmp/h/s/abc.sock")
         );
         assert_eq!(exit_path(home, &agent), PathBuf::from("/tmp/h/s/abc.exit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn long_owner_socket_paths_use_the_short_directory() {
         // A home too long for a socket name uses the daemon's short socket
         // directory, so a full agent id still fits.
         let long = PathBuf::from(format!("/tmp/{}", "h".repeat(120)));
