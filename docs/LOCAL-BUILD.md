@@ -47,7 +47,10 @@ open engineering; see [Remaining work](REMAINING-WORK.md).
 
 Installations before this command copied files by hand (`install.sh`, or the
 bundle script). The installer keeps unrelated files safe by refusing to
-overwrite an app or command it did not install. If `make install-preview`
+overwrite an app or command it did not install, and `install.sh` refuses in
+the other direction: it will not copy over the links a managed installation
+owns, and when it does replace a hand-copied bundle it stages the new one
+beside the old and keeps the old as `AgentDocker.app.previous`. If `make install-preview`
 reports a collision on `~/Applications/AgentDocker.app` or `~/.local/bin/*`,
 do this once.
 
