@@ -150,6 +150,33 @@ This audit and the implemented queue/wake acceptance are required before marking
 incoming-message delivery complete. The existing hook bridge and successful
 round trips are supporting evidence, not completion of this requirement.
 
+## Provider-limit and session-exhaustion acceptance (September 14)
+
+The connected Claude session hit a provider session limit during the user's live
+coordination trial. Detection, clear unavailable status and recovery are open
+requirements; this report alone does not establish the precise provider limit
+type, reset time or an adapter signal. The current activity reports expose
+working/idle observations and cannot represent that failure explicitly.
+
+Follow the [delivery contract](DELIVERY-PLAN.md#provider-session-limits-and-interrupted-work-september-14).
+Retain raw provider evidence privately and record sanitized outcomes for:
+
+| Boundary | Required outcome |
+| --- | --- |
+| Limit before input receipt | Human and peer input remains queued in original order; no fabricated receipt, drain or completed status. |
+| Limit after receipt or during a tool | Preserve the consumed-input receipt and uncertain operation state. Reconcile the existing turn; do not automatically resubmit input or execute the tool again. |
+| Question awaiting an answer | Keep the question, draft and exact human reply correlation. Do not broaden a grant, revive an expired approval or turn its answer into ordinary new input. |
+| Continued submissions and queue pressure | Retain already accepted work, apply existing bounded backpressure to new submissions and give senders a concise waiting reason. Bound retry/ping/notification frequency. |
+| Recovery and restart | Re-establish provider availability and session identity, reconcile durable receipts, then continue queued work once. Test daemon restart, same-session reconnect and explicit replacement without merging distinct sessions. |
+| Missing or changing limit metadata | Use unknown availability when no supported signal exists. Do not invent a reset time, infer successful recovery from elapsed time, or confuse usage limits with context exhaustion, authentication or transport errors. |
+
+Controlled fixtures must exercise every boundary, including repeated limit
+responses and unavailable recovery. An actual Claude/Codex provider trial must
+record its version, observed limit signal and recovery outcome separately; do
+not spend quota solely to provoke a limit. Limited agents retain their files and
+normal lease semantics. A peer that has not replied has not accepted a new task
+or approved takeover of its unfinished work.
+
 ## Initial source audit
 
 Read-only tracing against code checkpoint `bf39280` confirms distinct paths:
