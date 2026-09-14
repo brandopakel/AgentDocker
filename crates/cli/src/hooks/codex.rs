@@ -162,7 +162,16 @@ pub(super) async fn report<B: Backend>(
         })
         .await?
     {
-        Response::Ok => Ok(Some(agent)),
+        Response::Ok => {
+            crate::input_status::adapter_contact(
+                backend,
+                agent.id.as_str(),
+                agent.process_started_at,
+                agentdocker_core::AdapterKind::Hooks,
+            )
+            .await;
+            Ok(Some(agent))
+        }
         Response::Error { message, .. } => bail!("activity report refused: {message}"),
         _ => bail!("unexpected activity response"),
     }
@@ -571,7 +580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adopted_codex_keeps_its_identity_and_reports_only_activity() {
+    async fn adopted_codex_keeps_its_identity_and_reports_activity_and_bound_contact() {
         let checkout = tempfile::tempdir().unwrap();
         let now = Utc::now();
         let mut agent = agentdocker_core::AgentRecord::new(
@@ -613,13 +622,17 @@ mod tests {
         .await
         .unwrap();
         let calls = backend.requests();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 4);
         assert!(
             matches!(&calls[1], Request::Register { spec, pid: Some(42), .. }
             if spec.labels.get("session_id").is_some_and(|s| s == "test-session"))
         );
         assert!(
             matches!(&calls[2], Request::ReportActivity { agent, observation } if agent == &id && observation.activity == ReportedActivity::Working)
+        );
+        assert!(
+            matches!(&calls[3], Request::ReportAdapter { agent, adapter: agentdocker_core::AdapterKind::Hooks, contact }
+            if agent == &id && contact.process_started_at == now)
         );
     }
 

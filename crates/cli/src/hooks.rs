@@ -195,6 +195,13 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                                 },
                             })
                             .await?;
+                        crate::input_status::adapter_contact(
+                            &client,
+                            agent.id.as_str(),
+                            agent.process_started_at,
+                            agentdocker_core::AdapterKind::Hooks,
+                        )
+                        .await;
                     }
                     Ok::<_, anyhow::Error>(())
                 })

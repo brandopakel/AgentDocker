@@ -186,6 +186,14 @@ def trial(args):
                         report["checks"].append({"boundary": item["event"], "correlated_reply": True,
                                                  "acknowledged": True})
                     assert len({s["agent"] for s in sent}) == 1, "identity split between hooks"
+                    observed = rpc(endpoint, {"op": "inspect", "agent": sent[0]["agent"]})["agent"]
+                    for adapter in ["hooks", "mcp"]:
+                        contact = observed.get("adapter_contacts", {}).get(adapter)
+                        assert contact and contact["process_started_at"] == observed["process_started_at"], \
+                            "missing generation-bound " + adapter + " contact"
+                    assert observed.get("input_delivery") is None, "hooks/MCP invented idle input readiness"
+                    report["adapter_contacts"] = ["hooks", "mcp"]
+                    report["idle_delivery_not_inferred"] = True
                     report["identity_count"] = 1
                     (output / "hook-events.jsonl").write_text(events.read_text())
                     report["result"] = "passed"

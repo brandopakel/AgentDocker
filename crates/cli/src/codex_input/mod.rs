@@ -331,6 +331,8 @@ async fn session(
                 activity(client, agent.id.as_str(), if turn.is_some() {
                     ReportedActivity::Working
                 } else { ReportedActivity::Idle }).await?;
+                crate::input_status::report(client, agent.id.as_str(), agent.process_started_at,
+                    agentdocker_core::InputReport::Ready).await?;
             }
             event = provider.next() => {
                 let event = event?;

@@ -96,6 +96,7 @@ pub struct McpServer<B> {
     identity: Identity,
     claude_channel: bool,
     codex_input: bool,
+    last_contact: std::sync::Mutex<Option<Instant>>,
 }
 
 /// Run the server on stdin/stdout until the host closes stdin.
@@ -314,6 +315,7 @@ impl<B: Backend> McpServer<B> {
             identity,
             claude_channel: false,
             codex_input: false,
+            last_contact: std::sync::Mutex::new(None),
         }
     }
 
@@ -391,6 +393,29 @@ impl<B: Backend> McpServer<B> {
             return id.map(|id| error_response(id, INVALID_REQUEST, "missing method"));
         };
         let id = id?;
+
+        // A request from this MCP host is contact evidence, regardless of
+        // whether its tools report working/idle. Never infer this from config.
+        if matches!(method, "initialize" | "ping" | "tools/list" | "tools/call") {
+            let report = {
+                let mut last = self.last_contact.lock().unwrap_or_else(|e| e.into_inner());
+                if last.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                    *last = Some(Instant::now());
+                    true
+                } else {
+                    false
+                }
+            };
+            if report {
+                crate::input_status::adapter_contact(
+                    &self.backend,
+                    &self.identity.id,
+                    self.identity.host_started_at,
+                    agentdocker_core::AdapterKind::Mcp,
+                )
+                .await;
+            }
+        }
 
         let result = match method {
             "initialize" => Ok(self.initialize(&params)),
@@ -1679,6 +1704,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_contact_is_bounded_metadata_separate_from_tool_activity() {
+        let birth = Utc::now();
+        let mut s = server(vec![Response::error(ErrorCode::Invalid, "older daemon")]);
+        s.identity.host_started_at = Some(birth);
+        let first = s.handle(rpc(1, "initialize", json!({}))).await.unwrap();
+        assert!(
+            first.get("result").is_some(),
+            "diagnostics cannot prevent initialization"
+        );
+        s.handle(rpc(2, "ping", json!({}))).await.unwrap();
+        let calls = s.backend.requests();
+        assert_eq!(calls.len(), 1, "contact reports are throttled");
+        assert!(
+            matches!(&calls[0], Request::ReportAdapter { agent, adapter: agentdocker_core::AdapterKind::Mcp, contact }
+            if agent == "abc123" && contact.process_started_at == birth)
+        );
+    }
+
+    #[tokio::test]
     async fn initialize_negotiates_protocol_version() {
         let s = server(vec![]);
         let reply = s
@@ -2174,7 +2218,7 @@ mod tests {
     async fn channel_receipt_is_durable_before_ack_and_failure_retains_input() {
         use agentdocker_core::{InputReceipt, InputReport, ReceivedInput};
         let generation = Utc::now();
-        for (responses, expected_requests) in [
+        for (mut responses, expected_requests) in [
             (vec![Response::Ok, Response::Ok], 2),
             (
                 vec![Response::error(
@@ -2184,6 +2228,7 @@ mod tests {
                 1,
             ),
         ] {
+            responses.insert(0, Response::Ok); // Independent MCP contact observation.
             let mut s = server(responses);
             s.claude_channel = true;
             s.identity.host_started_at = Some(generation);
@@ -2191,6 +2236,8 @@ mod tests {
                 "name": "acknowledge_messages", "arguments": {"messages": ["received-id", "received-id"]}
             }))).await.unwrap();
             let requests = s.backend.requests.lock().unwrap();
+            assert!(matches!(requests[0], Request::ReportAdapter { .. }));
+            let requests = &requests[1..];
             assert_eq!(requests.len(), expected_requests);
             let Request::ReportInput { observed_at, .. } = &requests[0] else {
                 panic!("missing receipt report")

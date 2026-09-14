@@ -76,6 +76,11 @@ pub enum EventKind {
         agent: AgentId,
         observation: crate::ActivityObservation,
     },
+    AdapterContactReported {
+        agent: AgentId,
+        adapter: crate::AdapterKind,
+        contact: crate::AdapterContact,
+    },
     InputDeliveryReported {
         agent: AgentId,
         delivery: crate::InputDelivery,

@@ -84,6 +84,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
     let mut unavailable = false;
+    let mut last_ready = tokio::time::Instant::now();
     loop {
         tokio::select! {
             incoming = read_frame(&mut input, &mut frame) => {
@@ -102,6 +103,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             agentdocker_core::InputReport::Ready).await?;
                     }
                     initialized = true;
+                    last_ready = tokio::time::Instant::now();
                     continue;
                 }
                 // A channel always reserves service for handshake, ping and
@@ -150,6 +152,13 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                         continue;
                     }
                 };
+                // Refresh only while the queue is reachable. Missing receipt
+                // remains visible separately; an offer is not consumption.
+                if last_ready.elapsed() >= Duration::from_secs(30) {
+                    crate::input_status::report(&server.backend, &server.identity.id,
+                        server.identity.host_started_at, agentdocker_core::InputReport::Ready).await?;
+                    last_ready = tokio::time::Instant::now();
+                }
                 if let Some((id, since, warned)) = &mut offered {
                     if messages.iter().any(|message| &message.id == id) {
                         if !*warned && since.elapsed() >= Duration::from_secs(30) {
@@ -289,7 +298,7 @@ mod tests {
                         .retain(|message| !messages.contains(&message.id));
                     Ok(Response::Ok)
                 }
-                Request::ReportInput { .. } => Ok(Response::Ok),
+                Request::ReportInput { .. } | Request::ReportAdapter { .. } => Ok(Response::Ok),
                 Request::Claim { .. } => std::future::pending().await,
                 other => panic!("unexpected channel request {other:?}"),
             }

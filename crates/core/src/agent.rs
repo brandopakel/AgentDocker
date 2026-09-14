@@ -353,6 +353,8 @@ pub struct AgentRecord {
     pub reported_activity: Option<crate::ActivityObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_delivery: Option<crate::InputDelivery>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub adapter_contacts: std::collections::BTreeMap<crate::AdapterKind, crate::AdapterContact>,
 }
 
 impl AgentRecord {
@@ -377,6 +379,7 @@ impl AgentRecord {
             last_seen: now,
             reported_activity: None,
             input_delivery: None,
+            adapter_contacts: Default::default(),
         }
     }
 }
