@@ -2470,11 +2470,11 @@ impl Daemon {
         lock(&self.sessions).get(agent).cloned()
     }
 
-    /// The agent is gone; so is its terminal.
     pub fn owner_mode(&self) -> supervisor::OwnerMode {
         self.owner_mode.clone()
     }
 
+    /// The agent is gone; so is its terminal.
     pub fn end_session(&self, agent: &AgentId) {
         lock(&self.sessions).remove(agent);
     }

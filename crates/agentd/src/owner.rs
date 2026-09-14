@@ -412,8 +412,13 @@ async fn supervise(
     }
     let mut owned = match tokio::task::spawn_blocking(move || pending.activate()).await {
         Ok(Ok(child)) => child,
-        Ok(Err(error)) => return finish_failed(&shared, &child, format!("{error:#}")).await,
-        Err(error) => return finish_failed(&shared, &child, error.to_string()).await,
+        Ok(Err(error)) => {
+            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
+                .await;
+        }
+        Err(error) => {
+            return finish_failed(&shared, &child, error.to_string(), &mut acknowledgement).await;
+        }
     };
     {
         let mut hello = shared.hello.lock().await;
@@ -552,7 +557,12 @@ async fn supervise(
     finish(&shared, report, &mut acknowledgement).await
 }
 
-async fn finish_failed(shared: &Arc<Shared>, child: &ChildIdentity, reason: String) -> i32 {
+async fn finish_failed(
+    shared: &Arc<Shared>,
+    child: &ChildIdentity,
+    reason: String,
+    acknowledgement: &mut watch::Receiver<bool>,
+) -> i32 {
     tracing::warn!(agent = %shared.launch.agent, %reason, "launch failed");
     let report = ExitReport {
         agent: shared.launch.agent.clone(),
@@ -563,9 +573,7 @@ async fn finish_failed(shared: &Arc<Shared>, child: &ChildIdentity, reason: Stri
         log_flushed: true,
         at: Utc::now(),
     };
-    let (_, mut acknowledgement) = watch::channel(false);
-    let _ = shared.acknowledged.send(false);
-    finish(shared, report, &mut acknowledgement).await
+    finish(shared, report, acknowledgement).await
 }
 
 /// Write the exit file, tell every controller, and wait (boundedly) for
@@ -927,6 +935,86 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::fd::OwnedFd;
+
+    #[tokio::test]
+    async fn failed_exec_waits_for_its_actual_controller_acknowledgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = AgentId::from("failed-exec");
+        let home = dir.path().join("state");
+        let socket = socket_path(&home, &agent);
+        let launch = Launch {
+            format: FORMAT,
+            agent: agent.clone(),
+            name: "failed-exec".into(),
+            command: vec![
+                dir.path()
+                    .join("missing-command")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+            env: BTreeMap::new(),
+            workdir: Some(dir.path().to_path_buf()),
+            tty: false,
+            home: home.clone(),
+            socket: dir.path().join("daemon.sock"),
+            log: dir.path().join("agent.log"),
+        };
+        let mut owner = tokio::spawn(serve(launch));
+        let stream = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(stream) = UnixStream::connect(&socket).await {
+                    break stream;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let hello = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<OwnerHello>(&hello).unwrap().agent,
+            agent
+        );
+        send(&mut writer, &OwnerCommand::Activate).await.unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("owner exited before reporting");
+                if let OwnerReport::Exited { status } = serde_json::from_str(&line).unwrap() {
+                    break status;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(report.code, None);
+        assert_eq!(report.signal, None);
+        assert!(exit_path(&home, &agent).exists());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut owner)
+                .await
+                .is_err(),
+            "failed exec must retain the real acknowledgement receiver"
+        );
+        send(&mut writer, &OwnerCommand::Acknowledge).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), owner)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
 
     #[tokio::test]
     async fn the_log_writer_waits_for_a_slow_sink_and_keeps_the_partial_last_line() {

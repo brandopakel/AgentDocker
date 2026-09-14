@@ -138,12 +138,14 @@ impl Daemon {
                         lock(&self.sessions).insert(id.clone(), session);
                     }
                     let owner_pid = spawned.owner.pid;
-                    let pending = *stopped.borrow();
-                    if let Some(force) = pending {
-                        spawned.control.send_replace(Some(force));
-                    }
                     {
                         let mut state = lock(&self.state);
+                        // Stop requests use this same mutex. Read the pending
+                        // stop and replace its target atomically so neither
+                        // the placeholder nor the new controller can miss it.
+                        if let Some(force) = *stopped.borrow() {
+                            spawned.control.send_replace(Some(force));
+                        }
                         state.supervised.insert(id.clone(), spawned.control.clone());
                         state.emit(EventKind::AgentOwnerReattached {
                             agent: id.clone(),
@@ -1000,6 +1002,15 @@ mod tests {
     /// supervision resumes and its exit is recorded exactly.
     #[tokio::test]
     async fn a_slow_owner_at_startup_keeps_its_agent_owned_until_it_answers() {
+        slow_owner(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_queued_while_the_owner_is_unavailable_reaches_the_new_controller() {
+        slow_owner(true).await;
+    }
+
+    async fn slow_owner(pending_stop: bool) {
         use agentdocker_core::session::{
             ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport, SessionOwner,
             socket_path,
@@ -1091,6 +1102,13 @@ mod tests {
                 ] {
                     writer.write_all(&framed(text)).await.unwrap();
                 }
+                if pending_stop {
+                    let command = lines.next_line().await.unwrap().unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<OwnerCommand>(&command).unwrap(),
+                        OwnerCommand::Stop { force: true }
+                    );
+                }
                 // Report an exit and expect the acknowledgement.
                 let report = ExitReport {
                     agent: agent_id,
@@ -1135,6 +1153,15 @@ mod tests {
             AgentStatus::Running,
             "the liveness sweep leaves an owned agent alone"
         );
+        if pending_stop {
+            let response = daemon
+                .handle(Request::Stop {
+                    agent: agent.id.to_string(),
+                    force: true,
+                })
+                .await;
+            assert!(!matches!(response, Response::Error { .. }), "{response:?}");
+        }
         let acknowledged = tokio::time::timeout(std::time::Duration::from_secs(10), fake)
             .await
             .expect("the retry attached in time")
