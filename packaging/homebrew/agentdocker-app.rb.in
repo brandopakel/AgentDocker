@@ -2,9 +2,12 @@
 #
 # A cask, not a formula, because this installs an application rather
 # than commands: Homebrew puts it in /Applications and knows how to
-# remove it again. The formula beside it installs `agentdocker` and
-# `agentd`, and the two are meant to be used together —
-# `depends_on formula:` below makes that automatic.
+# remove it again. The application carries the `agentdocker` and `agentd`
+# commands inside its bundle, and the cask links those into Homebrew's
+# bin, so one installation is one copy of everything — the same contract
+# the app's own installer (`agentdocker desktop install`) keeps. It
+# therefore conflicts with the `agentdocker` formula rather than
+# depending on it: the formula is the commands-only route.
 cask "agentdocker-app" do
   version "@VERSION@"
 
@@ -21,27 +24,37 @@ cask "agentdocker-app" do
   desc "Local orchestration for AI agents"
   homepage "https://github.com/brandopakel/AgentDocker"
 
-  depends_on formula: "brandopakel/tap/agentdocker"
   depends_on macos: ">= :big_sur"
+  conflicts_with formula: "agentdocker"
 
   app "AgentDocker.app"
+  binary "#{appdir}/AgentDocker.app/Contents/MacOS/agentdocker"
+  binary "#{appdir}/AgentDocker.app/Contents/MacOS/agentd"
 
-  # The app is ad-hoc signed until there is a Developer ID behind it, so
-  # Gatekeeper will refuse a downloaded copy. Homebrew's own flag is the
-  # supported way to say "I fetched this deliberately":
+  # Homebrew owns this copy: `agentdocker desktop update` reports that and
+  # points here instead of installing a second copy beside it.
   #
-  #     brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
-  #
-  # Once the release is signed and notarised this caveat goes, and so
-  # does the flag.
+  # Until the release is signed with an Apple Developer ID and notarised,
+  # the app is signed ad-hoc and Gatekeeper refuses a downloaded copy.
+  # Homebrew's own flag is the supported way to say "I fetched this
+  # deliberately"; the caveat and the flag both go the day the signature
+  # arrives.
   caveats <<~CAVEATS
-    AgentDocker.app is signed ad-hoc, not with an Apple Developer ID.
-    If macOS refuses to open it, reinstall with --no-quarantine:
+    Update with `brew upgrade --cask agentdocker-app`; the app's own
+    `agentdocker desktop update` does not manage a Homebrew installation.
+
+    If macOS refuses to open AgentDocker.app because it is not signed with
+    an Apple Developer ID, reinstall with --no-quarantine:
 
       brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
 
     The `agentdocker` and `agentd` commands are unaffected.
   CAVEATS
+
+  # Stop the login service this user may have installed before the
+  # binaries it points at go away; sessions and settings stay in
+  # ~/.agentdocker until zap.
+  uninstall launchctl: "dev.agentdocker.agentd"
 
   zap trash: [
     "~/.agentdocker",

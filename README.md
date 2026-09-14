@@ -69,9 +69,11 @@ archives, with no duplicate app copy in the CLI download. Packaging enforces a
 ```sh
 cargo install --git https://github.com/brandopakel/AgentDocker --tag v0.1.0 agentdocker --locked   # released CLI + daemon, from source on macOS/Linux
 cargo install --path crates/cli --locked                                                       # checked-out source: CLI + daemon
-curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/v0.1.0/install.sh | sh       # latest published binaries into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh         # the desktop and its commands (macOS default); AGENTDOCKER_INSTALL=cli for the two commands only
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
+
+The script downloads the verified desktop archive and runs the app's own installer from inside it, so rollback and `agentdocker desktop update` work from the first install; on Linux it installs the two commands unless `AGENTDOCKER_INSTALL=desktop`. A release without a desktop archive (v0.1.0) installs the commands and says so. The Homebrew routes are `brew install brandopakel/tap/agentdocker` (commands) and, once a release publishes it, `brew install --cask brandopakel/tap/agentdocker-app` (the app, with its commands linked); each route is one installation and is updated by its own tool. See [every route, one installation](docs/DISTRIBUTION-SETUP.md#every-route-one-installation).
 
 Pin the source: the default branch moves, and `--locked` pins dependencies, not the application. Use `--rev <reviewed-commit>` for newer source, or a release tag for a released version. Set `AGENTDOCKER_VERSION=v0.1.0` when invoking the installer to pin the downloaded release too. The installer verifies the published SHA-256 checksum, not a signature. The [Homebrew tap](https://github.com/brandopakel/homebrew-tap) carries the v0.1.0 formula (`brew install brandopakel/tap/agentdocker`). The desktop cask and registry-based Cargo installation are not established distribution channels yet. See the [platform and distribution matrix](docs/PRODUCT-DIRECTION.md#platforms-and-distribution).
 
