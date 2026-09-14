@@ -126,7 +126,7 @@ Glob/special selectors, scan-depth settings and remote environments require a ri
 and remain unsupported. The omitted/null environment ID and Codex's reserved
 `local` ID select this local flow; other IDs are refused. Permission receipts
 require delivery-record version 7;
-older records cannot claim this review meaning. Installed Codex 0.153.4 exposes
+older records cannot claim this review meaning. Codex 0.153.4, installed at trial time, exposed
 the request-permissions tool as a disabled feature under development. The
 [permission trial](verification/2026-09-12-permission-review.json) at `7051471`
 passed 856 Rust tests, 65 Python checks and actual Codex Allow/Deny with three
@@ -135,7 +135,7 @@ one exact human/provider resolution and one controller/conversation. Allow
 created the expected private fixture file; Deny left it absent. The corresponding
 native trial passed 18 review/draft/schema-upgrade/restart steps, including
 matching permission mirrors shown once. Initial environment/mirror failures and
-diagnostic setup failures are retained. Final CI/source review remain required.
+diagnostic setup failures are retained. PR #115 merged on September 13 after CI and review.
 
 Command/file/permission approvals and nonsecret provider questions use AgentDocker's registered
 human question route and the same retained inbox as ordinary input. The controller

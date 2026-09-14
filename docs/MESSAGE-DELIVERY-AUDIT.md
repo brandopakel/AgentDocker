@@ -4,6 +4,8 @@ Added September 10, 2026 at the user's request. This is a top-priority requireme
 in the [active delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
 It tracks partial implementation and the acceptance still needed for each provider.
 
+Status on September 14, 2026: every pull request this log names (#103–#108, #115 and #119) is merged on `main`, so the per-checkpoint "final CI/source review remain" sentences below are historical. The opt-in Codex bridge (`--codex-input`) and Claude channel adapter (`--claude-channel`) are shipped, the MCP `ask_human` duplicate-input defect is fixed (`crates/cli/src/codex_input/mcp_answers.rs`), and the structured Iced approval/choice controls are merged. What is still open is the list in [REMAINING-WORK.md](REMAINING-WORK.md).
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue
@@ -170,7 +172,7 @@ flowchart LR
     Q -. Required input and wake adapter .-> P
 ```
 
-The dotted adapter is planned. Human channel/inbox actions already share daemon
+The dotted adapter is now the opt-in Codex bridge and Claude channel adapter described in the later sections. Human channel/inbox actions already share daemon
 messaging with peers; typing into the attached provider terminal uses a different
 path. The new requirement reaches the provider's submitted-input queue.
 
@@ -260,7 +262,7 @@ The [schema-10 checkpoint](verification/2026-09-10-durable-queue.json) pins clea
 
 ### September 10: visible-message receipts and checkout removal
 
-[Checkpoint `796270a`](verification/2026-09-10-bulk-receipts.json) adds explicit batch dismissal of shown messages, retains unseen messages and drafts, removes duplicate pending-question presentation, exposes CLI receipt IDs, and ignores repeated/unknown receipt events. Removed temporary checkouts no longer masquerade as competing edits in the reproduced classifier and actual macOS watcher trials. The full gate passed 710 Rust tests and 48 Python checks; queue/MCP, 114 native control steps and 23 routing steps passed. The first GUI idle-sample exit remains unexplained, and high UI resource use remains under investigation. Supported provider idle-wake adapters are the next implementation task.
+[Checkpoint `796270a`](verification/2026-09-10-bulk-receipts.json) adds explicit batch dismissal of shown messages, retains unseen messages and drafts, removes duplicate pending-question presentation, exposes CLI receipt IDs, and ignores repeated/unknown receipt events. Removed temporary checkouts no longer masquerade as competing edits in the reproduced classifier and actual macOS watcher trials. The full gate passed 710 Rust tests and 48 Python checks; queue/MCP, 114 native control steps and 23 routing steps passed. The first GUI idle-sample exit remains unexplained, and high UI resource use remains under investigation. Supported provider idle-wake adapters were the next implementation task; the sections that follow record them.
 
 ### September 11: opt-in Claude channel adapter
 
@@ -322,7 +324,7 @@ extra answers, while persistent older question IDs stop late replies becoming
 new input after receipt rotation or restart. The original failed reports and the
 crash driver's corrected exited-record assertion remain in the evidence.
 
-PR #104 is in CI and source review. File/permission/MCP elicitation presentation,
+PR #104 merged on September 12. File/permission/MCP elicitation presentation,
 compact durable delivery status, guided recovery and sustained provider sessions
 remain open. The installed launcher, daemon and user sessions remain unchanged.
 
@@ -335,9 +337,9 @@ ordinary-input records still upgrade with their prepared input intact.
 A separate actual Codex trial then found that MCP `ask_human` returns its human
 answer to the tool while the same message is also accepted as a fourth ordinary
 provider input. The [retained failure](verification/2026-09-11-provider-question-receipts.json)
-is an open follow-up for MCP tool-result receipts. The native app-server question
+was an open follow-up for MCP tool-result receipts, closed by the MCP receipt fix below. The native app-server question
 callback fixes above do not cover that path. Structured Iced approval/choice
-controls are also in progress on a separate branch.
+controls landed with PR #105 and are included in PR #119.
 
 
 ### September 11: structured native question controls

@@ -33,11 +33,12 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits).
 
-> Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux have native host support and desktop packaging with graphical CI. Published signed desktop releases, target-distribution acceptance and full native Windows support remain unfinished; Windows CI currently covers core/host foundations. Before real-agent trials, read the [engineering audit and known blockers](docs/AUDIT-2026-09-06.md) and [trial plan](docs/LOCAL-TRIAL.md).
+> Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications, PTY sessions, working-state recovery, fair leases/activity, channels, contests and multiplexer adapters. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux have native host support and desktop packaging with graphical CI. Published signed desktop releases, target-distribution acceptance and full native Windows support remain unfinished; Windows CI currently covers core/host foundations. Before real-agent trials, read the [current remaining work](docs/REMAINING-WORK.md) and [trial plan](docs/LOCAL-TRIAL.md).
 
 The [current remaining-work tracker](docs/REMAINING-WORK.md) separates engineering
 gaps from release setup and manual acceptance. The desktop now opens on current
-sessions, with finished runs in History and advanced actions under More.
+sessions grouped by project, with finished runs in History, conversations in
+Inbox, and advanced actions under More.
 
 ## The Docker analogy
 
@@ -377,7 +378,7 @@ Five crates:
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
-- `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Inbox handles questions and drafts; Connections reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
+- `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Inbox handles conversations, questions and drafts; Tools reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
@@ -385,14 +386,19 @@ Five crates:
 
 The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker's is the **working set** — the daemon observes what every agent read, holds, changed, and which branch it is on, and derives from that what no single agent can: grouping, staleness, attribution, deadlock, handoff. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#roadmap) has the engineering detail for every item.
 
+Audited September 14, 2026 against merged `aaa1b61` (PR #119). Phases 0–4 have
+their listed single-host implementations; **the roadmap is not complete**.
+Phase 5 still needs the engineering and acceptance below, Windows is partial,
+and federation is deferred. Implementation status does not certify a release.
+
 - **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
 - **Phase 1 — adapters & persistence** *(done)*: SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts; `agentdocker mcp`; `agentdocker hook` for Claude Code; `Agentfile.toml` with `up`/`down`; `claim --wait`.
 - **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
 - **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
 - **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(in progress)*: ✅ an inventory of the agent tools installed on the machine and one-command `setup` that wires each into the daemon; ✅ the daemon watching for running agents on its own; ✅ a native desktop app (`agentdocker-ui`, pure Rust, over the same socket) showing agents, runtimes, the journal, leases and events, with a terminal and a console; ✅ the human as a first-class agent — `me`, `ask`/`answer`, and a desktop notification when something reaches you; ✅ a FIFO wait queue with instant deadlock detection, and derived activity that says what a blocked agent is blocked on and who has it; next, policy and quotas; restart policies and `depends_on`.
-- **Phase 5 also includes**: PTY sessions with attach/detach while the daemon lives; opt-in command relaunch after restart with readiness and durable-protection checks; multiplexer detection and tmux `run --in-pane`; contests backed by validation records; and compact MCP output. Seamless daemon upgrades and restoration of provider conversations are not implemented.
-- **Phase 6 — Windows and federation**: named pipes and a Windows service so the same daemon runs there; then `agentd` peers across laptop, cloud, and phone over authenticated channels with a global `host/agent` namespace, with project fingerprints making one repository one project everywhere.
+- **Phase 5 — the machine and the human** *(partly complete)*: implemented inventory and supported-tool setup, continuous discovery, Iced desktop, human questions, routed notifications, FIFO waiting/deadlock detection, observed activity, admission policy/quotas, restart policies and `depends_on`. PTY sessions, opt-in command relaunch, multiplexer adapters, validation-backed contests and compact MCP output are also implemented.
+- **Phase 5 delivery still open**: verified per-tool input readiness; broader provider review/elicitation and interruption handling; production duplicate repair; automatic retention and maintenance; safe live daemon replacement; physical notification/accessibility/IME trials; overnight and independent-platform acceptance; signed published desktop releases and hosted updates. The managed Codex bridge and Claude channels have bounded shared-queue/idle-wake evidence. Generic conversation restoration and seamless daemon upgrades remain unimplemented. Track these existing requirements in [Remaining work](docs/REMAINING-WORK.md), with test status in the [delivery crosswalk](docs/DELIVERY-PLAN.md#testing-standard-crosswalk).
+- **Phase 6 — Windows and federation** *(not complete)*: named-pipe and core/host foundations have native Windows CI; the full daemon, terminal, service, installer and GUI still need integration and acceptance. Authenticated peer daemons, global `host/agent` identity and cross-host coordination are deferred until the single-host product is dependable.
 
 ## Development
 

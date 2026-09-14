@@ -2,8 +2,12 @@
 
 The September 10 [input-queue and idle-wake audit](MESSAGE-DELIVERY-AUDIT.md)
 adds the requirement that peer messages use the same submitted-input workflow as
-user messages and wake an idle provider. That behavior is not implemented by the
-lifecycle hooks described below; incoming-message delivery remains incomplete.
+user messages and wake an idle provider. The lifecycle hooks described below do
+not provide idle wake. The opt-in [managed Codex bridge](CODEX-INPUT.md)
+(`--codex-input`) polls the queue while idle and starts a turn in its owned
+app-server conversation; it does not attach to an existing Codex TUI. The enabled
+[Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) (`--claude-channel`) can also
+deliver input while idle. Each guide records its source-specific acceptance limits.
 
 Discovery proves that a runtime process is present. Configuration does not prove
 that a running session has connected, read a message or begun a model turn.
@@ -39,7 +43,7 @@ An oversized or never-closed stream produces a diagnostic and exits successfully
 so the provider continues. Input, coordination delivery and activity each have
 separate budgets; this is not a one-second bound on every combined hook phase.
 
-## Messages
+## Messages delivered by lifecycle hooks
 
 ```mermaid
 flowchart LR
@@ -73,13 +77,15 @@ redelivery. A successful write is not proof of model comprehension.
 The September 10 actual Codex 0.153.4 trial received a correctly attributed,
 correlated reply at all three boundaries, with one hooks/MCP identity. The
 fixture exposed only `send_message`, so an explicit inbox tool could not explain
-receipt. See [integration acceptance](INTEGRATION-ACCEPTANCE.md). It does not wake
-an already idle provider or replace the provider's tool approval decisions.
+receipt. See [integration acceptance](INTEGRATION-ACCEPTANCE.md). This historical
+hook path does not wake an already idle provider; the separate managed bridge
+described above supplies that behavior for its owned conversation. Neither path
+replaces the provider's tool approval decisions.
 
 ## Channels and reviews
 
 Ordinary channel messages use
-`agentdocker send --as <agent> --to channel:<id> "message"`. The `--note` on a
+`agentdocker send --from <agent> --to channel:<id> "message"`. The `--note` on a
 review request is not the only channel message mechanism.
 
 `review-request --as <agent> <channel> --note "..."` queues a request to the other

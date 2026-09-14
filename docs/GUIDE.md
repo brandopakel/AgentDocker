@@ -70,7 +70,7 @@ AGENTDOCKER_HOME=/tmp/ad-scratch agentdocker ps
 ## The desktop app
 
 `agentdocker ui` opens the native Iced window. Its four destinations are
-**Projects**, **Inbox**, **Connections**, and **Settings**. The app uses the local
+**Projects**, **Inbox**, **Tools**, and **Settings**. The app uses the local
 daemon directly. See [the desktop guide](DESKTOP-UX.md) for every interaction and
 [remaining work](REMAINING-WORK.md) for engineering and release limitations.
 
@@ -87,11 +87,11 @@ The app remembers the selected project and keeps quiet projects available.
   Stopping requires **Confirm stop** within five seconds. External agents stay
   in the terminal or application where they started.
 - **Launch agent…** starts an installed CLI in the selected project. **Connect**
-  adopts a process under **Available to connect** for coordination; it does not
+  adopts a process under **Running here, not connected** for coordination; it does not
   install provider integrations.
-- **Activity** shows the recent project journal, newest first. **Channels** shows
-  project rooms and messages queued for you. **More** holds Coordination,
-  Commands, and project pin/forget actions.
+- **Activity** shows the recent project journal, newest first. **More → Channels** shows
+  project rooms and messages queued for you. **More** also holds **Files in use**,
+  **Command line**, and project pin/forget actions.
 
 On narrow windows the selected session replaces the list, with **Back to sessions**
 to return. Wide windows show actions beside the list. The human `user` identity
@@ -106,12 +106,12 @@ provisional idle that expires or is superseded by newer activity. Process
 presence, provider configuration and observed activity are separate facts.
 See [Activity and messaging](ACTIVITY-AND-MESSAGING.md).
 
-### Inbox and connections
+### Inbox and tools
 
 **Inbox** holds questions and direct messages. Answer drafts survive navigation
 and failed sends. Successful delivery does not prove the agent consumed an answer.
 
-**Connections** starts with installed tools. **Details** reveals executable paths,
+**Tools** starts with installed tools. **Details** reveals executable paths,
 versions and MCP/hooks configuration. **Other supported tools** expands the rest
 of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
 setup** use saved plans. **Check connections** provides bounded diagnostics;
@@ -120,7 +120,7 @@ actual provider delivery requires a real round trip.
 ### Terminal and settings
 
 **Open terminal** attaches to a managed live PTY. **Detach** leaves the agent
-running. Copy takes the visible screen, paste respects bracketed-paste mode,
+running. Copy uses the selected terminal range, or the visible screen when nothing is selected; paste respects bracketed-paste mode,
 F6 leaves terminal focus, and Control+] detaches. Rejected input is reported;
 already sent input is never automatically replayed.
 
@@ -134,7 +134,7 @@ exact changes and preserve running releases; see [desktop distribution](DESKTOP-
 
 ## The console
 
-Open **Projects → More → Commands** to run a bundled `agentdocker` subcommand
+Open **Projects → More → Command line** to run a bundled `agentdocker` subcommand
 in the selected project. Output stays in the window; **Previous** and **Next**
 recall commands. This field runs CLI arguments without a shell.
 
@@ -264,6 +264,10 @@ the flags.
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
 | `daemon` | Install, start, stop, reload or inspect `agentd` |
+| `desktop` | Install, inspect or roll back the native desktop for this user |
+| `identity-repair` | Preview a legacy identity repair; apply it only with daemon and sessions stopped |
+| `report-activity` | Report an observed provider turn state (expires after five minutes) |
+| `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
 
@@ -277,21 +281,22 @@ about us:
 
 `whoami` · `ping` · `list_agents` · `inspect_agent` · `activity`
 
-`send_message` · `read_inbox` · `wait_for_messages` · `ask_human` ·
-`open_questions` · `answer_question`
+`send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
+`ask_human` · `open_questions` · `answer_question` · `report_activity`
 
 `claim` · `renew` · `release` · `list_leases`
 
 `read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
-`overlap`
+`read_set` · `overlap`
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
-`validate`
+`validate` · `validation_results`
 
 `save_checkpoint` · `list_checkpoints` · `resume_checkpoint` · `handoff` ·
 `list_handoffs`
 
-`open_channel` · `list_channels` · `close_channel` · `request_review`
+`open_channel` · `list_channels` · `close_channel` · `request_review` ·
+`review`
 
 `contests` · `enter_contest` · `submit_entry`
 

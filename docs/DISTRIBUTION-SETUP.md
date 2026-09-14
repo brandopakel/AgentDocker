@@ -63,7 +63,7 @@ workflow builds. The release publishes both, and the cask is skipped —
 loudly, not silently — when a release has no packaged app, because a
 cask pointing at a download that is not there is worse than no cask.
 
-The template exists, but as of the September 9 GitHub check the tap's `Casks/`
+The template exists, but as of the September 14 GitHub check the tap's `Casks/`
 directory contains only a README. The install command below becomes available
 only after a release publishes the app cask:
 
@@ -74,93 +74,53 @@ brew install --cask brandopakel/tap/agentdocker-app
 It `depends_on` the formula, so installing the app brings the commands
 with it.
 
-**It carries a caveat, and will until there is a Developer ID.** The app
-is ad-hoc signed, so Gatekeeper refuses a downloaded copy. Homebrew's
-supported way to say "I fetched this deliberately" is:
+The existing cask template still describes ad-hoc signing and a quarantine
+bypass. That copy must be reconciled before publication: the current stable
+release workflow requires Developer ID signing and notarization. The cask's
+installation/removal behavior must also agree with managed activation and
+preserve existing integration paths. These are open release checks, not a
+currently available unsigned cask installation route.
 
-```sh
-brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
-```
+## Apple Developer ID and notification acceptance
 
-The cask says so in its own caveats. When the release is signed and
-notarised, both the caveat and the flag go away.
+The local app has its icon and native notification-routing implementation.
+The former AppleScript fallback, which could open Script Editor, has been
+removed. A failed notification post retains its inbox message; it does not
+prove the user saw a notification or that a click will route correctly.
 
-## Apple Developer ID: what it is actually for
+An earlier local ad-hoc bundle returned this notification-post error:
 
-**It is not for the app icon.** That is fixed, in software, and works on
-any Mac: the app sets its own at runtime, and the bundle carries an
-`.icns`. Nothing about signing was ever involved in that, and this
-document exists partly so nobody concludes otherwise again.
-
-**It *is* for the notification icon, and that one is measured.**
-A notification wears the icon of the bundle that posted it, and every
-way of overriding that is closed — the `UserNotifications` framework
-refuses a spoofed sender, which is why `terminal-notifier` withdrew
-`-sender`, and an `osascript` notification belongs to Script Editor. So
-AgentDocker posts its own, from `AgentDocker.app`, and the daemon runs
-it in a one-shot `--notify` mode.
-
-That path is written and it does not work yet, for one reason:
-
-```
-$ AgentDocker.app/Contents/MacOS/agentdocker-ui --notify AgentDocker test
+```text
 notifications are not permitted: Notifications are not allowed for this application (1)
 ```
 
-`UNErrorCodeNotificationsNotAllowed`. `UNUserNotificationCenter` will
-not register a bundle without a stable signing identity, and an ad-hoc
-signature has none:
+That probe did not isolate signing from notification authorization and bundle
+registration. Its result does not establish that paying for membership or
+adding a signature alone fixes posting or navigation. The
+[notification audit](NOTIFICATION-ROUTING-AUDIT.md) keeps those checks separate:
+actual Notification Center clicks must open the right destination while the app
+is active, backgrounded or closed, including retained drafts and expired targets.
+Physical installed-app acceptance remains open.
 
-| | signature | notifications |
-|---|---|---|
-| an app whose notifications work | `TeamIdentifier=Q6L2SF6YDW` | register, prompt, deliver |
-| `AgentDocker.app` today | `Signature=adhoc`, `TeamIdentifier=not set` | refused, no prompt |
+The packaging pipeline accepts `--identity` and `--notary-profile` through
+`packaging/desktop/package.py`. Local previews can be ad-hoc signed; the stable
+protected-tag workflow requires a Developer ID Application identity and
+successful notarization. Follow [release automation](RELEASE-AUTOMATION.md) for
+private credential configuration. Verify signing, notarization, stapling and
+Gatekeeper against the final app/DMG on an independent Mac before publication.
+These acceptance steps remain necessary after the credentials are configured.
 
-The daemon therefore falls back to `osascript`, which delivers with the
-wrong icon. The ordering is deliberate: the right icon arrives the day
-the signature does, with nothing to change here.
-
-**It is for other people being able to open the app.** `scripts/bundle-macos.sh`
-signs ad-hoc (`codesign --sign -`). That is a real signature and it is
-enough for the machine that built the app. It is not enough for anyone
-else: macOS refuses to open a downloaded application whose signature has
-no Developer ID behind it, and the message the user gets is that the app
-is damaged or cannot be verified. `spctl -a -t exec AgentDocker.app`
-answers `rejected` today and `accepted` after notarisation.
-
-So the $99/year Apple Developer Program membership buys exactly one
-thing here: **strangers can run the download.** Concretely it enables
-
-- signing the bundle with a Developer ID Application certificate,
-- submitting it to Apple's notary service and stapling the ticket,
-- therefore a `.dmg` or a Homebrew cask that opens on a first
-  double-click rather than through right-click → Open or
-  `xattr -d com.apple.quarantine`,
-- **and notifications that carry the AgentDocker mark**, which is the
-  more visible of the two if the only user is you.
-
-**What works without it, today:**
-
-- the CLI and the daemon, installed by `install.sh`, `cargo install`, or
-  a Homebrew formula — command-line tools are not gatekept this way;
-- the desktop app built from source on the user's own machine;
-- the desktop app on your machine, and on any machine where the person
-  is willing to right-click → Open once.
-
-**The honest recommendation:** ship the CLI and daemon through the tap
-now, and treat the signed, notarised `.app` as a separate step taken
-when there is somebody to ship it *to*. The packaging pipeline already
-accepts an identity and a notary profile — `packaging/desktop/package.py`
-takes `--identity` and `--notary-profile` and verifies the result — so
-when the certificate exists it is configuration, not work.
+The source-built app and CLI can continue local testing while release setup is
+unfinished. The current published CLI/formula remains v0.1.0; the newer installed
+local app is identified by its source commit, not that shared version string.
 
 ## Order
 
-1. ~~Create the tap and point the release at it.~~ Done, and verified by
-   installing from it.
-2. ~~Set `HOMEBREW_TAP_TOKEN` so releases publish on their own.~~ Done.
-3. Ship a release; confirm the formula updates and the cask appears.
-4. Buy the Developer ID when the app is going to somebody who is not
-   you. Then `--identity` and `--notary-profile` in the release
-   workflow, and drop the cask's caveat. Everything up to here works
-   without it.
+1. Complete: the tap and v0.1.0 formula exist; publishing configuration names were
+   present at the September 9 check. Secret values/token validity were not audited.
+2. Open: configure Developer ID/notarization privately, reconcile the cask
+   signing/installation contract, and validate final artifacts.
+3. Open: run the protected-tag release, confirm formula/cask publication and
+   exercise hosted update/rollback through the installed app.
+4. Open: finish physical notification and independent-machine acceptance; retain
+   results in the existing audit/verification records.

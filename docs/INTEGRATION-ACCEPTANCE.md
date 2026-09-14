@@ -24,8 +24,8 @@ CI, verifies executable hashes against the package manifest and records source,
 driver hash and cleanup. Registration additionally requires a supplied workdir
 to resolve to an existing directory; invalid directories must leave no registry,
 database or event state. The alias fixture stays entirely within its owned
-temporary directory. These later fixes need their own final CI; the historical
-package result alone does not certify them or migrate existing duplicates.
+temporary directory. Those fixes merged on `main` with CI (PR #98 and later); the historical
+package result alone does not migrate existing duplicates.
 
 ## September 10 Codex lifecycle delivery
 

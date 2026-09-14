@@ -385,7 +385,7 @@ The host control socket is mode `0600` and trusts the owning user. This is not a
 
 The [product direction](PRODUCT-DIRECTION.md) defines current delivery priorities. The phases below retain the detailed engineering design; numbered delivery rows are not GitHub PR numbers.
 
-Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. Unimplemented items in Phases 4–6 remain design intent, written at the level of detail needed to build it — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
+Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. The unimplemented rows — live daemon replacement (28), Windows (20) and federation (17) — remain design intent, written at the level of detail needed to build them — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
 ### Where AgentDocker sits
 
@@ -421,7 +421,7 @@ See [Projects](#projects). Compared with the original plan, derivation lives onl
 
 #### Discovery and adoption *(done)*
 
-See [Projects](#projects). The known-runtime table is code for now; making it configurable waits for the daemon config file that admission policy (Phase 5) introduces.
+See [Projects](#projects). The known-runtime table is code (`crates/core/src/runtime.rs`); admission policy's `policy.toml` shipped without a runtime section, so making the table configurable stays deferred until a need appears.
 
 #### Branch and head *(done)*
 
@@ -523,7 +523,12 @@ When the budget bites, the *oldest* entries collapse into the leading "… N ear
 
 **Caching.** The daemon keeps an in-memory ring of the newest 256 entries per project, created lazily on the first read or write for a project with live agents and dropped ten minutes after its last live agent leaves. Appends write through; a digest whose cursor lies inside the ring is served without touching SQLite, which is every hook fire in practice; `--since` older than the ring, `--path`, and `--grep` go to the tables. Rendering is cheap enough that digests themselves are not cached; if that ever changes the key is `(project, cursor, head_seq, budget, branch)`. Memory cost is about 256 KB per active project.
 
-**Retention.** Entries are kept forever by default: the journal is the audit trail, a busy five-agent team writes roughly a megabyte a day at worst, and SQLite is comfortable at millions of rows. `agentdocker journal prune --before <duration|seq> [--project]` deletes on demand, and an optional `[journal] retention = "180d"` in the daemon config is applied by the once-a-minute tick, deleting `journal`, `journal_paths`, and `journal_fts` rows together in batches of 1,000 so the tick stays short; a cursor below the new floor is clamped on read. Freed pages are reused by SQLite; `agentdocker daemon vacuum` reclaims disk when someone wants it back. No roll-up summaries.
+**Retention status at `aaa1b61` (September 14 audit).** Explicit sequence-based
+journal pruning is implemented. Duration parsing, automatic `[journal]` retention,
+read-cursor clamping and `daemon vacuum` in the design below remain follow-up
+work; they are not available commands/configuration at this baseline.
+
+**Retention design.** Entries are kept forever by default: the journal is the audit trail, a busy five-agent team writes roughly a megabyte a day at worst, and SQLite is comfortable at millions of rows. `agentdocker journal prune --before <duration|seq> [--project]` deletes on demand, and an optional `[journal] retention = "180d"` in the daemon config is applied by the once-a-minute tick, deleting `journal`, `journal_paths`, and `journal_fts` rows together in batches of 1,000 so the tick stays short; a cursor below the new floor is clamped on read. Freed pages are reused by SQLite; `agentdocker daemon vacuum` reclaims disk when someone wants it back. No roll-up summaries.
 
 **Adapters.** Hooks: `SessionStart` and `UserPromptSubmit` inject the digest as `additionalContext`; `Stop` sends `release_all` with the transcript-tail summary. MCP: `read_journal {since?}` returns the digest with `advance`, `journal_note {summary}` appends a note, and the `release` tool accepts `summary`.
 
@@ -641,7 +646,7 @@ remain ordinary inbox messages, but cannot change the accepted answer or satisfy
 a cancelled blocking wait. Blocking waits require the exact `question_closed`
 answer ID. Losing the answer message stream or the question event stream returns
 an error with retained inbox state.
-The [managed Codex adapter](CODEX-INPUT.md#questions-and-command-approvals) records
+The [managed Codex adapter](CODEX-INPUT.md#questions-and-approvals) records
 question routes and separates their responses from ordinary provider input.
 
 The daemon raises desktop notifications for messages addressed to a `human` agent, throttled to one per sender per minute. macOS uses the app bundle's `agentdocker-ui --notify-json JSON` entry point and no AppleScript fallback. The JSON carries display text and an optional action `{home, socket, target: {message, agent, project, channel}}`; identifiers and absolute origin paths are validated separately from message text. Native content stores the action in `userInfo["agentdocker.action"]`. Posting failures leave the inbox intact and emit a bounded diagnostic. Linux still uses `notify-send` without destination activation. `AGENTDOCKER_NO_NOTIFICATIONS=1` suppresses posting in ordinary fixtures. Notices are built under the state lock and posted by a separate worker.
@@ -773,7 +778,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 1 | ✅ `crates/host` with project discovery; `register` defaults `workdir`; `project` on records; `ps` grouping, `--project`, `list {project?, labels?}`; `projects` cache table | 2 | — |
 | 2 | ✅ `project:` destination; hooks orient by project | 2 | 1 |
 | 3 | ✅ canonical physical `path:` lease keys with validated `file:` input aliases | 2 | 1 |
-| 4 | ✅ service/lazy start, release archives and installer, and a maintained Homebrew tap carrying both the formula and the application cask; every tagged release publishes to it, and a tap that will not take the formula warns rather than failing the release | 2 | — |
+| 4 | ✅ service/lazy start, release archives and installer, and a Homebrew tap: every tagged release generates the formula and the application cask and publishes them to the tap, warning rather than failing when the tap will not take them. The tap carries the v0.1.0 formula; the cask waits for a signed, notarized release ([REMAINING-WORK.md](REMAINING-WORK.md)) | 2 | — |
 | 5 | ✅ `discover` / `adopt`; dimmed rows in `ps` | 2 | 1 |
 | 6 | ✅ `report` request with `vcs`; `BRANCH`/`HEAD` in `ps` | 2 | 1 |
 | 7 | ✅ project watcher over every checkout of a project — the main one and each linked worktree, capped at 32 extra per project with a `watcher_gap` when the cap bites — ledger (`changes` table, `changes`, `blame`), watcher-triggered branch refresh with a five-second polling fallback that also re-reads each checkout's HEAD | 3 | 3, 6 |
@@ -801,18 +806,17 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 29 | ✅ the app's terminal view over `attach` (vt100 screen, keys, colours, resize), plus a console that runs any `agentdocker` command and renders what it said; both draw on a chosen terminal palette, with text sizes and row density, kept in `ui.json` per home | 5 | 19, 23 |
 | 26 | ✅ token-lean output: compact MCP results with projections and a `verbose` opt-in; `logs --compress` and `validation <id> --compress` pipe a copy of a retained log through rtk where it is installed, and fall back to the whole log with a reason where it is not. The retained log is never rewritten | 5 | — |
 
-Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) have implementations requiring the integrated delivery audit. Live daemon replacement (28) remains blocked on process/I/O ownership and successor readiness. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
+Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) are implemented and covered by the integrated verification recorded on PR #119; what is still open is in [REMAINING-WORK.md](REMAINING-WORK.md). Live daemon replacement (28) remains blocked on process/I/O ownership and successor readiness. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
 
 ### Planned protocol and event additions
 
 Listed here so the wire-protocol table above stays a description of what exists. Handoff and scoped authentication are already implemented with the request shapes above; the older design of a token field on every host request was superseded by the separate authenticated endpoint.
 
+Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `commit` as `commit {agent, message?, all?, push?}` → `committed` (row 10); a `--stat`-only diff and opening a pull request from `commit` were not taken up. `report {…, reads?, writes?}` was superseded: reads are durable content observations (`observe`), and writes come from the watcher ledger rather than from an agent's own report.
+
 | Request | Response | Phase |
 |---|---|---|
-| `report {…, reads?, writes?}` | `ok` (adds read and write sets to the existing request) | 3 |
-| `diff {agent, stat?}` | `diff` | 4 |
-| `commit {agent, message?, push?, pr?}` | `commit` | 4 |
-| Additional execution adapters | capability-specific | 4 |
+| Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
 
 Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended` and `journal_read`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
@@ -823,7 +827,7 @@ Shipped events include `policy_updated` (effective rules or load diagnostic chan
 - Should topic messages ever queue? Durable subscriptions solve it, but require the daemon to know about an agent's interests when it is offline. The `project:` destination removes the most common reason to want this.
 - Priority vs. fairness for contested leases: waiters are FIFO. Whether labels or policy should ever let a claim jump the queue, and whether deadlock victims should be chosen by priority rather than always being the newcomer, is deferred until there is usage to look at.
 - Whether `from` should be verified for *unsandboxed* agents too. Per-agent tokens (Phase 4) settle it for sandboxed runtimes, where it matters; requiring them from local shells and hooks would cost ergonomics for little, so they stay optional until there is a reason.
-- Read-set capacity and eviction: 5,000 marks per agent is a guess; measure a long Claude Code session before tuning.
+- Read-set capacity and eviction: 1,000 marks per agent is a guess; measure a long Claude Code session before tuning.
 
 What exists is described above; the contracts and hardening decisions behind it — delivery boundaries, content observations, durable recovery, the verification workstream, and the journal's event barrier — are recorded in [IMPLEMENTATION-NOTES.md](IMPLEMENTATION-NOTES.md).
 

@@ -1,6 +1,10 @@
 # Remaining engineering and release work
 
-Updated September 12, 2026. This is the current backlog. Dated audits and
+Audited September 14, 2026 against merged `aaa1b61` (PR #119). This is the current
+backlog for the requirements already in the project documents. The
+[documentation index](README.md) records coverage of all 37 Markdown files;
+the [delivery crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk) records
+which test categories are complete or partial. Dated audits and
 [verification reports](verification/) retain the implementation history,
 source-specific results and failed trials.
 
@@ -9,13 +13,19 @@ source-specific results and failed trials.
 PRs #98–#114 provide durable queues, notification routing, shared human/peer
 submission, structured questions, update checking, identity-safe discovery and
 offline duplicate repair. PR #119 consolidates the remaining #115–#118 changes
-and Claude's messenger, minimal-home and Applications-folder work. Its
-[combined checkpoint](verification/2026-09-12-integrated-desktop.json) records
-869 Rust tests, 65 Python checks, 265 native steps, 12 installation scenarios,
-actual Claude delivery and a quiet 100-agent UI comparison. Final CI and review
-status belong to [PR #119](https://github.com/brandopakel/AgentDocker/pull/119).
-The older per-feature checkpoints retain history rather than separate pending
-integration work.
+and Claude's messenger, minimal-home and Applications-folder work. It is merged,
+reviewed and installed. [Final acceptance and installation](https://github.com/brandopakel/AgentDocker/pull/119#issuecomment-5649912103)
+record 871 Rust tests, 65 Python checks, 218 native steps and 12 installation
+scenarios at reviewed `d70668c`; the installed main build has matching source
+inputs and pre-package executable hashes. All main CI workflows passed at
+`aaa1b61`, including native desktop, Windows foundations and engines. Scheduled
+fuzzing also passed September 13 and 14.
+
+The earlier [combined checkpoint](verification/2026-09-12-integrated-desktop.json)
+records 869 Rust tests and 265 native steps at `462c1b3`, actual Claude delivery
+and a quiet 100-agent UI comparison. Those counts and sustained results remain
+specific to that source. Older per-feature “CI/review pending” notes no longer
+represent pending integration; their failed trials and acceptance limits remain.
 
 | Delivered behavior | Evidence and limits |
 | --- | --- |
@@ -31,6 +41,18 @@ safe restart; a successful app installation does not complete live replacement
 or activate newer daemon-only features. The earlier blocked Claude prompt was
 repaired, installed and confirmed by the user.
 
+The September 14 live check confirms `/Applications/AgentDocker.app` and the
+open GUI use `aaa1b61` (schema16-capable). The serving daemon remains the older
+schema15 release; no login service is installed. In particular, its discovery
+still offers a Chrome native-messaging helper that current source already
+excludes. Reinstalling the same UI does not activate that daemon correction.
+
+No old PR remains open. The last merged `claude/applications-folder` branch and
+its clean worktree were removed by the connected Claude session on September 14
+after checking inclusion in main. The September 12 archive tags retain the three
+superseded draft histories. Branches created for this audit or subsequent fixes
+are new work, not leftovers from PR #119.
+
 The [30-minute actual Codex trial](verification/2026-09-12-thirty-minute-codex-queue.json)
 passed 60 ordered human/peer inputs and exact replies, seven read-response cuts,
 one retained controller/conversation and normal cleanup. Profile and binary
@@ -42,16 +64,19 @@ replacement acceptance.
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
 | Top | Complete provider input and review handling | Finish broader permission forms, MCP elicitation and secret-input presentation; test further actual-provider interruptions, uncertain writes and sustained conversations. Preserve one queue/order and exact receipts for human and peer input. Managed Claude channels and the owned Codex bridge have bounded idle/busy/question acceptance; hooks alone cannot wake an idle model. See [message audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md) and [Claude question evidence](verification/2026-09-12-claude-question-queue.json). |
+| High | Verify setup and input readiness | Tools now hides setup detail and avoids green for unknown activity, but `tool_reports` still treats observed activity as connection evidence. Establish per-session configured/connected/input-ready capabilities and guide only required trust steps. A process, MCP configuration or activity callback does not prove idle wake or message receipt. See [guided setup](GUIDED-SETUP.md) and [desktop contracts](DESKTOP-UX.md). |
 | High | Verify notification clicks in the installed app | Source removes the AppleScript fallback and implements destinations plus native existing/cold-window routing. Complete actual Notification Center clicks, signed posting and installed-launcher acceptance, including expired targets and retained drafts. See [notification audit](NOTIFICATION-ROUTING-AUDIT.md). |
 | Next | Safe live daemon replacement | Retain child/process-group ownership, exact exit status, PTY/pipe I/O, logs, identity and leases; fence all writers/autostart; establish actual successor readiness and recover from failed transfer. Reconcile uncertain writes without blind replay. `daemon reload` remains unavailable. Event continuation, provider event reconnect, output drain and read-only queue retry are merged prerequisites, not completed replacement. See [replacement design](LIVE-DAEMON-UPGRADES.md). |
 | Next | Apply legacy reconciliation to production state | Offline proof-based repair exists. Complete an actual production inventory/preview and apply verified pairs with backup/recovery after the old daemon can be stopped safely. Do not merge records by display name or stop a live process to tidy the list. Current/History separation and helper filtering improve presentation independently. |
+| Engineering | Finish documented storage maintenance | Explicit journal pruning and bounded logs/UI queues exist. Automatic `[journal]` retention, `daemon vacuum` and checkpoint pruning are absent at the audited main source. Implement and test protected-reference handling, monotonic journal sequences/cursors, failure recovery and disk reclamation before marking the architecture/guide promises complete. See [architecture](ARCHITECTURE.md) and T09–T12 in the [delivery plan](DELIVERY-PLAN.md). |
 | Acceptance | Sustained use and unresolved failures | Complete overnight, sleep/reboot, broader queue/retention and checkout workloads. A [one-hour 100-agent/10,000-file daemon trial](verification/2026-09-11-hour-sustained-use.json) passed 1,392,836 cycles; it does not cover the remaining cases. Diagnose the retained incomplete Iced capture and historical socket timeout: later passing trials do not explain them. See [testing standard](TESTING-AND-BENCHMARKS.md) and [local trial](LOCAL-TRIAL.md). |
-| Release | Publish verified downloads and updates | Consumer, opt-in daily scheduler and release archive/feed automation exist. Complete protected-tag signing, hosted archive/feed downloads, formula/cask publication and actual update/rollback acceptance. Cargo registry publication is not an established supported route. See [distribution](DESKTOP-DISTRIBUTION.md), [release automation](RELEASE-AUTOMATION.md) and [setup](DISTRIBUTION-SETUP.md). |
+| Release | Publish verified downloads and updates | Consumer, opt-in daily scheduler and release archive/feed automation exist. Align the cask template with the stable signing and managed-installation contract. Resolve the legacy `install.sh` bundle replacement path, which still removes a bundle before copying its replacement outside managed activation. Complete protected-tag signing, hosted archive/feed downloads, formula/cask publication and actual update/rollback acceptance. Cargo registry publication is not an established supported route. See [distribution](DESKTOP-DISTRIBUTION.md), [release automation](RELEASE-AUTOMATION.md) and [setup](DISTRIBUTION-SETUP.md). |
 | Platform | Linux and independent Mac acceptance | Complete target-distribution desktop/service/package trials, a second Mac and physical Intel acceptance. ARM64/x86-64 graphical/package CI and Rosetta execution do not establish those hardware results. See [local trial](LOCAL-TRIAL.md). |
 | Platform | Full native Windows product | Integrate daemon/clients with named pipes; finish supervision, ConPTY, identity-safe stop/recovery, provider/desktop inventory, user service/session behavior, installer/update/rollback and native graphical CI. Existing core/host/desktop adapters are foundations. See [Windows port](WINDOWS-PORT.md). |
 | Input | Hands-on accessibility and input methods | Exercise VoiceOver and supported-platform screen readers, keyboard navigation/activation, visible focus, zoom, IME, Unicode and terminal copy/paste. Range selection has [actual macOS acceptance](verification/2026-09-11-terminal-selection.json); broader human trials remain. Repair observed defects. See [Iced contracts](ICED-DESIGN.md). |
 | Installed acceptance | Removed-checkout watcher recovery | Source ignores vanished checkout roots and reports lost coverage; independent macOS checkout streams fix a reproduced surviving-file event loss. Both regressions passed 100 repetitions. Verify after the launcher/daemon switch; historical conflict channels remain. See [watcher evidence](verification/2026-09-11-macos-watcher-recovery.json). |
-| Later | Optional expansion | Authenticated federation/host namespaces, cross-host leases/routing, additional adapters and container capabilities remain behind a dependable single-host desktop. See [product direction](PRODUCT-DIRECTION.md) and [containers](CONTAINER-ENGINES.md). |
+| Engineering | Finish existing architecture cleanup | Move the remaining environment defaults in `core::paths` to the host boundary while preserving callers. The [September 6 audit](AUDIT-2026-09-06.md) already identifies this pure-core exception. |
+| Later | Existing optional proposals | Federation/host namespaces and cross-host leases/routing are unbuilt. Additional adapters, container log following and proposed CLI conveniences remain deferred behind the single-host desktop. They are existing scope, not prerequisites invented by this audit. See [product direction](PRODUCT-DIRECTION.md), [architecture proposals](ARCHITECTURE.md#planned-protocol-and-event-additions) and [containers](CONTAINER-ENGINES.md). |
 
 ## Manual and operational steps
 
@@ -75,7 +100,13 @@ retains the incomplete restored-window capture, and the
 retains the socket timeout. Historical passes do not complete a new candidate's
 release or hands-on gates.
 
-A September 9 read-only GitHub check found the Homebrew formula at v0.1.0,
-the publishing variable and token secret name configured, and only a README in
-`Casks/`. The tap exists; publishing a newer verified release and app cask remains.
-That check did not inspect secret values or verify token validity.
+A September 14 read-only GitHub check still finds v0.1.0 as the latest published
+release and only a README in the tap's `Casks/` directory. A cask generator or
+template is not a published install route. The September 9 check found the
+publishing variable and token secret name configured; it did not inspect secret
+values or verify token validity.
+
+The connected Claude and Codex sessions exchanged this audit's ownership and
+findings through AgentDocker on September 14. The peer acknowledged the message
+and returned its findings. This verifies active-session routing and model
+consumption; it does not replace an idle-wake or sustained-load trial.
