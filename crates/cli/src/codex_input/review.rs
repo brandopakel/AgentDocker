@@ -164,6 +164,14 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
             .context("unsupported command reason")?
             .to_owned(),
     };
+    // Provider prose cannot insert lines or change the visual direction of
+    // the access details below it. Reject it rather than changing the text
+    // the provider supplied; only our own formatting adds section breaks.
+    ensure!(
+        !reason.chars().any(|c| c.is_control()
+            || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        "command reason contains unsupported display controls"
+    );
     if !params["networkApprovalContext"].is_null() {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -790,6 +798,30 @@ mod tests {
             json!({"host":"example.com", "protocol":"https"});
         event["params"]["additionalPermissions"] = json!({"network":{"enabled":true}, "fileSystem":{"read":["/owned/input"],"write":["/owned/output"],"entries":[{"access":"deny","path":{"type":"path","path":"/owned/private"}}]}});
         event
+    }
+    #[test]
+    fn command_reason_refuses_display_controls_and_preserves_unicode_prose() {
+        for control in [
+            '\0', '\t', '\n', '\r', '\u{001b}', '\u{007f}', '\u{0085}', '\u{061c}', '\u{200e}',
+            '\u{200f}', '\u{2028}', '\u{2029}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            let mut event = access_event();
+            event["params"]["reason"] = json!(format!("Run the check{control}Exclude: /private"));
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "accepted display control {control:?}"
+            );
+        }
+        for reason in [Value::Null, json!("変更を確認する — check the change.")] {
+            let mut event = access_event();
+            event["params"]["reason"] = reason.clone();
+            let planned =
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+            let shown = &planned.questions[0].text;
+            assert!(shown.contains(reason.as_str().unwrap_or("Requested by Codex")));
+            assert!(shown.contains("\n\nAdditional access for this command:\n"));
+        }
     }
     #[test]
     fn command_access_is_complete_in_native_and_fallback_reviews_and_retained_receipts() {

@@ -98,10 +98,23 @@ partial frame bytes across read deadlines. A deterministic reproduction found
 that the first timeout draft's `read_line` could discard a split UTF-8 character;
 the correction retains bytes and checks closure between chunks. Focused tests
 cover actual socket deadlines at every split, following frames, continuous
-unterminated input and closure without a usable shutdown handle. Final validation,
-review and integration remain pending. The earlier macOS CI writer-failure test
+unterminated input and closure without a usable shutdown handle. PR #128 merged
+as `573d1f0` after source review and all five final-head CI workflows passed.
+Reviewed `66c0946` passed 890 Rust tests, 70 Python checks and 165 native workflow
+steps; 100 independent repetitions of its 14 terminal tests also passed. The
+earlier macOS CI writer-failure test
 timeout remains recorded; these checks do not establish its original OS-level
 cause or explain the separate historical benchmark socket timeout.
+
+A separate five-minute retention trial at clean `66c0946` exercised the actual
+minute tick with retention enabled. It recorded 1,532 explicit journal notes and
+331 mixed human/peer inputs, preserving the entire FIFO queue through five prune
+batches and a daemon restart. The first batch hit the 1,000-row bound; the final
+durable journal head advanced from 1,534 to 1,535 after restart. No messages were
+acknowledged or drained, and no owned process remained. This closes the bounded
+retention/restart case; it does not complete overnight, sleep/reboot or actual
+provider recovery acceptance. The connected Claude's separate longer soak uses
+an earlier binary and does not enable retention.
 
 The [delivery plan](DELIVERY-PLAN.md), [message audit](MESSAGE-DELIVERY-AUDIT.md)
 and [verification directory](verification/) retain the full history. In
