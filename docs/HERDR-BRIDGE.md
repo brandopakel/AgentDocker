@@ -64,7 +64,7 @@ read-mostly and optional, and never a dependency.
 
 1. **Pane identity (done).** When an agent lives in a herdr pane we already
    record `herdr:<pane>`. Keep it; it is the join key for everything below.
-2. **Focus in herdr.** A "Show terminal" action on an agent that lives in a
+2. **Focus in herdr (proposed, not built).** A "Show terminal" action on an agent that lives in a
    herdr pane calls `agent.focus`/`pane.focus` on the socket named by that
    agent's `HERDR_SOCKET_PATH` (or the default socket). This is the only write
    we need, it marks the completion seen on herdr's side too, and it is the
@@ -72,13 +72,13 @@ read-mostly and optional, and never a dependency.
    terminal. Reply itself stays typed messaging; when our reply cannot reach
    the agent through MCP or a channel, `agent.prompt` on the pane is the
    fallback transport and it refuses safely while the agent is blocked.
-3. **Blocked mirror.** Subscribe to `pane.agent_status_changed` for the panes
+3. **Blocked mirror (proposed, not built).** Subscribe to `pane.agent_status_changed` for the panes
    our agents live in and surface `blocked` as attention when we have no
    `ask_human` question open for that agent. It closes the gap our hooks
    cannot see (permission dialogs, plan approval) without adopting screen
    scraping ourselves. Show it as "herdr reports a prompt", not as our own
    state.
-4. **Detection manifests as fallback, not authority.** Our `check_stale`
+4. **Detection manifests as fallback, not authority (proposed, not built).** Our `check_stale`
    and idle markers stay hook-driven. herdr's manifest result is displayed as
    a second opinion only when the agent is in a herdr pane and our own data
    is older than the herdr observation.

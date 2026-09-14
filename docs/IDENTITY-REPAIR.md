@@ -6,7 +6,7 @@ the same known PID and process birth, runtime, project and physical checkout;
 at least one must identify the provider session. A third matching candidate,
 conflicting session labels or incompatible ownership stops the repair.
 
-The implementation passed local validation; final-head CI and review remain.
+The implementation merged with PR #98 on September 11 after CI and review.
 Production records have not been migrated.
 It does not start, stop or signal a daemon or provider. Live/managed sessions,
 restorable ownership, containers, scoped credentials and ambiguous identities
@@ -75,6 +75,5 @@ including unchanged preview bytes, stale-digest refusal, idle-connection refusal
 idempotent apply, restarted alias/FIFO access and an acknowledgement through the
 retired ID. All owned processes exited. UI tests passed 108 checks, including
 former-ID notification navigation and draft preservation. The clean packaged checkpoint passed 114 native workflow steps, 23 notification
-routing steps and 11 updater cases. CI and final-head review remain before this
-item can close. Applying repair to the
+routing steps and 11 updater cases. PR #98 merged after CI and review. Applying repair to the
 user's actual legacy database remains a separate maintenance operation.

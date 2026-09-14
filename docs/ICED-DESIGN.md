@@ -159,7 +159,9 @@ records remain intact: these are view filters, not registry deletion or migratio
 Discovery suppresses known Codex Node launchers with a native child; the UI also
 suppresses overlapping discovery/registration snapshots with matching known
 PID and birth time. Unknown identities and distinct registered sessions remain
-separate. Legacy duplicate registry reconciliation remains engineering work.
+separate. Legacy duplicate registry reconciliation is the offline `identity-repair`
+command ([IDENTITY-REPAIR.md](IDENTITY-REPAIR.md)); applying it to the production
+database remains a manual step.
 
 ## Interaction contracts
 

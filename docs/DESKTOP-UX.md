@@ -92,7 +92,10 @@ counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
 
 Tools shows each installed tool with one status word: **Connected** once a
-session of that tool has reported in, **Needs setup** when its configuration is
+session of that tool has reported in (proof that its hooks or MCP reach the
+daemon, not that peer messages can enter its input queue, which needs the
+opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
+[CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md)), **Needs setup** when its configuration is
 missing (with a **Set up** button), **Configured, waiting for its first
 session** in between, and **Not installed**. **Details** holds versions,
 commands, the per-channel configuration state, **Review setup**, **Check

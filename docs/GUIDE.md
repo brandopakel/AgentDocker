@@ -264,6 +264,10 @@ the flags.
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
 | `daemon` | Install, start, stop, reload or inspect `agentd` |
+| `desktop` | Install, inspect or roll back the native desktop for this user |
+| `identity-repair` | Preview a legacy identity repair; apply it only with daemon and sessions stopped |
+| `report-activity` | Report an observed provider turn state (expires after five minutes) |
+| `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
 
@@ -277,21 +281,22 @@ about us:
 
 `whoami` · `ping` · `list_agents` · `inspect_agent` · `activity`
 
-`send_message` · `read_inbox` · `wait_for_messages` · `ask_human` ·
-`open_questions` · `answer_question`
+`send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
+`ask_human` · `open_questions` · `answer_question` · `report_activity`
 
 `claim` · `renew` · `release` · `list_leases`
 
 `read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
-`overlap`
+`read_set` · `overlap`
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
-`validate`
+`validate` · `validation_results`
 
 `save_checkpoint` · `list_checkpoints` · `resume_checkpoint` · `handoff` ·
 `list_handoffs`
 
-`open_channel` · `list_channels` · `close_channel` · `request_review`
+`open_channel` · `list_channels` · `close_channel` · `request_review` ·
+`review`
 
 `contests` · `enter_contest` · `submit_entry`
 

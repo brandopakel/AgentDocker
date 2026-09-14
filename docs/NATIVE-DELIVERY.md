@@ -35,7 +35,7 @@ The development Mac currently has no Developer ID Application signing identity i
 
 ## Desktop and onboarding follow-up
 
-[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. A per-user desktop installer now implements explicit local-package activation and compatible rollback, with native Installation controls and stable setup command paths. Its isolated acceptance is tracked separately from public release. Signed public distribution, a download/update feed, Windows parity and sustained upgrade crash boundaries remain.
+[Desktop distribution](DESKTOP-DISTRIBUTION.md) now provides app/archive packaging, provenance and graphical acceptance. [Guided setup](GUIDED-SETUP.md) provides a saved preview/apply/undo flow, reopening of interrupted plans and explicit connection diagnostics. These features remain in the feature stack pending review, final checks and merge; public v0.1.0 is unchanged. A per-user desktop installer now implements explicit local-package activation and compatible rollback, with native Installation controls and stable setup command paths. Its isolated acceptance is tracked separately from public release. `agentdocker desktop update` and the release feed generator exist ([RELEASE-AUTOMATION.md](RELEASE-AUTOMATION.md)); signed public distribution, hosted feed publication, Windows parity and sustained upgrade crash boundaries remain.
 
 ## September 7: native launch and exit durability follow-up
 

@@ -86,22 +86,22 @@ bundle registration remain open; the installed launcher and daemon are unchanged
 
 ## Work and acceptance
 
-1. Identify the actual daemon, app bundle, notification sender and source version
+1. (Done.) Identify the actual daemon, app bundle, notification sender and source version
    used by the installed launcher. Capture bounded native-post failure reasons
    without logging private message text. Check authorization, bundle registration
    and signing independently; reproduce with an explicitly owned notification.
-2. Carry stable message/question, canonical agent and project identifiers from
+2. (Done.) Carry stable message/question, canonical agent and project identifiers from
    the envelope through posting. Define routing within the correct local daemon
    instance and resolve identifiers against current state, including reconciled
    legacy identities. Never interpret notification text as a command or path.
-3. Implement native click handling and app activation, including cold launch and
+3. (Done in source: `crates/ui/src/notification_route.rs`.) Implement native click handling and app activation, including cold launch and
    forwarding to an existing window. Bind it to the app's normal navigation so a
    question opens its reply view and a message opens its conversation/context.
-4. Replace or constrain the AppleScript fallback so the supported click workflow
+4. (Done: the fallback is removed, `crates/host/src/notify.rs`.) Replace or constrain the AppleScript fallback so the supported click workflow
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. Test real Notification Center clicks with the app active, hidden and closed;
+5. (Open.) Test real Notification Center clicks with the app active, hidden and closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct

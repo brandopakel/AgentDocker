@@ -116,9 +116,9 @@ signature has none:
 | an app whose notifications work | `TeamIdentifier=Q6L2SF6YDW` | register, prompt, deliver |
 | `AgentDocker.app` today | `Signature=adhoc`, `TeamIdentifier=not set` | refused, no prompt |
 
-The daemon therefore falls back to `osascript`, which delivers with the
-wrong icon. The ordering is deliberate: the right icon arrives the day
-the signature does, with nothing to change here.
+There is no `osascript` fallback any more: a notification the app cannot
+post fails visibly and the inbox entry is retained. The right icon arrives
+the day the signature does, with nothing to change here.
 
 **It is for other people being able to open the app.** `scripts/bundle-macos.sh`
 signs ad-hoc (`codesign --sign -`). That is a real signature and it is

@@ -79,9 +79,9 @@ From Dax:
    `answer_question`; the notification could carry the reply field.
 2. Trace-file mining for zero-configuration project discovery and resume commands
    ([Vibe History](https://docs.getdax.app/tools/vibe-history.md)).
-3. A per-project visual identity derived from the path hash, for dense lists.
-4. An optional "install hooks" action framed as faster and more reliable.
-5. An honest online/offline badge per tool.
+3. A per-project visual identity derived from the path hash, for dense lists (present: `crates/ui/src/app/style.rs`).
+4. An optional "install hooks" action framed as faster and more reliable (present: Tools **Set up**).
+5. An honest online/offline badge per tool (present: Connected / Configured / Needs setup / Not installed).
 
 ## Where AgentDocker is different, and should say so
 
