@@ -183,25 +183,13 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     let _ = tokio::time::timeout_at(deadline, client.call_raw(&request)).await;
                 }
             }
-            if let Some(activity) = activity {
+            if agentdocker_core::runtime::CLAUDE_CODE_HOOKS
+                .iter()
+                .any(|(event, _)| *event == input.hook_event_name)
+            {
                 let _ = tokio::time::timeout_at(deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
-                        client
-                            .call_raw(&Request::ReportActivity {
-                                agent: agent.id.to_string(),
-                                observation: agentdocker_core::ActivityObservation {
-                                    activity,
-                                    observed_at: chrono::Utc::now(),
-                                },
-                            })
-                            .await?;
-                        crate::input_status::adapter_contact(
-                            &client,
-                            agent.id.as_str(),
-                            agent.process_started_at,
-                            agentdocker_core::AdapterKind::Hooks,
-                        )
-                        .await;
+                        report_hook_status(&client, &agent, activity).await?;
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -210,6 +198,32 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn report_hook_status<B: Backend>(
+    backend: &B,
+    agent: &AgentRecord,
+    activity: Option<agentdocker_core::ReportedActivity>,
+) -> Result<()> {
+    crate::input_status::adapter_contact(
+        backend,
+        agent.id.as_str(),
+        agent.process_started_at,
+        agentdocker_core::AdapterKind::Hooks,
+    )
+    .await;
+    if let Some(activity) = activity {
+        backend
+            .call(Request::ReportActivity {
+                agent: agent.id.to_string(),
+                observation: agentdocker_core::ActivityObservation {
+                    activity,
+                    observed_at: chrono::Utc::now(),
+                },
+            })
+            .await?;
+    }
+    Ok(())
 }
 
 /// Read inboxes without consuming them; acknowledge only after output is flushed.
@@ -1371,6 +1385,31 @@ mod tests {
                 collapsed: 0,
                 other_branches: 0,
             },
+        }
+    }
+
+    #[tokio::test]
+    async fn hook_contact_does_not_require_an_activity_observation() {
+        let mut session = agent("claude-fixture", true);
+        let birth = chrono::Utc::now();
+        session.process_started_at = Some(birth);
+        for activity in [None, Some(agentdocker_core::ReportedActivity::Working)] {
+            let backend = Mock::with(vec![
+                Response::Ok,
+                Response::error(
+                    agentdocker_core::ErrorCode::StorageUnavailable,
+                    "activity refused",
+                ),
+            ]);
+            report_hook_status(&backend, &session, activity)
+                .await
+                .unwrap();
+            let calls = backend.requests();
+            assert!(
+                matches!(&calls[0], Request::ReportAdapter { agent, contact, .. }
+                if agent == session.id.as_str() && contact.process_started_at == birth)
+            );
+            assert_eq!(calls.len(), if activity.is_some() { 2 } else { 1 });
         }
     }
 

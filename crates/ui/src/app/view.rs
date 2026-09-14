@@ -2878,7 +2878,7 @@ impl App {
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
                 }
-                if installed && supported && !missing && !reporting {
+                if installed && supported && !missing && !unverified && !reporting {
                     facts = facts.push(note(
                         "Setup is saved. Start a fresh session to load it. Approve only the \
                          integration prompts shown by the provider.",

@@ -492,8 +492,10 @@ enum Command {
     /// Adapter-only contact observation, bound to an exact process birth.
     #[command(hide = true)]
     ReportAdapter {
+        /// Agent ID or name (defaults to AGENTDOCKER_AGENT_ID).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
+        /// Exact process birth timestamp in RFC 3339 format.
         #[arg(long)]
         process_started_at: chrono::DateTime<chrono::Utc>,
         #[arg(value_parser = ["mcp", "hooks"])]
