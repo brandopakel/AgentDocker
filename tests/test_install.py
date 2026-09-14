@@ -229,10 +229,12 @@ class InstallerTests(unittest.TestCase):
         curl = mock / "curl"
         curl.write_text(CURL_STUB)
         curl.chmod(0o755)
-        if platform != "Darwin":
-            uname = mock / "uname"
-            uname.write_text(f"#!/bin/sh\ncase \"$1\" in -s) echo {platform} ;; -m) echo x86_64 ;; esac\n")
-            uname.chmod(0o755)
+        # The route is chosen from uname, so the test host's own answer
+        # must not decide which platform is being exercised.
+        machine = "arm64" if platform == "Darwin" else "x86_64"
+        uname = mock / "uname"
+        uname.write_text(f"#!/bin/sh\ncase \"$1\" in -s) echo {platform} ;; -m) echo {machine} ;; esac\n")
+        uname.chmod(0o755)
         home = root / "home"
         home.mkdir()
         env = dict(
