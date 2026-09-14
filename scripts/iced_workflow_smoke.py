@@ -138,7 +138,10 @@ def smoke(binary_dir, output):
                 reviews = []
                 for decision in ["Allow", "Deny"]:
                     presentation = {"kind": "codex_command", "command": "printf fixture", "cwd": str(project),
-                                    "reason": f"Exercise the {decision} control"}
+                                    "reason": (f"Exercise the {decision} control\n\n"
+                                               "Requested connection: example.com (https)\n\n"
+                                               "Additional access for this command:\n"
+                                               "Read: /fixture/input\nWrite: /fixture/output\nExclude: /fixture/private")}
                     fallback = ("Allow Codex to run this command once?\n\nDirectory: " + presentation["cwd"] +
                                 "\nCommand:\n" + presentation["command"] + "\n\nReason: " + presentation["reason"] +
                                 "\n\nReply Allow or Deny.")
@@ -154,6 +157,10 @@ def smoke(binary_dir, output):
                 reviews.append((created["message"], "Blue"))
                 allow, deny, choice = (item[0] for item in reviews)
                 review_steps = [step("fill", id=f"answer-{choice}", text="Keep this draft until I choose"),
+                                step("wait_text", text="Requested connection: example.com (https)"),
+                                step("wait_text", text="Read: /fixture/input"),
+                                step("wait_text", text="Write: /fixture/output"),
+                                step("wait_text", text="Exclude: /fixture/private"),
                                 step("wait_control", id=f"answer-{allow}", present=False),
                                 step("focus", id=f"answer-allow-{allow}"), step("wait_focus", id=f"answer-allow-{allow}"),
                                 step("capture", name="command-approval"), step("click", id=f"answer-allow-{allow}"),

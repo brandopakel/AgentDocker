@@ -74,6 +74,20 @@ other question drafts and become unavailable when the question closes or expires
 The structured presentation is checked against the complete fallback question
 text, so the native app and CLI describe the same request.
 
+Local command approvals also include the requested connection host/protocol and
+concrete additional filesystem/network permissions in that same checked review
+text. Read, write and excluded paths are shown completely. The parser uses the
+installed Codex 0.154.0 [app-server contract](https://learn.chatgpt.com/docs/app-server):
+omitted/null or `local` environments are accepted; other environments and
+unsupported permission selectors are refused. When Codex supplies
+`availableDecisions`, it must offer both `accept` and `decline`. The controller
+never selects a proposed policy amendment or session-wide approval. Only exact
+human `Allow` approves the reviewed operation; other answers deny it. This uses
+the existing command presentation and receipt format, with no schema change.
+Network-only requests without a command/directory and `writeStdin` approvals
+still require their own review surface. Final validation and integration of this
+command-context correction are pending.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
