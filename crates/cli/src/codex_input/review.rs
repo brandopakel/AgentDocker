@@ -140,7 +140,10 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         params["environmentId"].is_null() || params["environmentId"] == "local",
         "remote command requests need a separate review flow"
     );
-    let mut denial = CommandDenial::Decline;
+    // Codex 0.154.0's legacy decision fallback offers accept/cancel when
+    // this optional field is absent. Persisted pre-v8 requests still retain
+    // their original decline semantics via CommandDenial's serde default.
+    let mut denial = CommandDenial::Cancel;
     if !params["availableDecisions"].is_null() {
         let decisions = params["availableDecisions"]
             .as_array()
@@ -153,8 +156,8 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
                     .any(|decision| decision == "decline" || decision == "cancel"),
             "this command does not offer a one-time approval and a negative response"
         );
-        if !decisions.iter().any(|decision| decision == "decline") {
-            denial = CommandDenial::Cancel;
+        if decisions.iter().any(|decision| decision == "decline") {
+            denial = CommandDenial::Decline;
         }
     }
     let mut reason = match &params["reason"] {
@@ -788,7 +791,7 @@ mod tests {
     }
 
     fn event() -> Value {
-        json!({"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","cwd":"/owned","command":"echo trial","kind":"command"}})
+        json!({"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","cwd":"/owned","command":"echo trial","kind":"command","availableDecisions":["accept","decline"]}})
     }
     fn access_event() -> Value {
         let mut event = event();
@@ -825,10 +828,23 @@ mod tests {
     }
     #[test]
     fn command_access_is_complete_in_native_and_fallback_reviews_and_retained_receipts() {
-        for negative in ["decline", "cancel"] {
+        for (decisions, negative) in [
+            (Some(json!(["accept", "decline"])), "decline"),
+            (Some(json!(["accept", "cancel"])), "cancel"),
+            (Some(Value::Null), "cancel"),
+            (None, "cancel"),
+        ] {
             for decision in ["Allow", "Deny", "allow", " Allow", "Allow for session"] {
                 let mut event = access_event();
-                event["params"]["availableDecisions"] = json!(["accept", negative]);
+                match &decisions {
+                    Some(value) => event["params"]["availableDecisions"] = value.clone(),
+                    None => {
+                        event["params"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("availableDecisions");
+                    }
+                }
                 let mut request =
                     Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
                 let question = &request.questions[0];
@@ -879,6 +895,30 @@ mod tests {
                 // A retained write intent must survive recovery without being
                 // emitted again: only the provider's resolution proves receipt.
                 assert!(restored.reply(Utc::now()).unwrap().is_none());
+            }
+        }
+    }
+    #[test]
+    fn missing_command_decisions_keep_codex_default_cancellation_visible() {
+        for mut event in [event(), access_event()] {
+            for decisions in [None, Some(Value::Null)] {
+                match decisions {
+                    None => {
+                        event["params"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("availableDecisions");
+                    }
+                    Some(value) => event["params"]["availableDecisions"] = value,
+                }
+                let request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.has_command_cancellation());
+                assert!(request.questions[0].text.contains(CANCEL_REASON.trim()));
+                let restored: Pending =
+                    serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert!(restored.has_command_cancellation());
             }
         }
     }

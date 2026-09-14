@@ -361,7 +361,7 @@ mod tests {
         let binding = binding(home.path());
         let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         ledger.bind_thread("thread".into()).unwrap();
-        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned","availableDecisions":["accept","decline"]}});
         let mut request =
             Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
         request.questions[0].message = Some("recent-question".to_owned().into());
@@ -397,7 +397,7 @@ mod tests {
         let binding = binding(home.path());
         let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
         ledger.bind_thread("thread".into()).unwrap();
-        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned","availableDecisions":["accept","decline"]}});
         let mut request =
             Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
         request.questions[0].message = Some("recent-question".to_owned().into());
@@ -456,7 +456,7 @@ mod tests {
         ledger.accept(&input, receipt()).unwrap();
         let original = ledger.record().attempt.as_ref().unwrap().message.clone();
         ledger.acknowledge(&original).unwrap();
-        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let event = serde_json::json!({"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned","availableDecisions":["accept","decline"]}});
         let pending =
             Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now()).unwrap();
         ledger

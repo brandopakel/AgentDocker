@@ -81,6 +81,10 @@ installed Codex 0.154.0 [app-server contract](https://learn.chatgpt.com/docs/app
 omitted/null or `local` environments are accepted; other environments and
 unsupported permission selectors are refused. When Codex supplies
 `availableDecisions`, it must offer `accept` and either `decline` or `cancel`. The controller
+uses Codex 0.154.0's [default decision behavior](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/approval_events.rs#L56)
+when the optional list is absent/null: `accept` and `cancel`, with the cancellation
+explanation retained in the human question. Existing saved reviews retain their
+original response semantics. The controller
 never selects a proposed policy amendment or session-wide approval. Only exact
 human `Allow` approves the reviewed operation; other answers deny it. This uses
 the existing shared command presentation, with no daemon schema change. If Codex
