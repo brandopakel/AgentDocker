@@ -274,3 +274,20 @@ The existing installation and active sessions have not been switched.
 The provider transport and MCP policy reference are documented by OpenAI in
 [App server](https://learn.chatgpt.com/docs/app-server) and
 [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
+
+### September 14 command access and offered decisions
+
+At clean `8ff5665`, actual Codex 0.154.0 exercised separate Allow and Deny
+conversations. Both provider requests offered `cancel` as the negative choice.
+Each trial completed three FIFO peer/human/peer inputs with three correlated
+model replies, one exact human/provider approval receipt and no fourth input
+turn. Original provider configuration and binary hashes stayed unchanged and
+owned fixture processes were cleaned up. The full gate at `7d683cc` (identical
+Rust code) passed 890 Rust tests, 67 Python checks, lint, packaging and release
+build; the native workflow at `8ff5665` passed 170 steps.
+
+The preceding actual Allow attempt at `7f87fe4` was refused before a question
+because its decision check required `decline`. A separate wrapper probe failed
+managed MCP identity initialization and is not counted as provider acceptance.
+Both failures are retained privately. The corrected trials do not complete
+provider-limit recovery, unsupported review forms or installed-app acceptance.
