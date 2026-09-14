@@ -18,16 +18,28 @@ ROOT = Path(__file__).resolve().parents[1]
 # Stands in for the download: serves the checksum file and the archive
 # from whatever the environment points at.
 CURL_STUB = """#!/bin/sh
+# Serves the fixture for any URL; with -w it also prints an HTTP status the
+# way curl does, and a failing status writes no file.
+wants_status=""
 for arg in "$@"; do
-  case "$arg" in https://*) url="$arg";; esac
+  case "$arg" in https://*) url="$arg";; -w) wants_status=1;; esac
   if [ "${previous:-}" = "-o" ]; then output="$arg"; fi
   previous="$arg"
 done
+status=200
 case "$url" in
   *.sha256) [ "$TEST_MODE" != missing ] || exit 22; cp "$TEST_CHECKSUM" "$output" ;;
-  *desktop*) [ "$TEST_MODE" != nodesktop ] || exit 22; cp "$TEST_ARCHIVE" "$output" ;;
+  *desktop*)
+    case "$TEST_MODE" in
+      nodesktop) status=404 ;;
+      forbidden) status=403 ;;
+      *) cp "$TEST_ARCHIVE" "$output" ;;
+    esac ;;
   *) cp "$TEST_ARCHIVE" "$output" ;;
 esac
+[ -n "$wants_status" ] && printf '%s' "$status"
+[ "$status" = 200 ] || [ -n "$wants_status" ] || exit 22
+exit 0
 """
 
 
@@ -291,7 +303,16 @@ class InstallerTests(unittest.TestCase):
                 ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("download failed", result.stderr)
+            self.assertIn("download failed (HTTP 404)", result.stderr)
+            # Any failure other than a definite 404 never changes the route.
+            del env["AGENTDOCKER_VERSION"]
+            env["TEST_MODE"] = "forbidden"
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("download failed (HTTP 403)", result.stderr)
+            self.assertNotIn("installing the commands", result.stdout)
 
     def test_desktop_route_refuses_an_archive_without_the_payload(self):
         with tempfile.TemporaryDirectory() as tmp:

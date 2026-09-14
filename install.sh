@@ -50,8 +50,13 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "downloading $url"
-if ! curl -fsSL "$url" -o "$tmp/$archive"; then
-    if [ "$route" = desktop ] && [ "$version" = latest ]; then
+# Only a definite 404 means "this release has no such archive". Any other
+# failure (network, TLS, 403, 5xx) stops here rather than quietly changing
+# what gets installed.
+status="$(curl -sSL -o "$tmp/$archive" -w '%{http_code}' "$url" || echo "000")"
+if [ "$status" != 200 ]; then
+    rm -f "$tmp/$archive"
+    if [ "$status" = 404 ] && [ "$route" = desktop ] && [ "$version" = latest ]; then
         # Releases before the desktop archives existed (v0.1.0) have only
         # the commands; say so and install those rather than failing.
         echo "install.sh: this release has no desktop archive; installing the commands instead (set AGENTDOCKER_VERSION to a release that has one)"
@@ -60,7 +65,7 @@ if ! curl -fsSL "$url" -o "$tmp/$archive"; then
         echo "downloading $url"
         curl -fsSL "$url" -o "$tmp/$archive"
     else
-        echo "install.sh: download failed; nothing installed" >&2
+        echo "install.sh: download failed (HTTP $status); nothing installed" >&2
         exit 1
     fi
 fi

@@ -32,20 +32,27 @@ fn homebrew_caskrooms() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The Homebrew cask record that owns `application`, when there is no
-/// managed activation and the app sits where the cask puts it.
-fn homebrew_owner(
-    application: &Path,
-    active: Option<&Activation>,
-    caskrooms: &[PathBuf],
-) -> Option<PathBuf> {
-    if active.is_some() || application != Path::new("/Applications/AgentDocker.app") {
-        return None;
-    }
-    if !application.is_dir() {
+/// The Homebrew cask record that owns an AgentDocker app on this machine:
+/// present when the cask is installed and there is no managed activation.
+/// The app itself may sit anywhere (`brew --appdir`), so the record, not
+/// the application path, is the evidence.
+fn homebrew_owner(active: Option<&Activation>, caskrooms: &[PathBuf]) -> Option<PathBuf> {
+    if active.is_some() {
         return None;
     }
     caskrooms.iter().find(|room| room.is_dir()).cloned()
+}
+
+/// Refuse to install or update beside Homebrew's copy: one installation
+/// per machine, maintained by the tool that made it.
+fn refuse_homebrew_copy(active: Option<&Activation>) -> Result<()> {
+    if let Some(room) = homebrew_owner(active, &homebrew_caskrooms()) {
+        bail!(
+            "AgentDocker is installed by Homebrew ({}); update it with `brew upgrade --cask agentdocker-app` or remove it with `brew uninstall --cask agentdocker-app` rather than installing a second copy beside it",
+            room.display()
+        );
+    }
+    Ok(())
 }
 
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
@@ -1144,8 +1151,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
         }
         DesktopCommand::Status => {
-            let homebrew =
-                homebrew_owner(&layout.application, active.as_ref(), &homebrew_caskrooms());
+            let homebrew = homebrew_owner(active.as_ref(), &homebrew_caskrooms());
             println!(
                 "{}",
                 serde_json::to_string_pretty(
@@ -1161,15 +1167,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             local_preview,
             socket,
         } => {
-            if let Some(room) =
-                homebrew_owner(&layout.application, active.as_ref(), &homebrew_caskrooms())
-            {
-                bail!(
-                    "{} was installed by Homebrew ({}); update it with `brew upgrade --cask agentdocker-app` rather than installing a second copy beside it",
-                    layout.application.display(),
-                    room.display()
-                );
-            }
+            refuse_homebrew_copy(active.as_ref())?;
             return update::run(
                 &layout,
                 active.as_ref(),
@@ -1189,6 +1187,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
             expect_release,
             expect_current,
         } => {
+            refuse_homebrew_copy(active.as_ref())?;
             let (source, candidate) = inspect(&from, local_preview)?;
             (
                 source,
@@ -1630,27 +1629,16 @@ mod tests {
     }
 
     #[test]
-    fn homebrew_owns_the_system_app_only_without_a_managed_activation() {
+    fn homebrew_owns_the_app_when_its_record_exists_and_nothing_is_activated() {
         let tmp = tempfile::tempdir().unwrap();
         let room = tmp.path().join("Caskroom/agentdocker-app");
         let rooms = std::slice::from_ref(&room);
-        let system = Path::new("/Applications/AgentDocker.app");
-        // No cask record: not Homebrew's, whatever is in Applications.
-        assert_eq!(homebrew_owner(system, None, rooms), None);
+        // No cask record: not Homebrew's, wherever an app may sit.
+        assert_eq!(homebrew_owner(None, rooms), None);
         std::fs::create_dir_all(&room).unwrap();
-        // A per-user or trial application path is never the cask's.
-        assert_eq!(
-            homebrew_owner(
-                &tmp.path().join("Applications/AgentDocker.app"),
-                None,
-                rooms
-            ),
-            None
-        );
-        // The system app with a cask record and no activation is Homebrew's,
-        // provided the app is actually there; a managed activation wins.
-        let expected = system.is_dir().then(|| room.clone());
-        assert_eq!(homebrew_owner(system, None, rooms), expected);
+        // A cask record with no activation is Homebrew's, whatever
+        // --appdir put the app; a managed activation wins.
+        assert_eq!(homebrew_owner(None, rooms), Some(room.clone()));
         let active: Activation = serde_json::from_value(serde_json::json!({
             "format": 1,
             "current": {"id": "a".repeat(64), "version": "0.1.0", "source_commit": "b".repeat(40),
@@ -1659,7 +1647,7 @@ mod tests {
             "previous": null
         }))
         .unwrap();
-        assert_eq!(homebrew_owner(system, Some(&active), rooms), None);
+        assert_eq!(homebrew_owner(Some(&active), rooms), None);
     }
 
     #[test]

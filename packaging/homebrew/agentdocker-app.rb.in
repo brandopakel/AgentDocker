@@ -43,12 +43,11 @@ cask "agentdocker-app" do
     Update with `brew upgrade --cask agentdocker-app`; the app's own
     `agentdocker desktop update` does not manage a Homebrew installation.
 
-    If macOS refuses to open AgentDocker.app because it is not signed with
-    an Apple Developer ID, reinstall with --no-quarantine:
+    Until the release is signed with an Apple Developer ID, macOS refuses
+    the quarantined app and the `agentdocker` and `agentd` commands inside
+    it alike. Reinstall with --no-quarantine to run them:
 
       brew install --cask --no-quarantine brandopakel/tap/agentdocker-app
-
-    The `agentdocker` and `agentd` commands are unaffected.
   CAVEATS
 
   # Stop the login service this user may have installed before the
