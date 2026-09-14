@@ -85,7 +85,7 @@ replaces the provider's tool approval decisions.
 ## Channels and reviews
 
 Ordinary channel messages use
-`agentdocker send --as <agent> --to channel:<id> "message"`. The `--note` on a
+`agentdocker send --from <agent> --to channel:<id> "message"`. The `--note` on a
 review request is not the only channel message mechanism.
 
 `review-request --as <agent> <channel> --note "..."` queues a request to the other
