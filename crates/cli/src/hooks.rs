@@ -775,6 +775,10 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
     let mut labels = std::collections::BTreeMap::from([
         ("via".to_owned(), "hook".to_owned()),
         ("session_id".to_owned(), input.session_id.clone()),
+        (
+            agentdocker_core::agent::NAME_LABEL.to_owned(),
+            agentdocker_core::agent::GENERATED_NAME.to_owned(),
+        ),
     ]);
     if let Some(source) = &input.source {
         labels.insert("source".to_owned(), source.clone());

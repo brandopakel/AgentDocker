@@ -77,6 +77,17 @@ Project tabs provide:
 
 ## Inbox and tools
 
+Sessions are shown by name. A name an adapter generated from a runtime and
+an identifier (the record says so, or it is exactly that adapter's form for the
+record's own pid or session) reads as the tool's label, Claude Code or Codex,
+numbered by first appearance when more than one session of that tool has been
+in the project, live or ended, so a number never changes when a neighbour
+finishes. A name somebody chose is shown as chosen, whatever it looks like. An
+author the window has no record of reads as an unknown session. The session id
+stays under Details. In a narrow window Inbox shows either the conversation
+list or one conversation; choosing one, a notification, or the next question
+opens that conversation, and **Conversations** returns to the list.
+
 Inbox reads like a messenger. The left column lists one conversation per agent
 with its mark, the latest line and how many items wait; **Everyone** shows all
 of them. The conversation on the right starts with that agent's open questions

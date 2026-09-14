@@ -274,6 +274,7 @@ impl App {
                 .map(|q| (q.id.clone(), self.canonical_agent(&q.from).to_owned()));
             if let Some((_, agent)) = &next {
                 self.shell.inbox_thread = Some(agent.clone());
+                self.shell.inbox_open = true;
             }
             next.map(|(id, _)| id)
         } else {
@@ -1353,6 +1354,9 @@ impl App {
             Screen::Channels
         } else {
             self.shell.inbox_thread = self.shell.selected.clone();
+            // Opened, not merely selected: in the narrow layout the list
+            // would otherwise hide the conversation the notification names.
+            self.shell.inbox_open = true;
             Screen::Questions
         };
         if let Some(channel) = channel {
@@ -1982,6 +1986,10 @@ mod tests {
         assert_eq!(app.screen, Screen::Questions);
         assert_eq!(app.shell.message_detail, Some(id.clone()));
         assert_eq!(app.shell.inbox_thread.as_deref(), Some("asker"));
+        assert!(
+            app.shell.inbox_open,
+            "a notification opens the conversation, narrow or wide"
+        );
         assert!(app.shell.pending_answer_reveal.is_none());
         assert!(!app.shell.reveal_next_question);
         assert_eq!(app.answers[&id], "target draft");

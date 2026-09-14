@@ -2153,10 +2153,19 @@ impl Daemon {
             .or_else(|| procinfo::runtime_of(&process.argv).map(str::to_owned))
             .unwrap_or_else(|| "custom".to_owned());
         let spec = AgentSpec {
-            name: name.unwrap_or_else(|| format!("{runtime}-{pid}")),
+            name: name.clone().unwrap_or_else(|| format!("{runtime}-{pid}")),
             runtime: runtime.clone(),
             workdir: cwd,
-            labels: BTreeMap::from([("adopted".to_owned(), "true".to_owned())]),
+            labels: {
+                let mut labels = BTreeMap::from([("adopted".to_owned(), "true".to_owned())]);
+                if name.is_none() {
+                    labels.insert(
+                        agentdocker_core::agent::NAME_LABEL.to_owned(),
+                        agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                    );
+                }
+                labels
+            },
             ..AgentSpec::default()
         };
         let response = self.register(spec, Some(pid), None).await;
@@ -4816,6 +4825,10 @@ impl State {
         }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
+            record.spec.labels.insert(
+                agentdocker_core::agent::NAME_LABEL.to_owned(),
+                agentdocker_core::agent::GENERATED_NAME.to_owned(),
+            );
         }
         // One process, one agent.
         //

@@ -902,28 +902,28 @@ impl App {
             .iter()
             .find(|a| a.id.as_str() == id)
             .map(|a| self.display_name(a))
-            .unwrap_or_else(|| "a session that has ended".to_owned())
+            // Not knowing the record does not prove the session ended.
+            .unwrap_or_else(|| "an unknown session".to_owned())
     }
 
     /// The name a person reads for an agent. Adapters register sessions as
-    /// `<runtime>-<pid or session id>`; that suffix is an identifier, not a
-    /// name, so it is dropped and the runtime's label shown instead. When
-    /// two live sessions of the same tool share a project they are told
-    /// apart by their order of arrival, never by a hash. A name somebody
-    /// chose is shown as chosen.
+    /// `<runtime>-<pid or session id>`; the record says when its name was
+    /// generated like that, and then the runtime's label is shown instead.
+    /// Sessions of one tool in one project are told apart by their order of
+    /// first appearance, live or ended, so a number never changes when a
+    /// neighbour finishes. A name somebody chose is shown as chosen.
     fn display_name(&self, agent: &AgentRecord) -> String {
-        let base = humanized_name(&agent.spec.name, &agent.spec.runtime);
-        if base == agent.spec.name {
-            return base;
+        if !agent.name_is_generated() {
+            return agent.spec.name.clone();
         }
+        let base = runtime_label(&agent.spec.runtime);
         let mut peers: Vec<&AgentRecord> = self
             .agents
             .iter()
             .filter(|a| {
-                a.status.is_live() == agent.status.is_live()
+                a.name_is_generated()
                     && a.spec.runtime == agent.spec.runtime
                     && a.project.as_ref().map(|p| p.id()) == agent.project.as_ref().map(|p| p.id())
-                    && humanized_name(&a.spec.name, &a.spec.runtime) == base
             })
             .collect();
         if peers.len() < 2 {
@@ -937,10 +937,15 @@ impl App {
     }
 
     /// Journal lines name agents as they registered; show them as people
-    /// read them.
+    /// read them. The author is found by id, never by name: two records can
+    /// share a name and only one of them wrote the line.
     fn journal_line(&self, entry: &agentdocker_core::JournalEntry) -> String {
         let line = entry.line();
-        let Some(agent) = self.agents.iter().find(|a| a.spec.name == entry.agent_name) else {
+        let Some(id) = entry.agent.as_ref() else {
+            return line;
+        };
+        let id = self.canonical_agent(id.as_str());
+        let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
             return line;
         };
         let shown = self.display_name(agent);
@@ -1716,27 +1721,12 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
     });
 }
 
-/// `codex-51242`, `claude-218845eb` and `claude-code-1072` are generated
-/// registrations: a runtime and an identifier. Return the runtime's label
-/// for those, or the name itself for anything a person chose.
-pub(crate) fn humanized_name(name: &str, runtime: &str) -> String {
-    let generated = |stem: &str| -> Option<String> {
-        let (head, tail) = name.rsplit_once('-')?;
-        let looks_like_id = tail.len() >= 3 && tail.chars().all(|c| c.is_ascii_hexdigit());
-        if !looks_like_id {
-            return None;
-        }
-        let head_matches = head == stem
-            || head == runtime
-            || stem.starts_with(&format!("{head}-"))
-            || runtime.starts_with(&format!("{head}-"));
-        head_matches.then(|| {
-            agentdocker_core::runtime::spec(runtime)
-                .map(|spec| spec.label.to_owned())
-                .unwrap_or_else(|| runtime.to_owned())
-        })
-    };
-    generated(runtime).unwrap_or_else(|| name.to_owned())
+/// The label a tool is shown under, or its runtime id when the catalog
+/// does not know it.
+pub(crate) fn runtime_label(runtime: &str) -> String {
+    agentdocker_core::runtime::spec(runtime)
+        .map(|spec| spec.label.to_owned())
+        .unwrap_or_else(|| runtime.to_owned())
 }
 
 #[cfg(test)]
@@ -3176,50 +3166,115 @@ mod tests {
         assert!(app.shell.unviewed_done.is_empty());
     }
 
-    #[test]
-    fn generated_registrations_read_as_their_tool_and_chosen_names_stay() {
-        assert_eq!(humanized_name("codex-51242", "codex"), "Codex");
-        assert_eq!(
-            humanized_name("claude-218845eb", "claude-code"),
-            "Claude Code"
+    fn record(name: &str, runtime: &str, pid: Option<u32>) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: name.into(),
+                runtime: runtime.into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
         );
-        assert_eq!(
-            humanized_name("claude-code-1072", "claude-code"),
-            "Claude Code"
-        );
-        assert_eq!(humanized_name("reviewer", "codex"), "reviewer");
-        assert_eq!(humanized_name("parser-fix-2", "codex"), "parser-fix-2");
-        assert_eq!(humanized_name("codex-51242", "unknown-tool"), "codex-51242");
+        record.pid = pid;
+        record.status = agentdocker_core::AgentStatus::Running;
+        record
     }
 
     #[test]
-    fn two_sessions_of_one_tool_in_a_project_are_numbered_by_arrival() {
+    fn a_name_is_generated_by_provenance_not_by_its_shape() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        // Labelled by its adapter: generated, whatever it looks like.
+        let mut labelled = record("anything", "codex", None);
+        labelled.spec.labels.insert(
+            agentdocker_core::agent::NAME_LABEL.into(),
+            agentdocker_core::agent::GENERATED_NAME.into(),
+        );
+        // An older record: only the exact adapter form from its own pid.
+        let by_pid = record("codex-51242", "codex", Some(51242));
+        let mut by_session = record("claude-218845eb", "claude-code", None);
+        by_session.spec.labels.insert(
+            "session_id".into(),
+            "218845eb-ba1e-4457-bb5a-e1829f5652dd".into(),
+        );
+        // Chosen names that merely look like identifiers stay as chosen.
+        let chosen_hex = record("codex-cafe", "codex", Some(51242));
+        let chosen_pid_elsewhere = record("codex-51242", "codex", Some(999));
+        let chosen = record("reviewer", "codex", Some(1));
+        app.agents = vec![
+            labelled.clone(),
+            by_pid.clone(),
+            by_session.clone(),
+            chosen_hex.clone(),
+            chosen_pid_elsewhere.clone(),
+            chosen.clone(),
+        ];
+        assert!(app.display_name(&labelled).starts_with("Codex"));
+        assert!(app.display_name(&by_pid).starts_with("Codex"));
+        assert_eq!(app.display_name(&by_session), "Claude Code");
+        assert_eq!(app.display_name(&chosen_hex), "codex-cafe");
+        assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-51242");
+        assert_eq!(app.display_name(&chosen), "reviewer");
+    }
+
+    #[test]
+    fn numbers_come_from_first_appearance_and_survive_a_neighbour_ending() {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let now = Utc::now();
-        let mut first = AgentRecord::new(
-            agentdocker_core::AgentSpec {
-                name: "codex-5124".into(),
-                runtime: "codex".into(),
-                ..Default::default()
-            },
-            false,
-            now,
-        );
-        first.status = agentdocker_core::AgentStatus::Running;
-        let mut second = first.clone();
+        let mut first = record("codex-5124", "codex", Some(5124));
+        first.created_at = now;
+        let mut second = record("codex-6250", "codex", Some(6250));
         second.id = agentdocker_core::AgentId::from("second-id");
-        second.spec.name = "codex-6250".into();
         second.created_at = now + chrono::Duration::seconds(1);
-        let mut named = first.clone();
-        named.id = agentdocker_core::AgentId::from("named-id");
-        named.spec.name = "reviewer".into();
-        app.agents = vec![second.clone(), first.clone(), named.clone()];
+        app.agents = vec![second.clone(), first.clone()];
         assert_eq!(app.display_name(&first), "Codex 1");
         assert_eq!(app.display_name(&second), "Codex 2");
-        assert_eq!(app.display_name(&named), "reviewer");
+        // The first one ends: the second keeps its number, and a newcomer
+        // takes the next one rather than the vacated one.
+        first.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let mut third = record("codex-7000", "codex", Some(7000));
+        third.id = agentdocker_core::AgentId::from("third-id");
+        third.created_at = now + chrono::Duration::seconds(2);
+        app.agents = vec![second.clone(), first.clone(), third.clone()];
+        assert_eq!(app.display_name(&first), "Codex 1");
+        assert_eq!(app.display_name(&second), "Codex 2");
+        assert_eq!(app.display_name(&third), "Codex 3");
+        // Alone, no number.
         app.agents = vec![first.clone()];
         assert_eq!(app.display_name(&first), "Codex");
+    }
+
+    #[test]
+    fn journal_lines_are_attributed_by_agent_id_not_by_name() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let now = Utc::now();
+        let mut older = record("codex-1", "codex", Some(1));
+        older.created_at = now;
+        let mut newer = record("codex-2", "codex", Some(2));
+        newer.id = agentdocker_core::AgentId::from("newer-id");
+        newer.created_at = now + chrono::Duration::seconds(1);
+        app.agents = vec![older.clone(), newer.clone()];
+        let entry: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({
+            "project": "p", "seq": 7, "at": now, "agent": newer.id.as_str(), "agent_name": "codex-2",
+            "kind": "note", "summary": "done", "summary_source": "explicit"
+        }))
+        .unwrap();
+        let line = app.journal_line(&entry);
+        assert!(line.contains("Codex 2"), "{line}");
+        assert!(!line.contains("codex-2"), "{line}");
+        // A line whose author is not on record is left as it is.
+        let unknown: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({
+            "project": "p", "seq": 8, "at": now, "agent": "nobody", "agent_name": "codex-2",
+            "kind": "note", "summary": "done", "summary_source": "explicit"
+        }))
+        .unwrap();
+        assert!(app.journal_line(&unknown).contains("codex-2"));
+        assert_eq!(app.name_of("nobody"), "an unknown session");
     }
 }

@@ -268,10 +268,19 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
         command: Vec::new(),
         workdir,
         env: BTreeMap::new(),
-        labels: BTreeMap::from([
-            ("via".to_owned(), "mcp".to_owned()),
-            ("registrar".to_owned(), registrar.clone()),
-        ]),
+        labels: {
+            let mut labels = BTreeMap::from([
+                ("via".to_owned(), "mcp".to_owned()),
+                ("registrar".to_owned(), registrar.clone()),
+            ]);
+            if args.name.is_none() {
+                labels.insert(
+                    agentdocker_core::agent::NAME_LABEL.to_owned(),
+                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                );
+            }
+            labels
+        },
         isolate: false,
         tty: false,
         restore: false,
