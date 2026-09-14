@@ -139,6 +139,9 @@ pub struct Daemon {
     /// pending scan without holding any lock across async work.
     scanning: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
+    /// How session owners are run: as processes of the daemon binary, or
+    /// in-process where no daemon binary is on hand (tests).
+    owner_mode: supervisor::OwnerMode,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1025,6 +1028,7 @@ impl Daemon {
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            owner_mode: supervisor::OwnerMode::detect(),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -1549,6 +1553,7 @@ impl Daemon {
                         running.pid = Some(pid);
                         running.process_started_at = process_started_at;
                         running.process_group = Some(pid);
+                        running.owner = Some(spawned.owner.clone());
                         running.status = AgentStatus::Running;
                         running.started_at = Some(now);
                         running.last_seen = now;
@@ -2458,6 +2463,10 @@ impl Daemon {
     }
 
     /// The agent is gone; so is its terminal.
+    pub fn owner_mode(&self) -> supervisor::OwnerMode {
+        self.owner_mode.clone()
+    }
+
     pub fn end_session(&self, agent: &AgentId) {
         lock(&self.sessions).remove(agent);
     }

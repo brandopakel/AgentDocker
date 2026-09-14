@@ -10,6 +10,7 @@
 //! binary is [`main`] and nothing else.
 
 pub mod daemon;
+mod owner;
 pub mod reconcile;
 mod server;
 mod store;
@@ -87,6 +88,12 @@ pub struct Args {
     /// Unix socket to listen on (default: <home>/agentd.sock).
     #[arg(long, env = "AGENTDOCKER_SOCKET")]
     socket: Option<PathBuf>,
+
+    /// Run as one managed agent's session owner: read the launch from
+    /// stdin, hold the child and its terminal, serve the daemon on the
+    /// agent's session socket. Started by the daemon, not by hand.
+    #[arg(long, hide = true)]
+    session_owner: bool,
 }
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
@@ -97,8 +104,18 @@ pub fn main() -> anyhow::Result<()> {
 /// Run the daemon until SIGTERM or Ctrl-C. Exits at once, successfully,
 /// when another daemon already holds the socket's lock: clients start a
 /// daemon when they cannot connect, and two may race to do so.
+pub fn run(args: Args) -> anyhow::Result<()> {
+    if args.session_owner {
+        let launch: owner::Launch = serde_json::from_reader(std::io::stdin().lock())
+            .map_err(|error| anyhow::anyhow!("session owner expects a launch on stdin: {error}"))?;
+        let code = owner::main(launch)?;
+        std::process::exit(code);
+    }
+    serve(args)
+}
+
 #[tokio::main]
-pub async fn run(args: Args) -> anyhow::Result<()> {
+async fn serve(args: Args) -> anyhow::Result<()> {
     if args.build_info {
         println!(
             "{}",
@@ -153,6 +170,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let maintenance = async {
         // Liveness and lease expiration must not retire restore candidates
         // while their identities and protection are being recovered.
+        daemon.reattach_owners().await;
         daemon.restore_agents().await;
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         let mut ticks: u64 = 0;

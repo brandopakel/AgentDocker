@@ -59,6 +59,52 @@ pub(super) struct HeldLease {
 const RESTORE_POINT_LIFE: Duration = Duration::hours(12);
 
 impl Daemon {
+    /// Take back the managed agents whose session owners outlived the
+    /// previous daemon. Runs before the liveness sweep, so an agent with a
+    /// live owner is never retired for lacking a supervisor here.
+    pub async fn reattach_owners(self: &Arc<Self>) {
+        let candidates: Vec<AgentRecord> = lock(&self.state)
+            .registry
+            .live()
+            .filter(|a| a.managed && a.owner.is_some())
+            .cloned()
+            .collect();
+        for record in candidates {
+            let id = record.id.clone();
+            match supervisor::reattach(self, &record).await {
+                Ok(supervisor::Reattached::Running(spawned)) => {
+                    if let Some(session) = spawned.session.clone() {
+                        lock(&self.sessions).insert(id.clone(), session);
+                    }
+                    let owner_pid = spawned.owner.pid;
+                    {
+                        let mut state = lock(&self.state);
+                        state.supervised.insert(id.clone(), spawned.control.clone());
+                        state.emit(EventKind::AgentOwnerReattached {
+                            agent: id.clone(),
+                            owner_pid,
+                        });
+                    }
+                    info!(agent = %id.short(), owner_pid, "reattached to the session owner");
+                    supervisor::supervise(self.clone(), id, *spawned);
+                }
+                Ok(supervisor::Reattached::Exited(report)) => {
+                    info!(agent = %id.short(), "the agent finished while no daemon was watching");
+                    self.mark_exited(&id, supervisor::exit_status(&report));
+                }
+                Err(error) => {
+                    let reason = format!("session owner lost across restart: {error:#}");
+                    warn!(agent = %id.short(), %reason, "cannot reattach");
+                    self.emit(EventKind::AgentOwnerLost {
+                        agent: id.clone(),
+                        reason: reason.clone(),
+                    });
+                    self.mark_exited(&id, AgentStatus::Failed { reason });
+                }
+            }
+        }
+    }
+
     /// Recheck after asynchronous log preparation, immediately before spawn.
     /// Restore checks may have yielded while a stop, a storage failure or an
     /// expired/reassigned lease changed whether this writer can start.
@@ -283,6 +329,7 @@ impl Daemon {
             running.pid = Some(pid);
             running.process_started_at = process_started_at;
             running.process_group = Some(pid);
+            running.owner = Some(spawned.owner.clone());
             running.status = AgentStatus::Running;
             running.started_at = Some(Utc::now());
             running.finished_at = None;
@@ -620,8 +667,9 @@ mod tests {
             restore: true,
             ..Default::default()
         };
-        let Response::Agent { agent } = daemon.handle(Request::Run { spec }).await else {
-            panic!("fixture launch failed")
+        let agent = match daemon.handle(Request::Run { spec }).await {
+            Response::Agent { agent } => agent,
+            other => panic!("fixture launch failed: {other:?}"),
         };
         assert!(matches!(
             daemon
