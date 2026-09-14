@@ -697,6 +697,10 @@ mod tests {
         report(&backend, &input, 42, now, now).await.unwrap();
         assert!(matches!(
             &backend.requests()[1],
+            Request::ReportAdapter { .. }
+        ));
+        assert!(matches!(
+            &backend.requests()[2],
             Request::ReportActivity { .. }
         ));
         input.cwd = different;
