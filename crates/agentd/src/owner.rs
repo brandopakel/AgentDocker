@@ -352,6 +352,9 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     .await;
     accepting.abort();
     let _ = std::fs::remove_file(&socket);
+    // The lock file goes while the lock is still held, so a successor that
+    // opens the same path afterwards makes its own; nothing is left behind.
+    let _ = std::fs::remove_file(&lock_path);
     Ok(code)
 }
 
