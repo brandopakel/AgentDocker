@@ -515,6 +515,20 @@ impl Daemon {
     pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
         lock(&self.state).mark_exited(id, status)
     }
+
+    /// Record an exit and say whether the store kept it. A store that was
+    /// already unavailable, or fails on this write, still retires the
+    /// supervision in memory but answers false, so the caller keeps whatever
+    /// external evidence of the exit it holds.
+    pub fn mark_exited_durably(&self, id: &AgentId, status: AgentStatus) -> bool {
+        let mut state = lock(&self.state);
+        if state.storage_error.is_some() {
+            state.mark_exited(id, status);
+            return false;
+        }
+        state.mark_exited(id, status);
+        state.storage_error.is_none()
+    }
     /// Report a duplicate record left over from before one process was
     /// one agent. Report, not repair.
     ///

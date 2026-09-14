@@ -445,6 +445,7 @@ pub enum EventKind {
     /// typed and nothing is replayed.
     AgentInputDropped {
         agent: AgentId,
+        reason: String,
     },
     /// A managed agent's session owner could not be found after a daemon
     /// restart and left no exit report; the agent is recorded as failed.

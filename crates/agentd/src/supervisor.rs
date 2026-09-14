@@ -245,8 +245,12 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     let launch = launch_for(daemon, record);
     let socket = socket_path(&daemon.home, &record.id);
     // A stale exit file from an earlier life of this id must not be read
-    // as this launch's exit.
-    let _ = std::fs::remove_file(exit_path(&daemon.home, &record.id));
+    // as this launch's exit; if it cannot be cleared, nothing launches.
+    match std::fs::remove_file(exit_path(&daemon.home, &record.id)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("cannot clear a stale exit report"),
+    }
     let link = match daemon.owner_mode() {
         OwnerMode::InProcess => OwnerLink::InProcess(tokio::spawn(crate::owner::serve(launch))),
         OwnerMode::Process(executable) => {
@@ -335,13 +339,31 @@ pub(crate) async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
 
 /// Whether the recorded owner process is still the one that was recorded:
 /// same pid, same birth. A recycled pid is not an owner.
-fn owner_alive(owner: &SessionOwner) -> bool {
+pub(crate) fn owner_alive(owner: &SessionOwner) -> bool {
     agentdocker_host::procinfo::start_time(owner.pid) == Some(owner.started_at)
 }
 
-fn read_exit_file(path: &Path) -> Option<ExitReport> {
+/// The exit report at `path`, only if it is this agent's, from this owner,
+/// about this child. Anything else is another generation's and is left
+/// where it is, unread.
+fn read_exit_file(
+    path: &Path,
+    agent: &AgentId,
+    owner: &SessionOwner,
+    child_pid: u32,
+    child_started_at: chrono::DateTime<Utc>,
+) -> Option<ExitReport> {
     let text = std::fs::read(path).ok()?;
-    serde_json::from_slice(&text).ok()
+    let report: ExitReport = serde_json::from_slice(&text).ok()?;
+    let bound = report.agent == *agent
+        && report.owner == *owner
+        && report.child.pid == child_pid
+        && report.child.started_at == child_started_at;
+    if !bound {
+        tracing::warn!(agent = %agent, path = %path.display(), "exit report belongs to another generation; ignored");
+        return None;
+    }
+    Some(report)
 }
 
 /// Check that the owner answering on the socket is the one on the record,
@@ -379,7 +401,7 @@ pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<R
     let child_started_at = record
         .process_started_at
         .context("record has no child birth")?;
-    if let Some(report) = read_exit_file(&exit) {
+    if let Some(report) = read_exit_file(&exit, &record.id, &owner, child_pid, child_started_at) {
         // Finished while nobody watched; the owner may still be waiting to
         // hear that this was recorded.
         return Ok(Reattached::Exited(report));
@@ -566,6 +588,15 @@ async fn relay_until_exit(
     resizes: &mut Option<mpsc::Receiver<(u16, u16)>>,
 ) -> Outcome {
     let exit_file = exit_path(&daemon.home, id);
+    let exit_report = |spawned: &Spawned| {
+        read_exit_file(
+            &exit_file,
+            id,
+            &spawned.owner,
+            spawned.pid,
+            spawned.process_started_at,
+        )
+    };
     loop {
         let dropped = loop {
             tokio::select! {
@@ -582,7 +613,10 @@ async fn relay_until_exit(
                         // replays them.
                         tracing::warn!(agent = %id, "terminal input was dropped: the agent is not reading its terminal");
                         spawned.show(b"\r\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\r\n");
-                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped { agent: id.clone() });
+                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped {
+                            agent: id.clone(),
+                            reason: "the terminal's input queue was full".into(),
+                        });
                     }
                     Ok(Some(OwnerReport::OutputFailed { reason })) => {
                         tracing::warn!(agent = %id, %reason, "agent output capture failed");
@@ -597,13 +631,21 @@ async fn relay_until_exit(
                     Err(error) => break Some(error),
                 },
                 Some(bytes) = async { keystrokes.as_mut().expect("guarded").recv().await }, if keystrokes.is_some() => {
-                    if spawned.controller.send(&OwnerCommand::Input { bytes }).await.is_err() {
-                        *keystrokes = None;
+                    if let Err(error) = spawned.controller.send(&OwnerCommand::Input { bytes }).await {
+                        // The frame may or may not have reached the owner. Say
+                        // so, never replay it, keep typing possible, and let
+                        // the reconnect below bring a fresh stream.
+                        spawned.show(b"\r\n[agentdocker: input delivery uncertain; retype it]\r\n");
+                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped {
+                            agent: id.clone(),
+                            reason: format!("delivery uncertain: {error:#}"),
+                        });
+                        break Some(error);
                     }
                 }
                 Some((cols, rows)) = async { resizes.as_mut().expect("guarded").recv().await }, if resizes.is_some() => {
-                    if spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await.is_err() {
-                        *resizes = None;
+                    if let Err(error) = spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await {
+                        break Some(error);
                     }
                 }
                 Ok(()) = spawned.stop.changed() => {
@@ -616,7 +658,7 @@ async fn relay_until_exit(
         };
         // The transport went away. The exit file, if any, is the truth;
         // otherwise a living owner is reconnected and a dead one is lost.
-        if let Some(report) = read_exit_file(&exit_file) {
+        if let Some(report) = exit_report(spawned) {
             return Outcome::Exited(report);
         }
         if let Some(error) = &dropped {
@@ -626,7 +668,7 @@ async fn relay_until_exit(
         // long as the owner process lives, and only its death, or its exit
         // report, ends supervision.
         loop {
-            if let Some(report) = read_exit_file(&exit_file) {
+            if let Some(report) = exit_report(spawned) {
                 return Outcome::Exited(report);
             }
             if !owner_alive(&spawned.owner) {
@@ -682,7 +724,7 @@ pub fn supervise(
                 let status = exit_status(&report);
                 // Durable first, then acknowledged: an exit the store did not
                 // keep stays in the exit file for a daemon that can keep it.
-                if daemon.mark_exited(&id, status.clone()).is_some() {
+                if daemon.mark_exited_durably(&id, status.clone()) {
                     let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
                     let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
                 } else {

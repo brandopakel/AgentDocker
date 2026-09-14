@@ -93,6 +93,76 @@ impl Daemon {
                     self.mark_exited(&id, supervisor::exit_status(&report));
                 }
                 Err(error) => {
+                    let owner = record.owner.clone().expect("candidates have owners");
+                    if !supervisor::owner_alive(&owner) {
+                        let reason = format!("session owner lost across restart: {error:#}");
+                        warn!(agent = %id.short(), %reason, "cannot reattach");
+                        self.emit(EventKind::AgentOwnerLost {
+                            agent: id.clone(),
+                            reason: reason.clone(),
+                        });
+                        self.mark_exited(&id, AgentStatus::Failed { reason });
+                        continue;
+                    }
+                    // The owner lives but did not answer in time: the agent
+                    // stays owned, out of the liveness sweep's and restore's
+                    // reach, and attachment is retried until the owner
+                    // answers, exits or dies. Other recovery is not held up.
+                    warn!(agent = %id.short(), %error, "session owner alive but not answering; retrying");
+                    let (control, stopped) = tokio::sync::watch::channel(None);
+                    lock(&self.state).supervised.insert(id.clone(), control);
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.retry_reattach(record, stopped).await;
+                    });
+                }
+            }
+        }
+    }
+
+    /// Keep trying to attach to a living owner. Ends when the owner answers
+    /// (supervision resumes, a stop asked meanwhile is delivered), exits
+    /// (its report is recorded) or dies (the agent is recorded as lost).
+    async fn retry_reattach(
+        self: Arc<Self>,
+        record: AgentRecord,
+        stopped: tokio::sync::watch::Receiver<Option<bool>>,
+    ) {
+        let id = record.id.clone();
+        let owner = record.owner.clone().expect("candidates have owners");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            match supervisor::reattach(&self, &record).await {
+                Ok(supervisor::Reattached::Running(spawned)) => {
+                    if let Some(session) = spawned.session.clone() {
+                        lock(&self.sessions).insert(id.clone(), session);
+                    }
+                    let owner_pid = spawned.owner.pid;
+                    let pending = *stopped.borrow();
+                    if let Some(force) = pending {
+                        spawned.control.send_replace(Some(force));
+                    }
+                    {
+                        let mut state = lock(&self.state);
+                        state.supervised.insert(id.clone(), spawned.control.clone());
+                        state.emit(EventKind::AgentOwnerReattached {
+                            agent: id.clone(),
+                            owner_pid,
+                        });
+                    }
+                    info!(agent = %id.short(), owner_pid, "reattached to the session owner after retrying");
+                    supervisor::supervise(self.clone(), id, *spawned);
+                    return;
+                }
+                Ok(supervisor::Reattached::Exited(report)) => {
+                    info!(agent = %id.short(), "the agent finished while no daemon was watching");
+                    self.mark_exited(&id, supervisor::exit_status(&report));
+                    return;
+                }
+                Err(error) if supervisor::owner_alive(&owner) => {
+                    tracing::debug!(agent = %id.short(), %error, "session owner still not answering");
+                }
+                Err(error) => {
                     let reason = format!("session owner lost across restart: {error:#}");
                     warn!(agent = %id.short(), %reason, "cannot reattach");
                     self.emit(EventKind::AgentOwnerLost {
@@ -100,6 +170,7 @@ impl Daemon {
                         reason: reason.clone(),
                     });
                     self.mark_exited(&id, AgentStatus::Failed { reason });
+                    return;
                 }
             }
         }
@@ -654,6 +725,206 @@ impl Brief {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A store that is already unavailable cannot keep an exit: the exit
+    /// is retired in memory, but the owner's report is neither acknowledged
+    /// nor removed, so a daemon that can write finds it.
+    #[tokio::test]
+    async fn an_exit_the_store_cannot_keep_leaves_the_owner_report_in_place() {
+        let dir = TempDir::new().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let Response::Agent { agent } = daemon
+            .handle(Request::Run {
+                spec: AgentSpec {
+                    name: "poisoned".into(),
+                    command: vec!["sh".into(), "-c".into(), "exit 5".into()],
+                    workdir: Some(dir.path().to_path_buf()),
+                    ..Default::default()
+                },
+            })
+            .await
+        else {
+            panic!("launch failed")
+        };
+        // Poison before the exit lands: any write from here on fails.
+        lock(&daemon.state).store.reject_writes_for_test();
+        let exit = agentdocker_core::session::exit_path(&daemon.home, &agent.id);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !lock(&daemon.state).supervised.contains_key(&agent.id) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "supervision did not end"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let state = lock(&daemon.state);
+        assert!(state.storage_error.is_some());
+        assert!(
+            exit.exists(),
+            "the owner's exit report must survive an exit the store could not keep"
+        );
+        let report: agentdocker_core::session::ExitReport =
+            serde_json::from_slice(&std::fs::read(&exit).unwrap()).unwrap();
+        assert_eq!(report.agent, agent.id);
+        assert_eq!(report.code, Some(5));
+    }
+
+    /// An owner that is alive but slow to answer at daemon startup keeps its
+    /// agent owned: no liveness retirement, no relaunch, and once it answers
+    /// supervision resumes and its exit is recorded exactly.
+    #[tokio::test]
+    async fn a_slow_owner_at_startup_keeps_its_agent_owned_until_it_answers() {
+        use agentdocker_core::session::{
+            ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport, SessionOwner,
+            socket_path,
+        };
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("state");
+        let daemon = Arc::new(Daemon::open(home.clone(), dir.path().join("sock")).unwrap());
+        // The "owner" is this test process; the child is a real sleep, so
+        // both identities are live and verifiable.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let child_pid = child.id();
+        let child_started_at = agentdocker_host::procinfo::start_time(child_pid).unwrap();
+        let owner = SessionOwner {
+            pid: std::process::id(),
+            started_at: agentdocker_host::procinfo::start_time(std::process::id()).unwrap(),
+        };
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "slow-owned".into(),
+                    command: vec!["sleep".into(), "30".into()],
+                    workdir: Some(dir.path().to_path_buf()),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed")
+        };
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&agent.id).unwrap();
+            record.managed = true;
+            record.pid = Some(child_pid);
+            record.process_started_at = Some(child_started_at);
+            record.process_group = Some(child_pid);
+            record.owner = Some(owner.clone());
+            record.status = AgentStatus::Running;
+            let record = record.clone();
+            state.store.upsert_agent(&record).unwrap();
+        }
+        let socket = socket_path(&home, &agent.id);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let identity = ChildIdentity {
+            pid: child_pid,
+            started_at: child_started_at,
+            tty: false,
+        };
+        // The fake owner binds only after the daemon's first attempt has
+        // given up, then answers like a real one.
+        let fake = {
+            let socket = socket.clone();
+            let owner = owner.clone();
+            let identity = identity.clone();
+            let agent_id = agent.id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                let framed = |value: String| {
+                    let mut line = value.into_bytes();
+                    line.push(b'\n');
+                    line
+                };
+                let hello = OwnerHello {
+                    format: FORMAT,
+                    agent: agent_id.clone(),
+                    owner_pid: owner.pid,
+                    owner_started_at: owner.started_at,
+                    child: Some(identity.clone()),
+                    activated: true,
+                    output_offset: 0,
+                };
+                for text in [
+                    serde_json::to_string(&hello).unwrap(),
+                    serde_json::to_string(&OwnerReport::Prepared {
+                        child: identity.clone(),
+                    })
+                    .unwrap(),
+                    serde_json::to_string(&OwnerReport::Activated).unwrap(),
+                ] {
+                    writer.write_all(&framed(text)).await.unwrap();
+                }
+                // Report an exit and expect the acknowledgement.
+                let report = ExitReport {
+                    agent: agent_id,
+                    owner,
+                    child: identity,
+                    code: Some(9),
+                    signal: None,
+                    log_flushed: true,
+                    at: Utc::now(),
+                };
+                let text = serde_json::to_string(&OwnerReport::Exited { status: report }).unwrap();
+                writer.write_all(&framed(text)).await.unwrap();
+                loop {
+                    let Some(line) = lines.next_line().await.unwrap() else {
+                        return false;
+                    };
+                    if matches!(
+                        serde_json::from_str::<OwnerCommand>(&line),
+                        Ok(OwnerCommand::Acknowledge)
+                    ) {
+                        return true;
+                    }
+                }
+            })
+        };
+        daemon.reattach_owners().await;
+        // First attempt gave up, but the agent stays owned and running.
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.supervised.contains_key(&agent.id),
+                "kept owned while retrying"
+            );
+            assert_eq!(
+                state.registry.get(&agent.id).unwrap().status,
+                AgentStatus::Running
+            );
+        }
+        daemon.check_liveness();
+        assert_eq!(
+            lock(&daemon.state).registry.get(&agent.id).unwrap().status,
+            AgentStatus::Running,
+            "the liveness sweep leaves an owned agent alone"
+        );
+        let acknowledged = tokio::time::timeout(std::time::Duration::from_secs(10), fake)
+            .await
+            .expect("the retry attached in time")
+            .unwrap();
+        assert!(acknowledged, "the exit was acknowledged after recording");
+        assert_eq!(
+            lock(&daemon.state).registry.get(&agent.id).unwrap().status,
+            AgentStatus::Exited { code: Some(9) }
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     async fn saved() -> (TempDir, Arc<Daemon>, AgentRecord, PathBuf) {
         let dir = TempDir::new().unwrap();

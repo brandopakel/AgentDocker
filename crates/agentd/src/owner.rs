@@ -105,6 +105,8 @@ impl Output {
 /// Everything the connection tasks share.
 struct Shared {
     launch: Launch,
+    /// This owner's own identity, as the record and the exit report carry it.
+    owner: agentdocker_core::session::SessionOwner,
     hello: Mutex<OwnerHello>,
     output: Arc<std::sync::Mutex<Output>>,
     /// Live output: the offset of the chunk and the chunk.
@@ -152,6 +154,11 @@ pub fn main(launch: Launch) -> anyhow::Result<i32> {
     unsafe {
         let _ = nix::sys::signal::signal(Signal::SIGHUP, nix::sys::signal::SigHandler::SigIgn);
     }
+    // Hold the installed release this executable belongs to for as long as
+    // we own a child, so maintenance cannot prune an occupied release after
+    // the daemon that launched us has exited.
+    let _pin = agentdocker_host::installation::pin_current_executable()
+        .context("cannot pin the session owner's installed release")?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -278,6 +285,10 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     };
     let master = pty.map(|pty| Arc::new(pty.into_master()));
     let shared = Arc::new(Shared {
+        owner: agentdocker_core::session::SessionOwner {
+            pid: std::process::id(),
+            started_at: owner_started_at,
+        },
         hello: Mutex::new(OwnerHello {
             format: FORMAT,
             agent: launch.agent.clone(),
@@ -311,6 +322,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             // Every connection task is owned here so none outlives the
             // owner in-process, and finished ones are reaped as they end.
             let mut connections = tokio::task::JoinSet::new();
+            let mut current: Option<tokio::task::AbortHandle> = None;
             loop {
                 tokio::select! {
                     accepted = listener.accept() => match accepted {
@@ -322,10 +334,16 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
                                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                                     + 1
                             };
+                            // The superseded controller is cancelled outright:
+                            // one blocked on an idle owner would otherwise wait
+                            // for an event to learn it had been replaced.
+                            if let Some(previous) = current.take() {
+                                previous.abort();
+                            }
                             let shared = shared.clone();
-                            connections.spawn(async move {
+                            current = Some(connections.spawn(async move {
                                 let _ = controller(stream, shared, epoch).await;
-                            });
+                            }));
                         }
                         Err(error) => {
                             tracing::warn!(%error, "owner accept failed");
@@ -352,9 +370,8 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     .await;
     accepting.abort();
     let _ = std::fs::remove_file(&socket);
-    // The lock file goes while the lock is still held, so a successor that
-    // opens the same path afterwards makes its own; nothing is left behind.
-    let _ = std::fs::remove_file(&lock_path);
+    // The lock file stays: unlinking it would let an opener paused between
+    // open and flock lock the old inode while a third locks the new one.
     Ok(code)
 }
 
@@ -395,8 +412,8 @@ async fn supervise(
     }
     let mut owned = match tokio::task::spawn_blocking(move || pending.activate()).await {
         Ok(Ok(child)) => child,
-        Ok(Err(error)) => return finish_failed(&shared, format!("{error:#}")).await,
-        Err(error) => return finish_failed(&shared, error.to_string()).await,
+        Ok(Err(error)) => return finish_failed(&shared, &child, format!("{error:#}")).await,
+        Err(error) => return finish_failed(&shared, &child, error.to_string()).await,
     };
     {
         let mut hello = shared.hello.lock().await;
@@ -511,6 +528,9 @@ async fn supervise(
     }
     let report = match status {
         Ok(exit) => ExitReport {
+            agent: shared.launch.agent.clone(),
+            owner: shared.owner.clone(),
+            child: child.clone(),
             code: exit.code(),
             signal: std::os::unix::process::ExitStatusExt::signal(&exit),
             log_flushed,
@@ -519,6 +539,9 @@ async fn supervise(
         Err(error) => {
             tracing::warn!(agent = %shared.launch.agent, %error, "cannot wait for the agent");
             ExitReport {
+                agent: shared.launch.agent.clone(),
+                owner: shared.owner.clone(),
+                child: child.clone(),
                 code: None,
                 signal: None,
                 log_flushed,
@@ -529,9 +552,12 @@ async fn supervise(
     finish(&shared, report, &mut acknowledgement).await
 }
 
-async fn finish_failed(shared: &Arc<Shared>, reason: String) -> i32 {
+async fn finish_failed(shared: &Arc<Shared>, child: &ChildIdentity, reason: String) -> i32 {
     tracing::warn!(agent = %shared.launch.agent, %reason, "launch failed");
     let report = ExitReport {
+        agent: shared.launch.agent.clone(),
+        owner: shared.owner.clone(),
+        child: child.clone(),
         code: None,
         signal: None,
         log_flushed: true,

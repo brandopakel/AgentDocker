@@ -138,6 +138,12 @@ pub enum OwnerReport {
 /// An exit status that survives serialisation: the code, or the signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitReport {
+    /// Whose exit this is: the agent, the owner that held it and the child
+    /// it held, so a report from another generation of the same agent id
+    /// is never taken for this one.
+    pub agent: AgentId,
+    pub owner: SessionOwner,
+    pub child: ChildIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +170,16 @@ mod tests {
         );
         let report = OwnerReport::Exited {
             status: ExitReport {
+                agent: AgentId::from("abc"),
+                owner: SessionOwner {
+                    pid: 7,
+                    started_at: Utc::now(),
+                },
+                child: ChildIdentity {
+                    pid: 8,
+                    started_at: Utc::now(),
+                    tty: false,
+                },
                 code: Some(0),
                 signal: None,
                 log_flushed: true,
