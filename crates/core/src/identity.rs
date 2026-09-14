@@ -116,7 +116,16 @@ pub fn repair_pair<'a>(
     }
     for (key, value) in &a.spec.labels {
         if let Some(other) = b.spec.labels.get(key) {
-            if value != other && !(key == "session_id" && (value.is_empty() || other.is_empty())) {
+            // These adapters can independently register the same proven
+            // session. Their provenance is retained in the repair archive;
+            // it does not distinguish provider/process identity.
+            let adapter_provenance = key == "via"
+                && matches!(value.as_str(), "hook" | "mcp")
+                && matches!(other.as_str(), "hook" | "mcp");
+            if value != other
+                && !adapter_provenance
+                && !(key == "session_id" && (value.is_empty() || other.is_empty()))
+            {
                 return Err("the records carry conflicting identity labels");
             }
         }
@@ -200,6 +209,29 @@ mod tests {
                 "case {changed}"
             );
         }
+    }
+
+    #[test]
+    fn known_adapter_provenance_does_not_replace_or_conflict_with_identity_evidence() {
+        let mut a = record("a", Some("session"));
+        let mut b = record("b", None);
+        a.spec.labels.insert("via".into(), "hook".into());
+        b.spec.labels.insert("via".into(), "mcp".into());
+        assert!(repair_pair([&a, &b], &a.id, &b.id).is_ok());
+        assert!(repair_pair([&a, &b], &b.id, &a.id).is_ok());
+        for (key, value) in [
+            ("session_id", "other-session"),
+            ("via", "unknown-adapter"),
+            ("role", "writer"),
+        ] {
+            let mut altered = b.clone();
+            altered.spec.labels.insert(key.into(), value.into());
+            let mut a = a.clone();
+            a.spec.labels.insert("role".into(), "reviewer".into());
+            assert!(repair_pair([&a, &altered], &a.id, &altered.id).is_err());
+        }
+        b.process_started_at = None;
+        assert!(repair_pair([&a, &b], &a.id, &b.id).is_err());
     }
 
     #[test]

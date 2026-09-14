@@ -95,6 +95,42 @@ fn snapshot(store: &Store) -> Vec<Vec<String>> {
 }
 
 #[test]
+fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let (a, b) = seed(&store);
+    let mut kept = record(a.as_str());
+    kept.spec.labels.insert("via".into(), "hook".into());
+    let mut retired = record(b.as_str());
+    retired.spec.labels.remove("session_id");
+    retired.spec.labels.insert("via".into(), "mcp".into());
+    store.upsert_agent(&kept).unwrap();
+    store.upsert_agent(&retired).unwrap();
+    let before = snapshot(&store);
+    let plan = preview(&store, &a, &b);
+    assert_eq!(snapshot(&store), before);
+    store
+        .repair(&a, &b, Some(&plan.plan_sha256), now(), |_| Ok(()))
+        .unwrap();
+    let remaining = store.load_agents().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].spec.labels["via"], "hook");
+    let archive = store
+        .document::<Value>("identity_reconciliation", b.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        archive["before"]["canonical"],
+        serde_json::to_value(kept).unwrap()
+    );
+    assert_eq!(
+        archive["before"]["retired"],
+        serde_json::to_value(retired).unwrap()
+    );
+    assert_eq!(store.identity_aliases().unwrap()[0].canonical, a);
+}
+
+#[test]
 fn repair_keeps_fifo_payloads_history_and_before_images() {
     let store = Store::in_memory().unwrap();
     let (a, b) = seed(&store);
