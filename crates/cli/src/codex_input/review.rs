@@ -792,7 +792,10 @@ mod tests {
                 serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
             restored.validate(Some("thread"), "owner").unwrap();
             assert_eq!(restored.questions[0].text, request.questions[0].text);
-            assert_eq!(restored.reply(Utc::now()).unwrap(), Some(expected));
+            assert_eq!(restored.response, Some(expected));
+            // A retained write intent must survive recovery without being
+            // emitted again: only the provider's resolution proves receipt.
+            assert!(restored.reply(Utc::now()).unwrap().is_none());
         }
     }
     #[test]
