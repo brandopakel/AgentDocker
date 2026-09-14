@@ -95,9 +95,9 @@ fn tolerated(argv: &[&str]) -> Cmd {
 /// the service manager's environment cannot send the daemon elsewhere
 /// than the clients look.
 fn service_socket(home: &Path, explicit: Option<&Path>) -> Option<PathBuf> {
-    explicit
-        .map(Path::to_path_buf)
-        .or_else(|| (paths::socket_dir(home) != home).then(|| paths::socket_path(home)))
+    explicit.map(Path::to_path_buf).or_else(|| {
+        (paths::socket_dir(home) != home).then(|| agentdocker_host::dirs::socket_path(home))
+    })
 }
 
 fn validate_service_socket(socket: &Path) -> Result<()> {
@@ -128,7 +128,7 @@ impl Layout {
         Client::new(Some(
             self.socket
                 .clone()
-                .unwrap_or_else(|| paths::socket_path(&self.home)),
+                .unwrap_or_else(|| agentdocker_host::dirs::socket_path(&self.home)),
         ))
     }
 
@@ -587,7 +587,8 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     "service   not installed (`agentdocker daemon install` adds a {manager} user service)"
                 );
             }
-            let socket = socket.unwrap_or_else(|| paths::socket_path(&layout.home));
+            let socket =
+                socket.unwrap_or_else(|| agentdocker_host::dirs::socket_path(&layout.home));
             match client.call(&Request::Ping).await {
                 Ok(Response::Pong {
                     version,

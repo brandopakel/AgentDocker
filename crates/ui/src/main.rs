@@ -173,7 +173,7 @@ fn main() -> iced::Result {
         None => (None, None),
     };
     let home = agentdocker_host::dirs::home();
-    let daemon_socket = agentdocker_core::paths::socket_path(&home);
+    let daemon_socket = agentdocker_host::dirs::socket_path(&home);
     if notification_open
         .as_ref()
         .is_some_and(|action| action.home != home || action.socket != daemon_socket)

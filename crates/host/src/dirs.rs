@@ -173,12 +173,36 @@ pub fn check_socket_parent(socket: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// `$AGENTDOCKER_HOME`, else `%LOCALAPPDATA%\agentdocker` on Windows, else
+/// `~/.agentdocker`. The one place the environment decides where state
+/// lives; core derives every other path from the result.
+pub fn default_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("AGENTDOCKER_HOME") {
+        return PathBuf::from(home);
+    }
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|path| !path.is_empty()) {
+        return PathBuf::from(local).join(paths::WINDOWS_HOME_DIR_NAME);
+    }
+    std::env::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(paths::HOME_DIR_NAME)
+}
+
 /// The daemon's home as every process should spell it: the configured
 /// path, canonical when it exists, so a symlinked `AGENTDOCKER_HOME` names
 /// the same socket directory from the daemon, every client, and an
 /// installed service alike.
 pub fn home() -> PathBuf {
-    canonical_home(paths::default_home())
+    canonical_home(default_home())
+}
+
+/// `$AGENTDOCKER_SOCKET`, else the home's own control socket.
+pub fn socket_path(home: &Path) -> PathBuf {
+    match std::env::var_os("AGENTDOCKER_SOCKET") {
+        Some(socket) => PathBuf::from(socket),
+        None => paths::socket_path(home),
+    }
 }
 
 pub fn canonical_home(home: PathBuf) -> PathBuf {

@@ -43,7 +43,7 @@ fn queue() -> &'static Mutex<Queue> {
 pub fn receive(action: Option<Action>) -> Result<(), String> {
     if let Some(action) = &action {
         let home = agentdocker_host::dirs::home();
-        if action.home != home || action.socket != agentdocker_core::paths::socket_path(&home) {
+        if action.home != home || action.socket != agentdocker_host::dirs::socket_path(&home) {
             return instance::open_origin(action);
         }
     }

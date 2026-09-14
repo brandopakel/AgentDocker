@@ -124,7 +124,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // directory it derives is the one clients derive.
     let home = agentdocker_host::dirs::canonical_home(args.home);
     agentdocker_host::dirs::secure_state_dir(&home)?;
-    let socket = args.socket.unwrap_or_else(|| paths::socket_path(&home));
+    let socket = args
+        .socket
+        .unwrap_or_else(|| agentdocker_host::dirs::socket_path(&home));
     agentdocker_host::dirs::check_socket_parent(&socket)?;
     let lock_path = paths::daemon_lock(&home, &socket);
     if let Some(parent) = lock_path.parent() {

@@ -9,7 +9,6 @@
 //! the home's own bytes, so the daemon and every client agree on the place
 //! without a pointer file or a running daemon to ask.
 
-use std::env;
 use std::path::{Path, PathBuf};
 
 /// The longest path a Unix socket can have, excluding the terminating NUL.
@@ -24,19 +23,14 @@ pub const HOST_SOCKET: &str = "agentd.sock";
 /// The restricted, authenticated endpoint's file name.
 pub const CONTAINER_SOCKET: &str = "container.sock";
 
-/// `$AGENTDOCKER_HOME`, or `~/.agentdocker`.
-pub fn default_home() -> PathBuf {
-    if let Some(home) = env::var_os("AGENTDOCKER_HOME") {
-        return PathBuf::from(home);
-    }
-    #[cfg(windows)]
-    if let Some(local) = env::var_os("LOCALAPPDATA").filter(|path| !path.is_empty()) {
-        return PathBuf::from(local).join("agentdocker");
-    }
-    env::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".agentdocker")
-}
+/// The state directory's name under a user's home on Unix
+/// (`~/.agentdocker`); under `%LOCALAPPDATA%` on Windows it is `agentdocker`.
+/// Which of those applies, and whether `$AGENTDOCKER_HOME` overrides it, is
+/// the host's to read: `agentdocker_host::dirs::default_home`. Core only
+/// derives paths from a home it is given.
+pub const HOME_DIR_NAME: &str = ".agentdocker";
+/// The Windows state directory's name under `%LOCALAPPDATA%`.
+pub const WINDOWS_HOME_DIR_NAME: &str = "agentdocker";
 
 /// Whether a path is short enough to name a Unix socket at all.
 #[cfg(unix)]
@@ -145,11 +139,9 @@ fn runtime_dir() -> PathBuf {
     PathBuf::from("/tmp")
 }
 
-/// `$AGENTDOCKER_SOCKET`, or `agentd.sock` in the home's socket directory.
+/// `agentd.sock` in the home's socket directory. The `$AGENTDOCKER_SOCKET`
+/// override is the host's to read: `agentdocker_host::dirs::socket_path`.
 pub fn socket_path(home: &Path) -> PathBuf {
-    if let Some(sock) = env::var_os("AGENTDOCKER_SOCKET") {
-        return PathBuf::from(sock);
-    }
     #[cfg(windows)]
     return pipe_name(home, "host");
     #[cfg(unix)]
