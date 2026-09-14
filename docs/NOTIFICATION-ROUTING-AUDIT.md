@@ -92,6 +92,18 @@ trial retained the installation identity and poster hash; no production message,
 draft or provider state changed. This confirms the posting prerequisite is still
 unmet, without identifying signing or membership as its sole cause.
 
+The same September 14 check found that the installed real launcher fails
+`codesign --verify --deep --strict` with an invalid Info.plist: it uses
+`dev.agentdocker.launcher` metadata around a linked executable signed inside
+`dev.agentdocker.desktop`. The immutable native payload passes signature
+verification, but a direct post from that bundle also receives error 1. Both
+bundle identifiers have Launch Services records. Therefore bundle integrity is
+an established installed-bundle defect, while its contribution to the posting refusal
+remains unresolved. Do not re-sign through the installed executable links:
+that would modify an immutable release. A private alternative using a linked
+`Contents` directory also failed strict verification with unsealed root contents;
+that approach is not a validated fix. No installed files or settings changed.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version

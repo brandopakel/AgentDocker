@@ -74,6 +74,28 @@ other question drafts and become unavailable when the question closes or expires
 The structured presentation is checked against the complete fallback question
 text, so the native app and CLI describe the same request.
 
+Local command approvals also include the requested connection host/protocol and
+concrete additional filesystem/network permissions in that same checked review
+text. Read, write and excluded paths are shown completely. The parser uses the
+installed Codex 0.154.0 [app-server contract](https://learn.chatgpt.com/docs/app-server):
+omitted/null or `local` environments are accepted; other environments and
+unsupported permission selectors are refused. When Codex supplies
+`availableDecisions`, it must offer `accept` and either `decline` or `cancel`. The controller
+uses Codex 0.154.0's [default decision behavior](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/approval_events.rs#L56)
+when the optional list is absent/null: `accept` and `cancel`, with the cancellation
+explanation retained in the human question. Existing saved reviews retain their
+original response semantics. The controller
+never selects a proposed policy amendment or session-wide approval. Only exact
+human `Allow` approves the reviewed operation; other answers deny it. This uses
+the existing shared command presentation, with no daemon schema change. If Codex
+offers cancellation instead of decline, the card explains that Deny cancels the
+request. Private delivery-record version 8 retains that exact negative response;
+older records cannot claim the new cancellation meaning. Recovery preserves the
+saved response without automatically sending it again.
+Network-only requests without a command/directory and `writeStdin` approvals
+still require their own review surface. Final validation and integration of this
+command-context correction are pending.
+
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
 Allow becomes available after opening the complete diff; Deny remains available
@@ -187,7 +209,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-7 record preserves version-3/4/5/6 records and accepts version-1/2 records only without recorded question
+version-8 record preserves version-3/4/5/6/7 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
@@ -256,3 +278,20 @@ The existing installation and active sessions have not been switched.
 The provider transport and MCP policy reference are documented by OpenAI in
 [App server](https://learn.chatgpt.com/docs/app-server) and
 [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp).
+
+### September 14 command access and offered decisions
+
+At clean `8ff5665`, actual Codex 0.154.0 exercised separate Allow and Deny
+conversations. Both provider requests offered `cancel` as the negative choice.
+Each trial completed three FIFO peer/human/peer inputs with three correlated
+model replies, one exact human/provider approval receipt and no fourth input
+turn. Original provider configuration and binary hashes stayed unchanged and
+owned fixture processes were cleaned up. The full gate at `7d683cc` (identical
+Rust code) passed 890 Rust tests, 67 Python checks, lint, packaging and release
+build; the native workflow at `8ff5665` passed 170 steps.
+
+The preceding actual Allow attempt at `7f87fe4` was refused before a question
+because its decision check required `decline`. A separate wrapper probe failed
+managed MCP identity initialization and is not counted as provider acceptance.
+Both failures are retained privately. The corrected trials do not complete
+provider-limit recovery, unsupported review forms or installed-app acceptance.

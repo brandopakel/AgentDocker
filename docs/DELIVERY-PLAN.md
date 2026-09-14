@@ -124,6 +124,43 @@ at `a910d81` passed 727 Rust tests, 54 Python checks, 114 packaged native steps 
 runs in all four desktop CI jobs; its synthetic version exercise does not replace
 distinct-source or hosted-update acceptance.
 
+### Provider session limits and interrupted work (September 14)
+
+The user reports that the connected Claude session reached its provider session
+limit while coordinating this work. Treat this as a required delivery/recovery
+case in step 4 and L09/L13, alongside idle wake. Implementation and acceptance
+remain open; a live provider process or connected transport does not establish
+that the model can accept or finish work.
+
+- Surface a provider-reported limit with a concise unavailable status. Distinguish
+  a usage/rate limit, exhausted conversation context, authentication failure and
+  transport loss using supported signals; otherwise show unknown availability.
+  Display a reset time only when the provider supplies one, with its time zone.
+- Retain accepted human and peer messages in the same durable FIFO queue. Show
+  queued, provider-received and completed work separately. A limit never supplies
+  a receipt or proves a task completed; reconcile an interrupted turn before
+  deciding whether it can be retried. Do not blindly replay possibly executed
+  tools or consumed input.
+- Bound retries and notification frequency. Tell the sender once that delivery
+  is waiting; avoid repeated idle pings, limit-triggering submissions and
+  automatic provider/account changes. A reset deadline alone is not proof of
+  recovered availability.
+- Preserve drafts, unfinished changes, pending questions and exact answer
+  receipts. Expired approvals remain expired. Existing lease expiry rules still
+  apply; a limit does not authorize taking over another agent's checkout or
+  stopping its processes. Any resumed/replacement session must establish its
+  identity and reconcile delivery before draining pending input.
+- Test a limit before receipt, after receipt, mid-tool, during a question/answer,
+  and across daemon/provider restart. Include mixed human/peer arrivals, queue
+  pressure, absent/changed reset times, repeated limit responses and recovery
+  without message loss, duplicate execution or false success. Keep controlled
+  adapter tests distinct from an actual provider-limit observation.
+
+Track implementation and evidence in the existing [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14)
+and [remaining work](REMAINING-WORK.md). Preserve the currently limited Claude
+session's uncommitted work; its earlier replies are not acceptance of newer
+coordination requests.
+
 ### Legacy duplicate repair (September 11)
 
 [Offline identity repair](IDENTITY-REPAIR.md) now has a read-only preview and an

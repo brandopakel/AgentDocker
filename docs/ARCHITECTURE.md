@@ -363,6 +363,15 @@ native controls describe the same turn-scoped grant, limited to 16 paths and
 16,000 bytes. Unknown or ambiguous permission selectors are refused. Existing
 question publication, closure and answer events carry these presentations.
 
+Local `codex_command` reviews include concrete additional permissions and managed
+connection context in their checked reason/fallback text. They use the existing
+presentation and exact human-answer/provider-resolution receipts. Unknown access
+selectors, remote environments and prompts without a one-time approval and a
+negative response are refused before question publication; policy amendments are not
+selected. This does not change stored presentation meaning or the schema.
+The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
+when only cancellation is offered, the complete question text explains it.
+
 ## Process supervision
 
 `run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
