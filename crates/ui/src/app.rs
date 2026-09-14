@@ -901,8 +901,54 @@ impl App {
         self.agents
             .iter()
             .find(|a| a.id.as_str() == id)
-            .map(|a| a.spec.name.clone())
-            .unwrap_or_else(|| id.chars().take(12).collect())
+            .map(|a| self.display_name(a))
+            .unwrap_or_else(|| "a session that has ended".to_owned())
+    }
+
+    /// The name a person reads for an agent. Adapters register sessions as
+    /// `<runtime>-<pid or session id>`; that suffix is an identifier, not a
+    /// name, so it is dropped and the runtime's label shown instead. When
+    /// two live sessions of the same tool share a project they are told
+    /// apart by their order of arrival, never by a hash. A name somebody
+    /// chose is shown as chosen.
+    fn display_name(&self, agent: &AgentRecord) -> String {
+        let base = humanized_name(&agent.spec.name, &agent.spec.runtime);
+        if base == agent.spec.name {
+            return base;
+        }
+        let mut peers: Vec<&AgentRecord> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.status.is_live() == agent.status.is_live()
+                    && a.spec.runtime == agent.spec.runtime
+                    && a.project.as_ref().map(|p| p.id()) == agent.project.as_ref().map(|p| p.id())
+                    && humanized_name(&a.spec.name, &a.spec.runtime) == base
+            })
+            .collect();
+        if peers.len() < 2 {
+            return base;
+        }
+        peers.sort_by_key(|a| (a.created_at, a.id.to_string()));
+        match peers.iter().position(|a| a.id == agent.id) {
+            Some(index) => format!("{base} {}", index + 1),
+            None => base,
+        }
+    }
+
+    /// Journal lines name agents as they registered; show them as people
+    /// read them.
+    fn journal_line(&self, entry: &agentdocker_core::JournalEntry) -> String {
+        let line = entry.line();
+        let Some(agent) = self.agents.iter().find(|a| a.spec.name == entry.agent_name) else {
+            return line;
+        };
+        let shown = self.display_name(agent);
+        if shown == entry.agent_name {
+            line
+        } else {
+            line.replacen(&entry.agent_name, &shown, 1)
+        }
     }
 
     // ----- screens -------------------------------------------------------
@@ -1668,6 +1714,29 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
             std::thread::sleep(Duration::from_secs(2));
         }
     });
+}
+
+/// `codex-51242`, `claude-218845eb` and `claude-code-1072` are generated
+/// registrations: a runtime and an identifier. Return the runtime's label
+/// for those, or the name itself for anything a person chose.
+pub(crate) fn humanized_name(name: &str, runtime: &str) -> String {
+    let generated = |stem: &str| -> Option<String> {
+        let (head, tail) = name.rsplit_once('-')?;
+        let looks_like_id = tail.len() >= 3 && tail.chars().all(|c| c.is_ascii_hexdigit());
+        if !looks_like_id {
+            return None;
+        }
+        let head_matches = head == stem
+            || head == runtime
+            || stem.starts_with(&format!("{head}-"))
+            || runtime.starts_with(&format!("{head}-"));
+        head_matches.then(|| {
+            agentdocker_core::runtime::spec(runtime)
+                .map(|spec| spec.label.to_owned())
+                .unwrap_or_else(|| runtime.to_owned())
+        })
+    };
+    generated(runtime).unwrap_or_else(|| name.to_owned())
 }
 
 #[cfg(test)]
@@ -3105,5 +3174,52 @@ mod tests {
         messages.send(report(&[(&worker, working)])).unwrap();
         app.drain();
         assert!(app.shell.unviewed_done.is_empty());
+    }
+
+    #[test]
+    fn generated_registrations_read_as_their_tool_and_chosen_names_stay() {
+        assert_eq!(humanized_name("codex-51242", "codex"), "Codex");
+        assert_eq!(
+            humanized_name("claude-218845eb", "claude-code"),
+            "Claude Code"
+        );
+        assert_eq!(
+            humanized_name("claude-code-1072", "claude-code"),
+            "Claude Code"
+        );
+        assert_eq!(humanized_name("reviewer", "codex"), "reviewer");
+        assert_eq!(humanized_name("parser-fix-2", "codex"), "parser-fix-2");
+        assert_eq!(humanized_name("codex-51242", "unknown-tool"), "codex-51242");
+    }
+
+    #[test]
+    fn two_sessions_of_one_tool_in_a_project_are_numbered_by_arrival() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let now = Utc::now();
+        let mut first = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "codex-5124".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        first.status = agentdocker_core::AgentStatus::Running;
+        let mut second = first.clone();
+        second.id = agentdocker_core::AgentId::from("second-id");
+        second.spec.name = "codex-6250".into();
+        second.created_at = now + chrono::Duration::seconds(1);
+        let mut named = first.clone();
+        named.id = agentdocker_core::AgentId::from("named-id");
+        named.spec.name = "reviewer".into();
+        app.agents = vec![second.clone(), first.clone(), named.clone()];
+        assert_eq!(app.display_name(&first), "Codex 1");
+        assert_eq!(app.display_name(&second), "Codex 2");
+        assert_eq!(app.display_name(&named), "reviewer");
+        app.agents = vec![first.clone()];
+        assert_eq!(app.display_name(&first), "Codex");
     }
 }

@@ -987,7 +987,10 @@ impl App {
         {
             items.push((
                 dot(c.amber, 8.0, c),
-                format!("{}: message delivery needs review", agent.spec.name),
+                format!(
+                    "{}: message delivery needs review",
+                    self.display_name(agent)
+                ),
                 action(
                     format!("needs-you-review-{}", agent.id),
                     "Review",
@@ -1208,9 +1211,10 @@ impl App {
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let spoken = format!("{}\n{} · {}", agent.spec.name, agent.spec.runtime, meta);
+            let name = self.display_name(agent);
+            let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
             let mut lines = column![
-                text(agent.spec.name.clone())
+                text(name.clone())
                     .size(14)
                     .font(weight(iced::font::Weight::Medium)),
                 small(meta, c)
@@ -1334,7 +1338,7 @@ impl App {
             row![
                 dot(self.activity_color(agent, c), 10.0, c),
                 column![
-                    heading(agent.spec.name.clone(), 18),
+                    heading(self.display_name(agent), 18),
                     note(
                         format!("{} · {}", agent.spec.runtime, self.activity_label(agent)),
                         c
@@ -1890,7 +1894,23 @@ impl App {
         }
 
         if self.narrow() {
-            column![panel(list, c), convo].spacing(14).into()
+            // One column: the list, or the conversation with a way back.
+            // Choosing a conversation must show it, not append it below a
+            // list the reader then has to scroll past.
+            if self.shell.inbox_open {
+                let back = custom(
+                    "thread-back",
+                    "Conversations",
+                    row![text("‹ Conversations").size(14)],
+                    Some(Message::InboxList),
+                    false,
+                    Kind::Quiet,
+                    [8, 10],
+                );
+                column![back, convo].spacing(14).into()
+            } else {
+                column![panel(list, c)].spacing(14).into()
+            }
         } else {
             row![
                 container(panel(list, c)).width(300),
@@ -2520,8 +2540,8 @@ impl App {
                             dot(if index == 0 { c.accent } else { c.faint }, 7.0, c)
                         ],
                         column![
-                            text(entry.line()).size(14),
-                            small(format!("{} · #{}", ago(Utc::now(), entry.at), entry.seq), c)
+                            text(self.journal_line(entry)).size(14),
+                            small(ago(Utc::now(), entry.at), c)
                         ]
                         .spacing(3)
                         .width(Fill)
@@ -2895,7 +2915,7 @@ impl App {
                     };
                     facts = facts
                         .push(rule(c))
-                        .push(heading(agent.spec.name.clone(), 14))
+                        .push(heading(self.display_name(agent), 14))
                         .push(small(self.input_readiness(agent), c))
                         .push(small(
                             format!(

@@ -37,6 +37,9 @@ pub(super) struct State {
     pub message_detail: Option<MessageId>,
     /// The conversation open in Inbox: one agent, or every agent at once.
     pub inbox_thread: Option<String>,
+    /// In a narrow window Inbox shows either the list or one conversation;
+    /// this is which. Wide windows show both and ignore it.
+    pub inbox_open: bool,
     pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
@@ -183,6 +186,8 @@ pub enum Message {
     QuestionDetails(MessageId),
     /// Open one agent's conversation in Inbox, or all of them.
     SelectThread(Option<String>),
+    /// Back from a conversation to the list, in a narrow window.
+    InboxList,
     /// Send the agent's draft to everyone in its project as well.
     SendProject(String),
     OtherTools,
@@ -458,6 +463,7 @@ impl App {
                     .find(|q| q.id == id && !q.expired(Utc::now()))
                 {
                     self.shell.inbox_thread = Some(self.canonical_agent(&question.from).to_owned());
+                    self.shell.inbox_open = true;
                     self.shell.message_detail = Some(id.clone());
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
@@ -608,6 +614,11 @@ impl App {
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
             Message::SelectThread(agent) => {
                 self.shell.inbox_thread = agent;
+                self.shell.inbox_open = true;
+                self.shell.message_detail = None;
+            }
+            Message::InboxList => {
+                self.shell.inbox_open = false;
                 self.shell.message_detail = None;
             }
             Message::SendProject(id) => {
