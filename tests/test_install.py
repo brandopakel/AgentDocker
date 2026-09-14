@@ -80,8 +80,13 @@ class InstallerTests(unittest.TestCase):
                 install = root / "installed"
                 install.mkdir()
                 (install / "agentd").write_text("existing")
+                # A private home, so the machine's own installation cannot
+                # decide the outcome.
+                home = root / "home"
+                home.mkdir()
                 env = dict(os.environ, PATH=str(mock) + ":" + os.environ["PATH"], TEST_MODE=mode,
-                           TEST_CHECKSUM=str(checksums), TEST_ARCHIVE=str(archive), AGENTDOCKER_INSTALL_DIR=str(install))
+                           TEST_CHECKSUM=str(checksums), TEST_ARCHIVE=str(archive), AGENTDOCKER_INSTALL_DIR=str(install),
+                           HOME=str(home))
                 result = subprocess.run(["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, mode == "valid", result.stderr)
                 self.assertEqual((install / "agentd").read_text(), "#!/bin/sh\nexit 0\n" if mode == "valid" else "existing")
@@ -140,6 +145,110 @@ class InstallerTests(unittest.TestCase):
                 bundled = home / "Applications/AgentDocker.app/Contents/MacOS/AgentDocker"
                 self.assertEqual(bundled.exists(), carries_bundle, result.stdout)
                 self.assertTrue((install / "agentdocker-ui").exists(), result.stdout)
+
+    def _valid_fixture(self, root, carries_bundle=True):
+        """A downloadable archive, its checksum, a curl stub that serves
+        both, and a private home and install directory: everything the
+        installer needs to run for real without the network."""
+        archive = root / "fixture.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            entries = [(name, b"#!/bin/sh\nexit 0\n") for name in ["agentd", "agentdocker", "agentdocker-ui"]]
+            if carries_bundle:
+                entries += [
+                    ("AgentDocker.app/Contents/Info.plist", b"<plist></plist>\n"),
+                    ("AgentDocker.app/Contents/MacOS/AgentDocker", b"#!/bin/sh\nexit 0\n"),
+                ]
+            for name, data in entries:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        checksums = root / "checksum"
+        checksums.write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "  fixture.tar.gz\n")
+        mock = root / "mock"
+        mock.mkdir()
+        curl = mock / "curl"
+        curl.write_text(CURL_STUB)
+        curl.chmod(0o755)
+        install = root / "installed"
+        install.mkdir()
+        home = root / "home"
+        home.mkdir()
+        env = dict(
+            os.environ,
+            PATH=str(mock) + ":" + os.environ["PATH"],
+            TEST_MODE="valid",
+            TEST_CHECKSUM=str(checksums),
+            TEST_ARCHIVE=str(archive),
+            AGENTDOCKER_INSTALL_DIR=str(install),
+            HOME=str(home),
+        )
+        return env, install, home
+
+    def test_refuses_to_overwrite_a_managed_installation(self):
+        """`agentdocker desktop install` owns its launchers through links into
+        its retained versions and leaves ~/Applications/AgentDocker.app as a
+        link to the system copy. Copying files over either would break that
+        installation, so the installer must refuse before writing anything
+        and say which command updates it instead."""
+        for managed in ["launcher", "bundle"]:
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env, install, home = self._valid_fixture(root)
+                payload = home / ".local/share/agentdocker/desktop/current/payload/Contents/MacOS"
+                payload.mkdir(parents=True)
+                (payload / "agentdocker").write_text("managed")
+                if managed == "launcher":
+                    (install / "agentdocker").symlink_to(payload / "agentdocker")
+                else:
+                    (home / "Applications").mkdir()
+                    (home / "Applications/AgentDocker.app").symlink_to("/Applications/AgentDocker.app")
+                result = subprocess.run(
+                    ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("managed desktop installation", result.stderr)
+                self.assertIn("agentdocker desktop update", result.stderr)
+                self.assertFalse((install / "agentd").exists(), "nothing was installed")
+                if managed == "launcher":
+                    self.assertTrue((install / "agentdocker").is_symlink(), "the link is intact")
+                    self.assertEqual((payload / "agentdocker").read_text(), "managed")
+                else:
+                    self.assertTrue((home / "Applications/AgentDocker.app").is_symlink())
+
+    def test_bundle_replacement_keeps_the_previous_bundle(self):
+        """Replacing the bundle used to be `rm -rf` then `cp -R`: nothing to go
+        back to, and a failure between the two left no app at all. Now the
+        old bundle is renamed aside and stays there until the new one has
+        been tried."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, install, home = self._valid_fixture(root)
+            old = home / "Applications/AgentDocker.app/Contents/MacOS"
+            old.mkdir(parents=True)
+            (old / "AgentDocker").write_text("old launcher")
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            new = home / "Applications/AgentDocker.app/Contents/MacOS/AgentDocker"
+            self.assertEqual(new.read_text(), "#!/bin/sh\nexit 0\n")
+            kept = home / "Applications/AgentDocker.app.previous/Contents/MacOS/AgentDocker"
+            self.assertEqual(kept.read_text(), "old launcher")
+            self.assertIn("previous bundle kept", result.stdout)
+            self.assertFalse(
+                any(p.name.startswith(".AgentDocker.app.staging") for p in (home / "Applications").iterdir()),
+                "no staging directory is left behind",
+            )
+            # A second install replaces the kept copy rather than piling up.
+            result = subprocess.run(
+                ["sh", str(ROOT / "install.sh")], env=env, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(kept.read_text(), "#!/bin/sh\nexit 0\n")
+            self.assertEqual(
+                sorted(p.name for p in (home / "Applications").iterdir()),
+                ["AgentDocker.app", "AgentDocker.app.previous"],
+            )
 
     def test_the_mark_is_present_and_square(self):
         """The icon is composed around artwork now, not drawn, so the
