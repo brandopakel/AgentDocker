@@ -67,7 +67,7 @@ impl Client {
     pub fn from_env() -> Self {
         let home = dirs::home();
         Self {
-            socket: paths::socket_path(&home),
+            socket: dirs::socket_path(&home),
             home,
             autostart: !std::env::var_os("AGENTDOCKER_NO_AUTOSTART")
                 .is_some_and(|value| !value.is_empty() && value != "0"),

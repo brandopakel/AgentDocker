@@ -81,7 +81,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     );
     let client = client.with_start_timeout(None);
     let home = dirs::home();
-    let socket = socket.unwrap_or_else(|| agentdocker_core::paths::socket_path(&home));
+    let socket = socket.unwrap_or_else(|| dirs::socket_path(&home));
     let cwd = std::env::current_dir()?.canonicalize()?;
     let agent_id =
         std::env::var("AGENTDOCKER_AGENT_ID").context("Codex input has no supervised identity")?;

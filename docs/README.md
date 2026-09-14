@@ -49,12 +49,12 @@ current tracker. **Deferred** identifies existing optional proposals.
 | Existing document | Audit outcome / remaining scope |
 | --- | --- |
 | [Root README and roadmap](../README.md) | Partial: phases 0–4 implemented; phase 5 acceptance/engineering, Windows and federation unfinished. Policy/quotas and restart/dependencies are already built. |
-| [Coding instructions](../CLAUDE.md) | Reference: source layout, one build campaign, strict verification and source review. Pure-core exception remains tracked. |
+| [Coding instructions](../CLAUDE.md) | Reference: source layout, one build campaign, strict verification and source review. The pure-core rule holds: environment reads live in the host crate. |
 | [This index](README.md) | Reference: complete file inventory and one current backlog/crosswalk. |
 | [Remaining work](REMAINING-WORK.md) | Partial: current disposition of existing engineering, acceptance and release requirements. |
 | [Delivery plan](DELIVERY-PLAN.md) | Partial: current sequence and T01–T12/L01–L15 status; old checkpoints are historical. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists; release/platform delivery remains, federation deferred. |
-| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory and journal/checkpoint maintenance exist; pure-core cleanup, live replacement and Windows are incomplete. Optional protocol proposals remain deferred. |
+| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory, journal/checkpoint maintenance and an environment-free core exist; live replacement and Windows are incomplete. Optional protocol proposals remain deferred. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Partial: simplified home/Inbox/Tools implemented; capability verification and human input acceptance remain. |
@@ -68,7 +68,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Identity repair](IDENTITY-REPAIR.md) | Partial: offline preview/apply implemented and tested; production reconciliation and live transfer not done. |
 | [Live daemon upgrades](LIVE-DAEMON-UPGRADES.md) | Partial: event continuation, reconnect and output drain implemented; process/I/O transfer and successor fencing/readiness unbuilt. |
 | [Native delivery](NATIVE-DELIVERY.md) | Partial: merged implementation record; installation complete on this Mac, broader release acceptance incomplete. |
-| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths and rollback implemented; running-daemon switch remains operational work. |
+| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths, rollback and the two-way `install.sh`/managed-install protection implemented; running-daemon switch remains operational work. |
 | [Desktop distribution](DESKTOP-DISTRIBUTION.md) | Partial: packaging, installer, update consumer and retention implemented; signing and final distribution acceptance remain. |
 | [Distribution setup](DISTRIBUTION-SETUP.md) | Partial: tap/formula and automation exist; Developer ID, notarization and published app cask remain. |
 | [Release automation](RELEASE-AUTOMATION.md) | Partial: archives/feed workflow implemented; protected-tag execution, hosted update and clean-Mac acceptance remain. |
