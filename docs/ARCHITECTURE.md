@@ -366,9 +366,11 @@ question publication, closure and answer events carry these presentations.
 Local `codex_command` reviews include concrete additional permissions and managed
 connection context in their checked reason/fallback text. They use the existing
 presentation and exact human-answer/provider-resolution receipts. Unknown access
-selectors, remote environments and prompts without both one-time accept/decline
-decisions are refused before question publication; policy amendments are not
+selectors, remote environments and prompts without a one-time approval and a
+negative response are refused before question publication; policy amendments are not
 selected. This does not change stored presentation meaning or the schema.
+The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
+when only cancellation is offered, the complete question text explains it.
 
 ## Process supervision
 

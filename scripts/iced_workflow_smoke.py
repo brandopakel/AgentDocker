@@ -141,7 +141,8 @@ def smoke(binary_dir, output):
                                     "reason": (f"Exercise the {decision} control\n\n"
                                                "Requested connection: example.com (https)\n\n"
                                                "Additional access for this command:\n"
-                                               "Read: /fixture/input\nWrite: /fixture/output\nExclude: /fixture/private")}
+                                               "Read: /fixture/input\nWrite: /fixture/output\nExclude: /fixture/private\n\n"
+                                               "Deny cancels this Codex request.")}
                     fallback = ("Allow Codex to run this command once?\n\nDirectory: " + presentation["cwd"] +
                                 "\nCommand:\n" + presentation["command"] + "\n\nReason: " + presentation["reason"] +
                                 "\n\nReply Allow or Deny.")
@@ -161,6 +162,7 @@ def smoke(binary_dir, output):
                                 step("wait_text", text="Read: /fixture/input"),
                                 step("wait_text", text="Write: /fixture/output"),
                                 step("wait_text", text="Exclude: /fixture/private"),
+                                step("wait_text", text="Deny cancels this Codex request."),
                                 step("wait_control", id=f"answer-{allow}", present=False),
                                 step("focus", id=f"answer-allow-{allow}"), step("wait_focus", id=f"answer-allow-{allow}"),
                                 step("capture", name="command-approval"), step("click", id=f"answer-allow-{allow}"),

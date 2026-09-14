@@ -12,6 +12,7 @@ use std::collections::HashSet;
 pub(super) const MAX_QUESTIONS: usize = 8;
 pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
+const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +21,27 @@ enum Kind {
     Files,
     Permissions,
     UserInput,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CommandDenial {
+    #[default]
+    Decline,
+    Cancel,
+}
+
+impl CommandDenial {
+    fn is_decline(&self) -> bool {
+        *self == Self::Decline
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Decline => "decline",
+            Self::Cancel => "cancel",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -54,6 +76,8 @@ pub(super) struct Pending {
     pub turn: String,
     pub human: String,
     kind: Kind,
+    #[serde(default, skip_serializing_if = "CommandDenial::is_decline")]
+    command_denial: CommandDenial,
     pub expires_at: DateTime<Utc>,
     pub questions: Vec<Question>,
     // Persisted before attempting the write. A pipe write alone is not a
@@ -107,7 +131,7 @@ fn answer_text(answer: &Envelope) -> Result<&str> {
 
 /// Build the complete local command review before publishing a human route.
 /// `accept` never selects either proposed policy amendment or session scope.
-fn command_presentation(params: &Value) -> Result<QuestionPresentation> {
+fn command_presentation(params: &Value) -> Result<(QuestionPresentation, CommandDenial)> {
     ensure!(
         params["kind"].is_null() || params["kind"] == "command",
         "this Codex approval action requires a richer review UI"
@@ -116,6 +140,7 @@ fn command_presentation(params: &Value) -> Result<QuestionPresentation> {
         params["environmentId"].is_null() || params["environmentId"] == "local",
         "remote command requests need a separate review flow"
     );
+    let mut denial = CommandDenial::Decline;
     if !params["availableDecisions"].is_null() {
         let decisions = params["availableDecisions"]
             .as_array()
@@ -123,9 +148,14 @@ fn command_presentation(params: &Value) -> Result<QuestionPresentation> {
         ensure!(
             decisions.len() <= 16
                 && decisions.iter().any(|decision| decision == "accept")
-                && decisions.iter().any(|decision| decision == "decline"),
-            "this command does not offer both Allow once and Deny"
+                && decisions
+                    .iter()
+                    .any(|decision| decision == "decline" || decision == "cancel"),
+            "this command does not offer a one-time approval and a negative response"
         );
+        if !decisions.iter().any(|decision| decision == "decline") {
+            denial = CommandDenial::Cancel;
+        }
     }
     let mut reason = match &params["reason"] {
         Value::Null => "Requested by Codex".to_owned(),
@@ -175,6 +205,9 @@ fn command_presentation(params: &Value) -> Result<QuestionPresentation> {
         reason.push_str("\n\nAdditional access for this command:\n");
         reason.push_str(&permissions.lines().join("\n"));
     }
+    if denial == CommandDenial::Cancel {
+        reason.push_str(CANCEL_REASON);
+    }
     let presentation = QuestionPresentation::CodexCommand {
         command: text(&params["command"])?.into(),
         cwd: text(&params["cwd"])?.into(),
@@ -184,7 +217,7 @@ fn command_presentation(params: &Value) -> Result<QuestionPresentation> {
         presentation.valid_for(&presentation.text()),
         "provider request is too large to review as a question"
     );
-    Ok(presentation)
+    Ok((presentation, denial))
 }
 
 impl Pending {
@@ -220,6 +253,7 @@ impl Pending {
             .as_str()
             .context("Codex request has no method")?;
         let mut questions = Vec::new();
+        let mut command_denial = CommandDenial::Decline;
         let kind = match method {
             "item/permissions/requestApproval" => {
                 ensure!(
@@ -277,7 +311,8 @@ impl Pending {
                 Kind::Files
             }
             "item/commandExecution/requestApproval" => {
-                let presentation = command_presentation(params)?;
+                let (presentation, denial) = command_presentation(params)?;
+                command_denial = denial;
                 let prompt = presentation.text();
                 questions.push(Question {
                     field: "command".into(),
@@ -356,6 +391,7 @@ impl Pending {
             turn: turn.into(),
             human: human.into(),
             kind,
+            command_denial,
             expires_at: now + Duration::seconds(300),
             questions,
             response: None,
@@ -365,6 +401,10 @@ impl Pending {
 
     pub fn key(&self) -> String {
         self.id.to_string()
+    }
+
+    pub fn has_command_cancellation(&self) -> bool {
+        self.command_denial == CommandDenial::Cancel
     }
 
     pub fn is_file_review(&self) -> bool {
@@ -521,7 +561,7 @@ impl Pending {
                         .as_ref()
                         .context("approval has no answer")?,
                 )?;
-                json!({"decision":if answer == "Allow" { "accept" } else { "decline" }})
+                json!({"decision":if answer == "Allow" { "accept" } else { self.command_denial.wire() }})
             }
             Kind::UserInput => {
                 let mut answers = serde_json::Map::new();
@@ -535,6 +575,10 @@ impl Pending {
     }
 
     pub fn validate(&self, thread: Option<&str>, agent: &str) -> Result<()> {
+        ensure!(
+            self.command_denial == CommandDenial::Decline || matches!(self.kind, Kind::Command),
+            "a non-command review cannot supply command cancellation semantics"
+        );
         ensure!(
             valid_request_id(&self.id)
                 && thread == Some(self.thread.as_str())
@@ -556,6 +600,11 @@ impl Pending {
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                !self.has_command_cancellation()
+                    || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON)),
+                "command cancellation has no matching human review"
+            );
             ensure!(
                 matches!(self.kind, Kind::Permissions)
                     == matches!(
@@ -744,58 +793,61 @@ mod tests {
     }
     #[test]
     fn command_access_is_complete_in_native_and_fallback_reviews_and_retained_receipts() {
-        for decision in ["Allow", "Deny", "allow", " Allow", "Allow for session"] {
-            let mut request =
-                Pending::plan(&access_event(), "thread", Some("turn"), "human", Utc::now())
+        for negative in ["decline", "cancel"] {
+            for decision in ["Allow", "Deny", "allow", " Allow", "Allow for session"] {
+                let mut event = access_event();
+                event["params"]["availableDecisions"] = json!(["accept", negative]);
+                let mut request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                let question = &request.questions[0];
+                let presentation = question.presentation.as_ref().unwrap();
+                assert!(presentation.valid_for(&question.text));
+                for detail in [
+                    "echo trial",
+                    "Directory: /owned",
+                    "Requested connection: example.com (https)",
+                    "Allow network access",
+                    "Read: /owned/input",
+                    "Write: /owned/output",
+                    "Exclude: /owned/private",
+                ] {
+                    assert!(question.text.contains(detail), "missing {detail}");
+                }
+                request.questions[0].message = Some("question".to_owned().into());
+                assert!(
+                    !request
+                        .capture(&[answer("peer", "Allow")], "owner", false)
+                        .unwrap()
+                );
+                let response = answer("human", decision);
+                assert!(
+                    !request
+                        .capture(std::slice::from_ref(&response), "owner", false)
+                        .unwrap()
+                );
+                assert!(request.reply(Utc::now()).unwrap().is_none());
+                request
+                    .observe(
+                        &EventKind::QuestionClosed {
+                            question: "question".to_owned().into(),
+                            answer: Some(response.id.clone()),
+                        },
+                        "owner",
+                    )
                     .unwrap();
-            let question = &request.questions[0];
-            let presentation = question.presentation.as_ref().unwrap();
-            assert!(presentation.valid_for(&question.text));
-            for detail in [
-                "echo trial",
-                "Directory: /owned",
-                "Requested connection: example.com (https)",
-                "Allow network access",
-                "Read: /owned/input",
-                "Write: /owned/output",
-                "Exclude: /owned/private",
-            ] {
-                assert!(question.text.contains(detail), "missing {detail}");
+                request.capture(&[response], "owner", false).unwrap();
+                let expected = json!({"id":7,"result":{"decision":if decision == "Allow" { "accept" } else { negative }}});
+                request.response = request.reply(Utc::now()).unwrap();
+                assert_eq!(request.response, Some(expected.clone()));
+                let restored: Pending =
+                    serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert_eq!(restored.questions[0].text, request.questions[0].text);
+                assert_eq!(restored.response, Some(expected));
+                // A retained write intent must survive recovery without being
+                // emitted again: only the provider's resolution proves receipt.
+                assert!(restored.reply(Utc::now()).unwrap().is_none());
             }
-            request.questions[0].message = Some("question".to_owned().into());
-            assert!(
-                !request
-                    .capture(&[answer("peer", "Allow")], "owner", false)
-                    .unwrap()
-            );
-            let response = answer("human", decision);
-            assert!(
-                !request
-                    .capture(std::slice::from_ref(&response), "owner", false)
-                    .unwrap()
-            );
-            assert!(request.reply(Utc::now()).unwrap().is_none());
-            request
-                .observe(
-                    &EventKind::QuestionClosed {
-                        question: "question".to_owned().into(),
-                        answer: Some(response.id.clone()),
-                    },
-                    "owner",
-                )
-                .unwrap();
-            request.capture(&[response], "owner", false).unwrap();
-            let expected = json!({"id":7,"result":{"decision":if decision == "Allow" { "accept" } else { "decline" }}});
-            request.response = request.reply(Utc::now()).unwrap();
-            assert_eq!(request.response, Some(expected.clone()));
-            let restored: Pending =
-                serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
-            restored.validate(Some("thread"), "owner").unwrap();
-            assert_eq!(restored.questions[0].text, request.questions[0].text);
-            assert_eq!(restored.response, Some(expected));
-            // A retained write intent must survive recovery without being
-            // emitted again: only the provider's resolution proves receipt.
-            assert!(restored.reply(Utc::now()).unwrap().is_none());
         }
     }
     #[test]
@@ -806,7 +858,7 @@ mod tests {
             ("environmentId", json!("remote")),
             ("environmentId", json!({})),
             ("availableDecisions", json!(["acceptForSession", "decline"])),
-            ("availableDecisions", json!(["accept", "cancel"])),
+            ("availableDecisions", json!(["accept", "acceptForSession"])),
             ("availableDecisions", json!([])),
             ("availableDecisions", json!({})),
             (

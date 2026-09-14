@@ -80,10 +80,14 @@ text. Read, write and excluded paths are shown completely. The parser uses the
 installed Codex 0.154.0 [app-server contract](https://learn.chatgpt.com/docs/app-server):
 omitted/null or `local` environments are accepted; other environments and
 unsupported permission selectors are refused. When Codex supplies
-`availableDecisions`, it must offer both `accept` and `decline`. The controller
+`availableDecisions`, it must offer `accept` and either `decline` or `cancel`. The controller
 never selects a proposed policy amendment or session-wide approval. Only exact
 human `Allow` approves the reviewed operation; other answers deny it. This uses
-the existing command presentation and receipt format, with no schema change.
+the existing shared command presentation, with no daemon schema change. If Codex
+offers cancellation instead of decline, the card explains that Deny cancels the
+request. Private delivery-record version 8 retains that exact negative response;
+older records cannot claim the new cancellation meaning. Recovery preserves the
+saved response without automatically sending it again.
 Network-only requests without a command/directory and `writeStdin` approvals
 still require their own review surface. Final validation and integration of this
 command-context correction are pending.
@@ -201,7 +205,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-7 record preserves version-3/4/5/6 records and accepts version-1/2 records only without recorded question
+version-8 record preserves version-3/4/5/6/7 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
