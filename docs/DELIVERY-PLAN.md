@@ -132,6 +132,19 @@ case in step 4 and L09/L13, alongside idle wake. Implementation and acceptance
 remain open; a live provider process or connected transport does not establish
 that the model can accept or finish work.
 
+- Apply this contract to every supported provider, company, model and runtime,
+  including OpenAI/Codex, Anthropic/Claude, Google/Gemini, integrations such as
+  Cursor, Copilot, Aider and OpenCode, and custom or local providers. The runtime
+  brand does not necessarily identify the underlying model provider. Keep a
+  shared availability/recovery model with adapter-specific evidence; Claude's
+  observed failure is one acceptance case, not the boundary of this work.
+- Cover session, daily/weekly usage, request/token rate, credit/billing,
+  concurrency and context limits where applicable. Preserve the reported scope
+  (session, model, account, organization or deployment) without exposing account
+  secrets. A model-specific limit must not disable unrelated agents; a confirmed
+  shared quota must not cause every affected agent to retry independently.
+  Provider availability is separate from process liveness, adapter contact and
+  input readiness; a heartbeat cannot clear a reported limit.
 - Surface a provider-reported limit with a concise unavailable status. Distinguish
   a usage/rate limit, exhausted conversation context, authentication failure and
   transport loss using supported signals; otherwise show unknown availability.
@@ -155,6 +168,13 @@ that the model can accept or finish work.
   pressure, absent/changed reset times, repeated limit responses and recovery
   without message loss, duplicate execution or false success. Keep controlled
   adapter tests distinct from an actual provider-limit observation.
+- Extend the existing message audit with coverage for every supported adapter
+  and model/provider combination it exposes: detected signals, unsupported or
+  unknown signals, recovery behavior, tested versions and remaining gaps.
+  Exercise providers with structured errors, hooks, MCP-only contact and no
+  reliable limit signal. An HTTP 429 alone does not identify quota scope or reset
+  time. A passing Claude trial cannot close another provider's acceptance; new
+  integrations inherit this contract before being described as verified.
 
 Track implementation and evidence in the existing [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14)
 and [remaining work](REMAINING-WORK.md). Preserve the currently limited Claude
