@@ -71,15 +71,35 @@ only after a release publishes the app cask:
 brew install --cask brandopakel/tap/agentdocker-app
 ```
 
-It `depends_on` the formula, so installing the app brings the commands
-with it.
+The cask keeps the same one-copy contract as the app's own installer: the
+application carries `agentdocker` and `agentd` inside its bundle, and the cask
+links those into Homebrew's bin as `binary` stanzas. It therefore
+`conflicts_with` the formula rather than depending on it — the formula is the
+commands-only route, the cask is the app route, and nobody ends up with two
+copies of the commands. Uninstalling the cask stops the `dev.agentdocker.agentd`
+login service first; `zap` also removes `~/.agentdocker`. Homebrew owns that
+copy: `agentdocker desktop update` reports a Homebrew installation and points
+at `brew upgrade --cask agentdocker-app` rather than installing a second copy
+beside it.
 
-The existing cask template still describes ad-hoc signing and a quarantine
-bypass. That copy must be reconciled before publication: the current stable
-release workflow requires Developer ID signing and notarization. The cask's
-installation/removal behavior must also agree with managed activation and
-preserve existing integration paths. These are open release checks, not a
-currently available unsigned cask installation route.
+Until a release is signed with a Developer ID and notarized, the cask's app is
+ad-hoc signed and its caveat names `--no-quarantine` as the way to open it.
+The caveat and the flag go the day the signature arrives; nothing else in the
+cask changes.
+
+## Every route, one installation
+
+| Route | Command | What it installs | Updated by |
+| --- | --- | --- | --- |
+| Desktop, direct download | `curl -fsSL …/install.sh \| sh` (default on macOS; `AGENTDOCKER_INSTALL=desktop` on Linux) | Downloads the verified desktop archive and runs the app's own installer from inside it: retained versions with rollback, launchers in `~/.local/bin`, the app in Applications | `agentdocker desktop update` |
+| Commands, direct download | `AGENTDOCKER_INSTALL=cli` with the same script (default on Linux) | The two commands copied into `~/.local/bin`; refuses to write over links a managed installation owns | Run the script again |
+| Homebrew cask | `brew install --cask brandopakel/tap/agentdocker-app` | The app in `/Applications` with its commands linked into Homebrew's bin | `brew upgrade --cask agentdocker-app` |
+| Homebrew formula | `brew install brandopakel/tap/agentdocker` | The two commands and an optional `brew services` daemon | `brew upgrade agentdocker` |
+| Local build | `make install` / `agentdocker desktop install --from` | The same managed installation as the desktop route | `agentdocker desktop update` or another local install |
+
+A release before the desktop archives existed (v0.1.0) has no desktop zip;
+the script says so and installs the commands instead, unless a version was
+pinned, in which case it fails rather than guess.
 
 ## Apple Developer ID and notification acceptance
 
