@@ -373,3 +373,12 @@ because its decision check required `decline`. A separate wrapper probe failed
 managed MCP identity initialization and is not counted as provider acceptance.
 Both failures are retained privately. The corrected trials do not complete
 provider-limit recovery, unsupported review forms or installed-app acceptance.
+
+The September 15 30-message mixed human/peer burst at `2fa897b`, using the
+`2a7656c` release binaries, delivered all 30 turns once and in order after the
+baseline and receiver-restart checks (38 total model requests, 36 queue
+receipts). The first burst input took 9.03 seconds and the last 299.15 seconds;
+the current one-outstanding-offer receiver follows Codex's queue polling cadence.
+This proves bounded durability/order, not low-latency burst handling or paid-model
+throughput. The retained [native trial record](verification/2026-09-15-native-codex-queue.json)
+includes the exact source, driver and binary hashes.
