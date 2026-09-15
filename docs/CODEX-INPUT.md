@@ -390,5 +390,5 @@ receipt-history and provider-queue scans now have a one-minute total bound.
 The receiver flags document their verified identity/path inputs. The fixture
 serializes bootstrap/question claims and response numbering, including auxiliary
 requests. The preceding `153fad3` integration gate passed 965 Rust tests (six
-skipped),70 Python checks and release packaging; the corrected source requires
-its own final gate and actual-provider trial.
+skipped),70 Python checks and release packaging; the corrected `bb1e50c` source then passed 967 Rust tests (six skipped),70 Python
+checks and the same full gate. Final actual-provider acceptance follows.

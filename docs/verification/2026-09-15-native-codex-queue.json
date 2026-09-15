@@ -1484,5 +1484,27 @@
       "agentd": "cbb1d90570baad20764e3189663ccd6b6f911f13eec713a085b66223254c43d8"
     },
     "scope": "Actual142/147 parents integrated with merged146 coalescing; precedes final native review corrections."
+  },
+  "combined_gate_bb1e50c": {
+    "source_commit": "bb1e50c751e86b9778eb13848fb71524ddfb19c5",
+    "result": "passed",
+    "rust_passed": 967,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace nextest",
+      "doctests",
+      "Python",
+      "workspace packaging",
+      "release build"
+    ],
+    "log_sha256": "1d6c269b606623bc0a6a29855e317076177ace8df710fb26e8323b16804dfe67",
+    "binary_sha256": {
+      "agentdocker": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+      "agentd": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9"
+    },
+    "scope": "Final review corrections after965-test integrated baseline; actual provider acceptance follows on frozen release binaries."
   }
 }
