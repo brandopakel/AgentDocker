@@ -178,6 +178,11 @@ an in-process Tokio test cannot establish this boundary.
   inherited; the CI test above repeats the chain.
 - Human and peer messages queued before/during transfer retain order and exact
   provider receipts; pending approval answers follow their original route once.
+  *Passed for peers* in the [reload acceptance record](verification/2026-09-15-reload-acceptance.json):
+  900 numbered messages sent through 20 successive reloads arrived once and in
+  order, and a question posted before the first reload kept its expiry and was
+  answered after the last. Provider receipts and approval routes are not
+  covered there.
 - Active Claude and Codex conversations survive, including an idle wake, a busy
   input, a question and an attached terminal with an unsubmitted draft.
 - Wrong/incompatible candidates, unavailable state, lost/trickled readiness,
@@ -190,6 +195,14 @@ an in-process Tokio test cannot establish this boundary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
+  *Passed* for log pressure (two agents printing 6.7 million numbered lines,
+  every log contiguous), concurrent send, stop and launch (653 short agents
+  launched during the reloads, half stopped early, all reaching a durable end
+  with no send, launch or stop error) and 20 successive replacements with
+  every predecessor retired, in the same record; the only daemon warnings
+  were fenced skips on exits that landed during an offer, each recovered
+  after acceptance. Installation rollback passes in the desktop reload smoke
+  (boundary 6). Replay retention limits and Windows are not covered.
 
 An old installed daemon that lacks this protocol cannot gain live transfer from
 an updated launcher. Its first switch still waits for active sessions to finish.
