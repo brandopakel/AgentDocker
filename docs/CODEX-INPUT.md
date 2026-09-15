@@ -1,4 +1,82 @@
-# Managed Codex input (experimental)
+# Codex input delivery (experimental)
+
+## Existing Codex terminals: native queue candidate (September 15)
+
+The current implementation connects an existing Codex CLI conversation to
+AgentDocker's ordinary human/peer queue. A verified Codex hook starts one detached
+receiver automatically. It binds the provider PID and birth, thread, profile,
+checkout and daemon endpoint; it neither types into the terminal nor starts or
+resumes a conversation. Codex's native `thread/queue/add` route schedules the next
+ordinary input and preserves the terminal's unfinished draft and permission UI.
+
+This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
+native queue API (tested with CLI 0.154.0). It is under integration and acceptance
+test and is **not yet the installed application's behavior**. An accepted hook
+configuration is needed to start a receiver for an existing terminal. Setup now
+includes `SessionStart`, which verifies identity and starts the receiver without
+asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
+delays this hook until a turn starts, even after reopening an existing thread.
+The initial-turn hook bootstrap passes; **startup/reopen with no prompt remains
+an observed gap**. MCP startup supplies no thread/profile identity in its
+environment, so it cannot safely infer that binding. The provider still requires review/trust
+of new hook definitions through `/hooks`. Merely
+installing MCP or receiving a hook event does not prove idle wake.
+The receiver probes the read-only queue/history APIs before taking ownership.
+Hooks keep their normal delivery while that probe is pending or unsupported;
+only an accepted daemon binding suppresses their competing reads. An incompatible
+provider version on an existing binding keeps the queue and reports a pause.
+
+The private `AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the controller
+token before binding and the exact input before offering it. An enqueue reply is
+only an offer. The receiver records the matching provider thread/turn/user-item
+before acknowledging the original AgentDocker message. Restart recovers that
+receipt or the exact native queue entry; absence of either pauses delivery and
+never authorizes blind resubmission. Competing legacy consumers are fenced by
+the daemon. A registered
+launch descriptor lets the daemon restart an ended receiver with bounded backoff,
+without restarting the provider or waiting for a hook. It pins the receiver's
+installed release and contains paths and arguments, not authentication. Delivered
+message bodies are discarded from the private ledger; only 128 receipt records
+are retained. `inbox --peek` provides administrative inspection of a bound queue.
+
+When a person explicitly reopens the same Codex thread, the verified hook finds
+its prior binding. A detached helper waits for the old receiver to exit and asks
+the daemon to resume the exact thread/profile/checkout into its original agent
+record. The newly registered ID becomes an alias; queued input, token, receipts
+and provider limits remain on the original record. The daemon starts the updated
+receiver descriptor, whose locked ledger accepts the new process only after
+checking the daemon's matching generation and retained token. A live prior
+process, different conversation or missing ledger refuses the handoff.
+
+A real Codex terminal with a private profile and loopback Responses fixture has
+passed idle wake, draft preservation, mixed human/peer busy ordering, new
+asynchronous MCP questions, old synchronous MCP answers without duplicate input,
+a typed HTTP 429 hold with explicit resumption, lost queue replies and retained
+ambiguous submissions. These bounded fixtures do not establish paid-account,
+long-duration or every-provider acceptance. Combined `7133023` passed the full
+962-Rust/70-Python gate and six release-binary trials: disconnected questions,
+generic legacy replies, canonical process resume, new MCP questions, rate limits
+and ambiguous-submission recovery. The schema-20 historical-answer migration passed the release-binary fixture at
+`8831524`: the consumed synchronous answer was reconciled without another turn.
+The later `2a7656c` binary source passed the full
+964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
+see the
+[delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
+`python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
+and scenario choices. Each run saves a sanitized result beside private traces.
+
+The daemon holds a synchronous question's answer until its route is settled.
+An answer handed to that tool stays queued as uncertain until the receiver finds
+its exact provider tool receipt. An unoffered answer from a CLI-posted question
+or disconnected ask uses ordinary input when the daemon confirms answer routing.
+Unknown historical offers still require reconciliation. The fixture includes
+`posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
+those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
+open; historical schema-19 answer migration passed its bounded fixture.
+An idle native queue entry without a provider receipt pauses after 45 seconds;
+active turns and permission waits retain their normal ordering.
+
+## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,
 choose Codex and tick **Receive messages while idle (experimental)**, or run:
@@ -93,8 +171,8 @@ request. Private delivery-record version 8 retains that exact negative response;
 older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
 Network-only requests without a command/directory and `writeStdin` approvals
-still require their own review surface. Final validation and integration of this
-command-context correction are pending.
+still require their own review surface. The command-context correction merged
+in PR #127; those broader review forms remain separate open requirements.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -295,3 +373,25 @@ because its decision check required `decline`. A separate wrapper probe failed
 managed MCP identity initialization and is not counted as provider acceptance.
 Both failures are retained privately. The corrected trials do not complete
 provider-limit recovery, unsupported review forms or installed-app acceptance.
+
+The September 15 30-message mixed human/peer burst at `2fa897b`, using the
+`2a7656c` release binaries, delivered all 30 turns once and in order after the
+baseline and receiver-restart checks (38 total model requests, 36 queue
+receipts). The first burst input took 9.03 seconds and the last 299.15 seconds;
+the current one-outstanding-offer receiver follows Codex's queue polling cadence.
+This proves bounded durability/order, not low-latency burst handling or paid-model
+throughput. The retained [native trial record](verification/2026-09-15-native-codex-queue.json)
+includes the exact source, driver and binary hashes.
+
+Final review corrections preserve a live bootstrap marker but allow a dead
+receiver generation's marker to be replaced after a successful launch; the
+private ledger still validates the provider generation independently. Both
+receipt-history and provider-queue scans now have a one-minute total bound.
+The receiver flags document their verified identity/path inputs. The fixture
+serializes bootstrap/question claims and response numbering, including auxiliary
+requests. The preceding `153fad3` integration gate passed 965 Rust tests (six
+skipped),70 Python checks and release packaging; the corrected `bb1e50c` source then passed 967 Rust tests (six skipped),70 Python
+checks and the same full gate. The final release-TUI legacy-reply trial at
+`b2c3938` then passed idle wake, preserved drafts, mixed-origin FIFO, automatic
+receiver restart and exact legacy human-answer consumption without another turn
+(nine model requests). Source and executable hashes stayed fixed.

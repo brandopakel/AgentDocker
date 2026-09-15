@@ -41,11 +41,20 @@ enum ProviderCommand {
         #[arg(env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
+    /// Start the session's bound input receiver again after the daemon gave
+    /// up restarting it. The queue and the provider session are untouched.
+    Retry {
+        /// Agent id/name, or the current AgentDocker session from the environment.
+        #[arg(env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+    },
 }
 
 pub async fn run(client: &Client, args: ProviderArgs) -> Result<()> {
     let name = match &args.command {
-        ProviderCommand::Report { agent, .. } | ProviderCommand::Resume { agent } => agent,
+        ProviderCommand::Report { agent, .. }
+        | ProviderCommand::Resume { agent }
+        | ProviderCommand::Retry { agent } => agent,
     };
     let Response::Agent { agent } = client
         .call(&Request::Inspect {
@@ -97,6 +106,20 @@ pub async fn run(client: &Client, args: ProviderArgs) -> Result<()> {
             );
             println!(
                 "Queued delivery resumed; uncertain or previously received input is not replayed."
+            );
+        }
+        ProviderCommand::Retry { .. } => {
+            let response = client
+                .call(&Request::RetryController {
+                    agent: agent.id.to_string(),
+                })
+                .await?;
+            ensure!(
+                matches!(response, Response::Ok),
+                "receiver retry refused: {response:?}"
+            );
+            println!(
+                "The bound receiver will be started again within a second; queued input waits for it."
             );
         }
     }

@@ -67,7 +67,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Guided setup](GUIDED-SETUP.md) | Implemented preview/apply/undo, configuration locks and per-session contact/input evidence. PR #125 is merged after review and CI; native and bounded actual-provider readiness checks passed. Installed-candidate acceptance remains. |
 | [Activity and messaging](ACTIVITY-AND-MESSAGING.md) | Partial: activity/hooks and opt-in input adapters exist; ordinary hooks alone cannot wake idle models. |
 | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md) | Implemented durable shared queue and exact receipts. PR #131 adds provider availability, quota isolation, queue gating and recovery, with actual isolated Claude/Codex trials, 135 runtime/interruption cases and [184 native steps at `66c4247`](https://github.com/brandopakel/AgentDocker/pull/131#issuecomment-5673268646). Combined `ec45cea` also passed mid-tool, pending-denial and same-identity controller replacement cases. Broader reviews, provider/account-reset and sustained acceptance remain. |
-| [Codex input](CODEX-INPUT.md) | Partial: managed bridge, question/MCP receipts and supported review forms implemented; broader elicitation/secret input and recovery remain. |
+| [Codex input](CODEX-INPUT.md) | Partial: managed bridge and existing-terminal native queue implemented; six actual Codex 0.154.0 release trials and the 962-Rust/70-Python gate passed at `7133023`. Final native integration/installation, broader elicitation/secret input and historical reconciliation remain. |
 | [Claude channel input](CLAUDE-CHANNEL-INPUT.md) | Partial: explicit channel input and question queue implemented; authorization/version and longer recovery acceptance remain. |
 | [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md) | Partial: AppleScript fallback removed and native routes implemented; physical installed notification clicks and signed posting remain. |
 | [Identity repair](IDENTITY-REPAIR.md) | Partial: offline preview/apply implemented and tested; production reconciliation and live transfer not done. |
@@ -78,8 +78,8 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Distribution setup](DISTRIBUTION-SETUP.md) | Partial: tap/formula and automation exist; Developer ID, notarization and published app cask remain. |
 | [Release automation](RELEASE-AUTOMATION.md) | Partial: archives/feed workflow implemented; protected-tag execution, hosted update and clean-Mac acceptance remain. |
 | [Integration acceptance](INTEGRATION-ACCEPTANCE.md) | Historical bounded trials: later source/runtime evidence is in the input guides and verification reports; no universal-provider claim. |
-| [Local trial](LOCAL-TRIAL.md) | Partial: isolated/native/provider/local installation trials exist; overnight, sleep/reboot and independent-machine stages incomplete. |
-| [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) | Partial: standard/CI/fuzz/benchmark tools exist; full workload, failure diagnosis and platform matrices incomplete. |
+| [Local trial](LOCAL-TRIAL.md) | Partial: isolated/native/provider/local installation trials exist; the overnight stage has a [7.5-hour record](verification/2026-09-14-overnight-sustained-use.json) and retention a [20-minute record](verification/2026-09-15-retention-sustained-use.json); sleep/reboot and independent-machine stages incomplete. |
+| [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) | Partial: standard/CI/fuzz/benchmark tools and the sustained-use and retention workload scripts exist with their records; failure diagnosis and platform matrices incomplete. |
 | [macOS test runner](TEST-RUNNER-MACOS.md) | Reference: reproduced descriptor inheritance and validated strict serial workaround; remove only after an upstream fix passes its controls. |
 | [Windows port](WINDOWS-PORT.md) | Partial: native core/host/named-pipe foundations; full daemon/GUI, ConPTY, service and installer remain. |
 | [Container engines](CONTAINER-ENGINES.md) | Partial: optional engines/workspaces implemented; Mac engine acceptance and documented unsupported capabilities remain. |
@@ -170,6 +170,7 @@ fails when it and the records disagree.
 | [2026-09-12-thirty-minute-codex-queue.json](verification/2026-09-12-thirty-minute-codex-queue.json) | passed |
 | [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
 | [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
-| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance. |
+| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. |
+| [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the d... |
 
 <!-- verification-index:end -->

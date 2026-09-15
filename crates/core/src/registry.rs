@@ -92,6 +92,36 @@ impl Registry {
         Ok(())
     }
 
+    /// Retire one record into another: the retired record leaves, and its
+    /// id resolves to the canonical one from now on. Both must be records
+    /// of their own; a chain or a self-reference is refused.
+    pub fn retire_into(
+        &mut self,
+        retired: &AgentId,
+        canonical: &AgentId,
+    ) -> Result<AgentRecord, crate::identity::AliasError> {
+        let reason = if retired == canonical {
+            Some("self reference")
+        } else if !self.agents.contains_key(canonical) {
+            Some("canonical record is missing")
+        } else if !self.agents.contains_key(retired) {
+            Some("retired ID owns no record")
+        } else if self.aliases.values().any(|target| target == retired) {
+            Some("retired ID is already a canonical alias target")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(crate::identity::AliasError {
+                retired: retired.clone(),
+                reason,
+            });
+        }
+        let record = self.agents.remove(retired).expect("checked");
+        self.aliases.insert(retired.clone(), canonical.clone());
+        Ok(record)
+    }
+
     pub fn canonical_id<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
         self.aliases.get(id).unwrap_or(id)
     }
@@ -301,6 +331,23 @@ mod tests {
             ..AgentSpec::default()
         };
         AgentRecord::new(spec, true, Utc::now())
+    }
+
+    #[test]
+    fn retiring_a_canonical_target_cannot_break_existing_aliases() {
+        let mut registry = Registry::new();
+        let old = record("old");
+        let current = record("current");
+        let later = record("later");
+        for record in [&old, &current, &later] {
+            registry.insert(record.clone()).unwrap();
+        }
+        registry.retire_into(&old.id, &current.id).unwrap();
+        assert!(registry.retire_into(&current.id, &later.id).is_err());
+        assert_eq!(registry.resolve(old.id.as_str()).unwrap(), current.id);
+        assert_eq!(registry.get(&current.id).unwrap().id, current.id);
+        assert_eq!(registry.get(&later.id).unwrap().id, later.id);
+        assert_eq!(registry.aliases().len(), 1);
     }
 
     #[test]

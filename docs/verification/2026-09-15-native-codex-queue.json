@@ -2,9 +2,9 @@
   "date_utc": "2026-09-15",
   "date_local": "2026-09-14",
   "timezone": "America/Los_Angeles",
-  "scope": "Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance.",
+  "scope": "Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. Trusted lifecycle bootstrap works after a first turn; zero-prompt startup/reopen remains an observed gap. Final CI and installation pending.",
   "provider_version": "codex-cli 0.154.0",
-  "agentdocker_forwarding_implemented": false,
+  "agentdocker_forwarding_implemented": true,
   "trials": [
     {
       "result": "failed",
@@ -93,5 +93,1468 @@
     },
     "remaining_owned_processes": 0,
     "duration_seconds": 0.6701691669877619
+  },
+  "installed": false,
+  "preliminary_integration_trials": [
+    {
+      "trial": "bootstrap-result1",
+      "result": "failed",
+      "driver_sha256": "a6daeafd384d11d7aae42d38fbafa4fcae94b02469c017e368583ea860bc7c9d",
+      "raw_result_sha256": "2039c1a3b2bdb4d5b1cbb7fc6182ec2684b810a180cfa1bef6c23eba336cd90f",
+      "provider_version": "codex-cli 0.154.0",
+      "failure_explanation": "The initial restricted tool sandbox could not inspect process ancestry; the fixture now grants its private bootstrap tool local process access."
+    },
+    {
+      "trial": "bootstrap-result2",
+      "result": "failed",
+      "driver_sha256": "80b93bfcc6742fe2d32907230a90725d2f21c0b3f1ceb42f15f3cdf789f9b989",
+      "raw_result_sha256": "9de04a24b63adb34a2f34083beb761675f42f8882a172c4b907189b3795d62f8",
+      "provider_version": "codex-cli 0.154.0",
+      "automatic_hook_bootstrap": true,
+      "failure_explanation": "A fresh AgentDocker daemon had no human record. The receiver now resolves/creates it through Me."
+    },
+    {
+      "trial": "bootstrap-result3",
+      "result": "passed",
+      "driver_sha256": "9cea33fe89ce074ccfa67ded4700c7f674fa0d58a98c1bad5871de483dd423f8",
+      "raw_result_sha256": "f570da936975e09fc186afdd0b3c5569222777803575918d3fbbc25d01767ea0",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 6.962047084001824,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a646-67b7-7a13-bf7d-20a341cb7d20",
+        "turn": "01a0a646-8ec6-7fb2-aea8-29f2beb606e1",
+        "item": "01a0a646-8edf-7191-b74a-30fc483e45b4"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "model_requests": 7
+    },
+    {
+      "trial": "integration-result1",
+      "result": "failed",
+      "driver_sha256": "1a5563f7f9c187d52861b77b2cd84ff8a845637d184050984e64c59affab6205",
+      "raw_result_sha256": "5676ae79c923f57baafe108193a6b502f56723e1fe8cc0c59aa06b3a0b87a905",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 5.902877542015631,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a63f-7551-7992-ac85-5f2e47390923",
+        "turn": "01a0a63f-9c5f-7441-9e46-a2aea5cfd6dd",
+        "item": "01a0a63f-9c7d-7c93-801f-bdded304b466"
+      },
+      "completed_receipts": 5,
+      "failure_explanation": "The driver expected six completed queue receipts for five submitted messages; corrected count passed."
+    },
+    {
+      "trial": "integration-result2",
+      "result": "passed",
+      "driver_sha256": "2922cdb7b3f5dbf0581f0ecc78db18395d464967b78d1ddb83a148aba2b53164",
+      "raw_result_sha256": "c9470ab293db1cba27af76ced6b51ff92426e07bde5af16b59c8cea18cb20b58",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 7.576860332977958,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a640-f498-7662-a0cd-838e1aeacec1",
+        "turn": "01a0a641-1ba6-7820-8f4e-7bb0afe162e2",
+        "item": "01a0a641-1bc7-7f61-831d-ede4f661a620"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "model_requests": 7
+    },
+    {
+      "trial": "legacy-question-result1",
+      "result": "failed",
+      "driver_sha256": "c61d4c2ee6c8fdaee3144d63d0e060d4dfeb6472776ae8e369c8a1b42736b06a",
+      "raw_result_sha256": "ebadb380f6c91eaeb6683221cc4dcfe984fd6e4acf9d8504fa6979d7b6bde5bd",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.251604708988452,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a655-ea3d-7953-a2c0-3ce375a5a3d7",
+        "turn": "01a0a656-1149-79a2-a116-3fbaa503a6de",
+        "item": "01a0a656-115f-70a3-a917-9f7574f3d227"
+      },
+      "completed_receipts": 4,
+      "failure_explanation": "The daemon acknowledgement becomes visible before the receiver ledger fsync. The driver now waits for both receipt boundaries."
+    },
+    {
+      "trial": "legacy-question-result2",
+      "result": "passed",
+      "driver_sha256": "b6c2722b20142a5034126409691ca5aa81586814310cc186b310e92d78474351",
+      "raw_result_sha256": "c7821ae8d84bf7acd6b7bd2cb2d6545c82d18995a1c2d66eada0017a0fe29da9",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.677151875017444,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a657-6547-70a3-b93d-7aed9c952e48",
+        "turn": "01a0a657-8c54-7d63-99d0-4ac112eedd01",
+        "item": "01a0a657-8c6e-78a3-8e68-d6f63332db70"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "model_requests": 9
+    },
+    {
+      "trial": "limit-result1",
+      "result": "failed",
+      "driver_sha256": "418caa71f966ed054e1ed67e1b30349de1819c2e4a2f97467cc76418a9840065",
+      "raw_result_sha256": "20373e4c3119b792e64c3f1546c229e268a8960daef787ecb1ddab7d5199b751",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.66199495800538,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64e-a436-7b63-8337-cc5ad002c7c4",
+        "turn": "01a0a64e-cb44-7f80-9433-5060c6e92bf5",
+        "item": "01a0a64e-cb59-7aa2-82bf-5d56d9027453"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "failure_explanation": "An administrative legacy Inbox read correctly made the queued follow-up uncertain. The driver now uses explicit PeekInput."
+    },
+    {
+      "trial": "limit-result2",
+      "result": "passed",
+      "driver_sha256": "c2ec6029076b7c93d661e5f6d3bee9de925814f8f199083c1087f880a3438d71",
+      "raw_result_sha256": "aa48e85190b58b13e13ffe5d7824ce7925ff8ab8001cb903d27ae18bf19bed2a",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.239244458003668,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a654-088c-7bc0-8bcd-d0f820f11fd4",
+        "turn": "01a0a654-2f99-7cd0-b4c6-753a9323b03b",
+        "item": "01a0a654-2fa4-7a51-9305-7ad65af1a237"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "rate_limit_holds_queue": true,
+      "explicit_resume_without_replay": true,
+      "model_requests": 9
+    },
+    {
+      "trial": "question-result1",
+      "result": "failed",
+      "driver_sha256": "8692be8a7e6afe91df1e23b63a8ed765c977f0c29d26a38805be7203afffa8c0",
+      "raw_result_sha256": "e48cb16b3e1e267f7f75828eef13edd6eaa2c2ff79de39084bcf083423241472",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 6.933032167027704,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a648-e1ad-7cf2-a5d9-84f73a1afe16",
+        "turn": "01a0a649-08ba-7c60-aaa4-ab4ad1a77352",
+        "item": "01a0a649-08cb-79e1-b0b2-a253ec2ccbc4"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "failure_explanation": "The fixture emitted an obsolete flattened MCP tool name; the installed provider requires namespace plus tool name."
+    },
+    {
+      "trial": "question-result2",
+      "result": "failed",
+      "driver_sha256": "7210fa9c0f492e9dcc68aa63ec306b45fbd4a5f084ff51e6e1a078de470e26b6",
+      "raw_result_sha256": "1b25ff2f02772224d03b6f9957939767e34746d8a436e4943386a4f60c007186",
+      "provider_version": "codex-cli 0.154.0",
+      "failure_explanation": "The harness used a CLI build-info flag that does not exist; provenance capture was corrected."
+    },
+    {
+      "trial": "question-result3",
+      "result": "passed",
+      "driver_sha256": "514a6232cf604e4b987febe16254d420feb9a5709bed997484d3137cdae62151",
+      "raw_result_sha256": "c7c8694846013ba0ca3b390f960740bd4e6d7d46063c0d472bc74994cef04b8f",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.641975165985059,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64b-0530-7b63-9408-5bd836107238",
+        "turn": "01a0a64b-2c3a-7460-9c7b-60d2a8c0948c",
+        "item": "01a0a64b-2c45-7551-8ca5-c07d412ac542"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "async_question_answer_once": true,
+      "model_requests": 10
+    },
+    {
+      "trial": "recovery-result1",
+      "result": "failed",
+      "driver_sha256": "1b17aef7ab9b5426d82e0dc41f7e00572e3a404906f4c467636500fed4dc19ce",
+      "raw_result_sha256": "0a7843e4db8b92f19c62b3b83283e7deb78c30f6242e92263fa3d84187fffbb1",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.661587832990335,
+      "automatic_hook_bootstrap": true,
+      "failure_explanation": "Writing a complete line and Enter in one PTY write triggered paste handling; separate typing and Enter corrected the fixture."
+    },
+    {
+      "trial": "recovery-result2",
+      "result": "passed",
+      "driver_sha256": "44d1d505cf7b3552095947e44869c5e1ced249507af1bfc7fd4b0d94c3ec5b3f",
+      "raw_result_sha256": "058722b2c0d0cd392f623cdef17f1dfa8aa72840194ad3fbc9955721d878d095",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.667767458013259,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64f-f7eb-7082-a369-aec510f97062",
+        "turn": "01a0a650-1ef8-7de0-9669-68bd2bf0f19c",
+        "item": "01a0a650-1f09-77d0-b3d9-93651576a501"
+      },
+      "completed_receipts": 4,
+      "receiver_restart_no_replay": true,
+      "lost_queue_reply_recovered_without_resubmission": true,
+      "unconfirmed_attempt_paused_without_resubmission": true,
+      "model_requests": 7
+    }
+  ],
+  "integration_limits": [
+    "Earlier preliminary trials preceded daemon-supervised restart; supervised_native_trials records later combined source/binaries separately.",
+    "The Responses model is a loopback fixture; this does not validate paid provider availability, real account resets, other versions or other providers.",
+    "The real hook is invoked from a provider tool; provider hook configuration and trust UX still require installed-session acceptance.",
+    "CLI-posted answers and explicit same-thread TUI resume passed at 33cbccd. Disconnected-ask and generic send-reply fixes still need combined acceptance. Unknown legacy offers, renamed/overridden historical MCP bindings, sustained workloads and actual installation remain open.",
+    "Actual Codex 0.154.0 delays SessionStart until a turn, including reopening an existing TUI without a prompt. Trusted-hook initial-turn bootstrap works; zero-prompt startup/reopen is an observed unclosed gap, and MCP startup supplies no thread/profile identity in its environment."
+  ],
+  "supervised_native_trials": [
+    {
+      "started_at": "2026-09-15T19:17:14.518765+00:00",
+      "scenario": "legacy-question",
+      "result": "passed",
+      "driver_sha256": "02413f1b655af6ec34ca92279466cf115494ec1c8325467582d0659d1cb52d11",
+      "source": {
+        "commit": "8b2afe320213d1f0df219400c5bd7338b063f510",
+        "dirty": false,
+        "rust_and_driver_sha256": "12cfdd341f4d413ec20e7d64911e6fd60bf45841716310c884c6f75d1bc624a5"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "f80583dd5da141a3b9bf30aa44ecb0cd192463d9aeeedd17411a6e9d1e86cf0a",
+      "daemon_sha256": "254026d5a39e9e3a3f5313664386d667b1aff5c0eec24e9a9f0c7a28bc4963c0",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 93137,
+      "thread": "01a0a680-820b-75d1-8e56-6b64e1e840c8",
+      "agent": "49f73aa9f2fe494aa5606a846d1ab98b",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.361640290997457,
+      "cross_process_receipt": {
+        "thread": "01a0a680-820b-75d1-8e56-6b64e1e840c8",
+        "turn": "01a0a680-a918-7fd3-bfcc-0fb112b93722",
+        "item": "01a0a680-a94d-70e0-a8b9-beec09fa8687"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "f2a74e7889764fff"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a680-820b-75d1-8e56-6b64e1e840c8",
+          "turn": "01a0a681-1eb4-70e0-8cd1-9e334dcb15cb",
+          "item": "01a0a681-1ebf-77a3-b23c-a33859484832"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "2e8930c81b524a1c",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "5221d85a44d17bdd22c0c33f757e0256f34c460f83f7458894d0e538f23a8a68"
+    },
+    {
+      "started_at": "2026-09-15T19:18:10.683696+00:00",
+      "scenario": "rate-limit",
+      "result": "passed",
+      "driver_sha256": "02413f1b655af6ec34ca92279466cf115494ec1c8325467582d0659d1cb52d11",
+      "source": {
+        "commit": "8b2afe320213d1f0df219400c5bd7338b063f510",
+        "dirty": false,
+        "rust_and_driver_sha256": "12cfdd341f4d413ec20e7d64911e6fd60bf45841716310c884c6f75d1bc624a5"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "f80583dd5da141a3b9bf30aa44ecb0cd192463d9aeeedd17411a6e9d1e86cf0a",
+      "daemon_sha256": "254026d5a39e9e3a3f5313664386d667b1aff5c0eec24e9a9f0c7a28bc4963c0",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 95591,
+      "thread": "01a0a681-5d5c-73d3-a8be-58e373936297",
+      "agent": "7c9b67f6b0aa48e793c4080db464a991",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.657784624985652,
+      "cross_process_receipt": {
+        "thread": "01a0a681-5d5c-73d3-a8be-58e373936297",
+        "turn": "01a0a681-846c-7653-b4a4-4ee4c97ecef9",
+        "item": "01a0a681-8486-73f0-b405-69de8c9c5773"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ad0b5ad785e5431b"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a681-5d5c-73d3-a8be-58e373936297",
+          "turn": "01a0a681-f9db-7a83-8109-4e54fb946ad1",
+          "item": "01a0a681-fa06-74e1-be9b-59b274e6fd39"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "detected_provider_issue": {
+        "kind": "rate"
+      },
+      "rate_limit_holds_queue": true,
+      "explicit_resume_without_replay": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "fca04b511b1e61c81c65609341d769f5e9e39128b8a278e2cef7171d2159f9e5"
+    },
+    {
+      "started_at": "2026-09-15T19:19:12.827157+00:00",
+      "scenario": "recovery",
+      "result": "passed",
+      "driver_sha256": "02413f1b655af6ec34ca92279466cf115494ec1c8325467582d0659d1cb52d11",
+      "source": {
+        "commit": "8b2afe320213d1f0df219400c5bd7338b063f510",
+        "dirty": false,
+        "rust_and_driver_sha256": "12cfdd341f4d413ec20e7d64911e6fd60bf45841716310c884c6f75d1bc624a5"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "f80583dd5da141a3b9bf30aa44ecb0cd192463d9aeeedd17411a6e9d1e86cf0a",
+      "daemon_sha256": "254026d5a39e9e3a3f5313664386d667b1aff5c0eec24e9a9f0c7a28bc4963c0",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 97872,
+      "thread": "01a0a682-501e-7ab2-8fce-db949911208b",
+      "agent": "98dd0404814c43afaa5f72fc56ebbe4b",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.677131667005597,
+      "lost_queue_reply_recovered_without_resubmission": true,
+      "cross_process_receipt": {
+        "thread": "01a0a682-501e-7ab2-8fce-db949911208b",
+        "turn": "01a0a682-772b-7072-93ed-52cbd96e6201",
+        "item": "01a0a682-7753-7011-b6d7-5bf227b7f043"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "f6765700e03d4c0f"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a682-501e-7ab2-8fce-db949911208b",
+          "turn": "01a0a682-c56f-75b0-9c20-bb61392b49d1",
+          "item": "01a0a682-c593-7322-9041-3bd78ed4874f"
+        }
+      },
+      "completed_receipts": 4,
+      "automatic_receiver_restart_no_replay": true,
+      "unconfirmed_attempt_paused_without_resubmission": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 7,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "df9587c8d519c58cb4f99f96065c9fdc5d821e5f7f45c7272d554d8b1e3011c7"
+    },
+    {
+      "started_at": "2026-09-15T19:13:32.160233+00:00",
+      "scenario": "resume",
+      "result": "failed",
+      "driver_sha256": "1b54c33877802a8d0dd46ca1d8e0e943d9de49fa8ec3fb1bc4556125a8395f0e",
+      "source": {
+        "commit": "8b2afe320213d1f0df219400c5bd7338b063f510",
+        "dirty": false,
+        "rust_and_driver_sha256": "12cfdd341f4d413ec20e7d64911e6fd60bf45841716310c884c6f75d1bc624a5"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "f80583dd5da141a3b9bf30aa44ecb0cd192463d9aeeedd17411a6e9d1e86cf0a",
+      "daemon_sha256": "254026d5a39e9e3a3f5313664386d667b1aff5c0eec24e9a9f0c7a28bc4963c0",
+      "pid": 80841,
+      "thread": "01a0a67d-1f35-75c2-8e38-b9d4e96b9fbf",
+      "agent": "3678d0f9c5d548f8a70057eb1186f23a",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.343392124981619,
+      "cross_process_receipt": {
+        "thread": "01a0a67d-1f35-75c2-8e38-b9d4e96b9fbf",
+        "turn": "01a0a67d-4639-7751-bc36-04be436b7290",
+        "item": "01a0a67d-4643-7f20-a5cc-9706b767656a"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "67f1d1e470b04a1b"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a67d-1f35-75c2-8e38-b9d4e96b9fbf",
+          "turn": "01a0a67d-bb80-7621-ade3-e77f73674775",
+          "item": "01a0a67d-bb9f-7843-99f9-56e893367f4e"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "e7025449f0094f94",
+      "resumed_agent": "46cb9573bd264851b6b2597035e8b709",
+      "resumed_thread": "01a0a67d-1f35-75c2-8e38-b9d4e96b9fbf",
+      "same_logical_agent_after_resume": false,
+      "old_queue_after_resume": [
+        "e7025449f0094f94"
+      ],
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "8cee14fd0e560befc24ba213ec7baff5270d5351ec6f10c7a8d05dc6d50b7b0b",
+      "failure_analysis": "Same persisted conversation registered a new agent and stranded the old queued message; confirmed product defect."
+    },
+    {
+      "started_at": "2026-09-15T19:34:13.643753+00:00",
+      "scenario": "resume",
+      "result": "failed",
+      "driver_sha256": "c11f334045ff35f2b4f7bbff90bbeaa9926edf0c985cd26bf5bdd12d58fea531",
+      "source": {
+        "commit": "bf150ea680a27beb1ed8b0d80db569b81f6c9fea",
+        "dirty": true,
+        "rust_and_driver_sha256": "43ee895bf5bc60aeac5f8f52ad6e93ccec55574c8b56c1640258597e3197c69d"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "ed07748b9b36f96826288924b88ca43580600e672dc37a5897c910329b0f838a",
+      "daemon_sha256": "52834f71d113b3a7f7b6f6d7071c9a0af3120caada54e490e0a51a0d487446d1",
+      "pid": 36051,
+      "thread": "01a0a690-1127-7af1-ae17-8455d5fff9b7",
+      "agent": "0faccefe1db041a2aa20798aff92b532",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.1401206250011455,
+      "cross_process_receipt": {
+        "thread": "01a0a690-1127-7af1-ae17-8455d5fff9b7",
+        "turn": "01a0a690-3837-7ed3-ad19-abe0ecd942bd",
+        "item": "01a0a690-3850-7c50-821a-24361b18f9fa"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "44737d0781bd43cd"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a690-1127-7af1-ae17-8455d5fff9b7",
+          "turn": "01a0a690-ad76-7970-95ac-8ce0a49779d5",
+          "item": "01a0a690-ad8b-79d3-aa73-8b97b44ae6e8"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "7e1e307f48e64044",
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "c15e4e618d87b3019680ac5f1e215d102f6ca1be0475a23fa75fe984f02c5e50",
+      "failure_analysis": "Fixture stopped before reopening TUI: undefined ledgerpath; cleanup double-close masked the first exception. Corrected in later driver."
+    },
+    {
+      "started_at": "2026-09-15T19:35:27.919410+00:00",
+      "scenario": "resume",
+      "result": "failed",
+      "driver_sha256": "a1161a222b8583aa7dff67c663385e93caf4b75c44a5e1cc92ee5da3181c25e3",
+      "source": {
+        "commit": "bf150ea680a27beb1ed8b0d80db569b81f6c9fea",
+        "dirty": true,
+        "rust_and_driver_sha256": "3a6f1ff1cc58418496c73bc887614ac1735b1ffb2baae11bb7ab391cae695046"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "ed07748b9b36f96826288924b88ca43580600e672dc37a5897c910329b0f838a",
+      "daemon_sha256": "52834f71d113b3a7f7b6f6d7071c9a0af3120caada54e490e0a51a0d487446d1",
+      "pid": 40518,
+      "thread": "01a0a691-3120-7600-ad75-e7ae26459563",
+      "agent": "be408420ba764289ae47827585837b95",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.632950208004331,
+      "cross_process_receipt": {
+        "thread": "01a0a691-3120-7600-ad75-e7ae26459563",
+        "turn": "01a0a691-582b-7b82-a003-6920ee7d9380",
+        "item": "01a0a691-583b-78b1-b950-ce599d85e02e"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "35b190f1afe54543"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a691-3120-7600-ad75-e7ae26459563",
+          "turn": "01a0a691-cd68-7eb1-a441-32c35ee89019",
+          "item": "01a0a691-cd77-7d33-8b04-beae51168cd2"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "7e957344d0ad4869",
+      "resumed_agent": "be408420ba764289ae47827585837b95",
+      "resumed_thread": "01a0a691-3120-7600-ad75-e7ae26459563",
+      "same_logical_agent_after_resume": true,
+      "old_queue_after_resume": [],
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "4882cffb124bd0866310b15493a7c77d00e616e46a9124148874fdd897bce6ac",
+      "failure_analysis": "Same canonical agent and queued delivery/ledger preservation assertions passed; final transcript check incorrectly read request.input instead of request.body.input. Corrected in later driver; this trial remains failed."
+    },
+    {
+      "started_at": "2026-09-15T19:47:22.664011+00:00",
+      "scenario": "resume",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 64235,
+      "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+      "agent": "d32774a0ef2d4c0999df23ec33f98c56",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.099419584003044,
+      "cross_process_receipt": {
+        "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+        "turn": "01a0a69c-4255-7543-8734-73938723b941",
+        "item": "01a0a69c-4262-7a91-bbb3-095673118866"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "a0d24509cf2b405e"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+          "turn": "01a0a69c-b795-7320-90c4-63fdbd2e0403",
+          "item": "01a0a69c-b7a5-7873-9c21-32faffd060ec"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "ac02f0aa26514ce4",
+      "resumed_agent": "d32774a0ef2d4c0999df23ec33f98c56",
+      "resumed_thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+      "same_logical_agent_after_resume": true,
+      "old_queue_after_resume": [],
+      "restart_preserved_token_and_receipts": true,
+      "restart_delivered_retained_queue": true,
+      "same_live_tui_before_explicit_restart": true,
+      "same_live_tui": false,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "94311dc925a6b3cfe84a42cdc6e1acf22494c92d3f06ad3657d7d2880fd30680"
+    },
+    {
+      "started_at": "2026-09-15T19:48:23.324373+00:00",
+      "scenario": "posted-question",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 66851,
+      "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+      "agent": "104694b162c44ad98b7a168b7716f54a",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.629777291993378,
+      "cross_process_receipt": {
+        "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+        "turn": "01a0a69d-2d1f-75c2-8ec9-e9abc9ccd72c",
+        "item": "01a0a69d-2d2d-77e3-8704-eca1a296faa1"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "4273ae0e600740c2"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+          "turn": "01a0a69d-a25c-7363-9d9e-f4190db2c216",
+          "item": "01a0a69d-a26c-7ef2-a863-08b9dfdf392e"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "direct_answer_queued_once": true,
+      "question_connection_closed_before_answer": false,
+      "question_id": "121ba99c2a81491c",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "034c49af85a3cb4fd148febc88437a35f7dcb50e55cdb5a06c23c120628005e7"
+    },
+    {
+      "started_at": "2026-09-15T19:49:20.370601+00:00",
+      "scenario": "legacy-question",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 69220,
+      "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+      "agent": "fa519b06218c4c638a8c272288148049",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.643387374992017,
+      "cross_process_receipt": {
+        "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+        "turn": "01a0a69e-0bfd-7bf0-aacd-47ea0a37077b",
+        "item": "01a0a69e-0c11-7d42-97dd-b3aeaeb0eecf"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "f71a11767d9945f7"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+          "turn": "01a0a69e-813c-73e0-8efc-807cea826a12",
+          "item": "01a0a69e-814d-7a33-ae4f-fc7e252174d9"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "4d39e3d766f74beb",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "e095c6eb5442c03a8f86ce31f14a5149ca2b1c90fb229ef540c1429dac33b5e1"
+    },
+    {
+      "started_at": "2026-09-15T19:57:28.106617+00:00",
+      "scenario": "disconnected-question",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 84465,
+      "thread": "01a0a6a5-574a-71f2-9fde-a7f8642c5270",
+      "agent": "92d14342eb7f492c9557e207ec5c09d8",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.3319358750013635,
+      "cross_process_receipt": {
+        "thread": "01a0a6a5-574a-71f2-9fde-a7f8642c5270",
+        "turn": "01a0a6a5-7e56-7a53-8690-9825b60ee8fe",
+        "item": "01a0a6a5-7e6b-7751-bb2c-a1bcbb15ae8e"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ae813cfbe87c4e76"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a5-574a-71f2-9fde-a7f8642c5270",
+          "turn": "01a0a6a5-f394-71c3-a6b9-f40755b1d22b",
+          "item": "01a0a6a5-f39f-75a3-85ae-5dc33724aba2"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "direct_answer_queued_once": true,
+      "question_connection_closed_before_answer": true,
+      "question_id": "3d3d74209e3f4ec7",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "a1f949a48dceeaa8560a8689c3c6201f319dc6a52498789403a302f52ca3ae2a",
+      "private_result": "/private/tmp/agentdocker-native-release14-disconnected-question-2026-09-15/result.json",
+      "result_sha256": "da12ffb9849b4d3b117f702c89188a952d08943f04eeff81ea24f2ca40aea941"
+    },
+    {
+      "started_at": "2026-09-15T19:58:24.496815+00:00",
+      "scenario": "legacy-reply",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 87057,
+      "thread": "01a0a6a6-3247-7482-a913-830955c412df",
+      "agent": "94d1532faa524651b3d7554114b85c48",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.628525707987137,
+      "cross_process_receipt": {
+        "thread": "01a0a6a6-3247-7482-a913-830955c412df",
+        "turn": "01a0a6a6-5953-75f0-9154-9941f8b9f654",
+        "item": "01a0a6a6-5964-79c0-ae44-e73b3038c978"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "cd45130dbbe74c75"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a6-3247-7482-a913-830955c412df",
+          "turn": "01a0a6a6-ce8e-7d02-8ccd-45a5a6ffc2bc",
+          "item": "01a0a6a6-ce9f-7a51-ac34-d25bae52afa1"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "092fe1ee13fe4dd9",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "0233811290f01954b01522ad4def6bbc4892f5ac82f519865cc2c46aa061d1b5",
+      "private_result": "/private/tmp/agentdocker-native-release14-legacy-reply-2026-09-15/result.json",
+      "result_sha256": "bab8acc1ba5883a01e9c61bdc4ab4680263d83873ccd2a7b117a30a063d91190"
+    },
+    {
+      "started_at": "2026-09-15T19:59:20.559699+00:00",
+      "scenario": "resume",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 92791,
+      "thread": "01a0a6a7-0d3f-7792-908c-b748e345116e",
+      "agent": "f8d9b63506d845338a677f307a5b000e",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.634449375007534,
+      "cross_process_receipt": {
+        "thread": "01a0a6a7-0d3f-7792-908c-b748e345116e",
+        "turn": "01a0a6a7-344e-7000-8558-8ac4c71f951a",
+        "item": "01a0a6a7-345f-7113-a7ec-65b4534a7ea0"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "7c3f268b56284e77"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a7-0d3f-7792-908c-b748e345116e",
+          "turn": "01a0a6a7-a98f-71f3-9ef8-48c022d88b58",
+          "item": "01a0a6a7-a99e-7af3-8a7f-63152dea8bfd"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "0b37bfe249684fa5",
+      "resumed_agent": "f8d9b63506d845338a677f307a5b000e",
+      "resumed_thread": "01a0a6a7-0d3f-7792-908c-b748e345116e",
+      "same_logical_agent_after_resume": true,
+      "old_queue_after_resume": [],
+      "restart_preserved_token_and_receipts": true,
+      "restart_delivered_retained_queue": true,
+      "same_live_tui_before_explicit_restart": true,
+      "same_live_tui": false,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "711abcb052bc1cc92165d730928f80894e6f1e404a1def627f33bccdd1fedc7b",
+      "private_result": "/private/tmp/agentdocker-native-release14-resume-2026-09-15/result.json",
+      "result_sha256": "fd84e5748bb5e3dd69825f207ed59958441137eafd0d7c9ce67d8ca0f038e6a4"
+    },
+    {
+      "started_at": "2026-09-15T20:00:20.562002+00:00",
+      "scenario": "question",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 99360,
+      "thread": "01a0a6a7-f7a1-7b01-a6f8-1e6cc4ef3296",
+      "agent": "ab4a6f29d3d043b7a6fd2928568535c5",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.637018624984194,
+      "cross_process_receipt": {
+        "thread": "01a0a6a7-f7a1-7b01-a6f8-1e6cc4ef3296",
+        "turn": "01a0a6a8-1eae-70c3-b2ea-610e39647ae6",
+        "item": "01a0a6a8-1ecd-7252-80d1-a154812cc203"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "12fada5856c444cb"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a7-f7a1-7b01-a6f8-1e6cc4ef3296",
+          "turn": "01a0a6a8-9449-7db2-b443-b401ab6f3288",
+          "item": "01a0a6a8-9491-7b90-941d-b25f8250f4a1"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "async_question_answer_once": true,
+      "question_id": "5632bcebef6b4881",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 10,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "007a5fd199d382c0344596561bcdaafb82cf5efaa1875aae4e57e86427732782",
+      "private_result": "/private/tmp/agentdocker-native-release14-question-2026-09-15/result.json",
+      "result_sha256": "53a4df30e028108b52aea5b508e48d3eb2907faf13c02c3c31eb56841d886caf"
+    },
+    {
+      "started_at": "2026-09-15T20:01:27.352243+00:00",
+      "scenario": "rate-limit",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 4089,
+      "thread": "01a0a6a8-fe84-7a70-9732-d6304bf21163",
+      "agent": "499e711324164fec8e1da38855b6079f",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.317438500002027,
+      "cross_process_receipt": {
+        "thread": "01a0a6a8-fe84-7a70-9732-d6304bf21163",
+        "turn": "01a0a6a9-2585-7ea3-8098-9864b58a50f9",
+        "item": "01a0a6a9-258e-7130-bb30-f6a9576e7be9"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "c20cc34aaef94bde"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a8-fe84-7a70-9732-d6304bf21163",
+          "turn": "01a0a6a9-9ac5-7222-95fb-75f7818d2159",
+          "item": "01a0a6a9-9adb-7c21-aca0-8b14c821b3d9"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "detected_provider_issue": {
+        "kind": "rate"
+      },
+      "rate_limit_holds_queue": true,
+      "explicit_resume_without_replay": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "169e2b2b83af2837f73b7888184a83d0ff2aea524cccc7b4bec47ea86f5f6459",
+      "private_result": "/private/tmp/agentdocker-native-release14-rate-limit-2026-09-15/result.json",
+      "result_sha256": "70a29a0ffe51e9f1915ef294382b169b512df3b9411facae4ee863f2469e7d60"
+    },
+    {
+      "started_at": "2026-09-15T20:02:29.340990+00:00",
+      "scenario": "recovery",
+      "result": "passed",
+      "driver_sha256": "46a8623cdcbc8a2cfa17a96364e746ae5f161ed9c19d278bf91bd3dca23a026e",
+      "source": {
+        "commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+        "dirty": false,
+        "rust_and_driver_sha256": "e06e7170b0de092ed5aad4f19fedda3917d6bbec9c75e8f4b1de2c27f99e3e6f"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "00acf1fbf77d6218e1f5a5df275554f46f72863cca63a3fc57803cab56ae7def",
+      "daemon_sha256": "e76f9fd483808f874216926d10be80ae09d913b2316fb6a370fd5fbca5cea7ab",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 6951,
+      "thread": "01a0a6a9-eea7-7c21-89e5-3e668d474e33",
+      "agent": "80d89c4853454dc2a496da9e94d2c932",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.632547125016572,
+      "lost_queue_reply_recovered_without_resubmission": true,
+      "cross_process_receipt": {
+        "thread": "01a0a6a9-eea7-7c21-89e5-3e668d474e33",
+        "turn": "01a0a6aa-15b7-7db0-a37f-b69264f29ff2",
+        "item": "01a0a6aa-15ca-7df0-a760-cfcc6fea6c94"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "1a4a8debca704533"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6a9-eea7-7c21-89e5-3e668d474e33",
+          "turn": "01a0a6aa-63e3-7550-809b-863f53e9ae0f",
+          "item": "01a0a6aa-63f8-7160-ad6c-3d8ca320645d"
+        }
+      },
+      "completed_receipts": 4,
+      "automatic_receiver_restart_no_replay": true,
+      "unconfirmed_attempt_paused_without_resubmission": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 7,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "a15c6fd76b45eff1998fc34a4cd1540b75bb4a1f288b807630defbccda25009c",
+      "private_result": "/private/tmp/agentdocker-native-release14-recovery-2026-09-15/result.json",
+      "result_sha256": "e8d94095aeb71b72429f0ef9f50494afedba21e68c5750bf190ac9144256bc3d"
+    },
+    {
+      "started_at": "2026-09-15T20:33:56.243754+00:00",
+      "scenario": "migration",
+      "result": "passed",
+      "driver_sha256": "a42165c72b91989a1111bb897224850d8acff4b4043a1e3a46198be0b2ab7fa6",
+      "source": {
+        "commit": "8831524d1679aec586c489634da00c6bcf28d29e",
+        "dirty": false,
+        "rust_and_driver_sha256": "af830a663d7ae3b5c0fed6ce7a6867a9cb2284af9f2d7f60a195afb81b1431b4"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "b2fde21870a2d8d0b52b7c3965952e4874d15bc5dc2e661bd969e7f86d4555b6",
+      "daemon_sha256": "93513ad91542ba56c8612a0e711ecebbef1ed3ae13c65d05b3280256d16eff58",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 95609,
+      "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+      "agent": "a106e9a7e67e4620a8f23ab3a8931b4a",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.679055749991676,
+      "cross_process_receipt": {
+        "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+        "turn": "01a0a6c6-e081-7f50-8ea1-2129240099fc",
+        "item": "01a0a6c6-e0a6-72f3-8d86-def625af5f37"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ed6715de1cba429a"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+          "turn": "01a0a6c7-55e0-7f63-974c-28a615745a04",
+          "item": "01a0a6c7-561a-7ab2-acf0-235279b970e9"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "schema19_answer_migrated_before_receipt_reconciliation": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "076a123feeca43da",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "b8fa8b4f3422636ff647f5465bbf5bd4a9fa1b5e53ee7ceecf7cb8b08f3fb635",
+      "diagnosis": "Passed: schema19 queued synchronous answer migrated into uncertain offers, successor receiver reconciled the existing exact tool receipt, no extra provider turn. Private AgentDocker state fixture; no provider database edits.",
+      "private_result": "/private/tmp/agentdocker-native-migration21-2026-09-15/result.json",
+      "result_sha256": "29324c011203fdd0f88ba30d601125276ed3bff33319c1f7b1cb27d2fe590ee2",
+      "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
+    }
+  ],
+  "combined_gate_8b2afe3": {
+    "source_commit": "8b2afe320213d1f0df219400c5bd7338b063f510",
+    "rust_tests_passed": 954,
+    "rust_tests_skipped": 6,
+    "python_checks_passed": 70,
+    "fmt_clippy_doctests_packaging_release": "passed",
+    "log_sha256": "e7009c613be18c5679edfb4753a1e1921d5c596d5f4ae21fabae811977be0eb9",
+    "scope": "Combined receiver and daemon-supervised recovery before subsequent same-thread process resume and authoritative answer-routing changes."
+  },
+  "combined_gate_7133023": {
+    "source_commit": "713302319f739ce064cf3e1257bbdc2e40608b76",
+    "rust_passed": 962,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "result": "passed",
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace tests",
+      "doctests",
+      "Python",
+      "package",
+      "release build"
+    ],
+    "private_log": "/private/tmp/agentdocker-native-combined-gate14.log",
+    "log_sha256": "2d35d8d1dcfacf387e1b9000af2828805dc1cb56c515c87ce953a75426e54f2e"
+  },
+  "startup_and_migration_diagnostics": [
+    {
+      "started_at": "2026-09-15T20:19:08.745990+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "0d2bdaf979d2cd4a9050c1be1d2e52b79850ceb46b403361c753bc8a6973de15",
+      "source": {
+        "commit": "6e04a0910ca201a8a1e88ae9a64b9c601fecd63b",
+        "dirty": false,
+        "rust_and_driver_sha256": "89b6f8da4fecab4280d94ca74e019b5dca0597cd30ac4b6ef9da1f3faa24ca7a"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 47984,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "314c60f573502091253a47bfb1c410a32446cd044c47a9fcfe91d939a4efbf0f",
+      "diagnosis": "No-prompt fresh TUI did not register/bind within30s; no model request.",
+      "private_result": "/private/tmp/agentdocker-native-startup15-2026-09-15/result.json",
+      "result_sha256": "34b1967360fbe81c26b7f38659a1fbffba61ba847d9f4364ff238a4fde987d26"
+    },
+    {
+      "started_at": "2026-09-15T20:20:16.883483+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "6de2f22d556653085f75b03def2dd3de1a837388ab025a8bfe0611b21fba8d6d",
+      "source": {
+        "commit": "1677258e85cfe108e1c519eb106e3c69da919b96",
+        "dirty": false,
+        "rust_and_driver_sha256": "cca96a6f2bb769c835e4f3f1de8273b091aeac9933510f67ab94d9afc6496ea4"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 50739,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "89581a73be28751b85d449b8542129265d46b2fa68b81a73606c84621aba3144",
+      "diagnosis": "Explicit lifecycle hooks feature still emitted no SessionStart before first input.",
+      "private_result": "/private/tmp/agentdocker-native-startup16-2026-09-15/result.json",
+      "result_sha256": "09c4f0701761c3767bf04a7bcfaaed9fd2034914de8b81f959fbe92c1f41c7bd"
+    },
+    {
+      "started_at": "2026-09-15T20:21:46.803725+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "70f41ea0d7bcbfb9d89aa6265f094fcb5a10e9f1e697a5ce7a65b1af4b9a8f9b",
+      "source": {
+        "commit": "e62305554090fa4b41cb9a31aeb500b78b8624e8",
+        "dirty": false,
+        "rust_and_driver_sha256": "4eb84fbfe0a328f5e79360ad09bc1a93730b617b59be5502da01e82bdddfcb1b"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 54187,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "441c3b07267da41d73a6c3cdf87409223f50fb4e7f0fa304f61a10c3e65b9c72",
+      "diagnosis": "Private command capture confirmed no SessionStart invocation before first input.",
+      "private_result": "/private/tmp/agentdocker-native-startup17-2026-09-15/result.json",
+      "result_sha256": "de5259390069da6111ff77694b3d1d39f05bc0c588268ef4df37edd09a4774de"
+    },
+    {
+      "started_at": "2026-09-15T20:22:38.707903+00:00",
+      "scenario": "lifecycle",
+      "result": "failed",
+      "driver_sha256": "76acabbf92d4a3c10c61732733d080f0b4499bb2a7f4d9789b7729b17edc4ffb",
+      "source": {
+        "commit": "8a153b38015afb93b84fa68cebee7eeae7e69373",
+        "dirty": false,
+        "rust_and_driver_sha256": "a1aec02fa6355cb4841cd72714fde198ff0c8bb79f36162f9ec4a90867478dcc"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 56333,
+      "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+      "agent": "c705cf31af4040bca9a577cc39a16018",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.665050167008303,
+      "cross_process_receipt": {
+        "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+        "turn": "01a0a6bc-89f8-7b01-83f2-a734f1bdcf2a",
+        "item": "01a0a6bc-8a10-73d0-b8c1-96478fa1e007"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "b161ebea62ae495c"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+          "turn": "01a0a6bc-ff40-7fb0-85ab-89e58e7fa6c1",
+          "item": "01a0a6bc-ff4f-7fa1-98ca-2dc49802b4b1"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "cf0ed425ee924b2d",
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "bd7e94dbfb863a57a55b06b65b35570dec6ad75103911f2ca0e1a998553c7fcf",
+      "diagnosis": "Actual SessionStart hook after first input bootstrapped receiver; idle/draft/FIFO/controller crash passed. Reopen without prompt emitted no resume hook and retained the old queue.",
+      "private_result": "/private/tmp/agentdocker-native-lifecycle18-2026-09-15/result.json",
+      "result_sha256": "aa0e23acc778ba0d13cf81bb1d78edf8ce40fe3c629119a8037f0c657de00b9c"
+    },
+    {
+      "started_at": "2026-09-15T20:26:18.917778+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "484709c5cef368c0e3c90a906a8233a372e4edfa18142af0dd36f76608bf7ff8",
+      "source": {
+        "commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+        "dirty": false,
+        "rust_and_driver_sha256": "67f09ba86c7abb7cc7ec2e6de42b66d479960d1a30a08c0410bd30f01a2d1cbd"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "1f667b4e9205f567358f2a16b18b96a5c3fa98190cf0961e2549bd39fd2ab33b",
+      "daemon_sha256": "87dfa01cec7c6914dfda82e2f493b0aa413aeaa5353c1e6e5ea2bb7cff152158",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 71253,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "acc4a0499b9f73b14ed10152d19a484325e6903dc70c55b3ab6793f4f5d1044a",
+      "diagnosis": "Eager MCP startup confirmed CODEX_THREAD_ID and CODEX_HOME are absent from its filtered environment; cannot infer exact binding.",
+      "private_result": "/private/tmp/agentdocker-native-startup19-2026-09-15/result.json",
+      "result_sha256": "c62fe98cbbf7898f2eb03bc58d246a5262e6c154d7800fb10648e0b8e11778ed"
+    },
+    {
+      "started_at": "2026-09-15T20:27:07.981968+00:00",
+      "scenario": "migration",
+      "result": "failed",
+      "driver_sha256": "484709c5cef368c0e3c90a906a8233a372e4edfa18142af0dd36f76608bf7ff8",
+      "source": {
+        "commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+        "dirty": false,
+        "rust_and_driver_sha256": "67f09ba86c7abb7cc7ec2e6de42b66d479960d1a30a08c0410bd30f01a2d1cbd"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "1f667b4e9205f567358f2a16b18b96a5c3fa98190cf0961e2549bd39fd2ab33b",
+      "daemon_sha256": "87dfa01cec7c6914dfda82e2f493b0aa413aeaa5353c1e6e5ea2bb7cff152158",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 73292,
+      "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+      "agent": "5a90d6d33af345acae05a2bb686027da",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.582779667020077,
+      "cross_process_receipt": {
+        "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+        "turn": "01a0a6c0-a5f2-78a2-87a8-977f2359e0ff",
+        "item": "01a0a6c0-a615-7283-83d8-aba48fdca12a"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "6f84657bf17f4ce6"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+          "turn": "01a0a6c1-1b31-7ea3-bd60-d5e88180e275",
+          "item": "01a0a6c1-1b46-7c20-9d12-76240db8a65a"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "a910a66b92882902623128188b25a4824c7eb1ea30ae96d0b4682e4655dbac02",
+      "diagnosis": "Fixture failure: daemon restart reused a closed API observer log handle; corrected to a dedicated daemon log. Migration receipt behavior not established by this failed run.",
+      "private_result": "/private/tmp/agentdocker-native-migration19-2026-09-15/result.json",
+      "result_sha256": "b0ea3dd313fdd069bfc3250e23169f2d69bcd30a7b3f2bb0f0e4afe742c3af02"
+    },
+    {
+      "started_at": "2026-09-15T20:31:36.852108+00:00",
+      "scenario": "migration",
+      "result": "failed",
+      "driver_sha256": "f1ad543272c4a1d5822a4452e5bd1461d8b628efbb994452064b59d337873341",
+      "source": {
+        "commit": "65a87466a26ebbb0d2b6b7e45add190d3af37768",
+        "dirty": false,
+        "rust_and_driver_sha256": "ca71e88c081803b2c63482aa7646f9378bd13057c808eedbefe1f83158449276"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "b2fde21870a2d8d0b52b7c3965952e4874d15bc5dc2e661bd969e7f86d4555b6",
+      "daemon_sha256": "93513ad91542ba56c8612a0e711ecebbef1ed3ae13c65d05b3280256d16eff58",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 89636,
+      "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+      "agent": "c3ba250fc2af4c61ba58065a7fb76e00",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.371454917010851,
+      "cross_process_receipt": {
+        "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+        "turn": "01a0a6c4-c167-7aa1-ac23-a0c0ee4719e2",
+        "item": "01a0a6c4-c17b-7021-ade6-4c09f5835187"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ce699758f59a44cf"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+          "turn": "01a0a6c5-36a7-7780-a5e1-65ce9921e687",
+          "item": "01a0a6c5-36c1-7fd1-84a2-de223a27d86e"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "ceca256dee862113a1a6b4501e2d5093efcd2d4ef58e5e0afd2f26b42a284451",
+      "diagnosis": "Schema20 migration markers passed; fixture failed attempting to resume the receiver already retired by graceful shutdown. Corrected to follow the supervised replacement.",
+      "private_result": "/private/tmp/agentdocker-native-migration20-2026-09-15/result.json",
+      "result_sha256": "3cd8ff0f217561f6df117025eb67b71664cf73564da4defa5419c49e8a712cca",
+      "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
+    }
+  ],
+  "combined_gate_2a7656c": {
+    "source_commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+    "rust_passed": 964,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "result": "passed",
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace tests",
+      "doctests",
+      "Python",
+      "package",
+      "release build"
+    ],
+    "private_log": "/private/tmp/agentdocker-native-combined-gate19.log",
+    "log_sha256": "e09a4094ae59b58bd9c1965988fcb3b60cb84187aff113cd815e95e875331810"
+  },
+  "burst_30_messages_2fa897b": {
+    "started_at": "2026-09-15T20:38:24.636321+00:00",
+    "scenario": "baseline",
+    "result": "passed",
+    "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+    "driver_sha256": "606ce939d9ccfbe61d002016699249e3bc8fc47e26d567fc0f5e436e6f3e72d0",
+    "source": {
+      "commit": "2fa897b99ae3e026b78aa5adaaefb0c76566676b",
+      "dirty": false,
+      "rust_and_driver_sha256": "af830a663d7ae3b5c0fed6ce7a6867a9cb2284af9f2d7f60a195afb81b1431b4"
+    },
+    "provider_version": "codex-cli 0.154.0",
+    "cli_sha256": "b2fde21870a2d8d0b52b7c3965952e4874d15bc5dc2e661bd969e7f86d4555b6",
+    "daemon_sha256": "93513ad91542ba56c8612a0e711ecebbef1ed3ae13c65d05b3280256d16eff58",
+    "pid": 11319,
+    "thread": "01a0a6ca-d1f0-7822-99cc-6b6d791d3dc4",
+    "agent": "caea876a744142cbb83efcbfbd54f801",
+    "automatic_hook_bootstrap": true,
+    "idle_wake_seconds": 7.551356416021008,
+    "cross_process_receipt": {
+      "thread": "01a0a6ca-d1f0-7822-99cc-6b6d791d3dc4",
+      "turn": "01a0a6ca-f8fd-7373-a76f-eae16d5861b6",
+      "item": "01a0a6ca-f915-72b3-9530-4c282402e7e4"
+    },
+    "no_conversation_resume": true,
+    "daemon_receipt": {
+      "messages": [
+        "0a339b4a3a6f4763"
+      ],
+      "receipt": {
+        "provider": "codex",
+        "thread": "01a0a6ca-d1f0-7822-99cc-6b6d791d3dc4",
+        "turn": "01a0a6cb-6e3e-7b53-9d4d-550538afbdf7",
+        "item": "01a0a6cb-6e58-7be3-9569-2893e1ebaed5"
+      }
+    },
+    "completed_receipts": 5,
+    "automatic_receiver_restart_no_replay": true,
+    "idle_wake_after_receiver_crash": true,
+    "mixed_origin_burst": {
+      "messages": 30,
+      "model_turns": 30,
+      "exact_fifo_receipts": 36,
+      "no_duplicate_turns": true,
+      "latency_first_seconds": 9.033671042008791,
+      "latency_last_seconds": 299.1488743330119,
+      "latency_p50_seconds": 149.09350066600018,
+      "latency_p95_seconds": 289.14675412498764
+    },
+    "same_live_tui": true,
+    "draft_preserved": true,
+    "busy_order_preserved": true,
+    "model_requests": 38,
+    "agentdocker_integration": true,
+    "raw_result_sha256": "8c95a2c4ae002dfa3e37d6e71da9fc35f42b7603c1055d0a36d766ed9147af3a",
+    "acceptance_limit": "Thirty ordinary queued turns were delivered exactly once and in FIFO order, but the one-outstanding-offer receiver follows the provider queue polling cadence: last arrival took299.15seconds. These are local loopback fixture waiting times, not paid model performance or low-latency acceptance.",
+    "result_file_sha256": "f7fb1ec99470742b33a1865ea94c8b6d59a358f5c51bfc039926f78fdde7b1c5",
+    "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
+  },
+  "combined_gate_153fad3": {
+    "source_commit": "153fad32d3dd69ba656fb22155879db1248a9fc0",
+    "result": "passed",
+    "rust_passed": 965,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace nextest",
+      "doctests",
+      "Python",
+      "workspace packaging",
+      "release build"
+    ],
+    "log_sha256": "47f377de5bfd2bf1d0d12801027f5285b48acbbf14feb6519b231e28bb28f11a",
+    "binary_sha256": {
+      "agentdocker": "7879099e3c5d1052766a90dfd04eb5c3fcd972b5f9e72b4f26ba034a3828ca0d",
+      "agentd": "cbb1d90570baad20764e3189663ccd6b6f911f13eec713a085b66223254c43d8"
+    },
+    "scope": "Actual142/147 parents integrated with merged146 coalescing; precedes final native review corrections."
+  },
+  "combined_gate_bb1e50c": {
+    "source_commit": "bb1e50c751e86b9778eb13848fb71524ddfb19c5",
+    "result": "passed",
+    "rust_passed": 967,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace nextest",
+      "doctests",
+      "Python",
+      "workspace packaging",
+      "release build"
+    ],
+    "log_sha256": "1d6c269b606623bc0a6a29855e317076177ace8df710fb26e8323b16804dfe67",
+    "binary_sha256": {
+      "agentdocker": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+      "agentd": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9"
+    },
+    "scope": "Final review corrections after965-test integrated baseline; actual provider acceptance follows on frozen release binaries."
+  },
+  "release_review_legacy_reply_b2c3938": {
+    "started_at": "2026-09-15T21:23:03.415859+00:00",
+    "scenario": "legacy-reply",
+    "result": "passed",
+    "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+    "driver_sha256": "055fd9333a8e84f530b460b8c8de96bb74025532a0442262b2783d10da30575f",
+    "source": {
+      "commit": "b2c3938382866820eaff9f8bcbdbea856bcb6c4b",
+      "dirty": false,
+      "rust_and_driver_sha256": "7d2260392f798f57341a94995fbe19f9b604d50b58616602f36fa1b81bb16470"
+    },
+    "provider_version": "codex-cli 0.154.0",
+    "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+    "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+    "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+    "pid": 8012,
+    "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+    "agent": "3fb86841580f4429854b1edd93319741",
+    "automatic_hook_bootstrap": true,
+    "idle_wake_seconds": 7.352060540986713,
+    "cross_process_receipt": {
+      "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+      "turn": "01a0a6f3-da3e-7310-bd0d-7fd28cf0f9a4",
+      "item": "01a0a6f3-da4e-7313-a91f-1397ce56162f"
+    },
+    "no_conversation_resume": true,
+    "daemon_receipt": {
+      "messages": [
+        "627d8c58445a493d"
+      ],
+      "receipt": {
+        "provider": "codex",
+        "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+        "turn": "01a0a6f4-4f7b-7703-bd91-ec3fba906a36",
+        "item": "01a0a6f4-4f8d-7a43-b7b7-277d4e65ee20"
+      }
+    },
+    "completed_receipts": 5,
+    "automatic_receiver_restart_no_replay": true,
+    "legacy_mcp_answer_not_resubmitted": true,
+    "question_id": "027b9bcebab744d6",
+    "same_live_tui": true,
+    "draft_preserved": true,
+    "busy_order_preserved": true,
+    "model_requests": 9,
+    "agentdocker_integration": true,
+    "raw_result_sha256": "fc18a853850c927e40065fc86ad17ff1e41b24552221fc7b58bf1837ea8a4670",
+    "binary_build_source": "bb1e50c",
+    "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
   }
 }

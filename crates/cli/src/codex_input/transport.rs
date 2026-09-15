@@ -24,9 +24,22 @@ pub(super) struct Provider {
 
 impl Provider {
     pub fn start(program: &Path, arguments: &[String], cwd: &Path) -> Result<Self> {
+        Self::start_profile(program, arguments, cwd, None)
+    }
+
+    pub fn start_profile(
+        program: &Path,
+        arguments: &[String],
+        cwd: &Path,
+        profile: Option<&Path>,
+    ) -> Result<Self> {
         // Inherit the supervised bridge's process group, provider configuration,
         // authentication, and permission policy. No detached provider daemon.
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        if let Some(profile) = profile {
+            command.env("CODEX_HOME", profile);
+        }
+        let mut child = command
             .args(["app-server", "--stdio"])
             .args(arguments)
             .current_dir(cwd)
