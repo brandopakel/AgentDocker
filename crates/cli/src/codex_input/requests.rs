@@ -418,7 +418,7 @@ mod tests {
         recover(&client, &mut ledger).await.unwrap();
         let request = serving.await.unwrap();
         assert!(
-            matches!(request,Request::ProviderInbox { agent,acknowledge } if agent=="owner" && acknowledge==vec![answer.id])
+            matches!(request,Request::ProviderInbox { agent,acknowledge, .. } if agent=="owner" && acknowledge==vec![answer.id])
         );
         assert!(ledger.record().closed_reviews[0].acknowledged);
         drop(ledger);

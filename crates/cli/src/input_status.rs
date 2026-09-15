@@ -82,6 +82,7 @@ pub async fn report<B: Backend>(
                 .context("provider process generation is unavailable")?,
             observed_at: Utc::now(),
             report,
+            token: None,
         }),
     )
     .await

@@ -30,7 +30,7 @@ pub fn pin_path(root: &Path, id: &str) -> io::Result<PathBuf> {
     Ok(root.join("pins").join(format!("{id}.lock")))
 }
 
-fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
+pub fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
     let Some((root, version, id)) = managed(executable) else {
         return Ok(None);
     };

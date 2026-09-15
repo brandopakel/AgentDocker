@@ -2325,6 +2325,7 @@ mod tests {
                             receipt: InputReceipt::ClaudeChannel,
                         }
                     },
+                    token: None,
                 }
             );
             if expected_requests == 2 {

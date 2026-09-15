@@ -361,6 +361,16 @@ pub struct AgentRecord {
     pub provider_availability: Option<crate::ProviderAvailability>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub adapter_contacts: std::collections::BTreeMap<crate::AdapterKind, crate::AdapterContact>,
+    /// The external controller that consumes this agent's queued input,
+    /// while one is bound. See [`crate::InputBinding`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_binding: Option<crate::InputBinding>,
+    /// When each queued message was first offered to a legacy reader (a
+    /// hook's delivery queue, an inbox read, a subscription backlog), kept
+    /// so a controller that binds later knows which messages may already
+    /// have been injected. Cleared as messages leave the queue.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub legacy_offers: std::collections::BTreeMap<crate::MessageId, DateTime<Utc>>,
 }
 
 /// Label an adapter sets when it made the name up from a runtime and an
@@ -425,6 +435,8 @@ impl AgentRecord {
             input_delivery: None,
             provider_availability: None,
             adapter_contacts: Default::default(),
+            input_binding: None,
+            legacy_offers: Default::default(),
         }
     }
 }

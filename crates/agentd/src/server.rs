@@ -159,7 +159,10 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 return stream_attach(&daemon, &agent, cols, rows, &mut reader, &mut writer).await;
             }
             unary => {
-                let response = if matches!(&unary, Request::Claim { .. }) {
+                // A wait owns its connection: a claim's, or an ask's, whose
+                // end must be known before its answer arrives, so the answer
+                // goes to the queue rather than to nobody.
+                let response = if matches!(&unary, Request::Claim { .. } | Request::Ask { .. }) {
                     tokio::select! {
                         biased;
                         () = claim_eof(&mut reader) => return Ok(()),
@@ -1101,6 +1104,77 @@ mod tests {
         assert!(
             matches!(daemon.handle(Request::Leases{agent:Some("waiter".into()),resource:None}).await,Response::Leases{leases} if leases.is_empty())
         );
+    }
+
+    /// An ask whose client went away is over: its answer, arriving later,
+    /// is the queue's, with nothing held for a connection that no longer
+    /// exists.
+    #[tokio::test]
+    async fn a_disconnected_ask_leaves_its_answer_to_the_queue() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let daemon = Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+        for name in ["asker", "recipient"] {
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await;
+        }
+        let mut events = daemon.subscribe_events();
+        let (mut client, server) = agentdocker_host::ipc::pair().await.unwrap();
+        let running = tokio::spawn(handle(daemon.clone(), server));
+        client
+            .write_all(b"{\"op\":\"ask\",\"from\":\"asker\",\"to\":\"recipient\",\"question\":\"Ready?\",\"timeout_secs\":60}\n")
+            .await
+            .unwrap();
+        let question = loop {
+            if let EventKind::QuestionOpened { question, .. } = events.recv().await.unwrap().kind {
+                break question;
+            }
+        };
+        assert!(daemon.question_waiting(&question));
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            !daemon.question_waiting(&question),
+            "the wait ended with the connection"
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: question.clone(),
+                text: "Yes".into(),
+            })
+            .await
+        else {
+            panic!("answer failed");
+        };
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "asker".into(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox failed");
+        };
+        assert!(
+            messages.iter().any(|m| m.id == answer),
+            "the queue's, at once"
+        );
+        assert!(daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
+            EventKind::AnswerRouted { answer: a, route: agentdocker_core::AnswerRoute::Queue, .. } if *a == answer)));
     }
 
     #[tokio::test]

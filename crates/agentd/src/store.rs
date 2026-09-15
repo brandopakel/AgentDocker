@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use agentdocker_core::{
     AgentId, AgentRecord, Change, Envelope, Event, JournalEntry, JournalKind, Lease, LeaseId,
-    ProjectId,
+    MessageId, ProjectId,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -31,7 +31,9 @@ pub(crate) use event_replay::EventReplay;
 // v15 stores complete file-change review presentations in pending questions.
 // v16 stores concrete, turn-scoped permission review presentations.
 // v17 retains independent session-owner identity; v18 retains provider blocks.
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+// v19 retains input bindings and legacy offers on the agent record: an older
+// daemon would not know a queue is a bound controller's and would drain it.
+pub(crate) const SCHEMA_VERSION: i64 = 20;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -590,10 +592,21 @@ impl Store {
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
                 // The daemon maps legacy file keys idempotently on load.
+                let tx = conn.unchecked_transaction()?;
+                if found < 19 {
+                    Self::offer_queued(&conn, |_| true)?;
+                }
+                if found < 20 {
+                    // A v19 daemon could hand a synchronous ask its answer
+                    // and leave the row queued unrecorded; a v20 daemon says
+                    // answers_routed and would deliver it as fresh input.
+                    Self::offer_queued(&conn, |envelope| envelope.reply_to.is_some())?;
+                }
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     params![SCHEMA_VERSION.to_string()],
                 )?;
+                tx.commit()?;
             }
             Some(other) => anyhow::bail!(
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
@@ -644,6 +657,80 @@ impl Store {
     }
 
     // ----- agents ---------------------------------------------------------
+
+    /// A provider session's new record joins the prior record of its
+    /// thread: the prior row takes the new process and binding, the
+    /// caller's queued rows move to it, the caller's row leaves and its
+    /// id becomes an alias, all with the event, in one transaction.
+    pub fn resume_input(
+        &self,
+        canonical: &AgentRecord,
+        alias: &agentdocker_core::identity::AgentAlias,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "UPDATE inbox SET agent=?1 WHERE agent=?2",
+            params![alias.canonical.as_str(), alias.retired.as_str()],
+        )?;
+        self.conn.execute(
+            "DELETE FROM journal_cursors WHERE agent=?1",
+            [alias.retired.as_str()],
+        )?;
+        self.upsert_agent(canonical)?;
+        self.conn
+            .execute("DELETE FROM agents WHERE id=?1", [alias.retired.as_str()])?;
+        self.put_document("identity_alias", alias.retired.as_str(), alias)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Mark queued messages as offered at the upgrade, so a controller
+    /// that binds afterwards gets them as uncertain to reconcile rather
+    /// than as new input to submit, and a binding that stands has them
+    /// in its uncertain set. Before v19 nothing recorded which queued
+    /// messages a hook or MCP read had already put in front of a model
+    /// (every row); before v20 a synchronous ask could return its answer
+    /// and leave the row queued unrecorded (every correlated reply).
+    fn offer_queued(conn: &Connection, offered: impl Fn(&Envelope) -> bool) -> Result<()> {
+        let now = Utc::now();
+        let mut agents = conn.prepare("SELECT id, json FROM agents")?;
+        let rows: Vec<(String, String)> = agents
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut queued = conn.prepare("SELECT json FROM inbox WHERE agent = ?1")?;
+        for (id, json) in rows {
+            let messages: Vec<MessageId> = queued
+                .query_map(params![id], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(|json| serde_json::from_str::<Envelope>(&json).ok())
+                .filter(|envelope| offered(envelope))
+                .map(|envelope| envelope.id)
+                .collect();
+            if messages.is_empty() {
+                continue;
+            }
+            let mut record: AgentRecord = match serde_json::from_str(&json) {
+                Ok(record) => record,
+                Err(_) => continue,
+            };
+            for message in messages {
+                record.legacy_offers.entry(message.clone()).or_insert(now);
+                if let Some(binding) = record.input_binding.as_mut()
+                    && !binding.uncertain.contains(&message)
+                {
+                    binding.uncertain.push(message);
+                }
+            }
+            conn.execute(
+                "UPDATE agents SET json = ?1 WHERE id = ?2",
+                params![serde_json::to_string(&record)?, id],
+            )?;
+        }
+        Ok(())
+    }
 
     pub fn upsert_agent(&self, record: &AgentRecord) -> Result<()> {
         self.conn.execute(
@@ -1656,6 +1743,166 @@ mod tests {
                 .unwrap();
             assert_eq!(version, SCHEMA_VERSION.to_string());
         }
+    }
+
+    /// A database written before v19 has queued messages nobody recorded
+    /// an offer for. Opened by this build, every one of them is an offer,
+    /// so a binding made afterwards carries them as uncertain; messages
+    /// queued after the upgrade are recorded as they are offered.
+    #[test]
+    fn queued_messages_from_before_v19_are_offered_at_the_upgrade() {
+        use agentdocker_core::{AgentSpec, Destination};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('schema_version', '18')",
+            [],
+        )
+        .unwrap();
+        let now = Utc::now();
+        let mut record = AgentRecord::new(AgentSpec::default(), false, now);
+        record.spec.name = "old".into();
+        let mut json = serde_json::to_value(&record).unwrap();
+        // The row as an old daemon wrote it: no bookkeeping fields at all.
+        json.as_object_mut().unwrap().remove("legacy_offers");
+        json.as_object_mut().unwrap().remove("input_binding");
+        conn.execute(
+            "INSERT INTO agents (id, name, live, created_at, json) VALUES (?1, 'old', 1, ?2, ?3)",
+            params![record.id.as_str(), now.to_rfc3339(), json.to_string()],
+        )
+        .unwrap();
+        let queued: Vec<Envelope> = (0..2)
+            .map(|n| {
+                Envelope::new(
+                    "peer",
+                    Destination::Agent(record.id.clone()),
+                    "chat",
+                    serde_json::json!({ "text": format!("old {n}") }),
+                    None,
+                    now,
+                )
+            })
+            .collect();
+        for envelope in &queued {
+            conn.execute(
+                "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
+                params![
+                    record.id.as_str(),
+                    envelope.id.as_str(),
+                    serde_json::to_string(envelope).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let untouched = AgentRecord::new(AgentSpec::default(), false, now);
+        conn.execute(
+            "INSERT INTO agents (id, name, live, created_at, json) VALUES (?1, 'empty', 1, ?2, ?3)",
+            params![
+                untouched.id.as_str(),
+                now.to_rfc3339(),
+                serde_json::to_string(&untouched).unwrap()
+            ],
+        )
+        .unwrap();
+        let store = Store::init(conn).unwrap();
+        let agents = store.load_agents().unwrap();
+        let old = agents.iter().find(|a| a.id == record.id).unwrap();
+        assert_eq!(old.legacy_offers.len(), 2);
+        for envelope in &queued {
+            assert!(old.legacy_offers[&envelope.id] >= now);
+        }
+        let empty = agents.iter().find(|a| a.id == untouched.id).unwrap();
+        assert!(empty.legacy_offers.is_empty());
+        let version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// A v19 daemon could hand a synchronous ask its answer and leave the
+    /// row queued with nothing recorded. Opened by this build, every
+    /// queued correlated reply is an offer, on the record and in a
+    /// standing binding's uncertain set; ordinary messages are not.
+    #[test]
+    fn correlated_replies_from_before_v20_are_offered_at_the_upgrade() {
+        use agentdocker_core::{
+            AgentSpec, Destination, InputBinding, ProcessIdentity, ProviderGeneration,
+        };
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('schema_version', '19')",
+            [],
+        )
+        .unwrap();
+        let now = Utc::now();
+        let mut record = AgentRecord::new(AgentSpec::default(), false, now);
+        let process = ProcessIdentity {
+            pid: 4242,
+            started_at: now,
+        };
+        record.input_binding = Some(InputBinding {
+            provider: ProviderGeneration {
+                process: process.clone(),
+                session: "thread".into(),
+                profile: "/profile".into(),
+            },
+            controller: process,
+            controller_since: now,
+            token_sha256: "digest".into(),
+            bound_at: now,
+            controller_generations: 1,
+            uncertain: Vec::new(),
+            launch: None,
+            restart: Default::default(),
+        });
+        conn.execute(
+            "INSERT INTO agents (id, name, live, created_at, json) VALUES (?1, 'bound', 1, ?2, ?3)",
+            params![
+                record.id.as_str(),
+                now.to_rfc3339(),
+                serde_json::to_string(&record).unwrap()
+            ],
+        )
+        .unwrap();
+        let message = |reply_to: Option<MessageId>| {
+            Envelope::new(
+                "peer",
+                Destination::Agent(record.id.clone()),
+                "answer",
+                serde_json::json!({ "text": "x" }),
+                reply_to,
+                now,
+            )
+        };
+        let plain = message(None);
+        let reply = message(Some(MessageId::generate()));
+        for envelope in [&plain, &reply] {
+            conn.execute(
+                "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
+                params![
+                    record.id.as_str(),
+                    envelope.id.as_str(),
+                    serde_json::to_string(envelope).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let store = Store::init(conn).unwrap();
+        let bound = store
+            .load_agents()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == record.id)
+            .unwrap();
+        assert!(bound.legacy_offers.contains_key(&reply.id));
+        assert!(!bound.legacy_offers.contains_key(&plain.id));
+        assert_eq!(bound.input_binding.unwrap().uncertain, vec![reply.id]);
     }
 
     #[test]
