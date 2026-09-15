@@ -169,26 +169,34 @@ impl Client {
     /// the request as new. A caller only sees the code once the window is
     /// spent.
     pub async fn call_raw(&self, request: &Request) -> Result<Response> {
+        // The first attempt is as long as the request itself takes: an
+        // `ask` waits for its answer, a `validate` for its command. Only
+        // the retries after a `transferring` answer are bounded, each by
+        // what is left of the window.
+        let mut response = self.call_once(request).await?;
         let deadline = Instant::now() + TRANSFER_WINDOW;
         let mut told = false;
-        loop {
-            let response = self.call_once(request).await?;
-            let transferring = matches!(
-                &response,
-                Response::Error {
-                    code: agentdocker_core::ErrorCode::Transferring,
-                    ..
-                }
-            );
-            if !transferring || Instant::now() >= deadline {
-                return Ok(response);
+        while transferring(&response) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
             }
             if !told {
                 eprintln!("agentdocker: the daemon is handing over to a successor; retrying");
                 told = true;
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(250).min(remaining)).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            response = match tokio::time::timeout(remaining, self.call_once(request)).await {
+                Ok(answered) => answered?,
+                // The window is spent mid-attempt: the last answer stands.
+                Err(_) => break,
+            };
         }
+        Ok(response)
     }
 
     async fn call_once(&self, request: &Request) -> Result<Response> {
@@ -211,16 +219,21 @@ impl Client {
         let quiet = self.clone().with_start_timeout(None);
         let deadline = Instant::now() + RESUME_WINDOW;
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
             if matches!(
-                quiet.call_once(&Request::Ping).await,
-                Ok(Response::Pong { .. })
+                tokio::time::timeout(remaining, quiet.call_once(&Request::Ping)).await,
+                Ok(Ok(Response::Pong { .. }))
             ) {
                 return true;
             }
-            if Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return false;
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(200).min(remaining)).await;
         }
     }
 
@@ -249,9 +262,19 @@ impl Client {
         mut resumed: impl FnMut(),
         mut on_response: impl FnMut(Response) -> Result<bool>,
     ) -> Result<()> {
+        // Whatever was replayed on the first subscription is not replayed
+        // again on the successor: the stream carries on live from there.
+        let again = match request {
+            Request::Events { .. } => Request::Events {
+                replay: 0,
+                ready: false,
+            },
+            other => other.clone(),
+        };
+        let mut current = request;
         loop {
             let ended = self
-                .stream_inner(request, async { Ok(()) }, |(), response| {
+                .stream_inner(current, async { Ok(()) }, |(), response| {
                     on_response(response)
                 })
                 .await?;
@@ -259,6 +282,7 @@ impl Client {
                 return Ok(());
             }
             resumed();
+            current = &again;
         }
     }
 
@@ -331,6 +355,16 @@ impl Client {
             }
         }
     }
+}
+
+fn transferring(response: &Response) -> bool {
+    matches!(
+        response,
+        Response::Error {
+            code: agentdocker_core::ErrorCode::Transferring,
+            ..
+        }
+    )
 }
 
 /// How a stream came to an end.

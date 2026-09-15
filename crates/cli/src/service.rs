@@ -568,6 +568,10 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             // upgrade. `backpressure` means a mutation admitted before the
             // offer is still executing; the daemon offers again once it is
             // done, so wait for it rather than hand the user a retry.
+            // Each attempt runs for as long as the daemon takes: a handover
+            // in progress is not abandoned from this side, and the daemon
+            // bounds it itself. What is bounded is how long this keeps
+            // asking again after `backpressure`.
             let quiet = client.with_start_timeout(None);
             let deadline = Instant::now() + RELOAD_WAIT;
             let mut told = false;
@@ -580,14 +584,15 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                         ..
                     }
                 );
-                if !busy || Instant::now() >= deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !busy || remaining.is_zero() {
                     break response;
                 }
                 if !told {
                     eprintln!("waiting for a request still executing before the handover");
                     told = true;
                 }
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(Duration::from_millis(500).min(remaining)).await;
             };
             if let Response::Error { message, code, .. } = response {
                 anyhow::bail!("reload failed: {message} ({code:?})");

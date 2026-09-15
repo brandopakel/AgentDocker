@@ -1,6 +1,6 @@
 //! Real daemon/CLI restart acceptance. Every command and endpoint belongs to
 //! the fixture; no installed daemon, provider account or user config is used.
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -331,7 +331,7 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     // A live event stream opened on the first daemon follows the chain:
     // each replacement ends its stream without a word, and it subscribes
     // again on whichever daemon answers next.
-    let following = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+    let mut following = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
         .args(["events"])
         .env("AGENTDOCKER_HOME", &home)
         .env("AGENTDOCKER_SOCKET", &socket)
@@ -342,8 +342,10 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // Subscribed before the reload: the offer is the first thing it sees.
-    std::thread::sleep(Duration::from_millis(300));
+    let followed = Followed::new(following.stdout.take().unwrap());
+    // Subscribed before the reload, proven by a marker event it has
+    // printed: the offer is then the next thing it sees.
+    followed.wait_for_marker(&socket, &work, "marker-1");
 
     let response = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(response["type"], "ok", "{response}");
@@ -368,9 +370,9 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     assert_eq!(later["type"], "agent", "{later}");
 
     // The successor holds what it was given and can hand it on in turn,
-    // this time through the CLI. The stream is given a moment to have
-    // joined the successor first, so it sees this handover as well.
-    std::thread::sleep(Duration::from_millis(500));
+    // this time through the CLI. The stream has joined the successor
+    // first, proven by a marker event, so it sees this handover as well.
+    followed.wait_for_marker(&socket, &work, "marker-2");
     let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
         .args(["daemon", "reload"])
         .env("AGENTDOCKER_HOME", &home)
@@ -439,14 +441,16 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     }
     // With the last daemon gone, the stream ends for good. It saw both
     // offers and said twice that it had moved on.
-    let followed = following.wait_with_output().unwrap();
-    assert!(
-        followed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&followed.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&followed.stdout);
-    let stderr = String::from_utf8_lossy(&followed.stderr);
+    let status = following.wait().unwrap();
+    let mut stderr = String::new();
+    following
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let stdout = followed.text();
+    assert!(status.success(), "{stderr}");
     assert_eq!(
         stderr.matches("was replaced").count(),
         2,
@@ -456,6 +460,67 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         stdout.matches("transfer offered").count() >= 2,
         "the stream saw each daemon's offer: {stdout}"
     );
+}
+
+/// The stdout of a following `agentdocker events`, read as it arrives, so
+/// a test can wait for what the stream has actually printed.
+struct Followed {
+    text: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Followed {
+    fn new(stdout: std::process::ChildStdout) -> Self {
+        let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        std::thread::spawn({
+            let text = text.clone();
+            move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    text.lock().unwrap().push_str(&line);
+                    text.lock().unwrap().push('\n');
+                }
+            }
+        });
+        Self { text }
+    }
+
+    fn text(&self) -> String {
+        self.text.lock().unwrap().clone()
+    }
+
+    /// Register a throwaway agent named `marker` and wait until the
+    /// stream has printed its start (by the agent's short id, which is
+    /// what the line carries): from then on the stream is known to be
+    /// live on whichever daemon answers the socket.
+    ///
+    /// A marker emitted before the stream subscribed is never seen (the
+    /// stream is live, not replayed), so markers are registered again
+    /// until one is.
+    fn wait_for_marker(&self, socket: &Path, work: &Path, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for attempt in 1.. {
+            let name = format!("{marker}-{attempt}");
+            let registered = rpc(
+                socket,
+                json!({"op":"register", "spec": {"name":name, "workdir":work}, "pid":null, "session":null}),
+            )
+            .unwrap();
+            assert_eq!(registered["type"], "agent", "{registered}");
+            let id = registered["agent"]["id"].as_str().unwrap().to_owned();
+            let short = &id[..12.min(id.len())];
+            let seen_by = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < seen_by {
+                if self.text().contains(short) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the stream never printed a {marker}: {}",
+                self.text()
+            );
+        }
+    }
 }
 
 #[test]
