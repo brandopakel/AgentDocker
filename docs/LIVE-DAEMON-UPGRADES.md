@@ -113,9 +113,9 @@ event continuity, not just a new socket or a readiness marker.
    processes and logs. The [successor-readiness record](verification/2026-09-15-successor-readiness.json)
    repeats that chain on release binaries and adds the failing candidates:
    an older-schema candidate refused before any offer (no coordinator row),
-   a candidate that died (offer aborted in 13 ms, same daemon serving,
-   writes resumed) and one that never answered (aborted at the 30 s
-   deadline, same daemon serving, nothing of its session left behind).
+   a candidate that died (offer aborted within milliseconds, same daemon
+   serving, writes resumed) and one that never answered (aborted at the
+   30 s deadline, same daemon serving, nothing of its session left behind).
 5. **Connected clients.** Preserve or resume terminal and question/event streams,
    provider input polls, pending questions and leases across the transition.
    Reconnection must retain drafts, receipts and original question expiry.

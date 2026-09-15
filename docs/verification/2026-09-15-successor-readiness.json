@@ -1,16 +1,16 @@
 {
   "date": "2026-09-14",
-  "status": "Passed at 001e818 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the container endpoint inherited; an older-schema candidate was refused before any offer, a dying candidate and a silent one were aborted with the same daemon still serving, its agent untouched and writes resumed, and no successor session left behind. This is boundary 4 of LIVE-DAEMON-UPGRADES.md; connected-client resumption, installation integration and the rest of the acceptance list remain, and the gate stays on.",
+  "status": "Passed at fb92879 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the container endpoint inherited; an older-schema candidate was refused before any offer, a dying candidate and a silent one were aborted with the same daemon still serving, its agent untouched and writes resumed, and no successor session left behind. This is boundary 4 of LIVE-DAEMON-UPGRADES.md; connected-client resumption, installation integration and the rest of the acceptance list remain, and the gate stays on.",
   "scope": "Successor readiness behind AGENTDOCKER_EXPERIMENTAL_RELOAD: candidate validation, coordinator offer, SCM_RIGHTS handover of the listening socket, daemon lock and container endpoint, readiness answer after owner reattachment, and abort on every failing outcome. Connected-client resumption and installation integration are not covered.",
   "build": {
-    "source_commit": "001e81842fefda47d89b8ac4b20249e3535b6ff2",
-    "source_tree": "0ee5fe1f6834fd573f868729d71a1c789688ab91",
-    "source_input_sha256": "d9b022db003bd84780beb3ec550e2ef71fb4e28226ad37554f99574c6b11ade1",
+    "source_commit": "fb9287965fbbd2ebe50802156b19bede6658b21b",
+    "source_tree": "676168a8d8e04fee4d8efa1112596bd87db7af5c",
+    "source_input_sha256": "93506e04f37bb2462d777a099eb5e280d8d29ac1b36c8b2e3bfdde9eaacf880c",
     "source_dirty": false,
     "binary_directory": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/p3-final-bin",
     "binary_sha256": {
-      "agentdocker": "9813245c1a537963da90054a68dfdc9367643a6f17cb2f2afaaef3e3b6bff061",
-      "agentd": "706efa7495cdc1779b827ddd7fa1e60a2591758500a9fe7892c787e8d26fee79"
+      "agentdocker": "75fc644132ecd4cc89a9d461e39e47489486be3e8949add4a23c7cc3b4e6544f",
+      "agentd": "1ae28f35839002a0ec574c8f45ad24fb2f299933e764aec66e28bdab9b6379a2"
     },
     "build_info": {
       "arch": "aarch64",
@@ -30,23 +30,23 @@
   "results": {
     "success_chain": {
       "daemon_pids": [
-        67028,
-        67137,
-        67140
+        29636,
+        29679,
+        29683
       ],
       "reload_seconds": [
-        0.357,
-        0.016
+        0.223,
+        0.026
       ],
       "agents": {
         "batch": {
-          "id": "96b1880974534a94bdd0d9c8c77f6396",
-          "pid": 67041,
+          "id": "b9fa23d2c9f64a87b02b118fad01215a",
+          "pid": 29648,
           "exit": 7
         },
         "terminal": {
-          "id": "fb8ce85e05f549538f1050ffc84d6066",
-          "pid": 67044,
+          "id": "70c770fe7534476fa2da49e5a3e02486",
+          "pid": 29651,
           "exit": 3
         }
       },
@@ -56,51 +56,51 @@
       },
       "logs_complete_across_switches": true,
       "container_endpoint_inherited": true,
-      "writes_resumed_under_successor": "02f2b662494043599aa6a1fe6dea5899",
+      "writes_resumed_under_successor": "e54051e76c4b47bbbe7fc3471f52db52",
       "final_transfer_row": {
-        "id": "865a8c05680a4bd4b220421ecb925293",
-        "predecessor_pid": 67137,
-        "successor_pid": 67140,
+        "id": "576702dbfcf54a62af50a7a92d65e8d5",
+        "predecessor_pid": 29679,
+        "successor_pid": 29683,
         "state": "accepted",
-        "offered_at": "2026-09-15T05:43:33.633627Z",
-        "settled_at": "2026-09-15T05:43:33.638961Z"
+        "offered_at": "2026-09-15T06:30:39.872822Z",
+        "settled_at": "2026-09-15T06:30:39.878955Z"
       }
     },
     "failing_candidates": {
       "old-schema": {
-        "reload_seconds": 0.009,
+        "reload_seconds": 0.02,
         "refusal": "candidate state schema 16 is older than the database's 18; a successor cannot roll the database back (Unavailable)",
         "daemon_pid_unchanged": true,
         "still_serving": true,
         "transfer_row_state": null,
         "agent_pid_unchanged": true,
-        "writes_resumed_under_same_daemon": "4a43da1d5d314057afe3cf4c3ffc84fd",
+        "writes_resumed_under_same_daemon": "1377263d7019484da55c758493970b1b",
         "successor_session_left_behind": []
       },
       "dies": {
-        "reload_seconds": 0.013,
+        "reload_seconds": 0.024,
         "refusal": "successor failed and the offer was withdrawn: the successor said nothing: handoff ended before its header (Unavailable)",
         "daemon_pid_unchanged": true,
         "still_serving": true,
         "transfer_row_state": "aborted",
         "agent_pid_unchanged": true,
-        "writes_resumed_under_same_daemon": "40d621dfeeab42698f35dbbb8a26cd7c",
+        "writes_resumed_under_same_daemon": "4458c93eddc84d5b9391ab7d4ed662ae",
         "successor_session_left_behind": []
       },
       "hangs": {
-        "reload_seconds": 30.016,
+        "reload_seconds": 30.025,
         "refusal": "successor failed and the offer was withdrawn: the successor did not say it was serving within 30s (Unavailable)",
         "daemon_pid_unchanged": true,
         "still_serving": true,
         "transfer_row_state": "aborted",
         "agent_pid_unchanged": true,
-        "writes_resumed_under_same_daemon": "590f5d28da8d4c55ad658995dd40c835",
+        "writes_resumed_under_same_daemon": "1b27df3c181b4fea8fc6521ef5536e83",
         "successor_session_left_behind": []
       }
     }
   },
   "local_check": {
-    "log": "scripts/verify.sh check at 8cc5612 plus the docs and takeover cleanup in 001e818: 953 Rust tests passed (6 skipped), 70 Python checks, fmt, strict clippy, doctests, installer tests, packaging and release build; the takeover change was re-run through clippy, its unit tests and the real-binary reload test before this record."
+    "log": "scripts/verify.sh check at the same source apart from one documentation line in ARCHITECTURE.md: 957 Rust tests passed (6 skipped), 70 Python checks, fmt, strict clippy, doctests, installer tests, packaging and release build."
   },
-  "ci_test": "crates/cli/tests/native_restore.rs::enabled_reload_hands_real_processes_to_a_successor_and_leaves repeats the success chain on every CI run; the failing-candidate paths are covered by unit tests on the handover protocol and this record."
+  "ci_test": "crates/cli/tests/native_restore.rs::enabled_reload_hands_real_processes_to_a_successor_and_leaves repeats the success chain on every CI run and asserts: the offer's backpressure refusal while a validation runs, the predecessor leaving only after the successor serves, the agents' pids and running state through the new daemon, the container endpoint answering after two handovers, exact exits 7/3 under the third daemon, complete logs, a write under the successor, and a second reload through the CLI. The failing-candidate paths below are covered by unit tests on the handover protocol and by this record, not by that test."
 }
