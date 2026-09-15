@@ -13,7 +13,7 @@ pub(super) const MAX_QUESTIONS: usize = 8;
 pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
 const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
-const NETWORK_REVIEW: &str = "Allow Codex to make this connection once?";
+const NETWORK_REVIEW: &str = "Allow network access for this request?";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,12 +135,12 @@ fn network_options(denial: CommandDenial) -> Vec<QuestionOption> {
     vec![
         QuestionOption {
             label: "Allow".into(),
-            description: "Allow this connection only".into(),
+            description: "Allow the pending network request".into(),
         },
         QuestionOption {
             label: "Deny".into(),
             description: match denial {
-                CommandDenial::Decline => "Decline this connection",
+                CommandDenial::Decline => "Decline the pending network request",
                 CommandDenial::Cancel => "Cancel this Codex request",
             }
             .into(),
@@ -235,24 +235,34 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         reason.push_str("\n\nAdditional access for this command:\n");
         reason.push_str(&permissions.lines().join("\n"));
     }
-    if denial == CommandDenial::Cancel {
-        reason.push_str(CANCEL_REASON);
-    }
-    let presentation = if params["command"].is_null() && params["cwd"].is_null() {
-        ensure!(
-            !params["networkApprovalContext"].is_null()
-                && params["additionalPermissions"].is_null()
-                && params["commandActions"].is_null(),
-            "network-only approval has no complete destination or includes other access"
+    let presentation = if !params["networkApprovalContext"].is_null() {
+        // Codex groups pending connections to a destination. Network context
+        // determines this route even when optional command metadata is present;
+        // accept does not select a command policy amendment or session grant.
+        let mut context = String::new();
+        if !params["cwd"].is_null() {
+            context.push_str(&format!("Directory: {}\n", text(&params["cwd"])?));
+        }
+        if !params["command"].is_null() {
+            context.push_str(&format!(
+                "Provider context:\n{}\n\n",
+                text(&params["command"])?
+            ));
+        }
+        reason.push_str(
+            "\n\nThis approval may cover multiple pending connections to this destination.",
         );
-        // Network-only callbacks carry no command or working directory. The
-        // existing choice presentation shows every supplied destination detail
-        // without inventing either, and works with older question-capable UIs.
+        if denial == CommandDenial::Cancel {
+            reason.push_str(CANCEL_REASON);
+        }
         QuestionPresentation::Choices {
-            question: format!("{NETWORK_REVIEW}\n\nReason: {reason}"),
+            question: format!("{NETWORK_REVIEW}\n\n{context}Reason: {reason}"),
             options: network_options(denial),
         }
     } else {
+        if denial == CommandDenial::Cancel {
+            reason.push_str(CANCEL_REASON);
+        }
         QuestionPresentation::CodexCommand {
             command: text(&params["command"])?.into(),
             cwd: text(&params["cwd"])?.into(),
@@ -832,7 +842,37 @@ mod tests {
     }
 
     #[test]
-    fn network_only_review_refuses_missing_or_hidden_access_and_wrong_identity() {
+    fn network_context_selects_network_review_with_or_without_command_metadata() {
+        for command in [Value::Null, json!("provider connection context")] {
+            for cwd in [Value::Null, json!("/owned")] {
+                let mut event = access_event();
+                event["params"]["command"] = command.clone();
+                event["params"]["cwd"] = cwd.clone();
+                event["params"]["commandActions"] = json!([]);
+                let request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.is_network_review());
+                let shown = &request.questions[0].text;
+                assert!(shown.starts_with(NETWORK_REVIEW));
+                assert!(shown.contains("multiple pending connections to this destination"));
+                assert!(shown.contains("Requested connection: example.com (https)"));
+                assert!(shown.contains("Read: /owned/input"));
+                assert!(shown.contains("Write: /owned/output"));
+                assert!(shown.contains("Exclude: /owned/private"));
+                assert_eq!(shown.contains("Provider context:"), !command.is_null());
+                assert_eq!(shown.contains("Directory:"), !cwd.is_null());
+                request.validate(Some("thread"), "owner").unwrap();
+            }
+        }
+        for field in ["command", "cwd"] {
+            let mut event = event();
+            event["params"][field] = Value::Null;
+            assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err());
+        }
+    }
+
+    #[test]
+    fn network_review_refuses_missing_or_hidden_access_and_wrong_identity() {
         for (key, value) in [
             ("networkApprovalContext", Value::Null),
             (
@@ -843,10 +883,6 @@ mod tests {
                 "networkApprovalContext",
                 json!({"host":"example.com","protocol":"https","hidden":true}),
             ),
-            ("command", json!("curl example.com")),
-            ("cwd", json!("/owned")),
-            ("commandActions", json!([])),
-            ("additionalPermissions", json!({"network":{"enabled":true}})),
             ("availableDecisions", json!(["acceptForSession", "decline"])),
             ("environmentId", json!("remote")),
             ("kind", json!("writeStdin")),
@@ -1136,8 +1172,8 @@ mod tests {
             ),
             ("reason", json!({})),
             ("reason", json!("x".repeat(MAX_TEXT))),
-            ("command", Value::Null),
-            ("cwd", Value::Null),
+            ("command", json!(false)),
+            ("cwd", json!([])),
         ] {
             let mut event = access_event();
             event["params"][key] = value;

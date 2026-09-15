@@ -170,11 +170,15 @@ offers cancellation instead of decline, the card explains that Deny cancels the
 request. Private delivery-record version 8 retains that exact negative response;
 older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
-Network-only requests with an exact host/protocol and no command, directory,
-command actions or additional permission bundle now use the existing choice
-controls. The question names the connection and offers one-time Allow or Deny;
-no command or folder is invented. Private ledger version 9 retains this separate
-review kind and refuses it in an older-version record without rewriting bytes.
+Managed-network requests with an exact host/protocol now use the existing choice
+controls whenever `networkApprovalContext` is present. Optional command and
+folder metadata remain context; absent fields are not invented. The question
+shows the destination and any supplied access details, and explains that approval
+can cover multiple pending connections to that destination, as the
+[provider contract specifies](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
+Allow selects `accept` for the pending request, never a session or policy grant.
+Private ledger version 9 retains this separate review kind and refuses it in an
+older-version record without rewriting bytes.
 The implementation and receipt/refusal regressions are under validation; actual
 provider, native UI and final integration acceptance remain open. `writeStdin`,
 broader permission forms and elicitation still need their own handling.
