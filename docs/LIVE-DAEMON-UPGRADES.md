@@ -75,7 +75,8 @@ event continuity, not just a new socket or a readiness marker.
    `Transferring` error for refused mutations, the fence inside every
    write path (`persist`, `store_op`) so tick writers skip too and a
    skipped write is never mistaken for a commit, an offer that waits for
-   admitted mutations to finish, and a fenced startup that defers recovery
+   admitted mutations to finish (a waiting `ask` or `claim --wait` gives its
+   place up and takes one back before writing), and a fenced startup that defers recovery
    writes until the successor has accepted; see
    [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
    exclusion during a transfer rides on the daemon lock the successor will

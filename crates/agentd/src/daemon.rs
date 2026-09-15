@@ -135,6 +135,14 @@ impl Drop for InFlight {
     }
 }
 
+tokio::task_local! {
+    /// The admitted mutation's place, kept where its handler can give it
+    /// up: a request that has written what it will write and now only
+    /// waits (an `ask` for its answer, a `claim --wait` for its lease)
+    /// must not hold an offer back for as long as it waits.
+    static ADMISSION: std::cell::RefCell<Option<InFlight>>;
+}
+
 /// A recovery write held back until this process is allowed to write.
 type DeferredWrite = Box<dyn FnOnce(&Store) -> anyhow::Result<()> + Send>;
 
@@ -1272,7 +1280,7 @@ impl Daemon {
         // an offer that finds the count at zero knows no admitted mutation
         // is still executing, so its final write follows every side effect.
         let admitted = mutates(&request);
-        let _in_flight = if admitted {
+        let in_flight = if admitted {
             let mut state = lock(&self.state);
             if let Some(refusal) = state.transferring() {
                 return refusal;
@@ -1293,13 +1301,43 @@ impl Daemon {
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
         let control = !admitted;
-        let response = Box::pin(self.handle_healthy(request)).await;
+        let response = ADMISSION
+            .scope(
+                std::cell::RefCell::new(in_flight),
+                Box::pin(self.handle_healthy(request)),
+            )
+            .await;
         if control {
             // Reads and control requests answer for themselves: a write the
             // fence skipped meanwhile is not their failure.
             return response;
         }
         lock(&self.state).write_failure().unwrap_or(response)
+    }
+
+    /// This request has written what it will write and is about to wait.
+    /// Give its in-flight place up, so an offer need not wait with it;
+    /// anything it writes after this is fenced like a tick writer's.
+    fn done_writing(&self) {
+        let _ = ADMISSION.try_with(|place| place.borrow_mut().take());
+    }
+
+    /// The wait is over and the request will write again: take a place
+    /// back first. Refused, with nothing applied, once coordination has
+    /// been offered meanwhile.
+    fn readmit(self: &Arc<Self>) -> Result<(), Box<Response>> {
+        let place = {
+            let mut state = lock(&self.state);
+            if let Some(refusal) = state.transferring() {
+                return Err(Box::new(refusal));
+            }
+            state.in_flight += 1;
+            InFlight(self.clone())
+        };
+        // Outside a request (a direct call in a test) the place goes
+        // straight back with the guard.
+        let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
+        Ok(())
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -3391,7 +3429,7 @@ impl Daemon {
 
     #[allow(clippy::too_many_arguments)]
     async fn claim(
-        &self,
+        self: &Arc<Self>,
         reference: &str,
         resource: String,
         mode: LeaseMode,
@@ -3612,6 +3650,9 @@ impl Daemon {
                     details: Some(json!({ "held_by": held_by })),
                 };
             }
+            // The conflict is recorded; from here this request only waits,
+            // and an offer must not wait with it.
+            self.done_writing();
             if !wait_for_release(&mut events, &resource, deadline).await {
                 waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
@@ -3619,6 +3660,12 @@ impl Daemon {
                     message,
                     details: Some(json!({ "held_by": held_by })),
                 };
+            }
+            // Something changed; claiming again is a write, so take a
+            // place back for it, or learn the daemon is handing over.
+            if let Err(refusal) = self.readmit() {
+                waiting.end(agentdocker_core::WaitOutcome::Cancelled);
+                return *refusal;
             }
         }
     }

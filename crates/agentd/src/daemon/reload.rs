@@ -951,6 +951,119 @@ mod fence_tests {
     /// A fenced expiry tick changes nothing: the lease stays in memory and
     /// on disk together, and no event is published for a write that did
     /// not happen.
+    /// A mutation whose writes are done and is only waiting — an `ask`
+    /// for an answer, a `claim --wait` for a lease — gives up its
+    /// in-flight place, so an offer need not wait hours with it. When the
+    /// wait ends the waiter takes a place back before it writes again.
+    #[tokio::test]
+    async fn a_waiting_ask_or_claim_does_not_hold_up_an_offer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let asker = register(&daemon, "asker").await;
+        let answerer = register(&daemon, "answerer").await;
+        let asking = tokio::spawn({
+            let daemon = daemon.clone();
+            let (from, to) = (asker.to_string(), answerer.to_string());
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from,
+                        to,
+                        question: "is the offer held up?".into(),
+                        timeout_secs: 30,
+                    })
+                    .await
+            }
+        });
+        // Once the request is waiting, its place must be free.
+        let settled = async |daemon: &Arc<Daemon>, waiting: fn(&State) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !waiting(&lock(&daemon.state)) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the request never started waiting"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while lock(&daemon.state).in_flight > 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the waiter kept its place"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        settled(&daemon, |state| !state.questions.is_empty()).await;
+        let offered = daemon.offer_transfer(1);
+        assert!(offered.is_ok(), "{offered:?}");
+        assert!(daemon.abort_transfer("cleanup"));
+        // The question is still open and still answerable.
+        let question = match lock(&daemon.state).questions.keys().next() {
+            Some(question) => question.clone(),
+            None => panic!("the question vanished"),
+        };
+        let answered = daemon
+            .handle(Request::Send {
+                from: answerer.to_string(),
+                to: asker.to_string(),
+                kind: "answer".into(),
+                payload: serde_json::json!({"text": "no"}),
+                reply_to: Some(question),
+            })
+            .await;
+        assert!(matches!(answered, Response::Sent { .. }), "{answered:?}");
+        assert!(matches!(
+            asking.await.unwrap(),
+            Response::Answer { text, .. } if text == "no"
+        ));
+
+        // A claim waiting behind a holder: the same, and it takes its
+        // place back to claim once the holder lets go.
+        let holder = register(&daemon, "holder").await;
+        let waiter = register(&daemon, "waiter").await;
+        assert!(matches!(
+            daemon.handle(claim(&holder, "task:x")).await,
+            Response::Lease { .. }
+        ));
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            let waiter = waiter.to_string();
+            async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent: waiter,
+                        resource: "task:x".into(),
+                        mode: LeaseMode::Exclusive,
+                        ttl_secs: 60,
+                        wait_secs: 30,
+                        note: None,
+                        amount: None,
+                    })
+                    .await
+            }
+        });
+        settled(&daemon, |state| !state.waiting.is_empty()).await;
+        let offered = daemon.offer_transfer(1);
+        assert!(offered.is_ok(), "{offered:?}");
+        assert!(daemon.abort_transfer("cleanup"));
+        let held = match lock(&daemon.state).leases.by_holder(&holder).first() {
+            Some(lease) => lease.id.clone(),
+            None => panic!("the holder lost its lease"),
+        };
+        let released = daemon
+            .handle(Request::Release {
+                agent: holder.to_string(),
+                lease: held,
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+        assert!(matches!(waiting.await.unwrap(), Response::Lease { .. }));
+        assert_eq!(lock(&daemon.state).in_flight, 0, "every place given back");
+    }
+
     #[tokio::test]
     async fn a_fenced_expiry_tick_leaves_memory_and_disk_agreeing() {
         let dir = TempDir::new().unwrap();
@@ -1003,32 +1116,44 @@ mod fence_tests {
     async fn a_cancelled_mutation_releases_its_in_flight_place() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
-        let a = register(&daemon, "waiter").await;
-        // Hold the resource so the second claim waits, then drop that
-        // waiting future as the server does on EOF.
-        assert!(matches!(
-            daemon.handle(claim(&a, "task:held")).await,
-            Response::Lease { .. }
-        ));
-        let b = register(&daemon, "other").await;
-        let waiting = daemon.handle(Request::Claim {
-            agent: b.to_string(),
-            resource: "task:held".into(),
-            mode: LeaseMode::Exclusive,
-            amount: None,
-            ttl_secs: 60,
-            note: None,
-            wait_secs: 30,
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let a = match daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "validator".into(),
+                    workdir: Some(work.clone()),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent.id,
+            other => panic!("{other:?}"),
+        };
+        // A validation is in flight for as long as its command runs, since
+        // its writes come after; drop that future as the server does on
+        // EOF.
+        let validating = daemon.handle(Request::Validate {
+            agent: a.to_string(),
+            command: vec!["sh".into(), "-c".into(), "sleep 2".into()],
+            timeout_secs: 30,
         });
-        let mut waiting = Box::pin(waiting);
+        let mut validating = Box::pin(validating);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(200), &mut waiting)
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut validating)
                 .await
                 .is_err(),
-            "the claim is waiting"
+            "the validation is running"
         );
         assert_eq!(lock(&daemon.state).in_flight, 1);
-        drop(waiting);
+        assert!(
+            daemon.offer_transfer(1).is_err(),
+            "an offer waits for the running mutation"
+        );
+        drop(validating);
         assert_eq!(
             lock(&daemon.state).in_flight,
             0,

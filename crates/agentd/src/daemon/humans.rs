@@ -365,6 +365,9 @@ impl Daemon {
             return sent;
         };
 
+        // The question is durable; from here this request only waits for
+        // its answer, and an offer must not wait with it.
+        self.done_writing();
         let waited = tokio::time::timeout(timeout, async {
             let mut candidate: Option<Envelope> = None;
             let mut accepted: Option<MessageId> = None;
