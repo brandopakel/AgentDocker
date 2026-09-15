@@ -172,6 +172,56 @@ pub fn event_line(event: &Event) -> String {
                 if delivery.paused { "paused" } else { "updated" }
             )
         }
+        EventKind::InputBound {
+            agent,
+            controller,
+            resumed,
+        } => format!(
+            "input bound      {} to controller pid {}{}",
+            agent.short(),
+            controller.pid,
+            if *resumed { " (resumed)" } else { "" }
+        ),
+        EventKind::InputUnbound { agent, reason } => {
+            format!("input unbound    {} ({reason})", agent.short())
+        }
+        EventKind::InputControllerEnded { agent, controller } => {
+            format!("controller ended {} pid {}", agent.short(), controller.pid)
+        }
+        EventKind::InputControllerLaunched {
+            agent,
+            controller,
+            attempt,
+        } => format!(
+            "controller launched {} pid {} (attempt {attempt})",
+            agent.short(),
+            controller.pid
+        ),
+        EventKind::InputControllerLaunchFailed {
+            agent,
+            attempt,
+            error,
+        } => format!(
+            "controller launch failed {} (attempt {attempt}): {error}",
+            agent.short()
+        ),
+        EventKind::InputRestartsExhausted { agent, attempts } => format!(
+            "controller restarts exhausted {} after {attempts}",
+            agent.short()
+        ),
+        EventKind::InputRestartsReset { agent } => {
+            format!("controller restart requested {}", agent.short())
+        }
+        EventKind::InputResumed {
+            agent,
+            retired,
+            provider,
+        } => format!(
+            "input resumed    {} from {} (provider pid {})",
+            agent.short(),
+            retired.short(),
+            provider.process.pid
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,
@@ -493,6 +543,19 @@ pub fn event_line(event: &Event) -> String {
         } => {
             format!("question opened  {question} until {expires_at}")
         }
+        EventKind::AnswerRouted {
+            question,
+            answer,
+            route,
+        } => format!(
+            "answer routed    {} for {} via {}",
+            answer.as_str(),
+            question.as_str(),
+            match route {
+                agentdocker_core::AnswerRoute::ToolResult => "the waiting ask",
+                agentdocker_core::AnswerRoute::Queue => "the queue",
+            }
+        ),
         EventKind::QuestionClosed { question, answer } => match answer {
             Some(answer) => format!("question answered {question} by message {answer}"),
             None => format!("question expired {question}"),

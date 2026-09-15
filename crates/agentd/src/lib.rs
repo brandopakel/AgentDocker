@@ -160,6 +160,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let daemon = Arc::new(Daemon::open(home, socket)?);
 
     daemon.reload_policies();
+    daemon.pin_controllers();
     // Bind before any restored command can execute. Poll serving alongside
     // restoration so an agent's first hook/MCP request can receive a reply.
     let listener = server::bind(&daemon).await?;
@@ -179,6 +180,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             daemon.reconcile_containers();
             daemon.expire_leases();
             daemon.check_liveness();
+            daemon.tend_controllers();
             // A `stat` per policy file, so editing one takes effect
             // within a second without a restart or a signal.
             daemon.reload_policies();

@@ -413,21 +413,7 @@ impl App {
         if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
             return state.issue.as_ref().expect("blocked").kind.label();
         }
-        let Some(delivery) = agent.input_delivery.as_ref() else {
-            return "Idle delivery not verified";
-        };
-        if delivery.paused_for(agent.process_started_at) {
-            return "Delivery paused";
-        }
-        let now = Utc::now();
-        if !delivery.current_for(agent.process_started_at, now) {
-            return "No recent receiver signal";
-        }
-        if delivery.received_for(agent.process_started_at, now) {
-            "Delivery verified"
-        } else {
-            "Receiver active, awaiting first receipt"
-        }
+        agentdocker_core::InputReadiness::for_agent(agent, Utc::now()).label()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -1418,6 +1404,25 @@ impl App {
                     false,
                 ));
             }
+            // The daemon gave up starting the bound receiver: the one repair a
+            // person can make from here, and the only control that makes one.
+            if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
+                body = body.push(small(
+                    format!(
+                        "The input receiver could not be started again after {} attempts. Queued input is kept.",
+                        binding.restart.attempts
+                    ),
+                    c,
+                ));
+                body = body.push(action(
+                    "retry-receiver",
+                    "Retry receiver",
+                    self.connected
+                        .is_ok()
+                        .then(|| Message::RetryController(agent.id.to_string())),
+                    false,
+                ));
+            }
             if paused {
                 body = body.push(action(
                     "review-delivery",
@@ -1920,7 +1925,7 @@ impl App {
             } else if let Some(error) = entry.and_then(|e| e.draft.error.as_ref()) {
                 composer = composer.push(text(error.clone()).size(13).color(c.amber));
             } else if entry.is_some_and(|e| e.queued.is_some()) && !sending {
-                composer = composer.push(small("Delivered to the agent's queue.", c));
+                composer = composer.push(small("Queued for the agent.", c));
             } else {
                 composer = composer.push(small(
                     "Send goes to this agent. Send to everyone reaches every agent in its project.",

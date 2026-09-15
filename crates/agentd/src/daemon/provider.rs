@@ -363,6 +363,7 @@ mod tests {
                 .handle(Request::ProviderInbox {
                     agent: agent.id.to_string(),
                     acknowledge,
+                    token: None,
                 })
                 .await;
             assert!(
@@ -414,6 +415,7 @@ mod tests {
                     agent.process_started_at.unwrap(),
                     now + Duration::seconds(1),
                     agentdocker_core::InputReport::Ready,
+                    None,
                     now + Duration::seconds(1)
                 ),
                 Response::Ok
@@ -436,6 +438,7 @@ mod tests {
                     agent.process_started_at.unwrap(),
                     now + Duration::seconds(2),
                     agentdocker_core::InputReport::Received { input },
+                    None,
                     now + Duration::seconds(2)
                 ),
                 Response::Ok

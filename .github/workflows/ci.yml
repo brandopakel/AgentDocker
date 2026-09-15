@@ -13,6 +13,24 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  docs:
+    name: documentation is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Index, links, verification index, and docs considered for every code change
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            python3 scripts/docs_check.py --base "origin/$BASE_REF"
+          else
+            python3 scripts/docs_check.py
+          fi
+
   check:
     name: fmt + clippy + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

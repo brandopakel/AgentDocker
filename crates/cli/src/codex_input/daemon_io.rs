@@ -34,6 +34,7 @@ pub(super) async fn queue(
     let request = Request::ProviderInbox {
         agent: agent.into(),
         acknowledge,
+        token: None,
     };
     if !read_only {
         // Even a lost response may follow an accepted acknowledgement.
@@ -71,7 +72,7 @@ mod tests {
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 assert!(
-                    matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::ProviderInbox { agent, acknowledge } if agent == "owned" && acknowledge.is_empty())
+                    matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::ProviderInbox { agent, acknowledge, .. } if agent == "owned" && acknowledge.is_empty())
                 );
                 if index == 1 {
                     reader

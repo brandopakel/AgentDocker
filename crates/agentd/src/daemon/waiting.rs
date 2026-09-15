@@ -171,6 +171,7 @@ impl State {
         process_started_at: DateTime<Utc>,
         observed_at: DateTime<Utc>,
         report: agentdocker_core::InputReport,
+        token: Option<&str>,
         now: DateTime<Utc>,
     ) -> Response {
         use agentdocker_core::{InputDelivery, InputReceipt, InputReport};
@@ -178,12 +179,18 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        // While a controller is bound, only it reports: readiness and
+        // receipts for this queue are its evidence, nobody else's.
+        let bound = match self.binding_for(&id, token) {
+            Ok(binding) => binding.is_some(),
+            Err(refusal) => return *refusal,
+        };
         let mut record = self.registry.get(&id).expect("resolved agent").clone();
         let codex = agentdocker_host::provider_input::is_codex_input(&record);
         let claude = record.container.is_none() && record.spec.runtime == "claude-code";
         if !record.status.is_live()
             || record.process_started_at != Some(process_started_at)
-            || (!codex && !claude)
+            || (!codex && !claude && !bound)
         {
             return Response::error(
                 ErrorCode::Invalid,
@@ -209,10 +216,11 @@ impl State {
         });
         match report {
             InputReport::Received { mut input } => {
-                let provider_matches = match input.receipt {
-                    InputReceipt::Codex { .. } => codex,
-                    InputReceipt::ClaudeChannel => claude,
-                };
+                let provider_matches = bound
+                    || match input.receipt {
+                        InputReceipt::Codex { .. } => codex,
+                        InputReceipt::ClaudeChannel => claude,
+                    };
                 if !input.valid() || !provider_matches {
                     return Response::error(ErrorCode::Invalid, "invalid provider input receipt");
                 }
