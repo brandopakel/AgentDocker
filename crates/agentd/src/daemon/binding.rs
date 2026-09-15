@@ -519,6 +519,22 @@ impl State {
         if !is_running(&controller) {
             return Response::error(ErrorCode::Invalid, "the controller process is not running");
         }
+        // One thread of one profile has one queue: a second record bound
+        // to it would be two receivers feeding one persisted conversation.
+        // The explicit route for a dead predecessor is resume_input.
+        if let Some(other) = self.registry.all().find(|r| {
+            r.id != id
+                && r.input_binding.as_ref().is_some_and(|b| {
+                    b.provider.session == provider.session && b.provider.profile == provider.profile
+                })
+        }) {
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: "another record is bound to this thread and profile; resume it or unbind it first"
+                    .to_owned(),
+                details: Some(serde_json::json!({ "agent": other.id })),
+            };
+        }
         let digest = token_digest(token);
         let mut resumed = false;
         let mut binding = match &record.input_binding {
@@ -703,6 +719,227 @@ impl State {
         self.next_seq += 1;
         let _ = self.events.send(event);
         Response::Ok
+    }
+
+    /// A provider session came back as a new process and, registering by
+    /// pid and birth, as a new record; its thread's queue, binding and the
+    /// controller's ledger are on the record of the process that ended.
+    /// Join them: the prior record stays canonical and takes the new
+    /// process, its binding takes the new generation and descriptor, the
+    /// caller's queued messages move across and everything queued becomes
+    /// uncertain, and the caller's id is retired into an alias. Only the
+    /// one prior record of exactly this thread, profile and checkout, and
+    /// only once every process of that generation is gone: two matches,
+    /// a live one, or a caller that already holds leases or channel
+    /// membership is refused rather than guessed at.
+    pub(super) fn resume_input(
+        &mut self,
+        reference: &str,
+        predecessor: &str,
+        provider: ProviderGeneration,
+        launch: ControllerLaunch,
+        now: DateTime<Utc>,
+    ) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let caller = self.registry.get(&id).expect("resolved agent").clone();
+        if !launch.valid() || !provider.valid() || !Path::new(&provider.profile).is_absolute() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "resuming needs a valid provider generation with an absolute profile path and a valid launch descriptor",
+            );
+        }
+        if !caller.status.is_live() || caller.managed || caller.input_binding.is_some() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the caller must be a live, externally registered record without a binding of its own",
+            );
+        }
+        if caller.pid != Some(provider.process.pid)
+            || caller.process_started_at != Some(provider.process.started_at)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the provider process must be the caller's registered pid and birth",
+            );
+        }
+        if caller.spec.labels.get("session_id") != Some(&provider.session) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the provider session must be the caller's registered session_id",
+            );
+        }
+        if !is_running(&provider.process) {
+            return Response::error(ErrorCode::Invalid, "the caller's process is not running");
+        }
+        let Some(workdir) = caller.spec.workdir.as_deref().map(project::canonical) else {
+            return Response::error(ErrorCode::Invalid, "the caller has no working directory");
+        };
+        let prior_id = match self.resolve(predecessor) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let prior = self
+            .registry
+            .get(&prior_id)
+            .expect("resolved agent")
+            .clone();
+        let Some(binding) = prior.input_binding.clone() else {
+            return Response::error(ErrorCode::Invalid, "the predecessor has no input binding");
+        };
+        if prior.id == caller.id
+            || binding.provider.session != provider.session
+            || binding.provider.profile != provider.profile
+            || prior.spec.workdir.as_deref().map(project::canonical) != Some(workdir)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the predecessor must be another record bound to the same thread, profile and checkout",
+            );
+        }
+        if let Some(other) = self.registry.all().find(|r| {
+            r.id != prior.id
+                && r.id != caller.id
+                && r.input_binding.as_ref().is_some_and(|b| {
+                    b.provider.session == provider.session && b.provider.profile == provider.profile
+                })
+        }) {
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: "another record is bound to this thread as well; resolve by hand"
+                    .to_owned(),
+                details: Some(serde_json::json!({ "agent": other.id })),
+            };
+        }
+        if is_running(&binding.provider.process)
+            || is_running(&binding.controller)
+            || binding.restart.launched.as_ref().is_some_and(is_running)
+        {
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: "a process of the prior generation is still running".to_owned(),
+                details: Some(serde_json::json!({ "agent": prior.id })),
+            };
+        }
+        if !self.leases.by_holder(&caller.id).is_empty()
+            || self
+                .channels
+                .values()
+                .any(|c| c.is_open() && c.has(&caller.id))
+        {
+            return Response::error(
+                ErrorCode::Conflict,
+                "the caller already holds leases or channel membership; resolve by hand",
+            );
+        }
+        if matches!(
+            self.store.document::<Vec<agentdocker_core::ReadMark>>("reads", caller.id.as_str()),
+            Ok(Some(reads)) if !reads.is_empty()
+        ) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "the caller has recorded observations of its own; resolve by hand",
+            );
+        }
+        let (pid, started_at) = (provider.process.pid, provider.process.started_at);
+        // The prior record with the caller's process, and its binding on
+        // the new generation. What was uncertain stays uncertain and the
+        // caller's own legacy offers join it; nothing else is flagged: the
+        // controller's ledger proves what it never prepared, and a row
+        // flagged for no reason would hang ordinary input.
+        let mut canonical = prior.clone();
+        canonical.pid = Some(pid);
+        canonical.process_started_at = Some(started_at);
+        canonical.process_group = caller.process_group;
+        canonical.status = caller.status;
+        canonical.last_seen = now;
+        canonical.vcs = caller.vcs.clone();
+        for (key, value) in &caller.spec.labels {
+            canonical
+                .spec
+                .labels
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        for (message, at) in &caller.legacy_offers {
+            canonical
+                .legacy_offers
+                .entry(message.clone())
+                .or_insert(*at);
+        }
+        let mut merged: Vec<Envelope> = self
+            .inboxes
+            .get(&prior.id)
+            .into_iter()
+            .chain(self.inboxes.get(&caller.id))
+            .flatten()
+            .cloned()
+            .collect();
+        merged.sort_by_key(|m| m.sent_at);
+        let mut binding = binding;
+        binding.provider = provider;
+        binding.launch = Some(launch.clone());
+        binding.restart = agentdocker_core::ControllerRestart {
+            ended_at: Some(now),
+            ..Default::default()
+        };
+        let queued: HashSet<&MessageId> = merged.iter().map(|m| &m.id).collect();
+        for message in caller.legacy_offers.keys() {
+            if queued.contains(message) && !binding.uncertain.contains(message) {
+                binding.uncertain.push(message.clone());
+            }
+        }
+        binding.uncertain.retain(|m| queued.contains(m));
+        canonical.input_binding = Some(binding.clone());
+        // The new descriptor may run from another release: hold that one.
+        self.controller_pins.remove(&prior.id);
+        if let Err(error) = self.pin_controller(&prior.id, &launch) {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("the launch descriptor's release cannot be held: {error}"),
+            );
+        }
+        let alias = agentdocker_core::identity::AgentAlias {
+            retired: caller.id.clone(),
+            canonical: prior.id.clone(),
+            reconciled_at: now,
+        };
+        let mut event = Event::new(
+            EventKind::InputResumed {
+                agent: prior.id.clone(),
+                retired: caller.id.clone(),
+                provider: binding.provider.clone(),
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        self.persist("input resume", |store| {
+            store.resume_input(&canonical, &alias, &event)
+        });
+        if let Some(error) = self.storage_failure() {
+            self.controller_pins.remove(&prior.id);
+            return error;
+        }
+        if let Err(error) = self.registry.retire_into(&caller.id, &prior.id) {
+            // Checked above; the store has the alias, memory must follow.
+            error!(%error, "retiring a resumed record");
+        }
+        *self.registry.get_mut(&prior.id).expect("prior record") = canonical;
+        let moved: usize = merged.iter().map(message_bytes).sum();
+        self.inboxes.remove(&caller.id);
+        self.inbox_bytes.remove(&caller.id);
+        self.inboxes
+            .insert(prior.id.clone(), merged.into_iter().collect());
+        self.inbox_bytes.insert(prior.id.clone(), moved);
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Response::InputResumed {
+            agent: prior.id,
+            retired: caller.id,
+            binding,
+        }
     }
 
     /// A person's retry: the restart episode starts over on the binding as
@@ -1211,6 +1448,291 @@ mod tests {
             .unwrap();
         assert!(stored.input_binding.unwrap().uncertain.is_empty());
         assert!(stored.legacy_offers.is_empty());
+    }
+
+    /// A provider that came back as a new process registered as a new
+    /// record; resuming joins it to the prior record of its thread: one
+    /// identity, one queue, the binding on the new generation, everything
+    /// queued uncertain, and the daemon starts the new descriptor.
+    #[tokio::test]
+    async fn a_resumed_provider_joins_the_record_that_holds_its_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let old_provider = Other::spawn();
+        let register = async |name: &str, pid: u32| {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "custom".into(),
+                workdir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            spec.labels.insert("session_id".into(), "thread-9".into());
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let prior = register("codex-old", old_provider.0.id()).await;
+        let sender = peer(&daemon, "sender").await;
+        let controller = Other::spawn();
+        let profile = dir.path().join("profile").display().to_string();
+        let old_launch = ControllerLaunch {
+            args: vec!["-c".into(), "exit 1".into()],
+            ..descriptor(&dir)
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: prior.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: old_provider.identity(),
+                        session: "thread-9".into(),
+                        profile: profile.clone(),
+                    },
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(old_launch),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let before = send(&daemon, &sender, &prior, "before the restart").await;
+        // The provider and its controller end; the thread comes back as a
+        // new process, which registers as a new record and gets a message.
+        drop(old_provider);
+        drop(controller);
+        let fresh = register("codex-new", std::process::id()).await;
+        assert_ne!(fresh.id, prior.id);
+        let after = send(&daemon, &sender, &fresh, "after the restart").await;
+        let generation = |profile: String| ProviderGeneration {
+            process: me(),
+            session: "thread-9".into(),
+            profile,
+        };
+        // The wrong profile is not the predecessor's thread.
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeInput {
+                    agent: fresh.id.to_string(),
+                    predecessor: prior.id.to_string(),
+                    provider: generation(dir.path().join("other").display().to_string()),
+                    launch: descriptor(&dir),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let seq = lock(&daemon.state).next_seq;
+        let Response::InputResumed {
+            agent,
+            retired,
+            binding,
+        } = daemon
+            .handle(Request::ResumeInput {
+                agent: fresh.id.to_string(),
+                predecessor: prior.id.to_string(),
+                provider: generation(profile.clone()),
+                launch: descriptor(&dir),
+            })
+            .await
+        else {
+            panic!("resume failed");
+        };
+        assert_eq!(agent, prior.id);
+        assert_eq!(retired, fresh.id);
+        assert_eq!(binding.provider.process, me());
+        assert_eq!(binding.provider.session, "thread-9");
+        assert_eq!(binding.launch, Some(descriptor(&dir)));
+        assert_eq!(binding.restart.attempts, 0);
+        assert!(
+            binding.uncertain.is_empty(),
+            "no legacy reader offered anything, so nothing is uncertain: the controller's ledger settles the rest"
+        );
+        assert!(
+            binding.accepts_digest(&token_digest(TOKEN)),
+            "the token stays"
+        );
+        {
+            let state = lock(&daemon.state);
+            let record = state
+                .registry
+                .get(&fresh.id)
+                .expect("resolves through the alias");
+            assert_eq!(record.id, prior.id);
+            assert_eq!(record.pid, Some(std::process::id()));
+            assert!(record.status.is_live());
+            assert_eq!(
+                state.inboxes[&prior.id]
+                    .iter()
+                    .map(|m| m.id.clone())
+                    .collect::<Vec<_>>(),
+                vec![before.clone(), after.clone()],
+                "one queue, in order"
+            );
+            assert!(!state.inboxes.contains_key(&fresh.id));
+        }
+        assert!(matches!(
+            &events_since(&daemon, seq).await[..],
+            [EventKind::InputResumed { agent, retired, .. }] if *agent == prior.id && *retired == fresh.id
+        ));
+        // The tick starts the new descriptor at once.
+        daemon.tend_controllers();
+        let launched = match &events_since(&daemon, seq).await[..] {
+            [
+                _,
+                EventKind::InputControllerLaunched {
+                    controller,
+                    attempt: 1,
+                    ..
+                },
+            ] => controller.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(is_running(&launched));
+        // It binds with the same token, as a resume of the dead controller.
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: fresh.id.to_string(),
+                    provider: binding.provider.clone(),
+                    controller: launched.clone(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::InputBound { resumed: true, agent, .. } if agent == prior.id
+        ));
+        signal(&launched, Signal::SIGKILL);
+        // Durable: a reopened daemon knows the alias and the joined queue.
+        drop(daemon);
+        let daemon = open(&dir);
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.registry.get(&fresh.id).map(|r| r.id.clone()),
+            Some(prior.id.clone())
+        );
+        assert_eq!(state.inboxes[&prior.id].len(), 2);
+        assert!(state.registry.all().all(|r| r.id != fresh.id));
+    }
+
+    /// Resuming refuses to guess: a generation still running, two prior
+    /// records, or a caller that already has state of its own.
+    #[tokio::test]
+    async fn resuming_refuses_a_live_generation_and_an_entangled_caller() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let provider_process = Other::spawn();
+        let register = async |name: &str, pid: u32, session: &str| {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "custom".into(),
+                workdir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            spec.labels.insert("session_id".into(), session.into());
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let prior = register("codex-old", provider_process.0.id(), "thread-9").await;
+        let profile = dir.path().join("profile").display().to_string();
+        let controller = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: prior.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: provider_process.identity(),
+                        session: "thread-9".into(),
+                        profile: profile.clone(),
+                    },
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: None,
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let fresh = register("codex-new", std::process::id(), "thread-9").await;
+        let resume = || {
+            daemon.handle(Request::ResumeInput {
+                agent: fresh.id.to_string(),
+                predecessor: prior.id.to_string(),
+                provider: ProviderGeneration {
+                    process: me(),
+                    session: "thread-9".into(),
+                    profile: profile.clone(),
+                },
+                launch: descriptor(&dir),
+            })
+        };
+        // The old provider still runs: not a restart.
+        assert!(matches!(
+            resume().await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        drop(provider_process);
+        // The old controller still runs: not yet.
+        assert!(matches!(
+            resume().await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        drop(controller);
+        // The caller holds a lease: it has a life of its own already.
+        let Response::Lease { lease } = daemon
+            .handle(Request::Claim {
+                agent: fresh.id.to_string(),
+                resource: "task:something".into(),
+                mode: agentdocker_core::LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("claim failed");
+        };
+        assert!(matches!(
+            resume().await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        let released = daemon
+            .handle(Request::Release {
+                agent: fresh.id.to_string(),
+                lease: lease.id,
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+        assert!(matches!(resume().await, Response::InputResumed { .. }));
     }
 
     /// After the daemon gave up, a person's retry starts the episode over

@@ -289,6 +289,24 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// A provider session came back as a new process and registered as a
+    /// new record, while its thread's queue, binding and controller ledger
+    /// sit on the record of the process that ended. The caller is the new
+    /// record and names the prior one; the daemon checks it is the one
+    /// record bound to the same thread, profile and checkout and that its
+    /// processes are all gone, keeps it as the canonical identity with the
+    /// caller's process, gives its binding the new generation and this
+    /// launch descriptor, and retires the caller's id into an alias of it.
+    /// Answers `input_resumed`.
+    ResumeInput {
+        agent: String,
+        /// The prior record, named rather than searched for.
+        predecessor: String,
+        /// The new generation: the caller's own process, the same thread
+        /// and profile.
+        provider: crate::ProviderGeneration,
+        launch: crate::ControllerLaunch,
+    },
     /// A person's retry after the daemon gave up starting a bound
     /// controller: the restart episode starts over on the same binding,
     /// with the queue kept and the provider untouched. Refused while the
@@ -946,6 +964,13 @@ pub enum Response {
         controller: Option<crate::ProcessIdentity>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// The outcome of `resume_input`: the prior record, canonical now for
+    /// the retired caller's id too, with its binding on the new generation.
+    InputResumed {
+        agent: AgentId,
+        retired: AgentId,
+        binding: crate::InputBinding,
     },
     /// The outcome of `bind_input`.
     InputBound {
