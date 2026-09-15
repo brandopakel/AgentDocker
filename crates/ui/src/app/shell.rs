@@ -318,6 +318,7 @@ impl App {
             Message::Draft(..)
                 | Message::SessionDraft(..)
                 | Message::SelectThread(_)
+                | Message::InboxList
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
                 | Message::SelectSession(_)
@@ -340,6 +341,7 @@ impl App {
             &message,
             Message::Navigate(_)
                 | Message::SelectThread(_)
+                | Message::InboxList
                 | Message::SelectProject(_)
                 | Message::Unassigned
                 | Message::AllProjects
@@ -1773,6 +1775,55 @@ mod tests {
         app.drain();
         assert!(app.take_answer_reveal().is_none());
         assert_eq!(app.answers[&second], "Newer draft");
+    }
+
+    #[test]
+    fn returning_to_conversations_cancels_an_answer_reveal_before_or_after_its_response() {
+        for response_before_back in [false, true] {
+            let (mut app, commands, messages) = app();
+            app.screen = Screen::Questions;
+            app.connected = Ok(());
+            app.shell.inbox_open = true;
+            app.shell.inbox_thread = Some("first-asker".into());
+            let first = MessageId::from("first".to_owned());
+            let second = MessageId::from("second".to_owned());
+            let question = Question {
+                presentation: None,
+                id: first.clone(),
+                from: "first-asker".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "Continue?".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            };
+            app.questions = vec![
+                question.clone(),
+                Question {
+                    id: second.clone(),
+                    from: "next-asker".into(),
+                    ..question
+                },
+            ];
+            app.answers.insert(first.clone(), "Yes".into());
+            app.answers.insert(second.clone(), "Keep this draft".into());
+            let _ = app.update(Message::Answer(first.clone()));
+            assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+                [Cmd::Answer(id, _)] if id == &first));
+            if response_before_back {
+                messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
+                app.drain();
+            }
+            let _ = app.update(Message::InboxList);
+            if !response_before_back {
+                messages.send(Msg::Answered(first, Ok(()))).unwrap();
+            }
+            let _ = app.update(Message::Tick);
+            assert!(!app.shell.inbox_open, "a late answer must not undo Back");
+            assert_eq!(app.shell.inbox_thread.as_deref(), Some("first-asker"));
+            assert!(app.shell.pending_answer_reveal.is_none());
+            assert!(!app.shell.reveal_next_question);
+            assert_eq!(app.answers[&second], "Keep this draft");
+        }
     }
 
     fn notification_app() -> (
