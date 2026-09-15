@@ -1404,6 +1404,25 @@ impl App {
                     false,
                 ));
             }
+            // The daemon gave up starting the bound receiver: the one repair a
+            // person can make from here, and the only control that makes one.
+            if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
+                body = body.push(small(
+                    format!(
+                        "The input receiver could not be started again after {} attempts. Queued input is kept.",
+                        binding.restart.attempts
+                    ),
+                    c,
+                ));
+                body = body.push(action(
+                    "retry-receiver",
+                    "Retry receiver",
+                    self.connected
+                        .is_ok()
+                        .then(|| Message::RetryController(agent.id.to_string())),
+                    false,
+                ));
+            }
             if paused {
                 body = body.push(action(
                     "review-delivery",

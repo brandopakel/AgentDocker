@@ -179,6 +179,7 @@ pub enum Message {
     SessionDetails,
     ReviewDelivery,
     ResumeProvider(String, chrono::DateTime<Utc>),
+    RetryController(String),
     ComposeSession,
     SessionDraft(String, String),
     SendSession(String),
@@ -600,6 +601,11 @@ impl App {
             Message::ResumeProvider(agent, blocked_at) => {
                 if self.connected.is_ok() {
                     self.send(Cmd::ResumeProvider(agent, blocked_at));
+                }
+            }
+            Message::RetryController(agent) => {
+                if self.connected.is_ok() {
+                    self.send(Cmd::RetryController(agent));
                 }
             }
             Message::ReviewDelivery => {
