@@ -359,6 +359,20 @@ struct State {
     question_waiters: HashSet<MessageId>,
     /// Answers held for a waiting ask, by answer id, with their question.
     held_answers: HashMap<MessageId, MessageId>,
+    /// Stale notices waiting for the next tick, per reader: each path that
+    /// changed after its observation, with the change that did it last. A
+    /// branch switch touches hundreds of paths in a moment; the reader
+    /// gets one message naming them, not one per change.
+    pending_stale: HashMap<AgentId, BTreeMap<PathBuf, Change>>,
+    /// The stale notice each reader was last sent, while it is still
+    /// queued: nothing more is sent until that one has been consumed
+    /// (acknowledged, so it left the queue); the paths that change in the
+    /// meantime wait and the next notice names them all.
+    stale_outstanding: HashMap<AgentId, MessageId>,
+    /// Paths that widened a contested channel since the last tick, told
+    /// to the channel as one message: the distinct paths, bounded, and
+    /// how many widenings there were.
+    pending_contested: HashMap<ChannelId, (std::collections::BTreeSet<PathBuf>, usize)>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -915,6 +929,11 @@ impl Daemon {
         state.expire_leases();
         state.expire_questions(Utc::now());
     }
+    /// Send the stale and contested notices that accumulated since the
+    /// last tick, one message per reader and per channel.
+    pub fn flush_notices(&self) {
+        lock(&self.state).flush_notices();
+    }
     pub fn prune_events(&self) {
         lock(&self.state).prune_events();
     }
@@ -1195,6 +1214,9 @@ impl Daemon {
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
                 held_answers: HashMap::new(),
+                pending_stale: HashMap::new(),
+                stale_outstanding: HashMap::new(),
+                pending_contested: HashMap::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
@@ -12278,6 +12300,18 @@ deny = ["send:all"]
         assert_eq!(entries[0].by, attributed);
         assert_eq!(entries[1].by, attributed);
         assert_eq!(entries[2].by, Attribution::External);
+        // Both alias changes warn the reader, as one notice on the tick
+        // naming the one physical path they share.
+        assert!(
+            daemon
+                .recent_events(50)
+                .iter()
+                .filter(|e| matches!(&e.kind, EventKind::AgentStale { .. }))
+                .count()
+                >= 2,
+            "each change is a live stale event"
+        );
+        daemon.flush_notices();
         let Response::Messages { messages } = daemon
             .handle(Request::Inbox {
                 agent: "reader".into(),
@@ -12287,14 +12321,12 @@ deny = ["send:all"]
         else {
             panic!("inbox failed");
         };
-        assert_eq!(messages.len(), 2, "both alias changes warn the reader");
-        for message in messages {
-            assert_eq!(message.kind, "stale");
-            assert_eq!(
-                message.payload["paths"],
-                json!([project::canonical(&target)])
-            );
-        }
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0].kind, "stale");
+        assert_eq!(
+            messages[0].payload["paths"],
+            json!([project::canonical(&target)])
+        );
         let root = repo.to_string_lossy();
         for filter in ["", ".", "./", root.as_ref()] {
             assert_eq!(ledger(&daemon, &repo, Some(filter)).await, entries);
@@ -12512,16 +12544,39 @@ deny = ["send:all"]
             [PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]
         );
 
-        // Both were told, and the journal says the room exists.
-        assert!(matches!(
-            daemon
+        // Both were told when the room opened; the widening is told on
+        // the tick, once for every path that joined since the last one.
+        let told = |daemon: Arc<Daemon>| async move {
+            match daemon
                 .handle(Request::Inbox {
                     agent: "home".into(),
                     drain: true,
                 })
-                .await,
-            Response::Messages { messages } if !messages.is_empty()
-        ));
+                .await
+            {
+                Response::Messages { messages } => messages,
+                other => panic!("{other:?}"),
+            }
+        };
+        let opening = told(daemon.clone()).await;
+        assert_eq!(opening.len(), 1, "{opening:?}");
+        assert!(
+            opening[0].payload["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("You are both changing"),
+            "{opening:?}"
+        );
+        daemon.flush_notices();
+        let widening = told(daemon.clone()).await;
+        assert_eq!(widening.len(), 1, "{widening:?}");
+        assert_eq!(
+            widening[0].payload["text"],
+            json!("src/b.rs is contested too; it is part of this channel now.")
+        );
+        daemon.flush_notices();
+        assert!(told(daemon.clone()).await.is_empty(), "nothing more to say");
+        // The journal says the room exists.
         let Response::Journal { entries, .. } = daemon
             .handle(Request::Journal {
                 project: repo.to_string_lossy().into_owned(),
