@@ -150,6 +150,58 @@ This audit and the implemented queue/wake acceptance are required before marking
 incoming-message delivery complete. The existing hook bridge and successful
 round trips are supporting evidence, not completion of this requirement.
 
+## Provider-limit and session-exhaustion acceptance (September 14)
+
+The connected Claude session hit a provider session limit during the user's live
+coordination trial. Detection, clear unavailable status and recovery are open
+requirements; this report alone does not establish the precise provider limit
+type, reset time or an adapter signal. The current activity reports expose
+working/idle observations and cannot represent that failure explicitly.
+
+This requirement covers all supported providers and models, including
+OpenAI/Codex, Anthropic/Claude, Google/Gemini, providers behind multi-provider
+tools, and custom/local runtimes. Record runtime and actual model/provider
+separately when known. Do not infer universal limit detection from runtime
+discovery or from Claude's hook signal. Provider availability must remain
+separate from transport/input readiness, so an idle heartbeat cannot clear it.
+
+Follow the [delivery contract](DELIVERY-PLAN.md#provider-session-limits-and-interrupted-work-september-14).
+Retain raw provider evidence privately and record sanitized outcomes for:
+
+| Boundary | Required outcome |
+| --- | --- |
+| Limit before input receipt | Human and peer input remains queued in original order; no fabricated receipt, drain or completed status. |
+| Limit after receipt or during a tool | Preserve the consumed-input receipt and uncertain operation state. Reconcile the existing turn; do not automatically resubmit input or execute the tool again. |
+| Question awaiting an answer | Keep the question, draft and exact human reply correlation. Do not broaden a grant, revive an expired approval or turn its answer into ordinary new input. |
+| Continued submissions and queue pressure | Retain already accepted work, apply existing bounded backpressure to new submissions and give senders a concise waiting reason. Bound retry/ping/notification frequency. |
+| Recovery and restart | Re-establish provider availability and session identity, reconcile durable receipts, then continue queued work once. Test daemon restart, same-session reconnect and explicit replacement without merging distinct sessions. |
+| Missing or changing limit metadata | Use unknown availability when no supported signal exists. Do not invent a reset time, infer successful recovery from elapsed time, or confuse usage limits with context exhaustion, authentication or transport errors. |
+| Provider, model and quota scope | Cover applicable session, daily/weekly usage, request/token rate, credit/billing, concurrency and context limits. A limit confined to one model/session must not pause unrelated agents. Confirmed account/organization/deployment limits require coordinated bounded retries across affected agents; unknown scope stays unknown. |
+| Different adapter capabilities | Run the shared queue/recovery cases for each supported adapter and the provider/model combinations it exposes. Record exact versions, supported evidence and gaps for structured errors, hooks, MCP-only and generic/local integrations. Unsupported detection must produce honest unknown status, never assumed availability or completion. |
+| Provider/model change or fallback | Do not switch provider, account or model automatically to bypass a limit. An explicitly requested change must preserve pending work and reconcile receipts and session identity before delivery. |
+
+Controlled fixtures must exercise every boundary, including repeated limit
+responses and unavailable recovery. Record per-adapter/provider coverage in this
+existing audit; one provider's passing tests do not complete the others. An
+actual provider trial must record its runtime/model version when available,
+observed limit signal and recovery outcome separately; do
+not spend quota solely to provoke a limit. Limited agents retain their files and
+normal lease semantics. A peer that has not replied has not accepted a new task
+or approved takeover of its unfinished work.
+
+A September 14 controlled probe of the installed Claude Code 2.1.270 CLI
+established a usable failure signal: one synthetic loopback HTTP 429, with
+provider retries disabled, produced an asynchronous `StopFailure` hook carrying
+`error: rate_limit`. Its final stream result had `subtype: success` **and**
+`is_error: true`, `terminal_reason: api_error`, `api_error_status: 429`.
+Adapters must inspect the error fields rather than accepting the subtype alone.
+The provider supplied no reset time in the captured hook. Earlier synchronous
+hook probes exited before capturing that failure; those failed trials remain
+retained. This used an isolated configuration and local server, no real quota,
+and left no owned processes. It establishes the signal, not AgentDocker's
+availability or recovery implementation, or recovery of the user's limited
+session. See the provider's [StopFailure contract](https://code.claude.com/docs/en/hooks#stopfailure).
+
 ## Initial source audit
 
 Read-only tracing against code checkpoint `bf39280` confirms distinct paths:

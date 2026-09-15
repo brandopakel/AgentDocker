@@ -1,115 +1,206 @@
-//! Process supervision for managed agents.
+//! Process supervision for managed agents, through a session owner.
+//!
+//! The daemon no longer holds a managed agent's child itself. Each `run`
+//! starts a [session owner](crate::owner): a small process that prepares
+//! the command behind the launch gate, owns the child, its terminal or
+//! pipes and its log, and serves this daemon on the agent's session socket.
+//! What this module keeps is the daemon's side of that conversation — the
+//! controller — behind the same shape the rest of the daemon always used:
+//! a [`Spawned`] with the child's identity, a stop handle, an optional
+//! [`Session`] for `attach`, `activate` once the launch record is durable,
+//! and `supervise` until the exit is recorded.
+//!
+//! Because the owner outlives the daemon, a daemon that restarts finds the
+//! owner still there and reattaches (`reattach`) instead of relaunching.
 
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
+use std::collections::VecDeque;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
+use agentdocker_core::session::{
+    ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport, SessionOwner, exit_path, socket_path,
+};
 use agentdocker_core::{AgentId, AgentRecord, AgentStatus};
-use agentdocker_host::launch::{OwnedChild, Pending};
 use anyhow::Context;
 use chrono::Utc;
-use std::os::fd::{AsRawFd, OwnedFd};
-use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::daemon::Daemon;
+use crate::owner::Launch;
 
-pub struct Spawned {
-    pub pid: u32,
-    pub process_started_at: chrono::DateTime<Utc>,
-    child: Option<OwnedChild>,
-    pending: Option<Pending>,
-    batch_log: Option<mpsc::Sender<String>>,
-    launch_error: Option<String>,
-    output: OutputCapture,
-    pub control: watch::Sender<Option<bool>>,
-    stop: watch::Receiver<Option<bool>>,
-    /// The daemon's end of the agent's terminal, when it was given one.
-    pub session: Option<Session>,
-}
-
-/// Readers and their log sink stay owned until every buffered write finishes.
-/// Dropping supervision cancels the tasks instead of leaving detached writers.
-#[derive(Default)]
-struct OutputCapture {
-    tasks: tokio::task::JoinSet<anyhow::Result<()>>,
-    input: Option<tokio::task::JoinHandle<()>>,
-    error: Option<String>,
-}
-
-impl OutputCapture {
-    /// Returns true on the first failure, so supervision can stop a producer
-    /// whose output can no longer be captured. A successful early EOF is fine.
-    fn completed(&mut self, result: Result<anyhow::Result<()>, tokio::task::JoinError>) -> bool {
-        let error = match result {
-            Ok(Ok(())) => return false,
-            Ok(Err(error)) => format!("{error:#}"),
-            Err(error) => format!("output task failed: {error}"),
-        };
-        if self.error.is_some() {
-            return false;
-        }
-        self.error = Some(error);
-        true
-    }
-
-    async fn finish(&mut self) {
-        // Attached clients may still hold input senders after the child exits.
-        // They must not keep the terminal writer waiting for more keystrokes.
-        if let Some(input) = self.input.take() {
-            input.abort();
-            let _ = input.await;
-        }
-        while let Some(result) = self.tasks.join_next().await {
-            self.completed(result);
-        }
-    }
-}
-
-impl Drop for OutputCapture {
-    fn drop(&mut self) {
-        if let Some(input) = &self.input {
-            input.abort();
-        }
-        // JoinSet aborts the readers and log writer on drop.
-    }
-}
+/// How long an owner may take to bind its socket and report the prepared
+/// child. The launch gate's own deadline is shorter.
+const OWNER_READY_WITHIN: Duration = Duration::from_secs(10);
 
 /// What a client attaching late is shown before the live stream: enough
 /// to see where the agent got to, not its whole history — the log has
 /// that.
 const SCROLLBACK: usize = 64 * 1024;
 
-/// A managed agent's terminal, as the daemon holds it: what it prints,
+/// How the daemon runs an owner: as its own process (production), or as a
+/// task in this process (tests, where the daemon binary is not on hand).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwnerMode {
+    Process(std::path::PathBuf),
+    InProcess,
+}
+
+impl OwnerMode {
+    /// The daemon's own executable runs owners; tests keep them in-process.
+    pub fn detect() -> Self {
+        if cfg!(test) || std::env::var_os("AGENTDOCKER_OWNER_IN_PROCESS").is_some() {
+            return Self::InProcess;
+        }
+        match std::env::current_exe() {
+            Ok(path) => Self::Process(path),
+            Err(_) => Self::InProcess,
+        }
+    }
+}
+
+enum OwnerLink {
+    Process(std::process::Child),
+    InProcess(tokio::task::JoinHandle<anyhow::Result<i32>>),
+    /// Reattached after a daemon restart: the owner is nobody's child here.
+    Detached,
+}
+
+/// Longest report line accepted from an owner: a scrollback replay is at
+/// most 64 KiB of bytes rendered as JSON numbers, well under this.
+const MAX_REPORT_BYTES: usize = 1024 * 1024;
+/// How long one write to an owner may block before the link is dead.
+const WRITE_WITHIN: Duration = Duration::from_secs(5);
+
+struct Controller {
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+    /// A report read so far: kept across a cancelled read, so a frame split
+    /// by another select branch winning resumes where it stopped.
+    partial: Vec<u8>,
+}
+
+impl Controller {
+    async fn connect(socket: &Path, within: Duration) -> anyhow::Result<Self> {
+        let deadline = tokio::time::Instant::now() + within;
+        let stream = loop {
+            match UnixStream::connect(socket).await {
+                Ok(stream) => break stream,
+                Err(error) if tokio::time::Instant::now() >= deadline => {
+                    return Err(error).with_context(|| {
+                        format!("session owner at {} did not answer", socket.display())
+                    });
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        };
+        let (reader, writer) = stream.into_split();
+        Ok(Self {
+            reader: BufReader::new(reader),
+            writer,
+            partial: Vec::new(),
+        })
+    }
+
+    async fn send(&mut self, command: &OwnerCommand) -> anyhow::Result<()> {
+        let mut line = serde_json::to_vec(command)?;
+        line.push(b'\n');
+        tokio::time::timeout(WRITE_WITHIN, self.writer.write_all(&line))
+            .await
+            .context("session owner stopped reading")?
+            .context("session owner connection closed")
+    }
+
+    /// One line, bounded; `None` at EOF. Cancel-safe: bytes already read
+    /// stay in `partial` until a whole frame is parsed.
+    async fn line(&mut self) -> anyhow::Result<Option<String>> {
+        read_frame(&mut self.reader, &mut self.partial, MAX_REPORT_BYTES)
+            .await
+            .context("session owner report")
+    }
+
+    async fn hello(&mut self) -> anyhow::Result<OwnerHello> {
+        let line = tokio::time::timeout(WRITE_WITHIN, self.line())
+            .await
+            .context("session owner did not say hello in time")??
+            .context("session owner closed before its hello")?;
+        let hello: OwnerHello = serde_json::from_str(&line).context("malformed owner hello")?;
+        anyhow::ensure!(hello.format == FORMAT, "unknown session owner format");
+        Ok(hello)
+    }
+
+    async fn next(&mut self) -> anyhow::Result<Option<OwnerReport>> {
+        loop {
+            let Some(line) = self.line().await? else {
+                return Ok(None);
+            };
+            match serde_json::from_str::<OwnerReport>(&line) {
+                Ok(report) => return Ok(Some(report)),
+                // A newer owner may say things this daemon does not know;
+                // that is not a reason to abandon the child.
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+pub struct Spawned {
+    pub pid: u32,
+    pub process_started_at: chrono::DateTime<Utc>,
+    /// The owner process, recorded on the agent so a restarted daemon can
+    /// find it again.
+    pub owner: SessionOwner,
+    link: OwnerLink,
+    controller: Controller,
+    launch_error: Option<String>,
+    activated: bool,
+    pub control: watch::Sender<Option<bool>>,
+    stop: watch::Receiver<Option<bool>>,
+    /// The daemon's end of the agent's terminal, when it was given one.
+    pub session: Option<Session>,
+    /// What the session's clients send, relayed to the owner by `supervise`.
+    keystrokes: Option<mpsc::Receiver<Vec<u8>>>,
+    resizes: Option<mpsc::Receiver<(u16, u16)>>,
+    /// Where relayed output goes.
+    output: Option<broadcast::Sender<Vec<u8>>>,
+    scrollback: Option<Arc<std::sync::Mutex<VecDeque<u8>>>>,
+    /// Bytes of output already relayed into the scrollback; an `Attach`
+    /// after a reattach asks for what follows.
+    relayed: u64,
+}
+
+/// A managed agent's terminal, as the daemon presents it: what it prints,
 /// what can be typed at it, how big its window is, and what it printed
-/// just before you looked.
+/// just before you looked. The bytes come from the owner; the shape is
+/// the one `attach` always used.
 #[derive(Clone)]
 pub struct Session {
-    /// Only the terminal reader owns the sender. An attached client must not
-    /// keep its own output stream alive after the terminal reaches EOF.
+    /// Only the relay owns the sender. An attached client must not keep
+    /// its own output stream alive after the terminal reaches EOF.
     output: broadcast::WeakSender<Vec<u8>>,
     /// Keystrokes on their way to the agent.
     pub input: mpsc::Sender<Vec<u8>>,
-    master: Arc<OwnedFd>,
-    /// The last [`SCROLLBACK`] bytes it printed, raw, so an attaching
-    /// client sees the screen rather than an empty one.
-    scrollback: Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
+    resize: mpsc::Sender<(u16, u16)>,
+    scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
 }
 
 impl Session {
     /// Tell the terminal its window changed, so full-screen agents relay
     /// out and get `SIGWINCH`.
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
-        agentdocker_host::pty::set_window_size(self.master.as_raw_fd(), cols, rows)
+        self.resize
+            .try_send((cols, rows))
+            .map_err(|_| std::io::Error::other("terminal is not accepting resizes"))
     }
 
-    /// What to show now, and what comes next. Taken together under one
-    /// lock so a byte cannot fall between them or arrive twice: anything
-    /// already broadcast is in the scrollback, anything broadcast later
-    /// reaches the receiver.
+    /// What to show now, and what comes next, taken together under one
+    /// lock so a byte cannot fall between them or arrive twice.
     pub fn attach(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
         let history = lock_scrollback(&self.scrollback);
         let seen: Vec<u8> = history.iter().copied().collect();
@@ -117,164 +208,333 @@ impl Session {
             .output
             .upgrade()
             .map(|output| output.subscribe())
-            // The reader may have ended just before this attach. Replay the
-            // final history, followed by a receiver that is already closed.
             .unwrap_or_else(|| broadcast::channel(1).1);
         drop(history);
         (seen, live)
     }
 }
 
-/// A poisoned scrollback is still readable bytes; nothing here can leave
-/// it inconsistent.
 fn lock_scrollback(
-    scrollback: &std::sync::Mutex<std::collections::VecDeque<u8>>,
-) -> std::sync::MutexGuard<'_, std::collections::VecDeque<u8>> {
+    scrollback: &std::sync::Mutex<VecDeque<u8>>,
+) -> std::sync::MutexGuard<'_, VecDeque<u8>> {
     scrollback
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Launch the agent's command with its output captured to a log file.
-/// The child inherits the daemon's environment plus `spec.env` and the
-/// `AGENTDOCKER_*` variables that let it find the daemon and itself.
+fn launch_for(daemon: &Daemon, record: &AgentRecord) -> Launch {
+    Launch {
+        format: FORMAT,
+        agent: record.id.clone(),
+        name: record.spec.name.clone(),
+        command: record.spec.command.clone(),
+        env: record.spec.env.clone(),
+        workdir: record.spec.workdir.clone(),
+        tty: record.spec.tty,
+        home: daemon.home.clone(),
+        socket: daemon.socket.clone(),
+        log: daemon.log_path(&record.id),
+    }
+}
+
+/// Start an owner for the agent's command and learn the prepared child's
+/// identity. The command does not run until [`Spawned::activate`].
 pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spawned> {
-    let Some((program, args)) = record.spec.command.split_first() else {
-        anyhow::bail!("empty command");
-    };
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .envs(&record.spec.env)
-        .env("AGENTDOCKER_HOME", &daemon.home)
-        .env("AGENTDOCKER_SOCKET", &daemon.socket)
-        .env_remove("AGENTDOCKER_TOKEN_FILE")
-        .env("AGENTDOCKER_NO_AUTOSTART", "1")
-        .env("AGENTDOCKER_AGENT_ID", record.id.as_str())
-        .env("AGENTDOCKER_AGENT_NAME", &record.spec.name)
-        .env(
-            "TERM",
-            std::env::var("TERM").as_deref().unwrap_or("xterm-256color"),
-        );
-    // A terminal when the agent asked for one: interactive runtimes need
-    // it, and it is what `attach` connects to. `setsid` in the child makes
-    // it a process-group leader by itself, so `process_group` would only
-    // make the later `setsid` fail.
-    let mut pty = if record.spec.tty {
-        Some(agentdocker_host::pty::Pty::open().context("cannot open a terminal for the agent")?)
-    } else {
-        None
-    };
-    match pty.as_mut().and_then(|pty| pty.take_slave()) {
-        Some(slave) => {
-            let stdin = slave.try_clone()?;
-            let stdout = slave.try_clone()?;
-            command
-                .stdin(Stdio::from(stdin))
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::from(slave));
-            // SAFETY: `take_controlling_terminal` uses only
-            // async-signal-safe calls, as its contract requires.
-            unsafe { command.pre_exec(|| agentdocker_host::pty::take_controlling_terminal()) };
-        }
-        None => {
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            command.process_group(0);
-        }
-    }
-    if let Some(workdir) = &record.spec.workdir {
-        command.current_dir(workdir);
-    }
-
-    // Allocate every fallible terminal descriptor before a process can start.
-    let terminal_io = pty
-        .as_ref()
-        .map(|pty| -> std::io::Result<_> {
-            Ok((pty.master().try_clone()?, pty.master().try_clone()?))
-        })
-        .transpose()
-        .context("cannot clone the agent's terminal")?;
-
-    let log_path = daemon.log_path(&record.id);
-    let log = tokio::task::spawn_blocking(move || {
-        agentdocker_host::dirs::secure_state_dir(
-            log_path.parent().expect("log path has a parent"),
-        )?;
-        agentdocker_host::dirs::private_file(&log_path, true, true)
-            .with_context(|| format!("cannot open {}", log_path.display()))
-    })
-    .await??;
-    let log = File::from_std(log);
+    anyhow::ensure!(!record.spec.command.is_empty(), "empty command");
     daemon.validate_native_launch(record)?;
-    let pending = tokio::task::spawn_blocking(move || agentdocker_host::launch::prepare(command))
-        .await?
-        .with_context(|| format!("failed to prepare `{program}`"))?;
-    let pid = pending.pid;
-    let process_started_at = agentdocker_host::procinfo::start_time(pid)
-        .context("cannot verify the prepared command's process identity; exec denied")?;
-    daemon.validate_native_launch(record)?;
-
-    let (tx, rx) = mpsc::channel::<String>(256);
-    let mut capture = OutputCapture::default();
-    capture.tasks.spawn(write_log(log, rx));
-    let mut batch_log = None;
-    let session = match pty {
-        Some(pty) => {
-            let master = Arc::new(pty.into_master());
-            let (output, _) = broadcast::channel::<Vec<u8>>(256);
-            let session_output = output.downgrade();
-            let (input, keystrokes) = mpsc::channel::<Vec<u8>>(64);
-            let scrollback = Arc::new(std::sync::Mutex::new(
-                std::collections::VecDeque::<u8>::new(),
-            ));
-            // One task reads the terminal into the log, the scrollback and
-            // whoever is attached; another types into it.
-            //
-            let (reader, writer) = terminal_io.expect("allocated before launch");
-            capture.tasks.spawn(pump_terminal(
-                tokio::fs::File::from_std(std::fs::File::from(reader)),
-                tx,
-                output,
-                scrollback.clone(),
-            ));
-            capture.input = Some(tokio::spawn(type_into_terminal(
-                tokio::fs::File::from_std(std::fs::File::from(writer)),
-                keystrokes,
-            )));
-            Some(Session {
-                output: session_output,
-                input,
-                master,
-                scrollback,
+    let launch = launch_for(daemon, record);
+    let socket = socket_path(&daemon.home, &record.id);
+    // A stale exit file from an earlier life of this id must not be read
+    // as this launch's exit; if it cannot be cleared, nothing launches.
+    match std::fs::remove_file(exit_path(&daemon.home, &record.id)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("cannot clear a stale exit report"),
+    }
+    let link = match daemon.owner_mode() {
+        OwnerMode::InProcess => OwnerLink::InProcess(tokio::spawn(crate::owner::serve(launch))),
+        OwnerMode::Process(executable) => {
+            let mut command = std::process::Command::new(executable);
+            command
+                .arg("--session-owner")
+                .env("AGENTDOCKER_HOME", &daemon.home)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
+                // Its own group: a signal meant for a managed agent's group,
+                // or for the daemon's, must never reach the owner.
+                .process_group(0);
+            let mut child = command.spawn().context("cannot start the session owner")?;
+            let mut stdin = child.stdin.take().expect("piped");
+            let text = serde_json::to_vec(&launch)?;
+            tokio::task::spawn_blocking(move || {
+                use std::io::Write;
+                stdin.write_all(&text).and_then(|()| stdin.flush())
             })
-        }
-        None => {
-            batch_log = Some(tx);
-            None
+            .await?
+            .context("cannot hand the launch to the session owner")?;
+            OwnerLink::Process(child)
         }
     };
-
+    let mut controller = Controller::connect(&socket, OWNER_READY_WITHIN).await?;
+    let hello = controller.hello().await?;
+    let child = hello
+        .child
+        .clone()
+        .context("session owner reported no prepared child")?;
+    daemon.validate_native_launch(record)?;
+    let owner = SessionOwner {
+        pid: hello.owner_pid,
+        started_at: hello.owner_started_at,
+    };
     let (control, stop) = watch::channel(None);
-    Ok(Spawned {
-        pid,
-        process_started_at,
-        child: None,
-        pending: Some(pending),
-        batch_log,
+    let mut spawned = Spawned {
+        pid: child.pid,
+        process_started_at: child.started_at,
+        owner,
+        link,
+        controller,
         launch_error: None,
-        output: capture,
+        activated: false,
         control,
         stop,
-        session,
-    })
+        session: None,
+        keystrokes: None,
+        resizes: None,
+        output: None,
+        scrollback: None,
+        relayed: 0,
+    };
+    if child.tty {
+        spawned.open_session();
+    }
+    Ok(spawned)
+}
+
+/// One newline-delimited frame from `reader`, accumulating into `partial`
+/// so a read cancelled mid-frame loses nothing: the next call continues.
+/// `None` at a clean EOF; an EOF mid-frame or a frame past `max` is an
+/// error. Shared by both ends of the owner wire.
+pub(crate) async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    partial: &mut Vec<u8>,
+    max: usize,
+) -> anyhow::Result<Option<String>> {
+    loop {
+        if let Some(end) = partial.iter().position(|b| *b == b'\n') {
+            let frame = partial.drain(..=end).collect::<Vec<u8>>();
+            let text = String::from_utf8(frame[..frame.len() - 1].to_vec())
+                .context("frame is not UTF-8")?;
+            return Ok(Some(text));
+        }
+        anyhow::ensure!(partial.len() <= max, "frame exceeds {max} bytes");
+        let budget = (max + 1 - partial.len()) as u64;
+        let read = reader.take(budget).read_until(b'\n', partial).await?;
+        if read == 0 {
+            anyhow::ensure!(partial.is_empty(), "connection closed mid-frame");
+            return Ok(None);
+        }
+    }
+}
+
+/// Whether the recorded owner process is still the one that was recorded:
+/// same pid, same birth. A recycled pid is not an owner.
+pub(crate) fn owner_alive(owner: &SessionOwner) -> bool {
+    agentdocker_host::procinfo::start_time(owner.pid) == Some(owner.started_at)
+}
+
+/// The exit report at `path`, only if it is this agent's, from this owner,
+/// about this child. Anything else is another generation's and is left
+/// where it is, unread.
+fn read_exit_file(
+    path: &Path,
+    agent: &AgentId,
+    owner: &SessionOwner,
+    child_pid: u32,
+    child_started_at: chrono::DateTime<Utc>,
+) -> Option<ExitReport> {
+    let text = std::fs::read(path).ok()?;
+    let report: ExitReport = serde_json::from_slice(&text).ok()?;
+    let bound = report.agent == *agent
+        && report.owner == *owner
+        && report.child.pid == child_pid
+        && report.child.started_at == child_started_at;
+    if !bound {
+        tracing::warn!(agent = %agent, path = %path.display(), "exit report belongs to another generation; ignored");
+        return None;
+    }
+    Some(report)
+}
+
+/// Check that the owner answering on the socket is the one on the record,
+/// holding the child on the record. Anything else is a stranger.
+fn validate_identity(
+    hello: &OwnerHello,
+    agent: &AgentId,
+    owner: &SessionOwner,
+    child_pid: u32,
+    child_started_at: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        hello.agent == *agent,
+        "session owner serves a different agent"
+    );
+    anyhow::ensure!(
+        hello.owner_pid == owner.pid && hello.owner_started_at == owner.started_at,
+        "session owner identity differs from the record"
+    );
+    let child = hello.child.as_ref().context("owner has no child")?;
+    anyhow::ensure!(
+        child.pid == child_pid && child.started_at == child_started_at,
+        "session owner holds a different child than the record"
+    );
+    Ok(())
+}
+
+/// Find an owner that outlived the previous daemon and take its child
+/// back under supervision. The exit file answers for an owner that has
+/// already finished. Identities are checked against the record: a
+/// recycled owner pid or a different child is refused.
+pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Reattached> {
+    let socket = socket_path(&daemon.home, &record.id);
+    let exit = exit_path(&daemon.home, &record.id);
+    let owner = record
+        .owner
+        .clone()
+        .context("record has no session owner")?;
+    let child_pid = record.pid.context("record has no child pid")?;
+    let child_started_at = record
+        .process_started_at
+        .context("record has no child birth")?;
+    if let Some(report) = read_exit_file(&exit, &record.id, &owner, child_pid, child_started_at) {
+        // Finished while nobody watched; the owner may still be waiting to
+        // hear that this was recorded.
+        return Ok(Reattached::Exited(report));
+    }
+    anyhow::ensure!(
+        owner_alive(&owner),
+        "session owner process is gone without an exit report"
+    );
+    let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
+    let hello = controller.hello().await?;
+    validate_identity(&hello, &record.id, &owner, child_pid, child_started_at)?;
+    let child = hello.child.clone().expect("validated");
+    let (control, stop) = watch::channel(None);
+    let mut spawned = Spawned {
+        pid: child.pid,
+        process_started_at: child.started_at,
+        owner,
+        link: OwnerLink::Detached,
+        controller,
+        launch_error: None,
+        activated: false,
+        control,
+        stop,
+        session: None,
+        keystrokes: None,
+        resizes: None,
+        output: None,
+        scrollback: None,
+        relayed: 0,
+    };
+    if child.tty {
+        spawned.open_session();
+        // Show what it printed while nobody was looking.
+        spawned
+            .controller
+            .send(&OwnerCommand::Attach { after: 0 })
+            .await?;
+    }
+    spawned.activated = hello.activated;
+    if !hello.activated {
+        // A launch the old daemon never authorised: its record was never
+        // committed as running either, so deny it rather than guess.
+        spawned
+            .controller
+            .send(&OwnerCommand::Stop { force: true })
+            .await?;
+    }
+    Ok(Reattached::Running(Box::new(spawned)))
+}
+
+pub enum Reattached {
+    Running(Box<Spawned>),
+    Exited(ExitReport),
+}
+
+/// A recovered exit is already durable before this runs. An available owner
+/// can retire immediately; a slow owner must not delay recovery of other agents.
+/// Keep the report if acknowledgement or cleanup cannot be completed safely.
+pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report: ExitReport) {
+    let socket = socket_path(&home, &report.agent);
+    if owner_alive(&report.owner) {
+        let acknowledged = async {
+            let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
+            let hello = controller.hello().await?;
+            validate_identity(
+                &hello,
+                &report.agent,
+                &report.owner,
+                report.child.pid,
+                report.child.started_at,
+            )?;
+            controller.send(&OwnerCommand::Acknowledge).await
+        }
+        .await;
+        if let Err(error) = acknowledged {
+            tracing::warn!(agent = %report.agent, %error, "recovered exit is durable but owner acknowledgement failed; report kept");
+            return;
+        }
+    }
+    // The owner holds this stable lock through socket cleanup. Acquiring it
+    // both waits for retirement and excludes a newer owner while comparing
+    // and removing the old generation's report. Never unlink the lock itself.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match agentdocker_host::lock::try_exclusive(&socket.with_extension("lock")) {
+            Ok(Some(_held)) => {
+                let exit = exit_path(&home, &report.agent);
+                if read_exit_file(
+                    &exit,
+                    &report.agent,
+                    &report.owner,
+                    report.child.pid,
+                    report.child.started_at,
+                ) == Some(report.clone())
+                {
+                    let _ = std::fs::remove_file(exit);
+                }
+                return;
+            }
+            Ok(None) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            _ => return,
+        }
+    }
 }
 
 impl Spawned {
+    fn open_session(&mut self) {
+        let (output, _) = broadcast::channel::<Vec<u8>>(256);
+        let (input, keystrokes) = mpsc::channel::<Vec<u8>>(64);
+        let (resize, resizes) = mpsc::channel::<(u16, u16)>(8);
+        let scrollback = Arc::new(std::sync::Mutex::new(VecDeque::<u8>::new()));
+        self.session = Some(Session {
+            output: output.downgrade(),
+            input,
+            resize,
+            scrollback: scrollback.clone(),
+        });
+        self.keystrokes = Some(keystrokes);
+        self.resizes = Some(resizes);
+        self.output = Some(output);
+        self.scrollback = Some(scrollback);
+    }
+
     /// The durable identity and event must already be committed. Dropping an
-    /// unactivated Spawned closes its gate; the command never executes.
+    /// unactivated Spawned closes its controller; the owner's gate then
+    /// times out and the command never executes.
     pub async fn activate(&mut self, action: &str) -> anyhow::Result<()> {
         let result = self
             .activate_inner()
@@ -291,236 +551,289 @@ impl Spawned {
             self.stop.borrow().is_none(),
             "launch was stopped before activation"
         );
-        let pending = self.pending.take().context("launch already activated")?;
-        let mut child = tokio::task::spawn_blocking(move || pending.activate()).await??;
-        if let Some(tx) = self.batch_log.take() {
-            let stdout = child
-                .take_stdout()
-                .map(tokio::process::ChildStdout::from_std)
-                .transpose()?;
-            let stderr = child
-                .take_stderr()
-                .map(tokio::process::ChildStderr::from_std)
-                .transpose()?;
-            if let Some(stdout) = stdout {
-                self.output.tasks.spawn(pump(stdout, "out", tx.clone()));
-            }
-            if let Some(stderr) = stderr {
-                self.output.tasks.spawn(pump(stderr, "err", tx));
+        self.controller.send(&OwnerCommand::Activate).await?;
+        // Nothing but activation, or an early exit, can arrive here: output
+        // begins only once the command runs.
+        loop {
+            match self.controller.next().await? {
+                Some(OwnerReport::Activated) => break,
+                Some(OwnerReport::Exited { status }) => {
+                    anyhow::bail!("command exited before it was activated: {status:?}")
+                }
+                Some(_) => continue,
+                None => anyhow::bail!("session owner closed during activation"),
             }
         }
-        self.child = Some(child);
+        self.activated = true;
+        if self.session.is_some() {
+            self.controller
+                .send(&OwnerCommand::Attach {
+                    after: self.relayed,
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn relay(&mut self, offset: u64, bytes: &[u8]) {
+        // Offsets make a replay after a reconnect idempotent: only bytes
+        // past what this daemon already showed are added.
+        let end = offset + bytes.len() as u64;
+        if end <= self.relayed {
+            return;
+        }
+        let skip = usize::try_from(self.relayed.saturating_sub(offset)).unwrap_or(0);
+        let fresh = &bytes[skip.min(bytes.len())..];
+        self.relayed = end;
+        self.show(fresh);
+    }
+
+    /// Bytes `..to` scrolled out of the owner's retention while nobody was
+    /// attached: say so on the screen, and resume counting at `to` so the
+    /// bytes that follow are not mistaken for already shown.
+    fn note_gap(&mut self, to: u64) {
+        if to > self.relayed {
+            self.show(b"\r\n[agentdocker: output gap; see logs]\r\n");
+            self.relayed = to;
+        }
+    }
+
+    fn show(&self, bytes: &[u8]) {
+        if let (Some(scrollback), Some(output)) = (&self.scrollback, &self.output) {
+            let mut history = lock_scrollback(scrollback);
+            history.extend(bytes.iter().copied());
+            let excess = history.len().saturating_sub(SCROLLBACK);
+            history.drain(..excess);
+            let _ = output.send(bytes.to_vec());
+        }
+    }
+
+    /// Reconnect to the same owner after the transport dropped: the owner
+    /// and child must be the ones this supervision started with, and the
+    /// screen resumes from the last byte shown.
+    async fn reconnect(&mut self, home: &Path, id: &AgentId) -> anyhow::Result<()> {
+        let socket = socket_path(home, id);
+        let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
+        let hello = controller.hello().await?;
+        validate_identity(&hello, id, &self.owner, self.pid, self.process_started_at)?;
+        if self.session.is_some() {
+            controller
+                .send(&OwnerCommand::Attach {
+                    after: self.relayed,
+                })
+                .await?;
+        }
+        self.controller = controller;
         Ok(())
     }
 }
 
-/// Read the agent's terminal: every byte goes to whoever is attached, and
-/// whole lines go to the log so `logs` reads the same as it always did.
-async fn pump_terminal(
-    mut terminal: tokio::fs::File,
-    log: mpsc::Sender<String>,
-    output: broadcast::Sender<Vec<u8>>,
-    scrollback: Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
-) -> anyhow::Result<()> {
-    use tokio::io::AsyncReadExt;
-    let mut buffer = vec![0_u8; 8192];
-    let mut line = String::new();
+/// How supervision ended: with the owner's exit report, or without one.
+enum Outcome {
+    Exited(ExitReport),
+    Failed(String),
+}
+
+/// Relay until the owner reports the exit or is gone for good. A dropped
+/// transport is not an exit: while the owner process lives, reconnect and
+/// carry on, so a daemon hiccup never releases a running agent's leases.
+async fn relay_until_exit(
+    daemon: &Daemon,
+    id: &AgentId,
+    spawned: &mut Spawned,
+    keystrokes: &mut Option<mpsc::Receiver<Vec<u8>>>,
+    resizes: &mut Option<mpsc::Receiver<(u16, u16)>>,
+) -> Outcome {
+    let exit_file = exit_path(&daemon.home, id);
+    let exit_report = |spawned: &Spawned| {
+        read_exit_file(
+            &exit_file,
+            id,
+            &spawned.owner,
+            spawned.pid,
+            spawned.process_started_at,
+        )
+    };
     loop {
-        // A closed terminal reads zero; a vanished one errors. Either ends
-        // the session.
-        let read = match terminal.read(&mut buffer).await {
-            Ok(0) => break,
-            // Linux reports the last terminal slave closing as EIO.
-            Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => break,
-            Err(error) => return Err(error).context("cannot read agent terminal output"),
-            Ok(read) => read,
+        let dropped = loop {
+            tokio::select! {
+                biased;
+                report = spawned.controller.next() => match report {
+                    Ok(Some(OwnerReport::Output { offset, bytes })) => spawned.relay(offset, &bytes),
+                    Ok(Some(OwnerReport::Gap { from, to })) => {
+                        tracing::info!(agent = %id, from, to, "terminal output skipped ahead after a gap");
+                        spawned.note_gap(to);
+                    }
+                    Ok(Some(OwnerReport::InputDropped)) => {
+                        // Said on the screen and in the event stream: bytes
+                        // the client saw accepted were not typed, and nothing
+                        // replays them.
+                        tracing::warn!(agent = %id, "terminal input was dropped: the agent is not reading its terminal");
+                        spawned.show(b"\r\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\r\n");
+                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped {
+                            agent: id.clone(),
+                            reason: "the terminal's input queue was full".into(),
+                        });
+                    }
+                    Ok(Some(OwnerReport::OutputFailed { reason })) => {
+                        tracing::warn!(agent = %id, %reason, "agent output capture failed");
+                        daemon.emit(agentdocker_core::EventKind::AgentOutputFailed {
+                            agent: id.clone(),
+                            reason,
+                        });
+                    }
+                    Ok(Some(OwnerReport::Exited { status })) => return Outcome::Exited(status),
+                    Ok(Some(_)) => {}
+                    Ok(None) => break None,
+                    Err(error) => break Some(error),
+                },
+                Some(bytes) = async { keystrokes.as_mut().expect("guarded").recv().await }, if keystrokes.is_some() => {
+                    if let Err(error) = spawned.controller.send(&OwnerCommand::Input { bytes }).await {
+                        // The frame may or may not have reached the owner. Say
+                        // so, never replay it, keep typing possible, and let
+                        // the reconnect below bring a fresh stream.
+                        spawned.show(b"\r\n[agentdocker: input delivery uncertain; check the terminal before retrying]\r\n");
+                        daemon.emit(agentdocker_core::EventKind::AgentInputDropped {
+                            agent: id.clone(),
+                            reason: format!("delivery uncertain: {error:#}"),
+                        });
+                        break Some(error);
+                    }
+                }
+                Some((cols, rows)) = async { resizes.as_mut().expect("guarded").recv().await }, if resizes.is_some() => {
+                    if let Err(error) = spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await {
+                        break Some(error);
+                    }
+                }
+                Ok(()) = spawned.stop.changed() => {
+                    let pending = *spawned.stop.borrow_and_update();
+                    if let Some(force) = pending {
+                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
+                    }
+                }
+            }
         };
-        let chunk = &buffer[..read];
-        {
-            // Remember it, then hand it on, both under the one lock, so a
-            // client attaching sees every byte exactly once.
-            let mut history = lock_scrollback(&scrollback);
-            history.extend(chunk.iter().copied());
-            let excess = history.len().saturating_sub(SCROLLBACK);
-            history.drain(..excess);
-            // No receiver simply means nobody is watching right now.
-            let _ = output.send(chunk.to_vec());
+        // The transport went away. The exit file, if any, is the truth;
+        // otherwise a living owner is reconnected and a dead one is lost.
+        if let Some(report) = exit_report(spawned) {
+            return Outcome::Exited(report);
         }
-        line.push_str(&String::from_utf8_lossy(chunk));
-        while let Some(end) = line.find('\n') {
-            let complete: String = line.drain(..=end).collect();
-            let complete = complete.trim_end_matches(['\n', '\r']).to_owned();
-            log.send(format!("out {complete}\n"))
-                .await
-                .context("terminal log writer closed")?;
+        if let Some(error) = &dropped {
+            tracing::warn!(agent = %id, %error, "session owner link failed");
         }
-        // A prompt with no newline should not be held forever.
-        if line.len() > 4096 {
-            let partial = std::mem::take(&mut line);
-            log.send(format!("out {partial}\n"))
-                .await
-                .context("terminal log writer closed")?;
-        }
-    }
-    if !line.is_empty() {
-        log.send(format!("out {line}\n"))
-            .await
-            .context("terminal log writer closed")?;
-    }
-    Ok(())
-}
-
-/// Type what an attached client sends into the agent's terminal.
-async fn type_into_terminal(
-    mut terminal: tokio::fs::File,
-    mut keystrokes: mpsc::Receiver<Vec<u8>>,
-) {
-    use tokio::io::AsyncWriteExt;
-    while let Some(bytes) = keystrokes.recv().await {
-        if terminal.write_all(&bytes).await.is_err() || terminal.flush().await.is_err() {
-            return;
+        // Transport unavailable is not the agent gone: keep trying for as
+        // long as the owner process lives, and only its death, or its exit
+        // report, ends supervision.
+        loop {
+            if let Some(report) = exit_report(spawned) {
+                return Outcome::Exited(report);
+            }
+            if !owner_alive(&spawned.owner) {
+                return Outcome::Failed("session owner lost".into());
+            }
+            match spawned.reconnect(&daemon.home, id).await {
+                Ok(()) => {
+                    tracing::info!(agent = %id, "reconnected to the session owner");
+                    // A stop asked for during the outage is still owed.
+                    let pending = *spawned.stop.borrow();
+                    if let Some(force) = pending {
+                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
+                    }
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %id, %error, "session owner unreachable; retrying while it lives");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
 
-/// Wait for the child in the background and record how it ended.
-async fn wait_owned_child(
-    child: &mut agentdocker_host::launch::OwnedChild,
-) -> std::io::Result<std::process::ExitStatus> {
-    // Subscribe before checking waitpid, so an exit between the check and
-    // receive is retained. Signals can coalesce or describe another child;
-    // only this owned PID is reaped, and no timer wakes idle agents.
-    let mut changes = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        changes
-            .recv()
-            .await
-            .ok_or_else(|| std::io::Error::other("child signal stream closed"))?;
-    }
-}
-
-/// Retain process ownership through exit, cancellation and group cleanup.
+/// Relay between the owner and the daemon until the exit is recorded.
 pub fn supervise(
     daemon: Arc<Daemon>,
     id: AgentId,
     mut spawned: Spawned,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let group = Pid::from_raw(-(spawned.pid as i32));
-        let mut stopping = false;
-        let mut deadline = tokio::time::Instant::now();
-        let result = if let Some(child) = &mut spawned.child {
-            loop {
-                tokio::select! {
-                    biased;
-                    result = wait_owned_child(child) => break result,
-                    Some(result) = spawned.output.tasks.join_next(), if !spawned.output.tasks.is_empty() => {
-                        if spawned.output.completed(result) {
-                            let _ = kill(group, Signal::SIGTERM);
-                            if !stopping {
-                                deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-                                stopping = true;
-                            }
-                        }
-                    }
-                    Ok(()) = spawned.stop.changed() => {
-                        if let Some(force) = *spawned.stop.borrow_and_update() {
-                            let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
-                            if !stopping {
-                                deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-                                stopping = true;
-                            }
-                        }
-                    }
-                    () = tokio::time::sleep_until(deadline), if stopping => {
-                        let _ = kill(group, Signal::SIGKILL);
-                        stopping = false;
-                    }
-                }
-            }
+        let outcome = if !spawned.activated {
+            // The launch record never became durable: tell the owner to deny
+            // exec now rather than at its own deadline; reaping the link
+            // below waits for it to go.
+            let reason = spawned
+                .launch_error
+                .take()
+                .unwrap_or_else(|| "launch was not activated".into());
+            let _ = spawned
+                .controller
+                .send(&OwnerCommand::Stop { force: true })
+                .await;
+            Outcome::Failed(reason)
         } else {
-            // Pending's socket shutdown denies exec, including after storage
-            // failure. Command's worker reaps its pre-exec failure.
-            spawned.pending.take();
-            Err(std::io::Error::other(
-                spawned
-                    .launch_error
-                    .take()
-                    .unwrap_or_else(|| "launch was not activated".into()),
-            ))
+            let mut keystrokes = spawned.keystrokes.take();
+            let mut resizes = spawned.resizes.take();
+            relay_until_exit(&daemon, &id, &mut spawned, &mut keystrokes, &mut resizes).await
         };
-        let status = match result {
-            Ok(exit) => AgentStatus::Exited { code: exit.code() },
-            Err(err) => AgentStatus::Failed {
-                reason: err.to_string(),
-            },
-        };
-        // A managed command owns its process group. Descendants must stop
-        // before the agent's leases can be released, even on a normal exit.
-        let group = Pid::from_raw(-(spawned.pid as i32));
-        if group_exists(spawned.pid) {
-            let _ = kill(group, Signal::SIGTERM);
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-            while group_exists(spawned.pid) {
-                if tokio::time::Instant::now() >= deadline {
-                    let _ = kill(group, Signal::SIGKILL);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-        }
-        // A prepared launch may have failed before its pipe readers existed.
-        // Release that sender so the log task can finish even on this path.
-        spawned.batch_log.take();
-        spawned.output.finish().await;
-        if let Some(reason) = spawned.output.error.take() {
-            tracing::warn!(agent = %id, %reason, "agent output capture failed");
-            daemon.emit(agentdocker_core::EventKind::AgentOutputFailed {
-                agent: id.clone(),
-                reason,
-            });
-        }
-        // Publish completion only after all output and final log writes have
-        // drained, so shutdown/restart cannot abandon the tail of the log.
         daemon.end_session(&id);
-        daemon.mark_exited(&id, status.clone());
+        let status = match outcome {
+            Outcome::Exited(report) => {
+                let status = exit_status(&report);
+                // Durable first, then acknowledged: an exit the store did not
+                // keep stays in the exit file for a daemon that can keep it.
+                if daemon.mark_exited_durably(&id, status.clone()) {
+                    let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                    let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
+                } else {
+                    tracing::warn!(agent = %id, "exit not recorded durably; the owner's exit report is kept");
+                }
+                status
+            }
+            Outcome::Failed(reason) => {
+                let status = AgentStatus::Failed { reason };
+                daemon.mark_exited(&id, status.clone());
+                status
+            }
+        };
+        // The owner finishes on its own once acknowledged; reap it here so
+        // no zombie outlives the supervision that started it.
+        match spawned.link {
+            OwnerLink::Process(mut child) => {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match child.try_wait() {
+                            Ok(Some(_)) | Err(_) => break,
+                            Ok(None) if std::time::Instant::now() >= deadline => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                break;
+                            }
+                            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                        }
+                    }
+                })
+                .await;
+            }
+            OwnerLink::InProcess(task) => {
+                let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+            }
+            OwnerLink::Detached => {}
+        }
+        let _ = std::fs::remove_file(socket_path(&daemon.home, &id));
         // After the exit is recorded, so a reader of the event stream
         // sees the agent end before it sees it start again.
         daemon.consider_restart(&id, &status);
     })
 }
 
-async fn pump<R: AsyncRead + Unpin>(
-    reader: R,
-    stream: &'static str,
-    tx: mpsc::Sender<String>,
-) -> anyhow::Result<()> {
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .context("cannot read agent pipe output")?
-    {
-        let stamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
-        tx.send(format!("{stamp} [{stream}] {line}\n"))
-            .await
-            .context("agent log writer closed")?;
+pub(crate) fn exit_status(report: &ExitReport) -> AgentStatus {
+    match (report.code, report.signal) {
+        (None, None) if !report.log_flushed => AgentStatus::Failed {
+            reason: "the command could not be waited for".into(),
+        },
+        _ => AgentStatus::Exited { code: report.code },
     }
-    Ok(())
-}
-
-async fn write_log<W: AsyncWrite + Unpin>(
-    mut log: W,
-    mut rx: mpsc::Receiver<String>,
-) -> anyhow::Result<()> {
-    while let Some(line) = rx.recv().await {
-        log.write_all(line.as_bytes())
-            .await
-            .context("cannot write agent log")?;
-    }
-    log.flush().await.context("cannot flush agent log")
 }
 
 /// Whether a validated dedicated group still has any processes. Uncertainty
@@ -539,96 +852,64 @@ pub(crate) fn group_exists(group: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix::libc;
-    use std::io::Write;
-    use std::os::{fd::OwnedFd, unix::process::CommandExt};
 
+    /// A frame split across reads, with the read cancelled between the
+    /// halves as another select branch winning would cancel it, still
+    /// arrives whole: the partial bytes are the connection's, not the
+    /// call's. Split UTF-8 and a following frame are included.
     #[tokio::test]
-    async fn output_completion_waits_for_a_slow_sink_and_preserves_the_partial_last_line() {
-        use tokio::io::AsyncReadExt;
-        let (writer, mut reader) = tokio::io::duplex(8);
-        let (tx, rx) = mpsc::channel(1);
-        let mut capture = OutputCapture::default();
-        capture.tasks.spawn(write_log(writer, rx));
-        capture
-            .tasks
-            .spawn(pump(&b"first\nlast without newline"[..], "out", tx));
-        let mut completion = tokio::spawn(async move {
-            capture.finish().await;
-            capture.error.take()
-        });
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(30), &mut completion)
-                .await
-                .is_err()
-        );
-        let mut written = String::new();
-        reader.read_to_string(&mut written).await.unwrap();
-        assert_eq!(completion.await.unwrap(), None);
-        assert!(written.contains("[out] first\n"), "{written}");
-        assert!(
-            written.ends_with("[out] last without newline\n"),
-            "{written}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_log_sink_is_reported_and_all_capture_tasks_finish() {
-        let (writer, reader) = tokio::io::duplex(8);
-        drop(reader);
-        let (tx, rx) = mpsc::channel(1);
-        let mut capture = OutputCapture::default();
-        capture.tasks.spawn(write_log(writer, rx));
-        capture
-            .tasks
-            .spawn(pump(&b"first\nsecond\nthird\n"[..], "out", tx));
-        tokio::time::timeout(std::time::Duration::from_secs(2), capture.finish())
+    async fn a_cancelled_read_keeps_the_partial_frame() {
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, _writer) = server.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut partial = Vec::new();
+        let whole = "{\"event\":\"output\",\"offset\":0,\"bytes\":[195,169]} caf\u{e9}\n{\"event\":\"activated\"}\n";
+        let bytes = whole.as_bytes();
+        // Cut inside the two-byte é.
+        let cut = whole.find("caf").unwrap() + 4;
+        client.write_all(&bytes[..cut]).await.unwrap();
+        // The first read sees no newline yet and is cancelled by a deadline.
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_frame(&mut reader, &mut partial, 1024),
+        )
+        .await;
+        assert!(cancelled.is_err(), "no whole frame yet");
+        assert_eq!(partial, &bytes[..cut], "the half read stays");
+        client.write_all(&bytes[cut..]).await.unwrap();
+        let first = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.ends_with("caf\u{e9}"), "{first}");
+        let second = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second, "{\"event\":\"activated\"}");
+        assert!(partial.is_empty());
+        // An oversized frame is refused, never buffered without bound.
+        client.write_all(&vec![b'x'; 2048]).await.unwrap();
+        let error = read_frame(&mut reader, &mut partial, 1024)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // EOF mid-frame is an error, EOF between frames is the end.
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, _writer) = server.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut partial = Vec::new();
+        client
+            .write_all(b"{\"event\":\"activated\"}\nhalf")
             .await
             .unwrap();
-        let error = capture
-            .error
-            .as_deref()
-            .expect("sink failure is not successful capture");
-        assert!(error.contains("log"), "{error}");
-        assert!(capture.tasks.is_empty());
-    }
-
-    #[tokio::test]
-    async fn child_exit_before_or_after_signal_subscription_is_not_lost() {
-        for already_exited in [true, false] {
-            let (mut input, stdin) = std::os::unix::net::UnixStream::pair().unwrap();
-            let mut command = std::process::Command::new("sh");
-            command.args(["-c", "read line; exit 17"]).process_group(0);
-            command.stdin(Stdio::from(OwnedFd::from(stdin)));
-            let pending = agentdocker_host::launch::prepare(command).unwrap();
-            let pid = pending.pid;
-            let mut child = pending.activate().unwrap();
-            if already_exited {
-                input.write_all(b"exit\n").unwrap();
-                // Observe exit without reaping; OwnedChild retains the PID.
-                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                assert_eq!(
-                    unsafe {
-                        libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT)
-                    },
-                    0
-                );
-            }
-            let mut waiting = tokio::spawn(async move { wait_owned_child(&mut child).await });
-            if !already_exited {
-                tokio::task::yield_now().await;
-                input.write_all(b"exit\n").unwrap();
-            }
-            let status =
-                match tokio::time::timeout(std::time::Duration::from_secs(5), &mut waiting).await {
-                    Ok(result) => result.unwrap().unwrap(),
-                    Err(error) => {
-                        waiting.abort();
-                        let _ = waiting.await;
-                        panic!("{error}");
-                    }
-                };
-            assert_eq!(status.code(), Some(17));
-        }
+        drop(client);
+        assert!(
+            read_frame(&mut reader, &mut partial, 1024)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(read_frame(&mut reader, &mut partial, 1024).await.is_err());
     }
 }
