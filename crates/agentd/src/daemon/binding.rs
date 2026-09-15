@@ -108,14 +108,17 @@ fn spawn_controller(
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(stderr))
         .process_group(0);
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|e| format!("{}: {e}", launch.executable.display()))?;
     let pid = child
         .id()
         .ok_or_else(|| "the process ended at once".to_owned())?;
-    let started_at = agentdocker_host::procinfo::start_time(pid)
-        .ok_or_else(|| format!("pid {pid}: start time unreadable"))?;
+    let Some(started_at) = agentdocker_host::procinfo::start_time(pid) else {
+        // A process nobody can name later cannot be stopped later either.
+        let _ = child.start_kill();
+        return Err(format!("pid {pid}: start time unreadable; stopped"));
+    };
     Ok(ProcessIdentity { pid, started_at })
 }
 
@@ -209,6 +212,7 @@ impl Daemon {
                     }
                     let spawned = state
                         .pin_controller(&id, &launch)
+                        .map_err(|e| format!("release of {}: {e}", launch.executable.display()))
                         .and_then(|()| spawn_controller(&self.home, &id, &launch));
                     let recorded = state.transition_binding(&id, &binding, now, |record| {
                         let b = record.input_binding.as_mut().expect("checked");
@@ -408,7 +412,11 @@ impl State {
     /// is inside a managed installation and not held already. An error
     /// means the release is being removed or is gone: nothing may be
     /// started from it.
-    fn pin_controller(&mut self, id: &AgentId, launch: &ControllerLaunch) -> Result<(), String> {
+    fn pin_controller(
+        &mut self,
+        id: &AgentId,
+        launch: &ControllerLaunch,
+    ) -> Result<(), std::io::Error> {
         if self.controller_pins.contains_key(id) {
             return Ok(());
         }
@@ -418,11 +426,26 @@ impl State {
                 Ok(())
             }
             Ok(None) => Ok(()),
-            Err(error) => Err(format!(
-                "release of {}: {error}",
-                launch.executable.display()
-            )),
+            Err(error) => Err(error),
         }
+    }
+
+    /// A pin that could not be taken, as an answer: a release being
+    /// removed may come back into reach, a removed one will not, and
+    /// anything else is the descriptor's own problem.
+    fn pin_refused(launch: &ControllerLaunch, error: &std::io::Error) -> Response {
+        let code = match error.kind() {
+            std::io::ErrorKind::WouldBlock => ErrorCode::Unavailable,
+            std::io::ErrorKind::NotFound => ErrorCode::NotFound,
+            _ => ErrorCode::Invalid,
+        };
+        Response::error(
+            code,
+            format!(
+                "the launch descriptor's release ({}) cannot be held: {error}",
+                launch.executable.display()
+            ),
+        )
     }
 
     /// One restart transition, applied only when the binding is still the
@@ -611,10 +634,7 @@ impl State {
         if let Some(launch) = &binding.launch
             && let Err(error) = self.pin_controller(&id, launch)
         {
-            return Response::error(
-                ErrorCode::Invalid,
-                format!("the launch descriptor's release cannot be held: {error}"),
-            );
+            return Self::pin_refused(launch, &error);
         }
         // Uncertainty is only ever about messages still queued.
         let queued: HashSet<&MessageId> = self
@@ -941,10 +961,7 @@ impl State {
             if let Some(pin) = previous_pin {
                 self.controller_pins.insert(prior.id.clone(), pin);
             }
-            return Response::error(
-                ErrorCode::Invalid,
-                format!("the launch descriptor's release cannot be held: {error}"),
-            );
+            return Self::pin_refused(&launch, &error);
         }
         let alias = agentdocker_core::identity::AgentAlias {
             retired: caller.id.clone(),
