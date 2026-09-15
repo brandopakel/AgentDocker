@@ -1397,10 +1397,14 @@ impl Daemon {
             } => self.contest_close(&agent, &contest, winner, resolution),
             Request::Inbox { agent, drain } => {
                 let mut state = lock(&self.state);
-                // A read without drain stays open to a person looking at a
-                // bound agent's queue; taking from it is the consumer's.
-                let consuming = drain;
-                match if consuming {
+                // Even a read without drain may be the session's own reader
+                // putting the text in front of the model, and a bound
+                // controller cannot be told that this happened between its
+                // snapshot and its enqueue; so a bound queue answers
+                // `input_owned` to every legacy read, and a person looks
+                // with `peek_input`. A managed bridge session keeps its
+                // non-draining read for the app, as before.
+                match if drain {
                     state.input_consumer(&agent, false)
                 } else {
                     state.readable_inbox(&agent)
@@ -1412,6 +1416,16 @@ impl Daemon {
                         }
                         response
                     }
+                    Err(error) => *error,
+                }
+            }
+            Request::PeekInput { agent } => {
+                let mut state = lock(&self.state);
+                match state.resolve(&agent) {
+                    Ok(id) => match state.read_inbox(&id, false) {
+                        Ok(messages) => Response::Messages { messages },
+                        Err(error) => *error,
+                    },
                     Err(error) => *error,
                 }
             }
@@ -3950,9 +3964,22 @@ impl State {
         Ok(())
     }
 
-    /// A person may look at any queue; only consuming it is the owner's.
+    /// A non-draining legacy read: refused for a bound queue, since the
+    /// daemon cannot tell a person from the session's own reader and the
+    /// controller cannot be told about an exposure that lands between its
+    /// snapshot and its enqueue; open for a managed bridge session, whose
+    /// app view reads this way.
     fn readable_inbox(&mut self, reference: &str) -> Result<(), Box<Response>> {
-        self.resolve(reference).map(|_| ())
+        let id = self.resolve(reference)?;
+        if self
+            .registry
+            .get(&id)
+            .is_some_and(|r| r.input_binding.is_some())
+            && let Some(owner) = self.input_owner(&id)
+        {
+            return Err(Box::new(owner));
+        }
+        Ok(())
     }
 
     /// A legacy acknowledgement is refused for an owned queue, except for

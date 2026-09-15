@@ -618,9 +618,11 @@ mod tests {
                 "{answer:?}"
             );
         }
-        // A look without draining after the binding may be a person or
-        // the session's own MCP read, so what it showed becomes uncertain
-        // too: here the second message.
+        // A look without draining may be the session's own reader, which
+        // the daemon cannot tell from a person, and an exposure between the
+        // controller's snapshot and its enqueue can never be reported to
+        // it in time: so a bound queue refuses that read too. A person
+        // looks with `peek_input`, which records no offer.
         assert!(matches!(
             daemon
                 .handle(Request::Inbox {
@@ -628,7 +630,15 @@ mod tests {
                     drain: false,
                 })
                 .await,
-            Response::Messages { .. }
+            Response::InputOwned { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::PeekInput {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { ref messages } if messages.len() == 2
         ));
         assert_eq!(
             lock(&daemon.state)
@@ -639,7 +649,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .uncertain,
-            vec![first.clone(), second.clone()]
+            vec![first.clone()],
+            "a peek adds no uncertainty"
         );
         // Reading as the provider without the token is refused; with it,
         // the whole queue comes with the uncertain one named.
@@ -688,12 +699,43 @@ mod tests {
             messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
             vec![first.clone(), second.clone()]
         );
-        assert_eq!(uncertain, vec![first.clone(), second.clone()]);
+        assert_eq!(uncertain, vec![first.clone()]);
+
+        // Between that snapshot and the controller's enqueue nothing can
+        // expose the queue to the model through a legacy read: every such
+        // read is refused, so the snapshot is exactly what the controller
+        // reconciles against.
+        let third = send(&daemon, &sender, &receiver, "three").await;
+        for request in [
+            Request::Inbox {
+                agent: receiver.id.to_string(),
+                drain: false,
+            },
+            Request::DeliveryQueue {
+                agent: receiver.id.to_string(),
+            },
+        ] {
+            assert!(matches!(
+                daemon.handle(request).await,
+                Response::InputOwned { .. }
+            ));
+        }
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .input_binding
+                .as_ref()
+                .unwrap()
+                .uncertain,
+            vec![first.clone()],
+            "nothing new became uncertain after the snapshot"
+        );
 
         // A legacy reader finishing its in-flight delivery may still
-        // acknowledge what it was offered, and nothing else: a third
+        // acknowledge what it was offered, and nothing else: the third
         // message nobody legacy has seen is the controller's alone.
-        let third = send(&daemon, &sender, &receiver, "three").await;
         assert!(matches!(
             daemon
                 .handle(Request::AckInbox {

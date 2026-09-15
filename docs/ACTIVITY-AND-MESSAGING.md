@@ -90,8 +90,9 @@ whichever hook or explicit read takes the queue delivers. An **input binding**
 session one: an external controller process, bound to the exact provider
 generation (the registered pid and birth, the registered `session_id`, an
 absolute profile path) and authenticated by a token the controller made and
-keeps. While the binding stands, the hook and MCP readers are answered
-`input_owned` instead of messages, the controller's `provider_inbox` reads
+keeps. While the binding stands, every legacy read, draining or not, is answered
+`input_owned` instead of messages (a person or the app looks with
+`peek_input`, which records nothing), the controller's `provider_inbox` reads
 (with the token) take the queue as `input_batch`, and its `report_input` is
 the only readiness and receipt evidence accepted. A controller that restarts
 resumes the binding with its token; another provider generation waits for an

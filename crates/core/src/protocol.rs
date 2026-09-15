@@ -356,6 +356,13 @@ pub enum Request {
         agent: String,
         messages: Vec<MessageId>,
     },
+    /// Look at an agent's queue without consuming it or counting as a
+    /// delivery: for a person or the app, never for the session's own
+    /// reader. Answers `messages` whoever consumes the queue, and records
+    /// no offer, so a bound controller's reconciliation is not disturbed.
+    PeekInput {
+        agent: String,
+    },
 
     /// The sole input controller of a managed Codex session acknowledges exact
     /// provider receipts, then reads the same durable queue used by human/peer
