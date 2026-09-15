@@ -19,6 +19,18 @@ pub const RETENTION_BATCH: usize = 1_000;
 pub struct DaemonConfig {
     #[serde(default)]
     pub journal: JournalConfig,
+    #[serde(default)]
+    pub messages: MessagesConfig,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessagesConfig {
+    /// How long archived messages are kept, as `30m`, `12h`, `180d` or
+    /// plain seconds. Absent means the per-conversation cap alone bounds
+    /// the archive.
+    #[serde(default)]
+    pub retention: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -39,6 +51,17 @@ impl DaemonConfig {
             .retention
             .as_deref()
             .map(|text| parse_duration(text).map_err(|error| format!("journal.retention: {error}")))
+            .transpose()
+    }
+
+    /// The message archive's retention window, when one is configured.
+    pub fn messages_retention(&self) -> Result<Option<Duration>, String> {
+        self.messages
+            .retention
+            .as_deref()
+            .map(|text| {
+                parse_duration(text).map_err(|error| format!("messages.retention: {error}"))
+            })
             .transpose()
     }
 }

@@ -2327,6 +2327,7 @@ mod tests {
         let channel = |project: &str, id: &str| Channel {
             id: ChannelId::from(id),
             project: ProjectId::from(project),
+            name: None,
             subject: ChannelSubject::Task {
                 task: "fixture".into(),
             },

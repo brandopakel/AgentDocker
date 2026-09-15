@@ -10,8 +10,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::{
-    AgentId, AgentRecord, Change, Envelope, Event, JournalEntry, JournalKind, Lease, LeaseId,
-    MessageId, ProjectId,
+    AgentId, AgentRecord, ArchivedMessage, Change, ConversationId, Envelope, Event, JournalEntry,
+    JournalKind, Lease, LeaseId, MessageId, ProjectId, ReadCursor,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -33,7 +33,7 @@ pub(crate) use event_replay::EventReplay;
 // v17 retains independent session-owner identity; v18 retains provider blocks.
 // v19 retains input bindings and legacy offers on the agent record: an older
 // daemon would not know a queue is a bound controller's and would drain it.
-pub(crate) const SCHEMA_VERSION: i64 = 20;
+pub(crate) const SCHEMA_VERSION: i64 = 21;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -122,11 +122,35 @@ CREATE TABLE IF NOT EXISTS journal_cursors (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (agent, project)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS messages (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id   TEXT NOT NULL UNIQUE,
+    conversation TEXT NOT NULL,
+    sender       TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    reply_to     TEXT,
+    sent_at      TEXT NOT NULL,
+    line         TEXT NOT NULL DEFAULT '',
+    json         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation, seq);
+CREATE INDEX IF NOT EXISTS messages_reply ON messages (reply_to);
+CREATE TABLE IF NOT EXISTS read_cursors (
+    reader       TEXT NOT NULL,
+    conversation TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (reader, conversation)
+) WITHOUT ROWID;
 ";
 
 /// Full-text search over journal summaries. Contentless: the text lives in
 /// the journal row, the index only maps terms to `journal.id`.
 const JOURNAL_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(summary, content='', contentless_delete=1)";
+/// The same over archived message lines, mapping terms to `messages.seq`.
+const MESSAGES_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(line, content='', contentless_delete=1)";
+/// Archived messages kept per conversation, whatever the retention window.
+pub const CONVERSATION_CAP: usize = 5_000;
 
 pub struct Store {
     conn: Connection,
@@ -602,6 +626,11 @@ impl Store {
                     // answers_routed and would deliver it as fresh input.
                     Self::offer_queued(&conn, |envelope| envelope.reply_to.is_some())?;
                 }
+                if found < 21 {
+                    // The archive starts here: what is still queued is the
+                    // only message anybody kept, so it is what history has.
+                    Self::backfill_archive(&conn)?;
+                }
                 conn.execute(
                     "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
                     params![SCHEMA_VERSION.to_string()],
@@ -648,6 +677,37 @@ impl Store {
                 )?;
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) VALUES('journal_fts_complete', '1')",
+                    [],
+                )?;
+                tx.commit()?;
+            }
+        }
+        if fts {
+            let had_messages_fts: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='messages_fts')",
+                [],
+                |row| row.get(0),
+            )?;
+            conn.execute_batch(MESSAGES_FTS)?;
+            let complete: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='messages_fts_complete'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if !had_messages_fts || complete.as_deref() != Some("1") {
+                let tx = conn.unchecked_transaction()?;
+                conn.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('delete-all')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO messages_fts(rowid, line) SELECT seq, line FROM messages",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES('messages_fts_complete', '1')",
                     [],
                 )?;
                 tx.commit()?;
@@ -859,6 +919,12 @@ impl Store {
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
         }
+        // The archive is written beside the queues, never instead of them:
+        // a queue is what a recipient has not taken, the archive is what
+        // was said in the conversation.
+        if let Some(conversation) = ConversationId::of(message) {
+            self.archive_message(&self.conn, message, &conversation)?;
+        }
         if let Some(sender) = sender {
             self.upsert_agent(sender)?;
         }
@@ -897,6 +963,377 @@ impl Store {
         self.insert_inbox(agent, message, capacity)?;
         tx.commit()?;
         Ok(())
+    }
+
+    // ----- conversations --------------------------------------------------
+
+    fn archive_message(
+        &self,
+        conn: &Connection,
+        message: &Envelope,
+        conversation: &ConversationId,
+    ) -> Result<()> {
+        let line = agentdocker_core::conversation::line_of(message);
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO messages (message_id, conversation, sender, kind, reply_to, sent_at, line, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                message.id.as_str(),
+                conversation.as_str(),
+                message.from,
+                message.kind,
+                message.reply_to.as_ref().map(|id| id.as_str()),
+                message.sent_at.to_rfc3339(),
+                line,
+                serde_json::to_string(message)?,
+            ],
+        )?;
+        if inserted == 1 && self.fts {
+            let seq = conn.last_insert_rowid();
+            if let Err(err) = conn.execute(
+                "INSERT INTO messages_fts (rowid, line) VALUES (?1, ?2)",
+                params![seq, line],
+            ) {
+                tracing::warn!(%err, "messages_fts insert failed; search falls back to LIKE");
+                conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Everything still queued becomes the start of the archive, once, by
+    /// message id: nothing acknowledged earlier exists anywhere to keep.
+    fn backfill_archive(conn: &Connection) -> Result<()> {
+        let mut rows = conn.prepare("SELECT json FROM inbox ORDER BY seq")?;
+        let envelopes: Vec<Envelope> = rows
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect();
+        for envelope in envelopes {
+            if let Some(conversation) = ConversationId::of(&envelope) {
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages (message_id, conversation, sender, kind, reply_to, sent_at, line, json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        envelope.id.as_str(),
+                        conversation.as_str(),
+                        envelope.from,
+                        envelope.kind,
+                        envelope.reply_to.as_ref().map(|id| id.as_str()),
+                        envelope.sent_at.to_rfc3339(),
+                        agentdocker_core::conversation::line_of(&envelope),
+                        serde_json::to_string(&envelope)?,
+                    ],
+                )?;
+            }
+        }
+        conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
+        Ok(())
+    }
+
+    fn archived_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchivedMessage> {
+        let seq: i64 = row.get(0)?;
+        let conversation: String = row.get(1)?;
+        let json: String = row.get(2)?;
+        let replies: i64 = row.get(3)?;
+        let envelope: Envelope = serde_json::from_str(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        Ok(ArchivedMessage {
+            seq: u64::try_from(seq).unwrap_or_default(),
+            conversation: ConversationId::from(conversation),
+            envelope,
+            replies: u64::try_from(replies).unwrap_or_default(),
+        })
+    }
+
+    const ARCHIVED_COLUMNS: &'static str = "m.seq, m.conversation, m.json, \
+        (SELECT COUNT(*) FROM messages r WHERE r.reply_to = m.message_id AND r.conversation = m.conversation)";
+
+    /// The newest `limit` messages of a conversation before `before_seq`,
+    /// oldest first, each root with its reply count.
+    pub fn history(
+        &self,
+        conversation: &ConversationId,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ArchivedMessage>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM messages m WHERE m.conversation = ?1 AND m.seq < ?2 ORDER BY m.seq DESC LIMIT ?3",
+            Self::ARCHIVED_COLUMNS
+        ))?;
+        let before = before_seq.map_or(i64::MAX, |s| i64::try_from(s).unwrap_or(i64::MAX));
+        let mut rows: Vec<ArchivedMessage> = stmt
+            .query_map(
+                params![
+                    conversation.as_str(),
+                    before,
+                    i64::try_from(limit.clamp(1, 500)).unwrap_or(500)
+                ],
+                Self::archived_row,
+            )?
+            .collect::<std::result::Result<_, _>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// One archived message by id, with its reply count.
+    pub fn archived(&self, message: &MessageId) -> Result<Option<ArchivedMessage>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM messages m WHERE m.message_id = ?1",
+            Self::ARCHIVED_COLUMNS
+        ))?;
+        Ok(stmt
+            .query_row([message.as_str()], Self::archived_row)
+            .optional()?)
+    }
+
+    /// The replies threaded under a root: same conversation, oldest first.
+    pub fn thread_replies(
+        &self,
+        root: &MessageId,
+        conversation: &ConversationId,
+        limit: usize,
+    ) -> Result<Vec<ArchivedMessage>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM messages m WHERE m.reply_to = ?1 AND m.conversation = ?2 ORDER BY m.seq LIMIT ?3",
+            Self::ARCHIVED_COLUMNS
+        ))?;
+        Ok(stmt
+            .query_map(
+                params![
+                    root.as_str(),
+                    conversation.as_str(),
+                    i64::try_from(limit.clamp(1, 500)).unwrap_or(500)
+                ],
+                Self::archived_row,
+            )?
+            .collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The last message of every conversation that has one.
+    pub fn conversation_heads(&self) -> Result<Vec<ArchivedMessage>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM messages m WHERE m.seq IN (SELECT MAX(seq) FROM messages GROUP BY conversation)",
+            Self::ARCHIVED_COLUMNS
+        ))?;
+        Ok(stmt
+            .query_map([], Self::archived_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// How many archived messages of a conversation lie past a seq, not
+    /// counting the reader's own words.
+    pub fn unread_after(
+        &self,
+        conversation: &ConversationId,
+        after_seq: u64,
+        reader: &str,
+    ) -> Result<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation = ?1 AND seq > ?2 AND sender != ?3",
+            params![
+                conversation.as_str(),
+                i64::try_from(after_seq).unwrap_or(i64::MAX),
+                reader
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    /// Whether an archived row with this seq belongs to the conversation.
+    pub fn seq_in_conversation(&self, conversation: &ConversationId, seq: u64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation = ?1 AND seq = ?2)",
+            params![
+                conversation.as_str(),
+                i64::try_from(seq).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Message ids of a conversation up to and including a seq.
+    pub fn message_ids_through(
+        &self,
+        conversation: &ConversationId,
+        through: u64,
+    ) -> Result<Vec<MessageId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT message_id FROM messages WHERE conversation = ?1 AND seq <= ?2")?;
+        Ok(stmt
+            .query_map(
+                params![
+                    conversation.as_str(),
+                    i64::try_from(through).unwrap_or(i64::MAX)
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(MessageId::from)
+            .collect())
+    }
+
+    pub fn read_cursors(&self, reader: &str) -> Result<Vec<ReadCursor>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT conversation, seq, updated_at FROM read_cursors WHERE reader = ?1")?;
+        Ok(stmt
+            .query_map([reader], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|(conversation, seq, at)| ReadCursor {
+                reader: AgentId::from(reader.to_owned()),
+                conversation: ConversationId::from(conversation),
+                through: u64::try_from(seq).unwrap_or_default(),
+                updated_at: DateTime::parse_from_rfc3339(&at)
+                    .map(|t| t.with_timezone(&Utc))
+                    .unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Move a reader's cursor forward, acknowledge the reader's queued rows
+    /// the cursor now covers, and record the event, in one transaction.
+    pub fn mark_read(
+        &self,
+        cursor: &ReadCursor,
+        acknowledged: &[MessageId],
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "INSERT INTO read_cursors (reader, conversation, seq, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(reader, conversation) DO UPDATE SET
+                 seq = MAX(seq, excluded.seq), updated_at = excluded.updated_at",
+            params![
+                cursor.reader.as_str(),
+                cursor.conversation.as_str(),
+                i64::try_from(cursor.through).unwrap_or(i64::MAX),
+                cursor.updated_at.to_rfc3339()
+            ],
+        )?;
+        for message in acknowledged {
+            self.conn.execute(
+                "DELETE FROM inbox WHERE agent = ?1 AND message_id = ?2",
+                params![cursor.reader.as_str(), message.as_str()],
+            )?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Archived messages whose line matches, newest first, before a seq,
+    /// within the named conversations when given.
+    pub fn search_messages(
+        &self,
+        query: &str,
+        conversations: Option<&[ConversationId]>,
+        before_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ArchivedMessage>> {
+        let before = before_seq.map_or(i64::MAX, |s| i64::try_from(s).unwrap_or(i64::MAX));
+        let limit = i64::try_from(limit.clamp(1, 200)).unwrap_or(200);
+        let scope_clause = match conversations {
+            Some([]) => " AND 0".to_owned(),
+            Some(ids) => format!(
+                " AND m.conversation IN ({})",
+                ids.iter()
+                    .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            None => String::new(),
+        };
+        let sql = if self.fts {
+            format!(
+                "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2) ORDER BY m.seq DESC LIMIT ?3",
+                Self::ARCHIVED_COLUMNS
+            )
+        } else {
+            format!(
+                "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.line LIKE '%' || ?2 || '%' ORDER BY m.seq DESC LIMIT ?3",
+                Self::ARCHIVED_COLUMNS
+            )
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let term = if self.fts {
+            format!("\"{}\"", query.replace('"', ""))
+        } else {
+            query.to_owned()
+        };
+        Ok(stmt
+            .query_map(params![before, term, limit], Self::archived_row)?
+            .collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Drop archived messages older than `cutoff`, and beyond the cap per
+    /// conversation, in one bounded batch. Returns how many went.
+    pub fn prune_messages(
+        &self,
+        cutoff: Option<DateTime<Utc>>,
+        cap: usize,
+        batch: usize,
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let batch = i64::try_from(batch).unwrap_or(i64::MAX);
+        let mut removed = 0usize;
+        if let Some(cutoff) = cutoff {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT seq FROM messages WHERE sent_at < ?1 ORDER BY seq LIMIT ?2")?;
+            let seqs: Vec<i64> = stmt
+                .query_map(params![cutoff.to_rfc3339(), batch], |row| row.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            removed += self.delete_archived(&seqs)?;
+        }
+        let cap_i = i64::try_from(cap).unwrap_or(i64::MAX);
+        let mut over = self.conn.prepare(
+            "SELECT conversation, COUNT(*) FROM messages GROUP BY conversation HAVING COUNT(*) > ?1",
+        )?;
+        let crowded: Vec<(String, i64)> = over
+            .query_map([cap_i], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        drop(over);
+        for (conversation, count) in crowded {
+            let excess = (count - cap_i).min(batch);
+            let mut stmt = self.conn.prepare(
+                "SELECT seq FROM messages WHERE conversation = ?1 ORDER BY seq LIMIT ?2",
+            )?;
+            let seqs: Vec<i64> = stmt
+                .query_map(params![conversation, excess], |row| row.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            removed += self.delete_archived(&seqs)?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    fn delete_archived(&self, seqs: &[i64]) -> Result<usize> {
+        let mut removed = 0;
+        for seq in seqs {
+            removed += self
+                .conn
+                .execute("DELETE FROM messages WHERE seq = ?1", [seq])?;
+            if self.fts {
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM messages_fts WHERE rowid = ?1", [seq]);
+            }
+        }
+        Ok(removed)
     }
 
     fn insert_inbox(&self, agent: &AgentId, message: &Envelope, capacity: usize) -> Result<()> {

@@ -340,6 +340,43 @@ enum Command {
         #[arg(long, conflicts_with = "all")]
         runtime: Option<String>,
     },
+    /// What you can read: every conversation with its unread count, newest first.
+    Conversations {
+        /// Project: an id prefix or a path inside it (default: everywhere).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Read as this agent rather than as yourself.
+        #[arg(long = "as", value_name = "AGENT")]
+        agent: Option<String>,
+    },
+    /// The archived messages of one conversation, oldest first.
+    History {
+        /// `everyone:<project>`, `all`, `channel:<id>`, `dm:<a>:<b>` or `notices:<agent>`, as `conversations` lists them.
+        conversation: String,
+        /// Only messages before this archive sequence, for paging back.
+        #[arg(long)]
+        before: Option<u64>,
+        /// How many, at most.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Mark the conversation read through the last message shown.
+        #[arg(long)]
+        read: bool,
+    },
+    /// A thread: one message and the replies under it.
+    Thread {
+        /// The root message id.
+        message: String,
+    },
+    /// Search the archived messages.
+    Search {
+        query: String,
+        /// Project: an id prefix or a path inside it (default: everywhere).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// The rooms agents share when they turn out to be on the same work: who is in them, and how the reviews stand.
     Channels {
         /// Project: an id prefix or a path inside it (default: the agent's own).
@@ -802,6 +839,10 @@ enum ChannelAction {
         #[arg(long = "with", value_name = "AGENT")]
         /// Who to put in it (default: everyone else in the project).
         members: Vec<String>,
+        /// The #name people will use (lowercase, digits, hyphens); made
+        /// from the task when absent.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// The work is final: close it and tell the members.
     Close {
@@ -1535,19 +1576,92 @@ async fn main() -> Result<()> {
                 print_channels(&client, &channels).await?;
             }
         }
+        Command::Conversations { project, agent } => {
+            let request = Request::Conversations {
+                project: project.as_deref().map(project_selector),
+                reader: agent,
+            };
+            if let Response::Conversations { conversations } = client.call(&request).await? {
+                for c in &conversations {
+                    println!("{}", format::conversation_line(c));
+                }
+            }
+        }
+        Command::History {
+            conversation,
+            before,
+            limit,
+            read,
+        } => {
+            let conversation = agentdocker_core::ConversationId::from(conversation);
+            let request = Request::History {
+                conversation: conversation.clone(),
+                before_seq: before,
+                limit,
+            };
+            if let Response::History { messages } = client.call(&request).await? {
+                for m in &messages {
+                    println!("{}", format::archived_line(m));
+                }
+                if read && let Some(last) = messages.last() {
+                    client
+                        .call(&Request::MarkRead {
+                            conversation,
+                            through: last.seq,
+                            reader: None,
+                        })
+                        .await?;
+                }
+            }
+        }
+        Command::Thread { message } => {
+            if let Response::Thread { root, replies } = client
+                .call(&Request::Thread {
+                    message: MessageId::from(message),
+                })
+                .await?
+            {
+                println!("{}", format::archived_line(&root));
+                for m in &replies {
+                    println!("    {}", format::archived_line(m));
+                }
+            }
+        }
+        Command::Search {
+            query,
+            project,
+            limit,
+        } => {
+            let request = Request::SearchMessages {
+                query,
+                project: project.as_deref().map(project_selector),
+                before_seq: None,
+                limit,
+            };
+            if let Response::History { messages } = client.call(&request).await? {
+                for m in &messages {
+                    println!("{}", format::archived_line(m));
+                }
+            }
+        }
         Command::Channel(args) => match args.action {
             ChannelAction::Open {
                 agent,
                 task,
                 members,
+                name,
             } => {
                 let request = Request::ChannelOpen {
                     agent,
                     task,
                     members,
+                    name,
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
-                    println!("{}", channel.id);
+                    match &channel.name {
+                        Some(name) => println!("#{name} ({})", channel.id),
+                        None => println!("{}", channel.id),
+                    }
                 }
             }
             ChannelAction::Close {

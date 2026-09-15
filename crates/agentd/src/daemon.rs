@@ -44,6 +44,7 @@ mod binding;
 mod channels;
 mod containers;
 mod contests;
+mod conversations;
 mod handoff;
 pub mod humans;
 mod images;
@@ -1607,11 +1608,33 @@ impl Daemon {
                 all,
                 agent,
             } => self.channels(&project, all, agent).await,
+            Request::Conversations { project, reader } => self.conversations(project, reader).await,
+            Request::History {
+                conversation,
+                before_seq,
+                limit,
+            } => self.history(conversation, before_seq, limit),
+            Request::Thread { message } => self.thread(message),
+            Request::MarkRead {
+                conversation,
+                through,
+                reader,
+            } => self.mark_read(conversation, through, reader),
+            Request::SearchMessages {
+                query,
+                project,
+                before_seq,
+                limit,
+            } => {
+                self.search_messages(query, project, before_seq, limit)
+                    .await
+            }
             Request::ChannelOpen {
                 agent,
                 task,
                 members,
-            } => self.channel_open(&agent, task, members),
+                name,
+            } => self.channel_open(&agent, task, members, name),
             Request::ChannelClose {
                 agent,
                 channel,
@@ -10009,6 +10032,7 @@ deny = ["send:all"]
                 agent: "sender".into(),
                 task: "legacy membership".into(),
                 members: vec!["receiver".into()],
+                name: None,
             })
             .await
         else {

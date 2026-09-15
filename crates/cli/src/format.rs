@@ -105,6 +105,40 @@ pub fn payload_text(payload: &Value) -> String {
     }
 }
 
+/// One archived message: its archive seq, then the message line.
+pub fn archived_line(message: &agentdocker_core::ArchivedMessage) -> String {
+    let replies = if message.replies > 0 {
+        format!("  ({} replies)", message.replies)
+    } else {
+        String::new()
+    };
+    format!(
+        "#{}  {}{replies}",
+        message.seq,
+        message_line(&message.envelope)
+    )
+}
+
+/// One conversation as the sidebar shows it: unread count, name or
+/// title, and the last line said.
+pub fn conversation_line(c: &agentdocker_core::ConversationSummary) -> String {
+    let label = match &c.name {
+        Some(name) => format!("#{name}"),
+        None => c.title.clone(),
+    };
+    let unread = if c.unread > 0 {
+        format!("{:>4} ", c.unread)
+    } else {
+        "     ".to_owned()
+    };
+    let last = match (&c.last_from, &c.last_line) {
+        (Some(from), Some(line)) => format!("  {}: {}", short(from), line),
+        _ => String::new(),
+    };
+    let when = c.last_at.map(clock).unwrap_or_default();
+    format!("{unread}{when:<6}  {label}  [{}]{last}", c.conversation)
+}
+
 pub fn message_line(message: &Envelope) -> String {
     let from = short(&message.from);
     let reply = message
@@ -440,6 +474,18 @@ pub fn event_line(event: &Event) -> String {
         ),
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
+        }
+        EventKind::ConversationRead {
+            reader,
+            conversation,
+            through,
+        } => format!(
+            "read             {} through {through} by {}",
+            conversation,
+            reader.short()
+        ),
+        EventKind::MessagesPruned { removed } => {
+            format!("messages pruned  {removed} archived messages")
         }
         EventKind::ChannelClosed {
             channel,

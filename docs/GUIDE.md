@@ -199,6 +199,10 @@ the flags.
 | `ask` | Ask an agent — or the human — and wait for the answer |
 | `answer` | Answer a question somebody is waiting on |
 | `questions` | Questions waiting for an answer |
+| `conversations` | What you can read: every conversation with its unread count, newest first |
+| `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown |
+| `thread <message>` | One message and the replies under it |
+| `search <query>` | Find archived messages by text (`--project` narrows) |
 | `me` | Register yourself as an agent named `user` |
 
 ### Share a resource
@@ -244,7 +248,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `channels` / `channel` | The rooms agents share when they are on the same work |
+| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
 
@@ -421,6 +425,14 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Conversations: every message is archived in the one conversation its
+  destination names (`everyone:<project>`, `all`, `channel:<id>`,
+  `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and
+  never instead of it, bounded by a per-conversation cap and `[messages]
+  retention`. `conversations` lists them with unread counts per reader,
+  `history` reads one back with reply counts, `thread` a root and its
+  replies, `search` finds text; reading moves a cursor forward, never back.
+  Channels get a `#name`; a person is no longer put in a collision room.
 - The desktop app ships as `AgentDocker.app` on macOS, with its own icon,
   so the Dock and the app switcher name it properly. `agentdocker ui`
   first launches a matching sibling `agentdocker-ui`, then falls back to the
