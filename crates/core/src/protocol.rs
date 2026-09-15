@@ -952,6 +952,14 @@ pub enum Response {
         messages: Vec<Envelope>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         uncertain: Vec<MessageId>,
+        /// This daemon settles how an answer travels: an answer in
+        /// `messages` that is not `uncertain` is for the queue; one a
+        /// synchronous `ask` was handed appears only flagged `uncertain`,
+        /// for the controller to settle against the provider's own record
+        /// of the tool call, and never while the `ask` is still waiting.
+        /// Absent from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answers_routed: bool,
     },
     /// A legacy consumer asked for input that belongs to someone else: the
     /// agent's queue is consumed by its bound controller or its managed
