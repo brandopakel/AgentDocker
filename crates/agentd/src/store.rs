@@ -1343,6 +1343,30 @@ impl Store {
         Ok(true)
     }
 
+    /// Rewrite an offer's successor pid while it is still offered.
+    pub fn readdress_transfer(&self, id: &str, successor_pid: u32) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(mut current) = self.transfer()? else {
+            return Ok(false);
+        };
+        if current.id != id || current.state != TransferState::Offered {
+            return Ok(false);
+        }
+        current.successor_pid = Some(successor_pid);
+        self.conn.execute(
+            "UPDATE coordinator SET json = ?1 WHERE one = 1",
+            params![serde_json::to_string(&current)?],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The schema this store is at: the compiled version, since open
+    /// upgrades or refuses.
+    pub fn schema_version(&self) -> i64 {
+        SCHEMA_VERSION
+    }
+
     /// Move the transfer `id` from `Offered` to `to`, only if it is still
     /// offered and, when `successor_pid` is given, offered to that pid. The
     /// first write a successor makes is this accept; a predecessor taking

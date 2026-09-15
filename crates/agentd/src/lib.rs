@@ -15,6 +15,7 @@ pub mod reconcile;
 mod server;
 mod store;
 mod supervisor;
+mod takeover;
 mod watcher;
 
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ use agentdocker_core::{EventKind, paths};
 use agentdocker_host::lock;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::daemon::Daemon;
@@ -94,6 +95,12 @@ pub struct Args {
     /// agent's session socket. Started by the daemon, not by hand.
     #[arg(long, hide = true)]
     session_owner: bool,
+
+    /// Take over from a running daemon: receive its listener, lock and
+    /// transfer on this inherited descriptor, accept the transfer as the
+    /// first write, then serve. Started by the predecessor, not by hand.
+    #[arg(long, hide = true, value_name = "FD")]
+    take_over: Option<i32>,
 }
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
@@ -153,16 +160,69 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let Some(_lock) = lock::try_exclusive(&lock_path)? else {
-        info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
-        return Ok(());
+    // A successor receives the lock and listener from its predecessor
+    // instead of taking them; an ordinary daemon takes both itself. Either
+    // way the daemon keeps a copy of each to hand on in its turn.
+    let takeover = args.take_over.map(takeover::receive).transpose()?;
+    let own_lock = match &takeover {
+        Some(handover) => {
+            anyhow::ensure!(
+                handover.handover.home == home && handover.handover.socket == socket,
+                "the handover names a different home or socket than this process was started with"
+            );
+            None
+        }
+        None => {
+            let Some(lock) = lock::try_exclusive(&lock_path)? else {
+                info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
+                return Ok(());
+            };
+            Some(lock)
+        }
     };
     let daemon = Arc::new(Daemon::open(home, socket)?);
-
     daemon.reload_policies();
+
     // Bind before any restored command can execute. Poll serving alongside
     // restoration so an agent's first hook/MCP request can receive a reply.
-    let listener = server::bind(&daemon).await?;
+    let (listener, predecessor, inherited_restricted) = match takeover {
+        Some(handover) => {
+            // First write: accept the transfer addressed to this pid. On
+            // refusal, tell the predecessor and exit having written nothing.
+            if let Err(reason) = daemon.accept_transfer(&handover.handover.transfer) {
+                let _ = daemon::reload::answer(
+                    &handover.socket,
+                    &daemon::reload::Ready::Failed {
+                        reason: reason.clone(),
+                    },
+                );
+                anyhow::bail!("take-over refused: {reason}");
+            }
+            let listener = handover.tokio_listener()?;
+            info!(
+                transfer = %handover.handover.transfer,
+                "took over from the predecessor; serving on its listener"
+            );
+            let restricted = handover.tokio_restricted()?;
+            daemon.hold(daemon::reload::Held {
+                listener: handover.listener,
+                lock: handover.lock,
+                restricted: handover.restricted,
+            });
+            (listener, Some(handover.socket), restricted)
+        }
+        None => {
+            let listener = server::bind(&daemon).await?;
+            if let Some(lock) = own_lock {
+                daemon.hold(daemon::reload::Held {
+                    listener: server::listener_fd(&listener)?,
+                    lock: lock.into_fd(),
+                    restricted: None,
+                });
+            }
+            (listener, None, None)
+        }
+    };
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
     daemon.notify_desktop();
@@ -198,10 +258,23 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     };
 
     let restricted = paths::container_socket(&daemon.home);
+    // A successor tells its predecessor it is serving only once the
+    // listener is in the accept loop and owners are reattached; the
+    // maintenance block does the reattach first, so answer from there.
+    let announcer = async {
+        if let Some(socket) = predecessor {
+            daemon.owners_reattached().await;
+            if let Err(e) = daemon::reload::answer(&socket, &daemon::reload::Ready::Serving) {
+                warn!(%e, "could not tell the predecessor we are serving; it will time out and check the store");
+            }
+        }
+        std::future::pending::<()>().await
+    };
     let result = tokio::select! {
         served = server::serve(daemon.clone(), listener) => served,
         () = maintenance => Ok(()),
-        () = server::restricted_endpoint(daemon.clone(), restricted.clone()) => Ok(()),
+        () = announcer => Ok(()),
+        () = server::restricted_endpoint(daemon.clone(), restricted.clone(), inherited_restricted) => Ok(()),
         () = shutdown_signal() => {
             info!("shutting down on signal");
             daemon.emit(EventKind::DaemonStopping { reason: "signal".to_owned() });
@@ -211,6 +284,12 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             info!("shutting down on request");
             daemon.emit(EventKind::DaemonStopping { reason: "request".to_owned() });
             Ok(())
+        }
+        () = daemon.transferred_exit() => {
+            // The successor owns the agents, the socket and the lock now.
+            // Leave all three alone.
+            info!("handed over to a successor; exiting without stopping agents");
+            return Ok(());
         }
     };
 

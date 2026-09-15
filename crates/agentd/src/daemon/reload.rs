@@ -31,8 +31,10 @@
 //! worse than one that admits it cannot go yet.
 
 use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agentdocker_host::handoff;
@@ -52,7 +54,17 @@ pub const READY_WITHIN: Duration = Duration::from_secs(30);
 
 /// The version of this conversation. A successor that does not recognise
 /// it refuses rather than guessing what the descriptors mean.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
+
+/// The environment variable that lets `reload` actually replace the
+/// daemon. Absent, `reload` refuses as it always has: the mechanism is
+/// complete but its acceptance matrix is still being run, and nobody
+/// should be replaced by accident.
+pub const ENABLE: &str = "AGENTDOCKER_EXPERIMENTAL_RELOAD";
+
+/// The executable a reload hands over to. Absent, the daemon's own; an
+/// installer sets it to the reviewed release it just activated.
+pub const CANDIDATE: &str = "AGENTDOCKER_RELOAD_CANDIDATE";
 
 /// What the predecessor hands over, beside the descriptors themselves.
 ///
@@ -61,14 +73,31 @@ pub const FORMAT: u32 = 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handover {
     pub format: u32,
+    /// The coordinator transfer this handover completes; the successor's
+    /// first write is accepting exactly this one.
+    pub transfer: String,
     /// Where the listening socket sits in the descriptor list.
     pub listener: usize,
+    /// Where the daemon lock's descriptor sits: held open by the
+    /// successor for its life, so no autostart finds the lock vacant
+    /// while the predecessor is leaving.
+    pub lock: usize,
+    /// Where the restricted container endpoint's listener sits, when the
+    /// predecessor had it up; absent means the successor binds its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restricted: Option<usize>,
+    /// The home and socket the predecessor served, spelled as it spelled
+    /// them, so the successor derives every other path the same way.
+    pub home: PathBuf,
+    pub socket: PathBuf,
     /// The agents whose terminals are travelling, and where each one's
-    /// descriptor sits.
+    /// descriptor sits. Empty since session owners: children and their
+    /// terminals stay with their owners, not with any daemon.
+    #[serde(default)]
     pub terminals: Vec<Terminal>,
     /// Processes the successor becomes responsible for without becoming
-    /// their parent. It cannot wait on them, so it tracks them the way
-    /// it tracks any externally started agent: by pid and start time.
+    /// their parent. Empty since session owners, for the same reason.
+    #[serde(default)]
     pub adopted: Vec<Adopted>,
 }
 
@@ -125,7 +154,9 @@ pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
     // Otherwise the successor takes over holding a terminal it cannot
     // find, and the agent on the other end is attached to nothing with
     // nobody saying so.
-    let named: Vec<usize> = std::iter::once(handover.listener)
+    let named: Vec<usize> = [handover.listener, handover.lock]
+        .into_iter()
+        .chain(handover.restricted)
         .chain(handover.terminals.iter().map(|t| t.fd))
         .collect();
     for &index in &named {
@@ -238,20 +269,215 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
     }
 }
 
+/// What the predecessor learns about a candidate executable before it
+/// trusts it with the database: `agentd --build-info`, read once.
+#[derive(Debug, Deserialize)]
+struct BuildInfo {
+    format: u32,
+    os: String,
+    arch: String,
+    state_schema: i64,
+}
+
+/// The descriptors and lock a daemon needs to hand over, given to it by
+/// its main once serving starts.
+pub struct Held {
+    pub listener: std::os::fd::OwnedFd,
+    pub lock: std::os::fd::OwnedFd,
+    /// The restricted endpoint's listener, once it is up.
+    pub restricted: Option<std::os::fd::OwnedFd>,
+}
+
 impl Daemon {
     pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
-        // Still no. The coordinator fence below and the session owners
-        // exist and are tested, but a handover also needs a successor
-        // that is validated, spawned, and proven ready before this daemon
-        // leaves (the next phase). Refusing is not a failure here: the
-        // daemon and its agents keep running, which is exactly what the
-        // previous attempt did not manage.
-        Response::error(
-            ErrorCode::Unavailable,
-            "live daemon reload is unavailable: session owners and the coordinator fence are in place \
-             but successor selection, readiness and recovery are not proven end to end yet; \
-             the current daemon and agents remain running",
-        )
+        if std::env::var_os(ENABLE).is_none() {
+            // The mechanism is in place; its acceptance matrix is still
+            // being run. Refusing is not a failure: the daemon and its
+            // agents keep running, which is exactly what the earliest
+            // attempt did not manage.
+            return Response::error(
+                ErrorCode::Unavailable,
+                format!(
+                    "live daemon reload is unavailable: session owners, the coordinator fence and the \
+                     successor handover are in place, but their acceptance matrix is still being recorded; \
+                     set {ENABLE}=1 on the daemon to allow it; the current daemon and agents remain running"
+                ),
+            );
+        }
+        let Some(held) = lock(&self.held).take() else {
+            return Response::error(
+                ErrorCode::Unavailable,
+                "this daemon holds no listener or lock to hand over",
+            );
+        };
+        let outcome = self.replace(&held).await;
+        match outcome {
+            Ok(()) => {
+                // The successor is serving. This daemon leaves without
+                // touching agents, socket or lock: all three are its now.
+                self.emit(EventKind::DaemonStopping {
+                    reason: "transferred".to_owned(),
+                });
+                self.transferred_exit.notify_one();
+                Response::Ok
+            }
+            Err(reason) => {
+                // Nothing was given up unless the store says it was.
+                *lock(&self.held) = Some(held);
+                Response::error(ErrorCode::Unavailable, reason)
+            }
+        }
+    }
+
+    /// Validate the installed candidate, offer the transfer, spawn the
+    /// successor with the listener and lock, and wait until it says it is
+    /// serving. On any failure take authority back if the store still
+    /// lets us.
+    async fn replace(self: &Arc<Self>, held: &Held) -> Result<(), String> {
+        let candidate = match std::env::var_os(CANDIDATE) {
+            Some(path) => PathBuf::from(path),
+            None => std::env::current_exe()
+                .map_err(|e| format!("cannot find this daemon's executable: {e}"))?,
+        };
+        let info = tokio::task::spawn_blocking({
+            let candidate = candidate.clone();
+            move || build_info(&candidate)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let schema = lock(&self.state).store.schema_version();
+        if info.format != 1
+            || info.os != std::env::consts::OS
+            || info.arch != std::env::consts::ARCH
+        {
+            return Err(format!(
+                "candidate {} is for {}/{} (format {}); this host is {}/{}",
+                candidate.display(),
+                info.os,
+                info.arch,
+                info.format,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ));
+        }
+        if info.state_schema < schema {
+            return Err(format!(
+                "candidate state schema {} is older than the database's {schema}; a successor cannot roll the database back",
+                info.state_schema
+            ));
+        }
+        // Pair first, so a successor that cannot be spawned costs nothing.
+        let (ours, theirs) =
+            UnixStream::pair().map_err(|e| format!("cannot make the handover socket: {e}"))?;
+        let transfer = self
+            .offer_transfer(std::process::id())
+            .map_err(|response| format!("{response:?}"))?;
+        let transfer_id = transfer.id.clone();
+        // The successor's pid is not known until spawn; the offer named
+        // ours as a placeholder and is corrected under the same fence.
+        let mut command = std::process::Command::new(&candidate);
+        command
+            .arg("--take-over")
+            .arg("3")
+            .env("AGENTDOCKER_HOME", &self.home)
+            .env("AGENTDOCKER_SOCKET", &self.socket)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit());
+        let theirs_fd = theirs.as_raw_fd();
+        // SAFETY: `dup2` and `close` are async-signal-safe and act only on
+        // descriptors this process owns.
+        unsafe {
+            command.pre_exec(move || {
+                if nix::libc::dup2(theirs_fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                nix::libc::setsid();
+                Ok(())
+            });
+        }
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                self.abort_transfer("successor did not spawn");
+                return Err(format!("cannot spawn the successor: {e}"));
+            }
+        };
+        drop(theirs);
+        let successor_pid = child.id();
+        if !lock(&self.state).readdress_offer(&transfer_id, successor_pid) {
+            let _ = kill_child(child);
+            self.abort_transfer("offer could not be addressed to the successor");
+            return Err("could not address the offer to the spawned successor".into());
+        }
+        let mut fds = vec![held.listener.as_fd(), held.lock.as_fd()];
+        let restricted = held.restricted.as_ref().map(|fd| {
+            fds.push(fd.as_fd());
+            2
+        });
+        let handover = Handover {
+            format: FORMAT,
+            transfer: transfer_id.clone(),
+            listener: 0,
+            lock: 1,
+            restricted,
+            home: self.home.clone(),
+            socket: self.socket.clone(),
+            terminals: Vec::new(),
+            adopted: Vec::new(),
+        };
+        let offered = offer(&ours, &handover, &fds);
+        if let Err(e) = offered {
+            let _ = kill_child(child);
+            self.abort_transfer("handover could not be sent");
+            return Err(format!("cannot send the handover: {e}"));
+        }
+        let ready = tokio::task::spawn_blocking(move || await_ready(&ours, READY_WITHIN))
+            .await
+            .map_err(|e| e.to_string())?;
+        match ready {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                // Silent or refusing successor: what does the store say?
+                // Accepted means it owns the database whatever it said
+                // afterwards; we must go. Otherwise take authority back.
+                match self.transfer_state() {
+                    Some(t) if t.id == transfer_id && t.state == TransferState::Accepted => {
+                        warn!(%reason, "successor accepted the database but did not report serving; leaving anyway");
+                        Ok(())
+                    }
+                    _ => {
+                        let _ = kill_child(child);
+                        if self.abort_transfer(&reason) {
+                            Err(format!(
+                                "successor failed and the offer was withdrawn: {reason}"
+                            ))
+                        } else {
+                            Err(format!(
+                                "successor failed and the offer could not be withdrawn; check `daemon status`: {reason}"
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolves once a completed handover says this daemon may leave.
+    pub async fn transferred_exit(&self) {
+        self.transferred_exit.notified().await;
+    }
+
+    /// Give the daemon the listener and lock it will hand over.
+    pub fn hold(&self, held: Held) {
+        *lock(&self.held) = Some(held);
+    }
+
+    /// The restricted endpoint came up: keep its listener to hand over.
+    pub fn hold_restricted(&self, fd: std::os::fd::OwnedFd) {
+        if let Some(held) = lock(&self.held).as_mut() {
+            held.restricted = Some(fd);
+        }
     }
 
     /// Stop writing and offer coordination to `successor_pid`. From here
@@ -323,16 +549,54 @@ impl Daemon {
     }
 }
 
+fn build_info(candidate: &std::path::Path) -> Result<BuildInfo, String> {
+    let output = std::process::Command::new(candidate)
+        .arg("--build-info")
+        .output()
+        .map_err(|e| format!("cannot run the candidate: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "candidate exited {} for --build-info",
+            output.status
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("candidate build info unreadable: {e}"))
+}
+
+/// End a successor that will not serve. It was started in its own
+/// session, so its whole process group goes with it: anything it spawned
+/// while fenced never had authority and must not outlive the attempt.
+fn kill_child(mut child: std::process::Child) -> std::io::Result<()> {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        let _ =
+            nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), nix::sys::signal::SIGKILL);
+    }
+    child.kill()?;
+    child.wait().map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Seek, Write};
     use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 
+    /// A stand-in for the daemon lock, which every handover names at
+    /// index 1.
+    fn lock_stand_in() -> std::fs::File {
+        std::fs::File::open("/dev/null").unwrap()
+    }
+
     fn handover() -> Handover {
         Handover {
             format: FORMAT,
+            transfer: "t".into(),
             listener: 0,
+            lock: 1,
+            restricted: None,
+            home: PathBuf::from("/tmp/h"),
+            socket: PathBuf::from("/tmp/h/agentd.sock"),
             terminals: Vec::new(),
             adopted: Vec::new(),
         }
@@ -354,11 +618,12 @@ mod tests {
         let path = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(path.path(), b"0123456789").unwrap();
         let carried = std::fs::File::open(path.path()).unwrap();
+        let lock = lock_stand_in();
 
-        offer(&mine, &handover(), &[carried.as_fd()]).unwrap();
+        offer(&mine, &handover(), &[carried.as_fd(), lock.as_fd()]).unwrap();
         let (received, fds) = accept(&theirs).unwrap();
         assert_eq!(received, handover());
-        assert_eq!(fds.len(), 1);
+        assert_eq!(fds.len(), 2);
         let mut arrived = std::fs::File::from(fds.into_iter().next().unwrap());
 
         // Move the offset using the sender's handle. A reopened file
@@ -405,17 +670,17 @@ mod tests {
         );
 
         // One agent given two terminals.
-        let files = opened(3);
+        let files = opened(4);
         let borrowed: Vec<_> = files.iter().map(AsFd::as_fd).collect();
         let mut twice = handover();
         twice.terminals = vec![
             Terminal {
                 agent: AgentId::from("abc"),
-                fd: 1,
+                fd: 2,
             },
             Terminal {
                 agent: AgentId::from("abc"),
-                fd: 2,
+                fd: 3,
             },
         ];
         let (mine, theirs) = UnixStream::pair().unwrap();
@@ -433,13 +698,14 @@ mod tests {
     fn an_adopted_process_with_no_birth_time_is_refused() {
         let (mine, theirs) = UnixStream::pair().unwrap();
         let carried = std::fs::File::open("/dev/null").unwrap();
+        let lock = lock_stand_in();
         let mut vague = handover();
         vague.adopted.push(Adopted {
             agent: AgentId::from("abc"),
             pid: 4242,
             started_at: None,
         });
-        offer(&mine, &vague, &[carried.as_fd()]).unwrap();
+        offer(&mine, &vague, &[carried.as_fd(), lock.as_fd()]).unwrap();
         let refused = accept(&theirs).unwrap_err();
         assert!(refused.to_string().contains("recycled one"), "{refused}");
     }
@@ -506,7 +772,8 @@ mod tests {
         let listening = std::os::unix::net::UnixListener::bind(&path).unwrap();
 
         let (mine, theirs) = UnixStream::pair().unwrap();
-        offer(&mine, &handover(), &[listening.as_fd()]).unwrap();
+        let lock = lock_stand_in();
+        offer(&mine, &handover(), &[listening.as_fd(), lock.as_fd()]).unwrap();
         let (_, fds) = accept(&theirs).unwrap();
 
         // The predecessor lets go, as it would on the way out.
@@ -587,14 +854,117 @@ mod tests {
         let (mine, theirs) = UnixStream::pair().unwrap();
         let file = tempfile::NamedTempFile::new().unwrap();
         let carried = std::fs::File::open(file.path()).unwrap();
+        let lock = lock_stand_in();
         let mut lying = handover();
         lying.terminals.push(Terminal {
             agent: AgentId::from("abc"),
             fd: 7,
         });
-        offer(&mine, &lying, &[carried.as_fd()]).unwrap();
+        offer(&mine, &lying, &[carried.as_fd(), lock.as_fd()]).unwrap();
+        let refused = accept(&theirs).unwrap_err();
+        assert!(refused.to_string().contains("only 2 arrived"), "{refused}");
+    }
+
+    /// A handover that names no lock — the shape before session owners —
+    /// is refused: a successor that does not hold the lock leaves a
+    /// window in which an autostart finds it vacant.
+    #[test]
+    fn a_handover_without_the_lock_is_refused() {
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        let carried = std::fs::File::open("/dev/null").unwrap();
+        offer(&mine, &handover(), &[carried.as_fd()]).unwrap();
         let refused = accept(&theirs).unwrap_err();
         assert!(refused.to_string().contains("only 1 arrived"), "{refused}");
+    }
+
+    /// The restricted endpoint's listener travels as a third descriptor
+    /// when the predecessor had it up, and its index is checked like the
+    /// others.
+    #[test]
+    fn the_restricted_listener_travels_when_named() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let listening = std::os::unix::net::UnixListener::bind(dir.path().join("host")).unwrap();
+        let restricted =
+            std::os::unix::net::UnixListener::bind(dir.path().join("container")).unwrap();
+        let lock = lock_stand_in();
+        let mut with_restricted = handover();
+        with_restricted.restricted = Some(2);
+
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        offer(
+            &mine,
+            &with_restricted,
+            &[listening.as_fd(), lock.as_fd(), restricted.as_fd()],
+        )
+        .unwrap();
+        let (received, fds) = accept(&theirs).unwrap();
+        assert_eq!(received.restricted, Some(2));
+        assert_eq!(fds.len(), 3);
+        // Order is the only thing the descriptor list preserves, so the
+        // third one must be the container endpoint and nothing else.
+        let arrived = std::os::unix::net::UnixListener::from(fds.into_iter().nth(2).unwrap());
+        assert_eq!(
+            arrived.local_addr().unwrap().as_pathname(),
+            Some(dir.path().join("container").as_path())
+        );
+
+        // Naming it without sending it is the lie the index check catches.
+        let (mine, theirs) = UnixStream::pair().unwrap();
+        offer(&mine, &with_restricted, &[listening.as_fd(), lock.as_fd()]).unwrap();
+        let refused = accept(&theirs).unwrap_err();
+        assert!(refused.to_string().contains("only 2 arrived"), "{refused}");
+    }
+
+    /// A successor that hangs is ended with everything it started: it ran
+    /// in its own session, and a child it spawned while fenced never had
+    /// authority to outlive the attempt.
+    #[test]
+    fn kill_child_ends_the_successor_s_whole_session() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let pidfile = dir.path().join("grandchild");
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 60 & echo $! > \"$1\"; wait")
+            .arg("session")
+            .arg(&pidfile)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: `setsid` is async-signal-safe and touches nothing
+        // shared with the parent.
+        unsafe {
+            command.pre_exec(|| {
+                nix::libc::setsid();
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let grandchild = loop {
+            if let Ok(text) = std::fs::read_to_string(&pidfile)
+                && let Ok(pid) = text.trim().parse::<i32>()
+            {
+                break nix::unistd::Pid::from_raw(pid);
+            }
+            assert!(Instant::now() < deadline, "the fixture never forked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(nix::sys::signal::kill(grandchild, None).is_ok());
+
+        kill_child(child).unwrap();
+
+        // SIGKILL is delivered asynchronously; the orphan is reparented and
+        // reaped by init within moments.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(grandchild, None).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the successor's child outlived the kill"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// A successor speaking a different format refuses rather than

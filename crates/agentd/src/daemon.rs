@@ -163,11 +163,15 @@ enum Coordination {
 /// Whether a request would write coordination state. Reads are served
 /// throughout a transfer from the projection this process still holds;
 /// everything else answers `transferring` until a coordinator owns the
-/// database again. `Shutdown` and `Reload` are handled before this.
+/// database again. `Shutdown` and `Reload` steer the daemon itself
+/// rather than its data: neither is fenced, and neither counts as a
+/// mutation in flight, or a reload would refuse itself.
 fn mutates(request: &Request) -> bool {
     !matches!(
         request,
-        Request::Ping
+        Request::Shutdown
+            | Request::Reload
+            | Request::Ping
             | Request::Images
             | Request::Stale { .. }
             | Request::Reads { .. }
@@ -230,6 +234,14 @@ pub struct Daemon {
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
     owner_mode: supervisor::OwnerMode,
+    /// The listener and daemon lock, kept here from serving onward so a
+    /// handover can pass them to a successor. Never held across an await.
+    held: Mutex<Option<reload::Held>>,
+    /// Signalled once a successor is serving and this daemon may leave.
+    transferred_exit: Notify,
+    /// Signalled once startup has reattached every owner, so a successor
+    /// tells its predecessor it is serving only after that.
+    owners_reattached: Notify,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1191,6 +1203,9 @@ impl Daemon {
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
+            held: Mutex::new(None),
+            transferred_exit: Notify::new(),
+            owners_reattached: Notify::new(),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -3874,6 +3889,25 @@ impl State {
             None => Err(Box::new(self.write_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::Internal, "cannot record the offer")
             }))),
+        }
+    }
+
+    /// Name the successor once it exists. The offer was made under this
+    /// process's own pid as a placeholder; the row is rewritten with the
+    /// successor's, still `Offered`, so only that process can accept.
+    fn readdress_offer(&mut self, transfer: &str, successor_pid: u32) -> bool {
+        let Coordination::Quiescing { transfer: current } = &self.coordination else {
+            return false;
+        };
+        if current != transfer {
+            return false;
+        }
+        match self.store.readdress_transfer(transfer, successor_pid) {
+            Ok(done) => done,
+            Err(err) => {
+                error!(%err, "cannot readdress the transfer offer");
+                false
+            }
         }
     }
 

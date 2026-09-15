@@ -16,6 +16,10 @@ struct RunningDaemon {
 
 impl RunningDaemon {
     fn start(home: &Path, socket: &Path) -> Self {
+        Self::start_with(home, socket, &[])
+    }
+
+    fn start_with(home: &Path, socket: &Path, extra_env: &[(&str, &str)]) -> Self {
         let log =
             agentdocker_host::dirs::private_file(&home.with_extension("daemon.log"), true, true)
                 .unwrap();
@@ -29,7 +33,10 @@ impl RunningDaemon {
             .env("AGENTDOCKER_NO_AUTOSTART", "1")
             .env_remove("AGENTDOCKER_TOKEN_FILE")
             .env_remove("AGENTDOCKER_AGENT_ID")
+            .env_remove("AGENTDOCKER_EXPERIMENTAL_RELOAD")
+            .env_remove("AGENTDOCKER_RELOAD_CANDIDATE")
             .env("RUST_LOG", "warn")
+            .envs(extra_env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log))
@@ -126,18 +133,11 @@ fn build_info_reports_compiled_contract_without_opening_state() {
     assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
 }
 
-#[test]
-fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
-    let tmp = tempfile::Builder::new()
-        .prefix("ad-reload-")
-        .tempdir_in("/tmp")
-        .unwrap();
-    let root = tmp.path().canonicalize().unwrap();
-    let home = root.join("state");
-    let socket = root.join("host.sock");
-    let work = root.join("work");
-    std::fs::create_dir(&work).unwrap();
-    let mut daemon = RunningDaemon::start(&home, &socket);
+/// One batch and one terminal agent, each waiting for a go-file before it
+/// prints again and records that it survived. Returns name, id, pid, log.
+type Fixture = (&'static str, String, Value, PathBuf);
+
+fn start_batch_and_terminal(home: &Path, socket: &Path, work: &Path) -> Vec<Fixture> {
     let mut agents = Vec::new();
     for tty in [false, true] {
         let name = if tty { "terminal" } else { "batch" };
@@ -146,7 +146,7 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
              printf '{name}-after\\n'; printf survived > {name}-survived; exec sleep 30"
         );
         let response = rpc(
-            &socket,
+            socket,
             json!({"op":"run", "spec": {
                 "name":name, "workdir":work, "tty":tty, "command":["sh", "-c", script]
             }}),
@@ -164,6 +164,44 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
         }
         agents.push((name, id, response["agent"]["pid"].clone(), log));
     }
+    agents
+}
+
+/// Let each fixture proceed and prove it still runs, still logs through
+/// the daemon at `socket`, and is still the same process.
+fn release_and_check_survivors(socket: &Path, work: &Path, agents: &[Fixture]) {
+    for (name, id, pid, log) in agents {
+        std::fs::write(work.join(format!("{name}-go")), b"").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !work.join(format!("{name}-survived")).exists()
+            || !std::fs::read_to_string(log)
+                .is_ok_and(|text| text.contains(&format!("{name}-after")))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{name} lost execution or logging"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let inspected = rpc(socket, json!({"op":"inspect", "agent":id})).unwrap();
+        assert_eq!(&inspected["agent"]["pid"], pid);
+        assert_eq!(inspected["agent"]["status"]["state"], "running");
+    }
+}
+
+#[test]
+fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
+    let tmp = tempfile::Builder::new()
+        .prefix("ad-reload-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let home = root.join("state");
+    let socket = root.join("host.sock");
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let mut daemon = RunningDaemon::start(&home, &socket);
+    let agents = start_batch_and_terminal(&home, &socket, &work);
     let response = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(response["type"], "error", "{response}");
     assert_eq!(response["code"], "unavailable", "{response}");
@@ -179,23 +217,7 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
     assert!(!cli.status.success());
     assert!(String::from_utf8_lossy(&cli.stderr).contains("reload is unavailable"));
     assert!(cli.stdout.is_empty());
-    for (name, id, pid, log) in agents {
-        std::fs::write(work.join(format!("{name}-go")), b"").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !work.join(format!("{name}-survived")).exists()
-            || !std::fs::read_to_string(&log)
-                .is_ok_and(|text| text.contains(&format!("{name}-after")))
-        {
-            assert!(
-                Instant::now() < deadline,
-                "{name} lost execution or logging"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let inspected = rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap();
-        assert_eq!(inspected["agent"]["pid"], pid);
-        assert_eq!(inspected["agent"]["status"]["state"], "running");
-    }
+    release_and_check_survivors(&socket, &work, &agents);
     daemon.stop();
     let absent_home = root.join("not-created");
     let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
@@ -208,6 +230,82 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
         .unwrap();
     assert!(!cli.status.success());
     assert!(!absent_home.exists(), "reload must not autostart a daemon");
+}
+
+/// With the gate set, a reload hands the listener, lock and container
+/// endpoint to a successor started from the same executable, waits for it
+/// to serve, and leaves. Agents keep their processes and their logs; the
+/// successor can be reloaded in its turn; and shutting it down ends the
+/// chain.
+#[test]
+fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
+    let tmp = tempfile::Builder::new()
+        .prefix("ad-reload-on-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let home = root.join("state");
+    let socket = root.join("host.sock");
+    let work = root.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let mut daemon =
+        RunningDaemon::start_with(&home, &socket, &[("AGENTDOCKER_EXPERIMENTAL_RELOAD", "1")]);
+    let agents = start_batch_and_terminal(&home, &socket, &work);
+
+    let response = rpc(&socket, json!({"op":"reload"})).unwrap();
+    assert_eq!(response["type"], "ok", "{response}");
+    // The predecessor leaves once the successor serves, without stopping
+    // anything.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while daemon.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the predecessor did not leave");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let pong = rpc(&socket, json!({"op":"ping"})).unwrap();
+    assert_eq!(pong["type"], "pong", "{pong}");
+    release_and_check_survivors(&socket, &work, &agents);
+    // Writes resumed under the successor.
+    let later = rpc(
+        &socket,
+        json!({"op":"run", "spec": {
+            "name":"later", "workdir":work, "command":["sh", "-c", "exit 0"]
+        }}),
+    )
+    .unwrap();
+    assert_eq!(later["type"], "agent", "{later}");
+
+    // The successor holds what it was given and can hand it on in turn,
+    // this time through the CLI.
+    let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .args(["daemon", "reload"])
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let pong = rpc(&socket, json!({"op":"ping"})).unwrap();
+    assert_eq!(pong["type"], "pong", "{pong}");
+    for (_, id, pid, _) in &agents {
+        let inspected = rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap();
+        assert_eq!(&inspected["agent"]["pid"], pid);
+        assert_eq!(inspected["agent"]["status"]["state"], "running");
+    }
+
+    // The third daemon is nobody's child here; stop it over the socket and
+    // wait for it to take the socket path down with it.
+    let response = rpc(&socket, json!({"op":"shutdown"})).unwrap();
+    assert_eq!(response["type"], "ok", "{response}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while socket.exists() {
+        assert!(Instant::now() < deadline, "the successor did not stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

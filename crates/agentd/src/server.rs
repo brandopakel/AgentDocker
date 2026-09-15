@@ -532,36 +532,58 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
 /// The restricted endpoint is optional: when it cannot be served the daemon
 /// says so, marks container access off so new grants are refused, and
 /// keeps serving the host socket. Never returns.
-pub async fn restricted_endpoint(daemon: Arc<Daemon>, socket: PathBuf) {
-    if let Err(err) = serve_restricted(daemon.clone(), socket.clone()).await {
+pub async fn restricted_endpoint(
+    daemon: Arc<Daemon>,
+    socket: PathBuf,
+    inherited: Option<Listener>,
+) {
+    if let Err(err) = serve_restricted(daemon.clone(), socket.clone(), inherited).await {
         tracing::error!(%err, socket = %socket.display(), "restricted endpoint unavailable; container access is off");
         daemon.restricted_unavailable(format!("{err:#}"));
     }
     std::future::pending::<()>().await;
 }
 
-/// Serve the restricted endpoint on `socket`. Returns only on failure; the
-/// daemon's main treats that as "container access is off", not as a
-/// reason to stop serving the host socket.
-pub async fn serve_restricted(daemon: Arc<Daemon>, socket: PathBuf) -> anyhow::Result<()> {
+/// Bind the restricted endpoint on `socket`, or refuse when something else
+/// already answers there.
+pub async fn bind_restricted(daemon: &Daemon, socket: &Path) -> anyhow::Result<Listener> {
     if socket == daemon.socket {
         anyhow::bail!("restricted and host sockets must differ");
     }
-    require_fits(&socket)?;
-    prepare_socket_parent(&daemon.home, &socket)?;
+    require_fits(socket)?;
+    prepare_socket_parent(&daemon.home, socket)?;
     #[cfg(unix)]
     if socket.exists() {
-        if Stream::connect(&socket).await.is_ok() {
+        if Stream::connect(socket).await.is_ok() {
             anyhow::bail!("restricted endpoint is already listening");
         }
-        std::fs::remove_file(&socket)?;
+        std::fs::remove_file(socket)?;
     }
     let listener =
-        Listener::bind(&socket).with_context(|| format!("cannot bind {}", socket.display()))?;
+        Listener::bind(socket).with_context(|| format!("cannot bind {}", socket.display()))?;
     #[cfg(unix)]
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+/// Serve the restricted endpoint on `socket`, binding it unless a
+/// predecessor handed the listener over. Returns only on failure; the
+/// daemon's main treats that as "container access is off", not as a
+/// reason to stop serving the host socket.
+pub async fn serve_restricted(
+    daemon: Arc<Daemon>,
+    socket: PathBuf,
+    inherited: Option<Listener>,
+) -> anyhow::Result<()> {
+    let listener = match inherited {
+        Some(listener) => listener,
+        None => bind_restricted(&daemon, &socket).await?,
+    };
     info!(socket = %socket.display(), "restricted endpoint listening");
     daemon.restricted_listening(socket.clone());
+    if let Ok(dup) = listener_fd(&listener) {
+        daemon.hold_restricted(dup);
+    }
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -1123,7 +1145,7 @@ mod tests {
             .await;
         // Too long for the kernel: refused up front, with the limit named.
         let long = PathBuf::from(format!("/tmp/{}.sock", "x".repeat(paths::SOCKET_PATH_MAX)));
-        let err = serve_restricted(daemon.clone(), long.clone())
+        let err = serve_restricted(daemon.clone(), long.clone(), None)
             .await
             .unwrap_err()
             .to_string();
@@ -1133,7 +1155,7 @@ mod tests {
         // Through the daemon's wrapper the host side keeps going: the
         // failure is announced, pinged as "off", and grants are refused.
         let mut events = daemon.subscribe_events();
-        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), long));
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), long, None));
         let announced = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(event) = events.recv().await
@@ -1173,7 +1195,7 @@ mod tests {
         // A socket that fits is served, announced, and reported.
         let good = tmp.path().join("container.sock");
         let mut events = daemon.subscribe_events();
-        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone()));
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone(), None));
         let announced = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(event) = events.recv().await
@@ -1197,4 +1219,11 @@ mod tests {
         assert!(up.is_ok(), "restricted endpoint reported once serving");
         endpoint.abort();
     }
+}
+
+/// A second handle on a listening socket, for a later handover.
+#[cfg(unix)]
+pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::AsFd;
+    listener.as_fd().try_clone_to_owned()
 }
