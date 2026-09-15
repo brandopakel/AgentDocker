@@ -355,8 +355,9 @@ impl State {
     }
 }
 
-/// Paths kept per reader between ticks; beyond this a reader that never
-/// drains its inbox is told the count and finds the rest by `check_stale`.
+/// Distinct paths kept per reader between ticks; beyond this nothing more
+/// is tracked, the notice's `count` is what was, and a reader that never
+/// drains its inbox finds the rest by `check_stale`.
 const PENDING_STALE_PATHS: usize = 10_000;
 /// Paths named in one notice, and changes carried with it, at most; a
 /// notice is kept under this many bytes by naming fewer.
