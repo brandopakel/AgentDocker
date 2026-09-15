@@ -48,6 +48,34 @@ pub fn exit_path(home: &std::path::Path, agent: &AgentId) -> PathBuf {
     sessions_dir(home).join(format!("{}.exit", agent.as_str()))
 }
 
+/// A coordinator transfer as the store records it: who offered authority
+/// over the database, to whom, and how far it got. Exactly one row; it
+/// is the fence. `Offered` means the predecessor has stopped writing and
+/// a successor may take over; `Accepted` means the successor wrote once
+/// and owns the database; `Aborted` means the predecessor took authority
+/// back. A successor whose accept finds the row no longer offered to it
+/// must exit without writing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transfer {
+    /// Random, chosen by the predecessor when it offers.
+    pub id: String,
+    pub predecessor_pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor_pid: Option<u32>,
+    pub state: TransferState,
+    pub offered_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferState {
+    Offered,
+    Accepted,
+    Aborted,
+}
+
 /// The owner process as the daemon records it on the agent, so a daemon
 /// that restarts can tell a live owner from a recycled pid.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

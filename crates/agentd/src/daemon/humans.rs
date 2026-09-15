@@ -164,10 +164,10 @@ impl State {
                 event
             })
             .collect();
-        self.persist("question expiration", |store| {
+        let committed = self.persist("question expiration", |store| {
             store.close_questions(&expired, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             return;
         }
         for question in expired {
@@ -318,7 +318,7 @@ impl Daemon {
                 record.project = project;
                 record.vcs = vcs;
                 let record = record.clone();
-                state.persist("agent", |store| store.upsert_agent(&record));
+                let _ = state.persist("agent", |store| store.upsert_agent(&record));
             }
         }
         let mut state = lock(&self.state);
@@ -365,6 +365,9 @@ impl Daemon {
             return sent;
         };
 
+        // The question is durable; from here this request only waits for
+        // its answer, and an offer must not wait with it.
+        self.done_writing();
         let waited = tokio::time::timeout(timeout, async {
             let mut candidate: Option<Envelope> = None;
             let mut accepted: Option<MessageId> = None;
@@ -452,7 +455,7 @@ impl Daemon {
             Ok(agent) => agent,
             Err(response) => return *response,
         };
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let Some(question) = state.questions.get(message) else {
@@ -472,10 +475,10 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("question cancellation", |store| {
+        let _ = state.persist("question cancellation", |store| {
             store.close_questions(std::slice::from_ref(message), std::slice::from_ref(&event))
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.questions.remove(message);
@@ -513,7 +516,7 @@ impl Daemon {
         };
         let mut state = lock(&self.state);
         state.expire_questions(Utc::now());
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         if !state.questions.contains_key(&message) {
@@ -1059,7 +1062,7 @@ mod tests {
             let mut pending = question(300);
             pending.to = Destination::Agent(recipient.id);
             assert!(!remember(&mut state, pending));
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.is_empty());
             assert!(state.inboxes.values().all(VecDeque::is_empty));
             assert!(state.store.load_inboxes().unwrap().is_empty());
@@ -1118,7 +1121,7 @@ mod tests {
             let mut state = lock(&daemon.state);
             state.store.reject_event_for_test("question_closed");
             state.expire_questions(pending.expires_at);
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.contains_key(&pending.id));
             assert_eq!(
                 state.store.documents::<Question>("question", None).unwrap(),

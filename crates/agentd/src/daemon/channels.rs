@@ -84,7 +84,8 @@ impl State {
         }
         let ids: Vec<AgentId> = members.iter().map(|m| m.id.clone()).collect();
         if let Some(id) = self.contested_channel(project) {
-            let Some(channel) = self.channels.get_mut(&id) else {
+            // Widen a copy; memory takes it only once the write has landed.
+            let Some(mut channel) = self.channels.get(&id).cloned() else {
                 return;
             };
             let widened = channel.add_path(path.to_path_buf());
@@ -99,10 +100,13 @@ impl State {
             if !widened && joined.is_empty() {
                 return;
             }
-            let channel = channel.clone();
-            self.persist("channel", |store| {
+            let committed = self.persist("channel", |store| {
                 store.put_document("channel", channel.id.as_str(), &channel)
             });
+            if committed != Persisted::Committed {
+                return;
+            }
+            self.channels.insert(id, channel.clone());
             for agent in joined {
                 self.emit(EventKind::ChannelJoined {
                     channel: channel.id.clone(),
@@ -150,10 +154,15 @@ impl State {
 
     /// Store, announce and journal a new channel.
     pub(super) fn install_channel(&mut self, channel: Channel, members: &[AgentRecord]) {
-        self.channels.insert(channel.id.clone(), channel.clone());
-        self.persist("channel", |store| {
+        // Written first, remembered second: a room the store did not keep
+        // is not open.
+        let committed = self.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
+        if committed != Persisted::Committed {
+            return;
+        }
+        self.channels.insert(channel.id.clone(), channel.clone());
         self.emit(EventKind::ChannelOpened {
             channel: channel.id.clone(),
             project: channel.project.clone(),
@@ -372,7 +381,7 @@ impl Daemon {
             &channel,
             format!("{} opened this channel: {task}", record.spec.name),
         );
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -409,7 +418,7 @@ impl Daemon {
         channel.closed_at = Some(Utc::now());
         channel.resolution = resolution.clone();
         let channel = channel.clone();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
         state.tell_channel(
@@ -437,7 +446,7 @@ impl Daemon {
                 state.append_journal(entry);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -469,13 +478,13 @@ impl Daemon {
             state.channels.remove(id);
         }
         let ids: Vec<String> = gone.iter().map(|id| id.to_string()).collect();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             for id in &ids {
                 store.delete_document("channel", id)?;
             }
             Ok(())
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Pruned {
@@ -530,7 +539,7 @@ impl Daemon {
             }),
             None,
         );
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -615,7 +624,7 @@ impl Daemon {
         };
         channel.reviews.push(review.clone());
         let channel = channel.clone();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
         state.emit(EventKind::ReviewSubmitted {
@@ -647,7 +656,7 @@ impl Daemon {
         ) {
             state.append_journal(entry);
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }

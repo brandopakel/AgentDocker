@@ -588,6 +588,12 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentOwnerReattached { agent, owner_pid } => {
             format!("owner reattached {} (owner pid {owner_pid})", agent.short())
         }
+        EventKind::AgentRestartCleared { agent } => {
+            format!("restart cleared  {}", agent.short())
+        }
+        EventKind::AgentRestoreCleared { agent } => {
+            format!("restore cleared  {}", agent.short())
+        }
         EventKind::AgentInputDropped { agent, reason } => {
             format!("input dropped    {} {reason}", agent.short())
         }
@@ -601,6 +607,22 @@ pub fn event_line(event: &Event) -> String {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
+        EventKind::DaemonTransferOffered {
+            transfer,
+            successor_pid,
+        } => format!(
+            "transfer offered {} to pid {successor_pid}",
+            &transfer[..12.min(transfer.len())]
+        ),
+        EventKind::DaemonTransferAccepted { transfer } => {
+            format!("transfer accepted {}", &transfer[..12.min(transfer.len())])
+        }
+        EventKind::DaemonTransferAborted { transfer, reason } => {
+            format!(
+                "transfer aborted {} {reason}",
+                &transfer[..12.min(transfer.len())]
+            )
+        }
         // A newer daemon than this CLI. Saying so beats a blank line,
         // and beats refusing to print the rest of the stream.
         EventKind::AgentReconciled {

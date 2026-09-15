@@ -70,6 +70,18 @@ event continuity, not just a new socket or a readiness marker.
    Only one coordinator may write. New requests must either complete under a
    known owner or receive explicit retry/recovery semantics; accepted input
    cannot be silently replayed after a lost response.
+   *In source:* `offer_transfer` / `abort_transfer` / `accept_transfer` on the
+   daemon, the single-row `coordinator` table settled by compare-and-set, the
+   `Transferring` error for refused mutations, the fence inside every
+   write path (`persist`, `store_op`) so tick writers skip too and a
+   skipped write is never mistaken for a commit, an offer that waits for
+   admitted mutations to finish (a waiting `ask` or `claim --wait` gives its
+   place up and takes one back before writing), and a fenced startup that defers recovery
+   writes until the successor has accepted; see
+   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
+   exclusion during a transfer rides on the daemon lock the successor will
+   inherit in the next phase; until then nothing calls `offer_transfer`
+   outside tests.
 4. **Successor readiness and recovery.** Validate the intended immutable
    executable and compatible state before transfer. Require the successor's
    serving loop, watcher and session routes to be usable before reporting
@@ -101,6 +113,17 @@ an in-process Tokio test cannot establish this boundary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
+- Input bindings (schema 19, the external controller and its supervision):
+  every binding transition and the legacy-offer bookkeeping must gate on
+  `Persisted::Committed`, not only on `storage_error`, because a fenced
+  daemon's `persist` answers `Skipped` without an error; controller
+  supervision (`tend_controllers`) must not note an end, launch a descriptor
+  or take an installation pin while fenced, and must recheck the fence under
+  the launch lock; a launched-but-unbound controller, its pin and the
+  restart episode are part of what a successor accepts, and the acceptance
+  trial must cover a controller ending and being started again across a
+  handover. Found in source review of #142 against #134; not yet in the
+  combined tests.
 
 An old installed daemon that lacks this protocol cannot gain live transfer from
 an updated launcher. Its first switch still waits for active sessions to finish.

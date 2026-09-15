@@ -586,6 +586,7 @@ impl State {
                 .cloned()
                 .map(|lease| EventKind::LeaseReleased { lease }),
         );
+        let previous_journal_seq = self.journal_seq.clone();
         for entry in &mut journal {
             entry.seq = self.next_journal_seq(&entry.project);
             kinds.push(EventKind::JournalAppended {
@@ -602,10 +603,11 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|l| l.id.clone()).collect();
-        self.persist("container transition", |store| {
+        let committed = self.persist("container transition", |store| {
             store.container_transition(&record, &leases, &journal, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
+            self.journal_seq = previous_journal_seq;
             return;
         }
         *self.registry.get_mut(&record.id).unwrap() = record.clone();
@@ -978,7 +980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_grant_distinguishes_stopped_endpoint_from_storage_failure() {
+    async fn workspace_grant_distinguishes_stopped_endpoint_from_write_failure() {
         use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
         let tmp = tempfile::tempdir().unwrap();
         let daemon = open(tmp.path(), Arc::new(Fake::default()));

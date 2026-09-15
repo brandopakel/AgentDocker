@@ -9,6 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use agentdocker_core::session::{Transfer, TransferState};
 use agentdocker_core::{
     AgentId, AgentRecord, Change, Envelope, Event, JournalEntry, JournalKind, Lease, LeaseId,
     ProjectId,
@@ -120,6 +121,10 @@ CREATE TABLE IF NOT EXISTS journal_cursors (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (agent, project)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS coordinator (
+    one    INTEGER PRIMARY KEY CHECK (one = 1),
+    json   TEXT NOT NULL
+);
 ";
 
 /// Full-text search over journal summaries. Contentless: the text lives in
@@ -1303,6 +1308,75 @@ impl Store {
         let before = size()?;
         self.conn.execute_batch("VACUUM")?;
         Ok((before, size()?))
+    }
+
+    // ----- coordinator transfer -----------------------------------------
+
+    /// The transfer row, if any daemon ever offered one.
+    pub fn transfer(&self) -> Result<Option<Transfer>> {
+        let json: Option<String> = self
+            .conn
+            .query_row("SELECT json FROM coordinator WHERE one = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        json.map(|text| Ok(serde_json::from_str(&text)?))
+            .transpose()
+    }
+
+    /// Record an offer. Refused while another transfer is still offered:
+    /// two successors must never be invited at once.
+    pub fn offer_transfer(&self, transfer: &Transfer, event: &Event) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(current) = self.transfer()?
+            && current.state == TransferState::Offered
+            && current.id != transfer.id
+        {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO coordinator (one, json) VALUES (1, ?1) ON CONFLICT(one) DO UPDATE SET json = excluded.json",
+            params![serde_json::to_string(transfer)?],
+        )?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Move the transfer `id` from `Offered` to `to`, only if it is still
+    /// offered and, when `successor_pid` is given, offered to that pid. The
+    /// first write a successor makes is this accept; a predecessor taking
+    /// authority back writes the abort. Whichever lands first wins, and the
+    /// other learns it did not.
+    pub fn settle_transfer(
+        &self,
+        id: &str,
+        successor_pid: Option<u32>,
+        to: TransferState,
+        settled_at: DateTime<Utc>,
+        event: &Event,
+    ) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(mut current) = self.transfer()? else {
+            return Ok(false);
+        };
+        if current.id != id || current.state != TransferState::Offered {
+            return Ok(false);
+        }
+        if let Some(pid) = successor_pid
+            && current.successor_pid != Some(pid)
+        {
+            return Ok(false);
+        }
+        current.state = to;
+        current.settled_at = Some(settled_at);
+        self.conn.execute(
+            "UPDATE coordinator SET json = ?1 WHERE one = 1",
+            params![serde_json::to_string(&current)?],
+        )?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(true)
     }
 
     // ----- journal cursors -----------------------------------------------

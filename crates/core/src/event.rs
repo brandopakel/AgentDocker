@@ -329,6 +329,16 @@ pub enum EventKind {
         pid: Option<u32>,
         attempt: u32,
     },
+    /// An explicit stop cleared the agent's restart policy: it will not
+    /// come back on its own.
+    AgentRestartCleared {
+        agent: AgentId,
+    },
+    /// An explicit stop cleared the agent's restore intent: a daemon
+    /// restart will not bring it back.
+    AgentRestoreCleared {
+        agent: AgentId,
+    },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
     /// Durable restore intent and lease protection precede process launch.
@@ -468,8 +478,26 @@ pub enum EventKind {
         agent: AgentId,
         vcs: VcsState,
     },
-    /// The daemon is about to exit; `reason` is `signal` or `request`.
+    /// The daemon is about to exit; `reason` is `signal`, `request` or
+    /// `transferred`.
     DaemonStopping {
+        reason: String,
+    },
+    /// This daemon stopped writing and offered coordination to a successor
+    /// process. Mutating requests answer `transferring` until the transfer
+    /// settles.
+    DaemonTransferOffered {
+        transfer: String,
+        successor_pid: u32,
+    },
+    /// The successor wrote once and owns the database; this daemon will
+    /// exit without touching agents.
+    DaemonTransferAccepted {
+        transfer: String,
+    },
+    /// The transfer did not complete; this daemon resumed writing.
+    DaemonTransferAborted {
+        transfer: String,
         reason: String,
     },
     /// An event this build has never heard of.
