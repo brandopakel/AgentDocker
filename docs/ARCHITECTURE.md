@@ -382,6 +382,11 @@ negative response are refused before question publication; policy amendments are
 selected. This does not change stored presentation meaning or the schema.
 The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
 when only cancellation is offered, the complete question text explains it.
+Network-only command-approval callbacks reuse `choices` with the exact host and
+protocol, one-time Allow/Deny and no invented command/directory. Extra access or
+partial command context is refused. Private ledger version 9 records the distinct
+network review kind; versions through 8 cannot supply it. This adds no daemon
+request, event or presentation variant; existing question/receipt ordering applies.
 
 ## Process supervision
 

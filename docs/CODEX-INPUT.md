@@ -170,9 +170,14 @@ offers cancellation instead of decline, the card explains that Deny cancels the
 request. Private delivery-record version 8 retains that exact negative response;
 older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
-Network-only requests without a command/directory and `writeStdin` approvals
-still require their own review surface. The command-context correction merged
-in PR #127; those broader review forms remain separate open requirements.
+Network-only requests with an exact host/protocol and no command, directory,
+command actions or additional permission bundle now use the existing choice
+controls. The question names the connection and offers one-time Allow or Deny;
+no command or folder is invented. Private ledger version 9 retains this separate
+review kind and refuses it in an older-version record without rewriting bytes.
+The implementation and receipt/refusal regressions are under validation; actual
+provider, native UI and final integration acceptance remain open. `writeStdin`,
+broader permission forms and elicitation still need their own handling.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -287,7 +292,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-8 record preserves version-3/4/5/6/7 records and accepts version-1/2 records only without recorded question
+version-9 record preserves version-3/4/5/6/7/8 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.

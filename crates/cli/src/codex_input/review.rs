@@ -13,11 +13,13 @@ pub(super) const MAX_QUESTIONS: usize = 8;
 pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
 const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
+const NETWORK_REVIEW: &str = "Allow Codex to make this connection once?";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Command,
+    Network,
     Files,
     Permissions,
     UserInput,
@@ -129,6 +131,23 @@ fn answer_text(answer: &Envelope) -> Result<&str> {
     Ok(text)
 }
 
+fn network_options(denial: CommandDenial) -> Vec<QuestionOption> {
+    vec![
+        QuestionOption {
+            label: "Allow".into(),
+            description: "Allow this connection only".into(),
+        },
+        QuestionOption {
+            label: "Deny".into(),
+            description: match denial {
+                CommandDenial::Decline => "Decline this connection",
+                CommandDenial::Cancel => "Cancel this Codex request",
+            }
+            .into(),
+        },
+    ]
+}
+
 /// Build the complete local command review before publishing a human route.
 /// `accept` never selects either proposed policy amendment or session scope.
 fn command_presentation(params: &Value) -> Result<(QuestionPresentation, CommandDenial)> {
@@ -219,10 +238,26 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
     if denial == CommandDenial::Cancel {
         reason.push_str(CANCEL_REASON);
     }
-    let presentation = QuestionPresentation::CodexCommand {
-        command: text(&params["command"])?.into(),
-        cwd: text(&params["cwd"])?.into(),
-        reason,
+    let presentation = if params["command"].is_null() && params["cwd"].is_null() {
+        ensure!(
+            !params["networkApprovalContext"].is_null()
+                && params["additionalPermissions"].is_null()
+                && params["commandActions"].is_null(),
+            "network-only approval has no complete destination or includes other access"
+        );
+        // Network-only callbacks carry no command or working directory. The
+        // existing choice presentation shows every supplied destination detail
+        // without inventing either, and works with older question-capable UIs.
+        QuestionPresentation::Choices {
+            question: format!("{NETWORK_REVIEW}\n\nReason: {reason}"),
+            options: network_options(denial),
+        }
+    } else {
+        QuestionPresentation::CodexCommand {
+            command: text(&params["command"])?.into(),
+            cwd: text(&params["cwd"])?.into(),
+            reason,
+        }
     };
     ensure!(
         presentation.valid_for(&presentation.text()),
@@ -323,6 +358,7 @@ impl Pending {
             }
             "item/commandExecution/requestApproval" => {
                 let (presentation, denial) = command_presentation(params)?;
+                let network = matches!(presentation, QuestionPresentation::Choices { .. });
                 command_denial = denial;
                 let prompt = presentation.text();
                 questions.push(Question {
@@ -333,7 +369,11 @@ impl Pending {
                     answer: None,
                     closure: Closure::Open,
                 });
-                Kind::Command
+                if network {
+                    Kind::Network
+                } else {
+                    Kind::Command
+                }
             }
             "item/tool/requestUserInput" => {
                 let values = params["questions"]
@@ -416,6 +456,10 @@ impl Pending {
 
     pub fn has_command_cancellation(&self) -> bool {
         self.command_denial == CommandDenial::Cancel
+    }
+
+    pub fn is_network_review(&self) -> bool {
+        matches!(self.kind, Kind::Network)
     }
 
     pub fn is_file_review(&self) -> bool {
@@ -565,7 +609,7 @@ impl Pending {
                 };
                 json!({"permissions":granted,"scope":"turn"})
             }
-            Kind::Command | Kind::Files => {
+            Kind::Command | Kind::Network | Kind::Files => {
                 let answer = answer_text(
                     self.questions[0]
                         .answer
@@ -587,7 +631,8 @@ impl Pending {
 
     pub fn validate(&self, thread: Option<&str>, agent: &str) -> Result<()> {
         ensure!(
-            self.command_denial == CommandDenial::Decline || matches!(self.kind, Kind::Command),
+            self.command_denial == CommandDenial::Decline
+                || matches!(self.kind, Kind::Command | Kind::Network),
             "a non-command review cannot supply command cancellation semantics"
         );
         ensure!(
@@ -604,8 +649,10 @@ impl Pending {
             "invalid retained provider question count"
         );
         ensure!(
-            !matches!(self.kind, Kind::Command | Kind::Files | Kind::Permissions)
-                || self.questions.len() == 1,
+            !matches!(
+                self.kind,
+                Kind::Command | Kind::Network | Kind::Files | Kind::Permissions
+            ) || self.questions.len() == 1,
             "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
@@ -613,8 +660,16 @@ impl Pending {
         for question in &self.questions {
             ensure!(
                 !self.has_command_cancellation()
-                    || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON)),
+                    || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON))
+                    || (self.is_network_review()
+                        && matches!(&question.presentation, Some(QuestionPresentation::Choices { question, .. }) if question.ends_with(CANCEL_REASON))),
                 "command cancellation has no matching human review"
+            );
+            ensure!(
+                !self.is_network_review()
+                    || matches!(&question.presentation, Some(QuestionPresentation::Choices { question, options })
+                        if question.starts_with(NETWORK_REVIEW) && options == &network_options(self.command_denial)),
+                "network approval has no complete one-time choice presentation"
             );
             ensure!(
                 matches!(self.kind, Kind::Permissions)
@@ -697,6 +752,132 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network_event() -> Value {
+        json!({"id":"network-callback","method":"item/commandExecution/requestApproval","params":{
+            "threadId":"thread","turnId":"turn","itemId":"shared-item","approvalId":"specific-connection",
+            "networkApprovalContext":{"host":"api.example.com:443","protocol":"https"},
+            "availableDecisions":["accept","decline"]
+        }})
+    }
+
+    #[test]
+    fn network_only_reviews_show_exact_destination_and_require_correlated_human_receipts() {
+        for denial in ["decline", "cancel"] {
+            for decision in ["Allow", "Deny", "Allow for session"] {
+                let mut event = network_event();
+                event["params"]["availableDecisions"] = json!(["accept", denial]);
+                let mut request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.is_network_review());
+                let question = &request.questions[0];
+                assert!(question.text.contains("api.example.com:443 (https)"));
+                assert!(!question.text.contains("Directory:"));
+                assert!(!question.text.contains("Command:"));
+                assert!(
+                    question
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .valid_for(&question.text)
+                );
+                request.questions[0].message = Some("question".into());
+                assert!(
+                    !request
+                        .capture(&[answer("peer", "Allow")], "owner", false)
+                        .unwrap()
+                );
+                let response = answer("human", decision);
+                assert!(
+                    !request
+                        .capture(std::slice::from_ref(&response), "owner", false)
+                        .unwrap()
+                );
+                assert!(request.reply(Utc::now()).unwrap().is_none());
+                request
+                    .observe(
+                        &EventKind::QuestionClosed {
+                            question: "question".into(),
+                            answer: Some(response.id.clone()),
+                        },
+                        "owner",
+                    )
+                    .unwrap();
+                request.capture(&[response], "owner", false).unwrap();
+                request.response = request.reply(Utc::now()).unwrap();
+                assert_eq!(
+                    request.response,
+                    Some(
+                        json!({"id":"network-callback","result":{"decision":if decision == "Allow" {"accept"} else {denial}}})
+                    )
+                );
+                let restored: Pending =
+                    serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert_eq!(restored.response, request.response);
+                assert!(
+                    restored.reply(Utc::now()).unwrap().is_none(),
+                    "uncertain provider writes must not replay"
+                );
+            }
+        }
+        let mut event = network_event();
+        event["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("availableDecisions");
+        let pending = Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+        assert!(pending.has_command_cancellation());
+        pending.validate(Some("thread"), "owner").unwrap();
+    }
+
+    #[test]
+    fn network_only_review_refuses_missing_or_hidden_access_and_wrong_identity() {
+        for (key, value) in [
+            ("networkApprovalContext", Value::Null),
+            (
+                "networkApprovalContext",
+                json!({"host":"x\nAllow everything","protocol":"https"}),
+            ),
+            (
+                "networkApprovalContext",
+                json!({"host":"example.com","protocol":"https","hidden":true}),
+            ),
+            ("command", json!("curl example.com")),
+            ("cwd", json!("/owned")),
+            ("commandActions", json!([])),
+            ("additionalPermissions", json!({"network":{"enabled":true}})),
+            ("availableDecisions", json!(["acceptForSession", "decline"])),
+            ("environmentId", json!("remote")),
+            ("kind", json!("writeStdin")),
+            ("threadId", json!("another")),
+            ("turnId", json!("another")),
+        ] {
+            let mut event = network_event();
+            event["params"][key] = value;
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "accepted {key}"
+            );
+        }
+        let mut request = Pending::plan(
+            &network_event(),
+            "thread",
+            Some("turn"),
+            "human",
+            Utc::now(),
+        )
+        .unwrap();
+        let Some(QuestionPresentation::Choices { options, .. }) =
+            &mut request.questions[0].presentation
+        else {
+            panic!()
+        };
+        options[0].label = "Allow for session".into();
+        request.questions[0].text = request.questions[0].presentation.as_ref().unwrap().text();
+        assert!(request.validate(Some("thread"), "owner").is_err());
+    }
+
     fn permission_event() -> Value {
         json!({"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"permissions","cwd":"/owned","permissions":{"network":{"enabled":true},"fileSystem":{"write":["/owned/output"]}}}})
     }
