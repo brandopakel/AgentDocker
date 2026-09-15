@@ -37,10 +37,10 @@ The docs are the record of what the repository does and how far it is delivered.
 - `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list, the phase rows).
 - `docs/REMAINING-WORK.md` for the disposition of an open item: what is now in source, what evidence exists, what is still open. Close a row only with evidence, and say what remains.
 - `docs/README.md` (the docs index): a new document is linked there, and the audit table's row for a document changes when that document's delivery state changes.
-- A verification record under `docs/verification/` for a trial on real binaries, with build provenance; then `python3 scripts/docs_check.py --write-index`.
+- A verification record under `docs/verification/` for a trial on real binaries, with build provenance; then `python3 scripts/docs_check.py --write-index`, which regenerates the records section of `docs/README.md`.
 - `docs/GUIDE.md`, `docs/DESKTOP-UX.md` or the root `README.md` when a command, tool or screen changes for the person using it.
 
-`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, the verification index must be current, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). That line is a statement to reviewers, not a way around the contract.
+`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, its verification records section must be current, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). That line is a statement to reviewers, not a way around the contract.
 
 ## Standard verification workflow
 

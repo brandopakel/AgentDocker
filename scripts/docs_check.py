@@ -5,9 +5,9 @@ Checks, each of which fails the gate when it does not hold:
 
 1. Every Markdown file under docs/ is linked from docs/README.md, the index.
 2. Every relative link in every Markdown file resolves to a file that exists.
-3. docs/verification/README.md lists every verification record exactly as
-   `--write-index` would write it, so a new record is indexed with a line
-   from its own status.
+3. The marked verification section of docs/README.md lists every
+   verification record exactly as `--write-index` would write it, so a new
+   record is indexed with a line from its own status.
 4. With --base <ref>: a change under crates/, scripts/, packaging/,
    install.sh, Makefile or .github/ is accompanied by a change under docs/,
    README.md or CLAUDE.md, or a commit in the range says why not with a
@@ -27,11 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 INDEX = DOCS / "README.md"
 RECORDS = DOCS / "verification"
-RECORD_INDEX = RECORDS / "README.md"
+INDEX_START = "<!-- verification-index:start -->"
+INDEX_END = "<!-- verification-index:end -->"
 CODE_PATHS = ("crates/", "scripts/", "packaging/", ".github/")
 CODE_FILES = ("install.sh", "Makefile", "Cargo.toml", "Cargo.lock")
 DOC_PATHS = ("docs/",)
-DOC_FILES = ("README.md", "CLAUDE.md", "AGENTS.md")
+DOC_FILES = ("README.md", "CLAUDE.md")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
@@ -114,28 +115,47 @@ def record_summary(path):
 
 
 def render_record_index():
+    """The marked section of docs/README.md, markers included."""
     lines = [
-        "# Verification records",
-        "",
-        "One line per record, taken from the record's own status; regenerate with",
-        "`python3 scripts/docs_check.py --write-index` after adding one. The check",
-        "in the gate fails when this file and the records disagree. A record keeps",
-        "its original source, date and outcome; a later merge does not rewrite it.",
+        INDEX_START,
         "",
         "| Record | Says |",
         "| --- | --- |",
     ]
     for path in sorted(RECORDS.glob("*.json")):
-        lines.append(f"| [{path.name}]({path.name}) | {record_summary(path)} |")
-    return "\n".join(lines) + "\n"
+        lines.append(f"| [{path.name}](verification/{path.name}) | {record_summary(path)} |")
+    lines += ["", INDEX_END]
+    return "\n".join(lines)
+
+
+def split_index():
+    """The index text before, inside and after the marked section, or None
+    when the markers are missing."""
+    text = INDEX.read_text()
+    start = text.find(INDEX_START)
+    end = text.find(INDEX_END)
+    if start < 0 or end < start:
+        return None
+    end += len(INDEX_END)
+    return text[:start], text[start:end], text[end:]
 
 
 def record_index_current():
-    expected = render_record_index()
-    actual = RECORD_INDEX.read_text() if RECORD_INDEX.exists() else ""
-    if expected != actual:
-        return ["docs/verification/README.md is not current; run `python3 scripts/docs_check.py --write-index`"]
+    parts = split_index()
+    if parts is None:
+        return [f"docs/README.md has no {INDEX_START} ... {INDEX_END} section for the verification records"]
+    if parts[1] != render_record_index():
+        return ["the verification records section of docs/README.md is not current; run `python3 scripts/docs_check.py --write-index`"]
     return []
+
+
+def write_index():
+    parts = split_index()
+    if parts is None:
+        print(f"docs_check: docs/README.md has no {INDEX_START} ... {INDEX_END} section to write", file=sys.stderr)
+        sys.exit(1)
+    INDEX.write_text(parts[0] + render_record_index() + parts[2])
+    print(f"wrote the verification records section of {INDEX.relative_to(ROOT)}")
 
 
 def changed_files(base):
@@ -173,11 +193,10 @@ def docs_considered(base):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="git ref to diff against for the docs-considered check")
-    parser.add_argument("--write-index", action="store_true", help="regenerate docs/verification/README.md")
+    parser.add_argument("--write-index", action="store_true", help="regenerate the verification records section of docs/README.md")
     args = parser.parse_args()
     if args.write_index:
-        RECORD_INDEX.write_text(render_record_index())
-        print(f"wrote {RECORD_INDEX.relative_to(ROOT)}")
+        write_index()
     problems = index_completeness() + links_resolve() + record_index_current()
     if args.base:
         problems += docs_considered(args.base)
