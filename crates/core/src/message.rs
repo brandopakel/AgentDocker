@@ -155,6 +155,17 @@ pub struct Question {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Which way an answer reached its asker. A synchronous `ask` waiting on
+/// its connection is handed the answer and the queue never shows it; with
+/// no `ask` waiting, or one that ended first, the queue delivers it. One
+/// answer travels one way, never both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerRoute {
+    ToolResult,
+    Queue,
+}
+
 /// Explicit controls for a human question. The fallback text must describe the
 /// same choice, so native and terminal clients review the same request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
