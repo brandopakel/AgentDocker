@@ -900,6 +900,14 @@ frames, including split UTF-8, survive timeout polling.
 
 ### Provider availability and retained input
 
+The external Codex receiver's read-only history sidecar does not own the live
+TUI. Codex 0.154.0 can reconstruct an active turn as `interrupted` while its
+thread status is `notLoaded`; these historical states cannot establish live
+idleness. A verified pending native queue entry therefore stays under the
+original TUI's scheduler without an inferred idle deadline. The receiver keeps
+one outstanding offer and acknowledges only an exact provider receipt. Loss of
+both the entry and receipt still pauses for reconciliation without resubmission.
+
 Schema 18 persists `AgentRecord.provider_availability` separately from input
 readiness, activity and process liveness. Usage, rate, budget, billing,
 concurrency, context, authentication, transport and unknown interruptions all

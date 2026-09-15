@@ -20,6 +20,9 @@ upgrade contract. PRs #142/#147 are merged. The native Codex queue candidate
 remains uninstalled: PR #148 and its dependent #149 are draft after an actual
 long-busy trial at `5f72f37` falsely paused a running direct user turn. Fixing
 that guard and repeating actual acceptance are required before integration.
+Trial 27 confirmed the sidecar reconstructs an active turn as interrupted; the
+source correction removes the inferred idle deadline while preserving exact
+queue/receipt reconciliation. The new 65-second regression awaits validation.
 Thirty queued human/peer inputs passed exact FIFO
 receipts in its local fixture, with about five minutes to consume the burst;
 no-prompt startup/resume and burst latency remain acceptance gaps.

@@ -1558,7 +1558,7 @@
     "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
   },
   "long_busy_blocker_5f72f37": {
-    "status": "open",
+    "status": "fix-in-source-awaiting-validation",
     "merge_and_installation": "PRs 148 and 149 are draft; do not merge/install until fixed and actual acceptance passes.",
     "trials": [
       {
@@ -1668,8 +1668,153 @@
         "artifact_sha256": "e6c789b123d5e2808bf3e71feca5c88c7bee2e90c48a09d34c55eacadecc7d47",
         "classification": "application-defect",
         "finding": "A real direct user turn stayed active while peer input remained in the native queue without a receipt. At about 50 seconds the receiver falsely paused it as idle. The copied rollout records task_started without task_complete for this turn. Historical turn status is not sufficient evidence of live TUI idleness."
+      },
+      {
+        "started_at": "2026-09-15T23:45:43.384770+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "c10c3ef1ae5589d07492456f7072191336c9d21fd5c7a75b570d2f1ce25b1d02",
+        "source": {
+          "commit": "145d2159c0bfc0dca7e7089b69778e7c8fbc480f",
+          "dirty": false,
+          "rust_and_driver_sha256": "27a98b45d36ccba9451dc287c0bd625c86b6d881f48fdf4a6550ac8740aeb2c1"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 23687,
+        "thread": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+        "agent": "af16b139081b45bfbcd018111b84eb18",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.647142875008285,
+        "long_busy_samples": [
+          {
+            "at_seconds": 5.038174792018253,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 10.041737750027096,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 15.043882083002245,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 20.046526750025805,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 25.05247470800532,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 30.052833625028143,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 35.05450600001495,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 40.06020870801876,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 45.06523429200752,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          }
+        ],
+        "live_busy_sidecar": {
+          "metadata": {
+            "id": 2,
+            "result": {
+              "thread": {
+                "id": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+                "environments": null,
+                "extra": null,
+                "sessionId": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+                "forkedFromId": null,
+                "parentThreadId": null,
+                "preview": "fixture warmup",
+                "ephemeral": false,
+                "section": null,
+                "sectionEnteredAt": null,
+                "projectId": null,
+                "historyMode": "paginated",
+                "modelProvider": "fixture",
+                "model": "fixture-model",
+                "reasoningEffort": null,
+                "createdAt": 1789515943,
+                "updatedAt": 1789515964,
+                "recencyAt": 1789515964,
+                "status": {
+                  "type": "notLoaded"
+                },
+                "path": "/private/tmp/ad-native-queue-ooju1oii/profile/sessions/2026/09/15/rollout-2026-09-15T16-45-43-01a0a776-4f4a-7e32-87c9-dc220877f921.jsonl",
+                "cwd": "/private/tmp/ad-native-queue-ooju1oii/project",
+                "cliVersion": "0.154.0",
+                "originator": "codex-tui",
+                "source": "cli",
+                "canAcceptDirectInput": null,
+                "threadSource": "user",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "daybreakEnabled": null,
+                "turns": []
+              }
+            }
+          },
+          "turns": {
+            "id": 3,
+            "result": {
+              "data": [
+                {
+                  "id": "01a0a776-a00f-7942-9c9e-4b9099215796",
+                  "items": [],
+                  "itemsView": "notLoaded",
+                  "status": "interrupted",
+                  "error": null,
+                  "startedAt": 1789515964,
+                  "completedAt": null,
+                  "durationMs": null
+                }
+              ],
+              "nextCursor": "{\"requestedThreadId\":\"01a0a776-4f4a-7e32-87c9-dc220877f921\",\"rolloutOrdinal\":47,\"includeAnchor\":false,\"scope\":{\"kind\":\"turns\"}}",
+              "backwardsCursor": "{\"requestedThreadId\":\"01a0a776-4f4a-7e32-87c9-dc220877f921\",\"rolloutOrdinal\":47,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+            }
+          }
+        },
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "d37b3bf1e6b6faeb8f095f9979f0113dafc8a0002aa73b8dd04170065abc9efe",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy27-2026-09-15/result.json",
+        "artifact_sha256": "1b27ece91c5863e810f7c0a1d627915c9874470fe1e4f9f4b49f811816427c22",
+        "classification": "application-defect-reproduced-with-live-provider-history",
+        "finding": "Live sidecar reports notLoaded and reconstructs the still-active direct-user turn as interrupted with completedAt=null. The exact active turn has task_started without task_complete in the retained rollout. The receiver falsely pauses near 50 seconds."
       }
     ],
-    "follow_up_diagnostic": "A read-only sidecar over only the copied rollout returned notLoaded metadata and an empty turn page. The private profile/database had already been retired, so this reconstruction does not reproduce the live sidecar response. Capture live responses in the next isolated trial; do not infer an idle session from absent history."
+    "follow_up_diagnostic": "A read-only sidecar over only the copied rollout returned notLoaded metadata and an empty turn page. The private profile/database had already been retired, so this reconstruction does not reproduce the live sidecar response. Capture live responses in the next isolated trial; do not infer an idle session from absent history.",
+    "correction": "Remove the speculative idle deadline while the exact native queue entry remains verified. Keep one outstanding offer, exact receipts, generation checks, provider blocks and missing-entry/receipt reconciliation. Add tracked long-busy scenario with 65-second direct user turn, ordered retained daemon inputs, no false receipt/pause, FIFO consumption and receiver crash recovery."
   }
 }
