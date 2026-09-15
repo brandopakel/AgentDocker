@@ -449,7 +449,9 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         .unwrap()
         .read_to_string(&mut stderr)
         .unwrap();
-    let stdout = followed.text();
+    // The reader has seen EOF once the process is gone; join it so the
+    // snapshot below is everything the stream printed.
+    let stdout = followed.finish();
     assert!(status.success(), "{stderr}");
     assert_eq!(
         stderr.matches("was replaced").count(),
@@ -466,12 +468,13 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
 /// a test can wait for what the stream has actually printed.
 struct Followed {
     text: std::sync::Arc<std::sync::Mutex<String>>,
+    reader: std::thread::JoinHandle<()>,
 }
 
 impl Followed {
     fn new(stdout: std::process::ChildStdout) -> Self {
         let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        std::thread::spawn({
+        let reader = std::thread::spawn({
             let text = text.clone();
             move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -480,11 +483,19 @@ impl Followed {
                 }
             }
         });
-        Self { text }
+        Self { text, reader }
     }
 
     fn text(&self) -> String {
         self.text.lock().unwrap().clone()
+    }
+
+    /// Everything the stream printed, once it has closed.
+    fn finish(self) -> String {
+        let Self { text, reader } = self;
+        reader.join().unwrap();
+        let printed = text.lock().unwrap();
+        printed.clone()
     }
 
     /// Register a throwaway agent named `marker` and wait until the
