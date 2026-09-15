@@ -30,7 +30,8 @@ pub(crate) use event_replay::EventReplay;
 // Older daemons can reuse sequence numbers and cannot serve checked cursors.
 // v15 stores complete file-change review presentations in pending questions.
 // v16 stores concrete, turn-scoped permission review presentations.
-pub(crate) const SCHEMA_VERSION: i64 = 17;
+// v17 retains independent session-owner identity; v18 retains provider blocks.
+pub(crate) const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -584,7 +585,7 @@ impl Store {
                 )?;
             }
             Some(Ok(found)) if found == SCHEMA_VERSION => {}
-            Some(Ok(1..=16)) => {
+            Some(Ok(found)) if (1..SCHEMA_VERSION).contains(&found) => {
                 // v2 adds stopping status and physical lease identities; v3
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.

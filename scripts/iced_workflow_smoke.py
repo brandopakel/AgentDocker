@@ -309,6 +309,23 @@ def smoke(binary_dir, output):
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
             report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
             checks.append("rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause")
+            input_report({"state": "ready"})
+            rpc(endpoint, {"op": "report_provider", "agent": receiver["id"],
+                           "process_started_at": receiver["process_started_at"], "observed_at": now(),
+                           "report": {"state": "blocked", "issue": {"kind": "usage"}}})
+            retained = rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
+            assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["type"] == "input_waiting"
+            report["provider_limit_window"] = launch("provider-limit", [
+                step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("click", id=f"session-{receiver['id']}"), step("wait_text", text="Usage limit"),
+                step("click", id="session-message"), step("fill", id="session-message-text", text="Keep this draft during recovery"),
+                step("capture", name="provider-limit"), step("click", id="resume-provider"),
+                step("wait_control", id="resume-provider", present=False),
+                step("wait_text", text="Keep this draft during recovery"), step("capture", name="provider-resumed")])
+            recovered = rpc(endpoint, {"op": "inspect", "agent": receiver["id"]})["agent"]
+            assert recovered["provider_availability"]["issue"] is None
+            assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["messages"] == retained
+            checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"

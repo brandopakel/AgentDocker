@@ -271,7 +271,9 @@ impl Daemon {
             Request::Inspect { agent }
             | Request::Reads { agent }
             | Request::Inbox { agent, .. }
+            | Request::DeliveryQueue { agent }
             | Request::AckInbox { agent, .. }
+            | Request::ReportProvider { agent, .. }
             | Request::ReportActivity { agent, .. }
             | Request::Release { agent, .. }
             | Request::ReleaseAll { agent, .. }

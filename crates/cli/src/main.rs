@@ -9,6 +9,7 @@ mod format;
 mod hooks;
 mod input_status;
 mod mcp;
+mod provider_status;
 mod rtk;
 mod sender;
 mod service;
@@ -51,6 +52,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Report provider availability or resume delivery after checking a limit.
+    Provider(provider_status::ProviderArgs),
     /// Preview a legacy identity repair; apply its exact plan only with daemon and sessions stopped.
     IdentityRepair {
         #[arg(long)]
@@ -1382,6 +1385,7 @@ async fn main() -> Result<()> {
                 println!("agentd {version} up {}", format::span_secs(uptime_secs));
             }
         }
+        Command::Provider(args) => provider_status::run(&client, args).await?,
         Command::Ps {
             all,
             project,

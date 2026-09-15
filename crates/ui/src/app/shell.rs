@@ -175,6 +175,7 @@ pub enum Message {
     More,
     SessionDetails,
     ReviewDelivery,
+    ResumeProvider(String, chrono::DateTime<Utc>),
     ComposeSession,
     SessionDraft(String, String),
     SendSession(String),
@@ -587,6 +588,11 @@ impl App {
                 self.confirm_stop = None;
             }
             Message::More => self.shell.more = !self.shell.more,
+            Message::ResumeProvider(agent, blocked_at) => {
+                if self.connected.is_ok() {
+                    self.send(Cmd::ResumeProvider(agent, blocked_at));
+                }
+            }
             Message::ReviewDelivery => {
                 if self.connected.is_ok()
                     && let Some(id) = self.shell.selected.clone()

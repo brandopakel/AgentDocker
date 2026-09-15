@@ -540,6 +540,22 @@ impl<B: Backend> McpServer<B> {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         match name {
+            "report_provider_status" => {
+                let report = serde_json::from_value::<agentdocker_core::ProviderReport>(arguments)
+                    .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+                crate::provider_status::report_bound(
+                    &self.backend,
+                    &me,
+                    self.identity.host_started_at,
+                    report,
+                )
+                .await
+                .map_err(transport)?;
+                Ok(text_result(
+                    &json!({"recorded":true,"input_receipt":false,"task_completed":false}),
+                    false,
+                ))
+            }
             "report_activity" => {
                 let activity = arguments
                     .get("activity")
@@ -675,9 +691,13 @@ impl<B: Backend> McpServer<B> {
             }
             "read_inbox" => {
                 let args: ReadInboxArgs = parse(arguments)?;
-                self.forward(Request::Inbox {
-                    agent: me,
-                    drain: args.drain,
+                self.forward(if args.drain {
+                    Request::Inbox {
+                        agent: me,
+                        drain: true,
+                    }
+                } else {
+                    Request::DeliveryQueue { agent: me }
                 })
                 .await
             }
@@ -929,9 +949,8 @@ impl<B: Backend> McpServer<B> {
         loop {
             let response = self
                 .backend
-                .call(Request::Inbox {
+                .call(Request::DeliveryQueue {
                     agent: self.identity.id.clone(),
-                    drain: false,
                 })
                 .await
                 .map_err(transport)?;
@@ -1167,6 +1186,7 @@ fn brief_agent(agent: &agentdocker_core::AgentRecord) -> Value {
         "id": agent.id,
         "name": agent.spec.name,
         "runtime": agent.spec.runtime,
+        "provider_availability": agent.provider_availability,
         "status": agent.status.to_string(),
         "project": agent.project.as_ref().map(|p| p.name()),
         "branch": agent.vcs.as_ref().and_then(|v| v.branch.clone()),
@@ -1315,6 +1335,7 @@ fn tool_definitions() -> Vec<Value> {
     let resource_doc = "Resource key `kind:value`, e.g. `path:/abs/file`, `path:/abs/dir` \
                         (covers everything beneath), `branch:name`, `task:ID`.";
     vec![
+        json!({"name":"report_provider_status","description":"Report this session's actual provider limit/interruption, or recovery after reconciling the interrupted turn. This never acknowledges messages or completes a task. Omit reset/scope unless explicitly known; quota_group must match the provider-quota registration label. Recovered names the exact blocked observation from inspect_agent; a heartbeat is not recovery.","inputSchema":{"type":"object","properties":{"state":{"enum":["blocked","recovered"]},"issue":{"type":"object","properties":{"kind":{"enum":["usage","rate","budget","billing","concurrency","context","authentication","transport","unknown"]},"reset_at":{"type":"string","format":"date-time"},"quota_group":{"type":"string","maxLength":128},"model":{"type":"string","maxLength":128}},"required":["kind"],"additionalProperties":false},"blocked_at":{"type":"string","format":"date-time"}},"required":["state"],"additionalProperties":false}}),
         json!({"name":"create_worktree","description":"Host endpoint only: create a new linked checkout and branch from this session's HEAD; existing files are preserved.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"branch":{"type":"string"}},"required":["path","branch"],"additionalProperties":false}}),
         json!({"name":"worktree_diff","description":"Host endpoint only: show tracked uncommitted changes in this session's physical checkout.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"commit","description":"Host endpoint only: commit this session's checkout. The journal records the commit against this agent with the message given, rather than inferring afterwards who moved HEAD. Nothing is written into the commit itself: the git author is unchanged and no trailer is added. all=true stages tracked modifications and deletions first; push=true pushes the branch afterwards.","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"all":{"type":"boolean"},"push":{"type":"boolean"}},"required":["message"],"additionalProperties":false}}),
@@ -1879,6 +1900,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "report_provider_status",
                 "create_worktree",
                 "worktree_diff",
                 "commit",
@@ -2207,9 +2229,8 @@ mod tests {
         let requests = s.backend.requests.lock().unwrap();
         assert_eq!(
             requests[0],
-            Request::Inbox {
+            Request::DeliveryQueue {
                 agent: "abc123".into(),
-                drain: false
             }
         );
     }
@@ -2380,7 +2401,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|request| matches!(request, Request::Inbox { drain: false, .. }))
+                .all(|request| matches!(request, Request::DeliveryQueue { .. }))
         );
     }
 

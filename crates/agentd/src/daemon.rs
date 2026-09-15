@@ -48,6 +48,7 @@ pub mod humans;
 mod images;
 mod panes;
 pub mod policies;
+mod provider;
 mod recovery;
 mod relay;
 pub mod reload;
@@ -1272,6 +1273,28 @@ impl Daemon {
                 report,
                 Utc::now(),
             ),
+            Request::ReportProvider {
+                agent,
+                process_started_at,
+                observed_at,
+                report,
+            } => lock(&self.state).report_provider(
+                &agent,
+                process_started_at,
+                observed_at,
+                report,
+                Utc::now(),
+            ),
+            Request::ResumeProvider { agent, blocked_at } => {
+                lock(&self.state).resume_provider(&agent, blocked_at, Utc::now())
+            }
+            Request::DeliveryQueue { agent } => {
+                let mut state = lock(&self.state);
+                match state.input_consumer(&agent, false) {
+                    Ok(()) => state.delivery_queue(&agent),
+                    Err(error) => *error,
+                }
+            }
             Request::Changes {
                 project,
                 since_seq,
@@ -1372,7 +1395,7 @@ impl Daemon {
                 let mut state = lock(&self.state);
                 match state.input_consumer(&agent, true) {
                     Ok(()) => match state.ack_inbox(&agent, &acknowledge) {
-                        Response::Ok => state.inbox(&agent, false),
+                        Response::Ok => state.delivery_queue(&agent),
                         error => error,
                     },
                     Err(error) => *error,
@@ -3645,6 +3668,16 @@ impl State {
         if self.is_live(&id) {
             return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
         }
+        if self.registry.get(&id).is_some_and(|a| {
+            a.provider_availability
+                .as_ref()
+                .is_some_and(|p| p.issue.is_some())
+        }) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "resolve this agent's provider limit before removing its record",
+            );
+        }
         let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
         event.seq = self.next_seq;
         self.persist("agent removal", |store| store.delete_agent(&id, &event));
@@ -3890,6 +3923,15 @@ impl State {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        if drain
+            && agentdocker_core::provider_block(
+                self.registry.get(&id).expect("resolved"),
+                self.registry.all(),
+            )
+            .is_some()
+        {
+            return self.delivery_queue(reference);
+        }
         // A failed liveness write must stop the operation before queue removal.
         self.touch(&id);
         let messages = match self.read_inbox(&id, drain) {

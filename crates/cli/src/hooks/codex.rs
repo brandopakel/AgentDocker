@@ -270,13 +270,13 @@ async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Resul
         return Ok(Delivery::empty());
     }
     let messages = match backend
-        .call(Request::Inbox {
+        .call(Request::DeliveryQueue {
             agent: agent.clone(),
-            drain: false,
         })
         .await?
     {
         Response::Messages { messages } => messages,
+        Response::InputWaiting { .. } => return Ok(Delivery::empty()),
         Response::Error { message, .. } => bail!("inbox read refused: {message}"),
         _ => bail!("unexpected inbox response"),
     };
@@ -404,7 +404,7 @@ mod tests {
                 .unwrap();
             assert!(matches!(
                 &backend.requests()[0],
-                Request::Inbox { drain: false, .. }
+                Request::DeliveryQueue { .. }
             ));
             assert_eq!(backend.requests().len(), 1);
             if event == "Stop" {

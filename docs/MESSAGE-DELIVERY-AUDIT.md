@@ -153,10 +153,10 @@ round trips are supporting evidence, not completion of this requirement.
 ## Provider-limit and session-exhaustion acceptance (September 14)
 
 The connected Claude session hit a provider session limit during the user's live
-coordination trial. Detection, clear unavailable status and recovery are open
-requirements; this report alone does not establish the precise provider limit
-type, reset time or an adapter signal. The current activity reports expose
-working/idle observations and cannot represent that failure explicitly.
+coordination trial. The current change implements provider availability as a
+separate durable state, with queue gating and explicit recovery. The user's
+report alone does not establish the precise limit type, reset time or adapter
+signal, and the existing limited session has not been restarted or drained.
 
 This requirement covers all supported providers and models, including
 OpenAI/Codex, Anthropic/Claude, Google/Gemini, providers behind multi-provider
@@ -201,6 +201,37 @@ retained. This used an isolated configuration and local server, no real quota,
 and left no owned processes. It establishes the signal, not AgentDocker's
 availability or recovery implementation, or recovery of the user's limited
 session. See the provider's [StopFailure contract](https://code.claude.com/docs/en/hooks#stopfailure).
+
+### Implemented contract and adapter coverage
+
+The current implementation closes the common availability/queue model: schema18
+stores a generation-bound normalized interruption separately from readiness;
+heartbeats, receipt ACKs and expired reset times cannot lift it. Equal repeated
+limits do not create event/ping storms. Shared quotas require explicit non-secret
+membership and optional model scope; unrelated agents continue. Manual resume
+and supported success signals name the exact blocked observation. Failed storage
+preserves the block and queue. Record removal and identity repair cannot erase
+an unresolved block. The desktop shows the reason, queue count and a resume
+action, retains drafts, and suppresses Done for known blocked turns.
+
+| Adapter | Implemented detection and queue handling | Evidence and remaining boundary |
+| --- | --- | --- |
+| Claude Code | Async `StopFailure` normalizes typed rate/billing/authentication/transport codes; other codes remain unknown. Failure does not release leases, drain input or block Stop to force a new turn. Successful Stop or explicit resume can clear the exact known block. Channel offers stop during a block; actual receipt ACKs remain possible. | Actual installed 2.1.270 produced the loopback 429 signal above. Hook and channel regressions cover queue retention, no offers over repeated polling, exact receipts while blocked and FIFO recovery. Automatic detection requires the newly installed hook to be loaded. Actual integrated recovery remains to be recorded. |
+| Managed Codex | Structured app-server `CodexErrorInfo` handles usage/rate/budget/context/authentication/transport and HTTP status classes. Failed `turn/start` retains the owned provider and uncertain attempt. Queue remains blocked until explicit recovery and receipt reconciliation. | Classifier and queue-contract tests pass; schema derived from installed Codex 0.154. Unknown/unreceipted attempts remain blocked rather than replayed. Actual provider-failure/recovery trials remain to be recorded. |
+| Codex hooks | Lifecycle input reads the same gated queue; a blocked read yields no context or acknowledgement. | No automatic typed limit signal is claimed from lifecycle hooks alone. Use an authoritative explicit report or the managed bridge. |
+| MCP-only and custom/local | `report_provider_status` binds the reporting process generation; `read_inbox`/`wait_for_messages` use the gated queue. Administrative inspection and proven ACKs remain available. | Contract tested for all 14 catalog runtimes plus a custom runtime, across nine interruption classes. Generic MCP is not automatic detection of every provider's private limit semantics; version-specific integrations must supply a supported signal. |
+
+The standard gate passed 924 Rust tests (six skipped), 70 Python checks,
+strict lint, doctests, package checks and release builds. The original failures
+are retained: an omitted schema17 migration case, legacy protocol/test expectations
+and a lint correction were fixed before this passing gate. Cross-runtime
+state tests exercise 135 runtime/interruption combinations, mixed human/peer
+FIFO queues, repeated limits, past resets, stale or wrong-generation recovery,
+restart persistence and failed-store recovery. These fixtures establish the
+shared contract, not real quota exhaustion at every provider/company/model.
+Mid-tool and pending-answer provider interruption, explicit replacement-session
+recovery and sustained actual-provider acceptance remain open. Existing uncertain
+input, question expiry and permission checks continue to apply.
 
 ## Initial source audit
 

@@ -88,12 +88,9 @@ impl Provider {
             if value.get("id").and_then(Value::as_u64) == Some(id) && value.get("method").is_none()
             {
                 if let Some(error) = value.get("error") {
-                    bail!(
-                        "Codex {method} refused: {}",
-                        error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("provider error")
+                    return Err(
+                        crate::provider_status::Failure(crate::provider_status::codex(error))
+                            .into(),
                     );
                 }
                 return value
