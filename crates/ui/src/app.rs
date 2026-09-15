@@ -829,8 +829,11 @@ impl App {
             | EventKind::AgentVcsChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
             EventKind::InputDeliveryReported { .. }
+            | EventKind::InputBound { .. }
+            | EventKind::InputUnbound { .. }
             | EventKind::InputControllerEnded { .. }
             | EventKind::InputControllerLaunched { .. }
+            | EventKind::InputControllerLaunchFailed { .. }
             | EventKind::InputRestartsExhausted { .. }
             | EventKind::InputRestartsReset { .. }
             | EventKind::InputResumed { .. } => {
