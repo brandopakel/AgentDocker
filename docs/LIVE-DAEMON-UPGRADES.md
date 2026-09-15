@@ -113,6 +113,17 @@ an in-process Tokio test cannot establish this boundary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
+- Input bindings (schema 19, the external controller and its supervision):
+  every binding transition and the legacy-offer bookkeeping must gate on
+  `Persisted::Committed`, not only on `storage_error`, because a fenced
+  daemon's `persist` answers `Skipped` without an error; controller
+  supervision (`tend_controllers`) must not note an end, launch a descriptor
+  or take an installation pin while fenced, and must recheck the fence under
+  the launch lock; a launched-but-unbound controller, its pin and the
+  restart episode are part of what a successor accepts, and the acceptance
+  trial must cover a controller ending and being started again across a
+  handover. Found in source review of #142 against #134; not yet in the
+  combined tests.
 
 An old installed daemon that lacks this protocol cannot gain live transfer from
 an updated launcher. Its first switch still waits for active sessions to finish.
