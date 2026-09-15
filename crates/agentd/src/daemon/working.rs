@@ -278,8 +278,11 @@ impl State {
     /// refuse a stale edit, whether or not a notice arrived.
     pub(super) fn flush_notices(&mut self) {
         if self.fenced() {
-            // Nothing can be queued while fenced; what waits keeps waiting
-            // for the successor's first tick.
+            // Nothing can be queued while fenced. What waits is in memory
+            // only: it is sent by this daemon's next tick if the transfer
+            // is aborted, and lost with this daemon if it is not; a reader
+            // of the successor finds the change by `stale`, and hooks deny
+            // a stale edit either way.
             return;
         }
         self.stale_outstanding.retain(|agent, message| {

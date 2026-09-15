@@ -192,7 +192,6 @@ fn mutates(request: &Request) -> bool {
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
-            | Request::DeliveryQueue { .. }
             | Request::PeekInput { .. }
             | Request::Subscribe { .. }
             | Request::Attach { .. }

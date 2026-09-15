@@ -259,26 +259,25 @@ impl Daemon {
     /// Called before serving and on every tick; a pin that cannot be
     /// taken is logged here and refused at the launch that needs it.
     pub fn pin_controllers(&self) {
-        let wanted: Vec<(AgentId, ControllerLaunch)> = {
-            let state = lock(&self.state);
-            if state.fenced() {
-                // Held pins stay held; new ones are the successor's to take.
-                return;
-            }
-            state
-                .registry
-                .list(true)
-                .into_iter()
-                .filter_map(|r| {
-                    r.input_binding
-                        .as_ref()
-                        .and_then(|b| b.launch.clone())
-                        .filter(|_| !state.controller_pins.contains_key(&r.id))
-                        .map(|launch| (r.id.clone(), launch))
-                })
-                .collect()
-        };
+        // One guard from the look to the pins: a transfer that begins in
+        // between would otherwise find pins taken past the fence.
         let mut state = lock(&self.state);
+        if state.fenced() {
+            // Held pins stay held; new ones are the successor's to take.
+            return;
+        }
+        let wanted: Vec<(AgentId, ControllerLaunch)> = state
+            .registry
+            .list(true)
+            .into_iter()
+            .filter_map(|r| {
+                r.input_binding
+                    .as_ref()
+                    .and_then(|b| b.launch.clone())
+                    .filter(|_| !state.controller_pins.contains_key(&r.id))
+                    .map(|launch| (r.id.clone(), launch))
+            })
+            .collect();
         for (id, launch) in wanted {
             if let Err(error) = state.pin_controller(&id, &launch) {
                 warn!(agent = %id, %error, "could not pin the controller's release");
@@ -2040,6 +2039,66 @@ mod tests {
             .expect("launched once authority is back");
         assert!(is_running(&launched));
         signal(&launched, Signal::SIGKILL);
+    }
+
+    /// A delivery read records the offer it makes, so it is a mutation: a
+    /// fenced daemon refuses it rather than hand a hook a message whose
+    /// exposure nobody would record, which a controller binding later
+    /// would take for never offered. A person's look stays a read.
+    #[tokio::test]
+    async fn a_fenced_delivery_read_is_refused_rather_than_unrecorded() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let sender = peer(&daemon, "sender").await;
+        let queued = send(&daemon, &sender, &receiver, "one").await;
+        daemon.offer_transfer(1).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::DeliveryQueue {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::PeekInput {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { messages } if messages.iter().map(|m| &m.id).eq([&queued])
+        ));
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .legacy_offers
+                .is_empty(),
+            "nothing was offered while fenced"
+        );
+        assert!(daemon.abort_transfer("cleanup"));
+        assert!(matches!(
+            daemon
+                .handle(Request::DeliveryQueue {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { messages } if messages.len() == 1
+        ));
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .legacy_offers
+                .contains_key(&queued),
+            "the offer is recorded once the write can land"
+        );
     }
 
     /// The restart record is on the agent record: a daemon opened again

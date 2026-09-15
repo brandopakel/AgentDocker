@@ -120,12 +120,17 @@ an in-process Tokio test cannot establish this boundary.
   controller supervision (`tend_controllers`) neither notes an end nor
   launches a descriptor nor takes an installation pin while fenced, and
   rechecks the fence under the launch lock; the notice tick
-  (`flush_notices`) sends nothing and forgets nothing while fenced;
-  `peek_input` is a read and is served through the fence; a `bind_input`
+  (`flush_notices`) sends nothing and forgets nothing while fenced (what
+  waits is memory: sent by this daemon's next tick after an abort, lost with
+  it after a handover, when `stale` still finds the change); `peek_input` is
+  a read and is served through the fence, while `delivery_queue` is a
+  mutation because it records the offer it makes, so a fenced daemon refuses
+  it rather than hand a hook a message nobody would record; a `bind_input`
   while fenced is refused as `transferring`. Held pins stay held until the
   predecessor exits and the successor takes its own before serving. Covered
-  by `a_fenced_tick_neither_notes_an_end_nor_launches` and the fenced part
-  of `stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read`. Still
+  by `a_fenced_tick_neither_notes_an_end_nor_launches`,
+  `a_fenced_delivery_read_is_refused_rather_than_unrecorded` and the fenced
+  part of `stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read`. Still
   ahead: a launched-but-unbound controller, its pin and the restart episode
   across an actual handover, in the reload acceptance trial.
 
