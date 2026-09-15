@@ -39,6 +39,7 @@ use agentdocker_host::handoff;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use agentdocker_core::session::{Transfer, TransferState};
 
 /// How long a successor has to say it is serving.
 ///
@@ -239,18 +240,81 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
 
 impl Daemon {
     pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
-        // Still no. The protocol above exists and is tested, but a
-        // handover is only safe once every descriptor, every child's
-        // lifetime and the rollback have been proven together against
-        // owned fixtures. Refusing is not a failure here: the daemon and
-        // its agents keep running, which is exactly what the previous
-        // attempt did not manage.
+        // Still no. The coordinator fence below and the session owners
+        // exist and are tested, but a handover also needs a successor
+        // that is validated, spawned, and proven ready before this daemon
+        // leaves (the next phase). Refusing is not a failure here: the
+        // daemon and its agents keep running, which is exactly what the
+        // previous attempt did not manage.
         Response::error(
             ErrorCode::Unavailable,
-            "live daemon reload is unavailable: the descriptor handover protocol is in place \
-             but process, I/O and successor-readiness transfer are not proven end to end yet; \
+            "live daemon reload is unavailable: session owners and the coordinator fence are in place \
+             but successor selection, readiness and recovery are not proven end to end yet; \
              the current daemon and agents remain running",
         )
+    }
+
+    /// Stop writing and offer coordination to `successor_pid`. From here
+    /// until [`Daemon::abort_transfer`] or the successor's accept, every
+    /// mutating request answers `transferring` and every tick writer
+    /// skips its turn; reads keep being served from memory.
+    pub fn offer_transfer(&self, successor_pid: u32) -> Result<Transfer, Box<Response>> {
+        lock(&self.state).offer_transfer(successor_pid)
+    }
+
+    /// Take authority back if the successor has not accepted. Returns
+    /// whether this daemon is writing again.
+    pub fn abort_transfer(&self, reason: &str) -> bool {
+        lock(&self.state).abort_transfer(reason)
+    }
+
+    /// Whether this daemon has ceded coordination for good.
+    pub fn transferred(&self) -> bool {
+        matches!(
+            lock(&self.state).coordination,
+            Coordination::Transferred { .. }
+        )
+    }
+
+    /// What the store says about the current offer.
+    pub fn transfer_state(&self) -> Option<Transfer> {
+        lock(&self.state).transfer_state()
+    }
+
+    /// The successor's first act: accept the offer addressed to it, or
+    /// learn it must not write. Called on a fresh `Daemon` opened over the
+    /// same database before it serves anything.
+    pub fn accept_transfer(&self, transfer: &str) -> Result<(), String> {
+        let state = lock(&self.state);
+        let now = Utc::now();
+        match state.store.settle_transfer(
+            transfer,
+            Some(std::process::id()),
+            TransferState::Accepted,
+            now,
+        ) {
+            Ok(true) => {
+                let mut event = Event::new(
+                    EventKind::DaemonTransferAccepted {
+                        transfer: transfer.to_owned(),
+                    },
+                    now,
+                );
+                event.seq = state.next_seq;
+                drop(state);
+                let mut state = lock(&self.state);
+                state.persist("transfer accept", |store| store.append_event(&event));
+                if state.storage_error.is_none() {
+                    state.next_seq += 1;
+                    let _ = state.events.send(event);
+                }
+                Ok(())
+            }
+            Ok(false) => Err(format!(
+                "transfer {transfer} is not offered to this process; refusing to write"
+            )),
+            Err(err) => Err(format!("cannot accept transfer {transfer}: {err}")),
+        }
     }
 }
 
@@ -540,5 +604,275 @@ mod tests {
         offer(&mine, &future, &[carried.as_fd()]).unwrap();
         let refused = accept(&theirs).unwrap_err();
         assert!(refused.to_string().contains("is not the"), "{refused}");
+    }
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+    use agentdocker_core::{AgentSpec, LeaseMode};
+    use tempfile::TempDir;
+
+    fn open(dir: &TempDir) -> Arc<Daemon> {
+        let home = dir.path().to_path_buf();
+        Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap())
+    }
+
+    async fn register(daemon: &Arc<Daemon>, name: &str) -> AgentId {
+        match daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent.id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn claim(agent: &AgentId, resource: &str) -> Request {
+        Request::Claim {
+            agent: agent.to_string(),
+            resource: resource.into(),
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs: 60,
+            note: None,
+            wait_secs: 0,
+        }
+    }
+
+    fn transfer_events(daemon: &Arc<Daemon>) -> Vec<String> {
+        daemon
+            .recent_events(100)
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                EventKind::DaemonTransferOffered { .. } => Some("offered".to_owned()),
+                EventKind::DaemonTransferAccepted { .. } => Some("accepted".to_owned()),
+                EventKind::DaemonTransferAborted { .. } => Some("aborted".to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// While an offer is open: mutations are refused with `transferring`
+    /// and leave nothing behind, reads still answer from memory, tick
+    /// writers skip, and aborting resumes everything.
+    #[tokio::test]
+    async fn an_open_offer_fences_writes_but_not_reads() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let a = register(&daemon, "a").await;
+        assert!(matches!(
+            daemon.handle(claim(&a, "task:before")).await,
+            Response::Lease { .. }
+        ));
+        let seq_before = daemon.recent_events(1)[0].seq;
+
+        let transfer = daemon.offer_transfer(4242).expect("offered");
+        assert_eq!(transfer.state, TransferState::Offered);
+        assert_eq!(transfer_events(&daemon), ["offered"]);
+
+        // A mutation is refused, and refused before anything was applied.
+        let refused = daemon.handle(claim(&a, "task:during")).await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        assert_eq!(leases.len(), 1, "the refused claim left no lease");
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "b".into(),
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        // Reads are served.
+        assert!(matches!(
+            daemon.handle(Request::Ping).await,
+            Response::Pong { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Inspect {
+                    agent: a.to_string()
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::List {
+                    all: true,
+                    project: None,
+                    labels: Default::default()
+                })
+                .await,
+            Response::Agents { .. }
+        ));
+        // Tick writers write nothing: the only event since the offer is the offer.
+        daemon.prune_events();
+        daemon.expire_leases();
+        daemon.check_liveness();
+        let latest = daemon.recent_events(1)[0].seq;
+        assert_eq!(
+            latest,
+            seq_before + 1,
+            "only the offer event landed while fenced"
+        );
+
+        // Abort: authority returns, writes land again.
+        assert!(daemon.abort_transfer("test"));
+        assert_eq!(transfer_events(&daemon), ["offered", "aborted"]);
+        assert!(matches!(
+            daemon.handle(claim(&a, "task:after")).await,
+            Response::Lease { .. }
+        ));
+        assert_eq!(
+            daemon.transfer_state().unwrap().state,
+            TransferState::Aborted
+        );
+    }
+
+    /// The successor's accept and the predecessor's abort are one
+    /// compare-and-set: whichever lands first wins and the other learns it.
+    #[tokio::test]
+    async fn accept_and_abort_race_through_the_store() {
+        // Accept first: the predecessor cannot take authority back.
+        let dir = TempDir::new().unwrap();
+        let predecessor = open(&dir);
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        successor
+            .accept_transfer(&transfer.id)
+            .expect("offered to this pid");
+        assert!(
+            !predecessor.abort_transfer("too late"),
+            "accepted first: abort must fail"
+        );
+        assert!(predecessor.transferred());
+        assert!(
+            matches!(
+                predecessor
+                    .handle(Request::Register {
+                        spec: AgentSpec {
+                            name: "x".into(),
+                            ..Default::default()
+                        },
+                        pid: None,
+                        session: None
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                }
+            ),
+            "a transferred predecessor never writes again"
+        );
+        assert_eq!(
+            predecessor.transfer_state().unwrap().state,
+            TransferState::Accepted
+        );
+        // The successor writes normally.
+        register(&successor, "on-successor").await;
+        drop(successor);
+
+        // Abort first: the successor must not write.
+        let dir = TempDir::new().unwrap();
+        let predecessor = open(&dir);
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        assert!(predecessor.abort_transfer("changed my mind"));
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        let refused = successor.accept_transfer(&transfer.id).unwrap_err();
+        assert!(refused.contains("not offered to this process"), "{refused}");
+    }
+
+    /// An offer names its successor; another process cannot accept it,
+    /// and a second offer cannot be opened over an open one.
+    #[tokio::test]
+    async fn an_offer_is_addressed_and_exclusive() {
+        let dir = TempDir::new().unwrap();
+        let predecessor = open(&dir);
+        let transfer = predecessor.offer_transfer(1).unwrap();
+        let stranger =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        assert!(
+            stranger.accept_transfer(&transfer.id).is_err(),
+            "offered to pid 1, not to this process"
+        );
+        assert!(stranger.accept_transfer("no-such-transfer").is_err());
+        let second = predecessor.offer_transfer(2).unwrap_err();
+        assert!(
+            matches!(
+                *second,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ),
+            "{second:?}"
+        );
+        assert!(predecessor.abort_transfer("cleanup"));
+    }
+
+    /// A store that has already failed has nothing trustworthy to hand
+    /// over: the offer is refused with the storage error.
+    #[tokio::test]
+    async fn a_failed_store_cannot_offer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        {
+            let mut state = lock(&daemon.state);
+            state.store.reject_writes_for_test();
+            let a = state.registry.all().next().cloned();
+            if let Some(a) = a {
+                state.persist("poison", |store| store.upsert_agent(&a));
+            } else {
+                state.storage_error = Some("poisoned".into());
+            }
+        }
+        let refused = daemon.offer_transfer(1).unwrap_err();
+        assert!(
+            matches!(
+                *refused,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
     }
 }

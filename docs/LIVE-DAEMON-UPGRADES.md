@@ -70,6 +70,14 @@ event continuity, not just a new socket or a readiness marker.
    Only one coordinator may write. New requests must either complete under a
    known owner or receive explicit retry/recovery semantics; accepted input
    cannot be silently replayed after a lost response.
+   *In source:* `offer_transfer` / `abort_transfer` / `accept_transfer` on the
+   daemon, the single-row `coordinator` table settled by compare-and-set, the
+   `Transferring` error for refused mutations, and the fence inside every
+   write path (`persist`, `store_op`) so tick writers skip too; see
+   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
+   exclusion during a transfer rides on the daemon lock the successor will
+   inherit in the next phase; until then nothing calls `offer_transfer`
+   outside tests.
 4. **Successor readiness and recovery.** Validate the intended immutable
    executable and compatible state before transfer. Require the successor's
    serving loop, watcher and session routes to be usable before reporting

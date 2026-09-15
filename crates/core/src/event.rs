@@ -468,8 +468,26 @@ pub enum EventKind {
         agent: AgentId,
         vcs: VcsState,
     },
-    /// The daemon is about to exit; `reason` is `signal` or `request`.
+    /// The daemon is about to exit; `reason` is `signal`, `request` or
+    /// `transferred`.
     DaemonStopping {
+        reason: String,
+    },
+    /// This daemon stopped writing and offered coordination to a successor
+    /// process. Mutating requests answer `transferring` until the transfer
+    /// settles.
+    DaemonTransferOffered {
+        transfer: String,
+        successor_pid: u32,
+    },
+    /// The successor wrote once and owns the database; this daemon will
+    /// exit without touching agents.
+    DaemonTransferAccepted {
+        transfer: String,
+    },
+    /// The transfer did not complete; this daemon resumed writing.
+    DaemonTransferAborted {
+        transfer: String,
         reason: String,
     },
     /// An event this build has never heard of.

@@ -756,6 +756,10 @@ pub enum ErrorCode {
     Timeout,
     /// The owner explicitly cancelled the pending operation.
     Cancelled,
+    /// The daemon is handing coordination to a successor: this request
+    /// was not applied. Retry it against the daemon that answers next;
+    /// nothing from it was accepted, so nothing needs undoing.
+    Transferring,
     /// Waiting for this would close a cycle: every agent in it is
     /// waiting for something another member holds, so none could ever
     /// proceed. `details.cycle` says who and what.

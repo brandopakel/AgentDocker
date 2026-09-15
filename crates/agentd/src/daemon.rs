@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
 use agentdocker_core::paths;
+use agentdocker_core::session::{Transfer, TransferState};
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
     Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
@@ -112,6 +113,59 @@ const OVERLAP_PAGE: usize = 2_000;
 /// Maximum foreground wait while failed-launch supervision stops its owned group.
 const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Who may write the database from this process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Coordination {
+    Serving,
+    /// Offered to a successor; every write here is refused until settled.
+    Quiescing {
+        transfer: String,
+    },
+    /// The successor accepted; this process is leaving without writing.
+    Transferred {
+        transfer: String,
+    },
+}
+
+/// Whether a request would write coordination state. Reads are served
+/// throughout a transfer from the projection this process still holds;
+/// everything else answers `transferring` until a coordinator owns the
+/// database again. `Shutdown` and `Reload` are handled before this.
+fn mutates(request: &Request) -> bool {
+    !matches!(
+        request,
+        Request::Ping
+            | Request::Images
+            | Request::Stale { .. }
+            | Request::Reads { .. }
+            | Request::Checkpoints { .. }
+            | Request::Handoffs { .. }
+            | Request::Validations { .. }
+            | Request::WorktreeDiff { .. }
+            | Request::Discover
+            | Request::Runtimes
+            | Request::List { .. }
+            | Request::Inspect { .. }
+            | Request::Changes { .. }
+            | Request::Overlap { .. }
+            | Request::Questions { .. }
+            | Request::Activity { .. }
+            | Request::Waiting
+            | Request::Contests { .. }
+            | Request::Journal { digest: None, .. }
+            | Request::Channels { .. }
+            | Request::Leases { .. }
+            | Request::Events { .. }
+            | Request::ResumeEvents { .. }
+            | Request::Logs { .. }
+            | Request::DeliveryQueue { .. }
+            | Request::Subscribe { .. }
+            | Request::Attach { .. }
+            | Request::AttachInput { .. }
+            | Request::AttachResize { .. }
+    )
+}
+
 pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
@@ -200,6 +254,11 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
+    /// Whether this process may write the database. Serving is the
+    /// ordinary case. Offering a transfer stops every writer here,
+    /// request or tick, until the successor accepts (this process exits
+    /// without touching agents) or the offer is aborted (writing resumes).
+    coordination: Coordination,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
@@ -1005,6 +1064,7 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
+                coordination: Coordination::Serving,
                 registry,
                 leases,
                 inboxes,
@@ -1122,6 +1182,11 @@ impl Daemon {
         }
         if let Some(error) = lock(&self.state).storage_failure() {
             return error;
+        }
+        if mutates(&request)
+            && let Some(refusal) = lock(&self.state).transferring()
+        {
+            return refusal;
         }
         // Boxed: `handle_healthy` is one match over every request the
         // protocol has, so the future it returns is as large as the
@@ -3544,6 +3609,10 @@ impl State {
         if self.storage_error.is_some() {
             return None;
         }
+        if self.fenced() {
+            debug!(%what, "store operation skipped: coordination is being transferred");
+            return None;
+        }
         let started = state_timing_start();
         let result = op(&self.store);
         state_timing_finish(what, started);
@@ -3578,6 +3647,128 @@ impl State {
             None => Attribution::External,
         }
     }
+    /// Whether writes are fenced off because a transfer is in flight.
+    fn fenced(&self) -> bool {
+        !matches!(self.coordination, Coordination::Serving)
+    }
+
+    /// The answer a mutating request gets while fenced.
+    fn transferring(&self) -> Option<Response> {
+        self.fenced().then(|| {
+            Response::error(
+                ErrorCode::Transferring,
+                "the daemon is handing coordination to its successor; nothing was applied, retry against the daemon that answers next",
+            )
+        })
+    }
+
+    /// Stop writing and record the offer durably: the last write this
+    /// process makes until the offer settles. Refused while a storage
+    /// failure is latched (nothing here is trustworthy to hand over) or
+    /// while another offer is open.
+    fn offer_transfer(&mut self, successor_pid: u32) -> Result<Transfer, Box<Response>> {
+        if let Some(error) = self.storage_failure() {
+            return Err(Box::new(error));
+        }
+        if self.fenced() {
+            return Err(Box::new(Response::error(
+                ErrorCode::Conflict,
+                "a coordination transfer is already in flight",
+            )));
+        }
+        let transfer = Transfer {
+            id: AgentId::generate().to_string(),
+            predecessor_pid: std::process::id(),
+            successor_pid: Some(successor_pid),
+            state: TransferState::Offered,
+            offered_at: Utc::now(),
+            settled_at: None,
+        };
+        let mut event = Event::new(
+            EventKind::DaemonTransferOffered {
+                transfer: transfer.id.clone(),
+                successor_pid,
+            },
+            transfer.offered_at,
+        );
+        event.seq = self.next_seq;
+        let offered = self.store_op("transfer offer", |store| {
+            let offered = store.offer_transfer(&transfer)?;
+            if offered {
+                store.append_event(&event)?;
+            }
+            Ok(offered)
+        });
+        match offered {
+            Some(true) => {
+                self.next_seq += 1;
+                let _ = self.events.send(event);
+                self.coordination = Coordination::Quiescing {
+                    transfer: transfer.id.clone(),
+                };
+                info!(transfer = %transfer.id, successor_pid, "coordination offered; writes fenced");
+                Ok(transfer)
+            }
+            Some(false) => Err(Box::new(Response::error(
+                ErrorCode::Conflict,
+                "another coordination transfer is still offered in the database",
+            ))),
+            None => Err(Box::new(self.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::Internal, "cannot record the offer")
+            }))),
+        }
+    }
+
+    /// Take authority back: abort the offer if it is still ours to abort.
+    /// Returns whether writing resumed. If the successor accepted first,
+    /// this process must leave: it says so and stays fenced.
+    fn abort_transfer(&mut self, reason: &str) -> bool {
+        let Coordination::Quiescing { transfer } = self.coordination.clone() else {
+            return !self.fenced();
+        };
+        // Written past the fence on purpose: settling is the one write a
+        // fenced coordinator may make, and only as a compare-and-set.
+        let now = Utc::now();
+        let settled = self
+            .store
+            .settle_transfer(&transfer, None, TransferState::Aborted, now);
+        match settled {
+            Ok(true) => {
+                self.coordination = Coordination::Serving;
+                let mut event = Event::new(
+                    EventKind::DaemonTransferAborted {
+                        transfer: transfer.clone(),
+                        reason: reason.to_owned(),
+                    },
+                    now,
+                );
+                event.seq = self.next_seq;
+                self.persist("transfer abort", |store| store.append_event(&event));
+                if self.storage_error.is_none() {
+                    self.next_seq += 1;
+                    let _ = self.events.send(event);
+                }
+                warn!(%transfer, reason, "coordination transfer aborted; writing resumed");
+                true
+            }
+            Ok(false) => {
+                // Not ours to abort any more: the successor accepted.
+                self.coordination = Coordination::Transferred { transfer };
+                false
+            }
+            Err(err) => {
+                error!(%err, "cannot settle the transfer; staying fenced");
+                false
+            }
+        }
+    }
+
+    /// What the store says about the offer, read past the fence: the
+    /// predecessor's way to learn that a silent successor did accept.
+    fn transfer_state(&self) -> Option<Transfer> {
+        self.store.transfer().ok().flatten()
+    }
+
     fn storage_failure(&self) -> Option<Response> {
         self.storage_error.as_ref().map(|error| {
             Response::error(
@@ -3589,6 +3780,12 @@ impl State {
 
     fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
         if self.storage_error.is_some() {
+            return;
+        }
+        if self.fenced() {
+            // Not an error: the caller's request was refused before it got
+            // here, and a tick writer simply skips its turn. Nothing lands.
+            debug!(%what, "write skipped: coordination is being transferred");
             return;
         }
         if let Err(err) = write(&self.store) {
