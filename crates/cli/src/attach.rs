@@ -23,9 +23,61 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     if !stdin.is_terminal() {
         bail!("attach needs a terminal; run it from a shell rather than a pipe");
     }
-    let size = agentdocker_host::pty::window_size(stdin.as_raw_fd());
-    let (cols, rows) = size.unzip();
+    let (mut reader, mut write_half) = open(client, agent, stdin.as_raw_fd()).await?;
 
+    eprintln!("attached to {agent}; press Ctrl-] to detach without stopping it");
+    // Raw mode from here, restored by the guard however this ends.
+    let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
+        .context("cannot put this terminal in raw mode")?;
+    let mut keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
+    let outcome = loop {
+        match pump(reader, write_half, &mut keys, tokio::io::stdout()).await {
+            Ok(Left::Lost) if client.still_served().await => {
+                // The daemon was replaced underneath this attachment. The
+                // terminal itself never moved: its session owner outlives
+                // any daemon, so the successor attaches to the same one.
+                match open(client, agent, stdin.as_raw_fd()).await {
+                    Ok(reopened) => {
+                        eprint!("\r\n[the daemon was replaced; attached again to {agent}]\r\n");
+                        (reader, write_half) = reopened;
+                    }
+                    Err(error) => {
+                        eprint!("\r\n{agent} ended: {error:#}\r\n");
+                        break Ok(());
+                    }
+                }
+            }
+            Ok(Left::Lost) => {
+                eprint!("\r\n{agent} ended\r\n");
+                break Ok(());
+            }
+            Ok(Left::Ended) => {
+                eprint!("\r\n{agent} ended\r\n");
+                break Ok(());
+            }
+            Ok(Left::Detached) => {
+                eprint!("\r\ndetached from {agent}; it is still running\r\n");
+                break Ok(());
+            }
+            Err(error) => break Err(error),
+        }
+    };
+    // The guard restores the terminal as it drops; say goodbye on a fresh
+    // line either way.
+    eprint!("\r\n");
+    outcome
+}
+
+type Attached = (
+    BufReader<agentdocker_host::ipc::OwnedReadHalf>,
+    agentdocker_host::ipc::OwnedWriteHalf,
+);
+
+/// Attach to the agent's terminal at this window size and read the
+/// daemon's acknowledgement, so a refusal arrives as an error rather than
+/// as silence.
+async fn open(client: &Client, agent: &str, terminal: i32) -> Result<Attached> {
+    let (cols, rows) = agentdocker_host::pty::window_size(terminal).unzip();
     let stream = client
         .open(&Request::Attach {
             agent: agent.to_owned(),
@@ -40,8 +92,6 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     // whatever it had buffered with it.
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
-    // The daemon acknowledges before the first byte, so a refusal arrives
-    // as an error rather than as silence.
     let mut line = String::new();
     if tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await? == 0 {
         bail!("agentd closed the connection without attaching");
@@ -51,28 +101,29 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
         Response::Error { message, .. } => bail!("{message}"),
         other => bail!("unexpected reply to attach: {other:?}"),
     }
-
-    eprintln!("attached to {agent}; press Ctrl-] to detach without stopping it");
-    // Raw mode from here, restored by the guard however this ends.
-    let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
-        .context("cannot put this terminal in raw mode")?;
-    let keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
-    let outcome = pump(reader, write_half, agent, keys, tokio::io::stdout()).await;
-    // The guard restores the terminal as it drops; say goodbye on a fresh
-    // line either way.
-    eprint!("\r\n");
-    outcome
+    Ok((reader, write_half))
 }
 
-/// Keystrokes out, terminal bytes in, until the agent ends or the human
-/// detaches.
+/// How an attachment came to an end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Left {
+    /// The human pressed Ctrl-]; the agent runs on.
+    Detached,
+    /// The daemon said `end`: the agent's terminal is closed.
+    Ended,
+    /// The connection closed with nothing said: the daemon went away,
+    /// which is not the same as the agent ending.
+    Lost,
+}
+
+/// Keystrokes out, terminal bytes in, until the agent ends, the human
+/// detaches, or the daemon goes away.
 async fn pump<R, W, K, S>(
     mut reader: BufReader<R>,
     mut write_half: W,
-    agent: &str,
     mut keys: K,
     mut screen: S,
-) -> Result<()>
+) -> Result<Left>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -90,7 +141,7 @@ where
             // What the agent printed.
             read = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line) => {
                 if read? == 0 {
-                    break;
+                    return Ok(Left::Lost);
                 }
                 match serde_json::from_str::<Response>(&line)? {
                     Response::Output { data } => {
@@ -102,7 +153,7 @@ where
                     Response::Lagged { skipped } => {
                         eprint!("\r\n[{skipped} bytes of output were dropped]\r\n");
                     }
-                    Response::End => break,
+                    Response::End => return Ok(Left::Ended),
                     Response::Error { message, .. } => bail!("{message}"),
                     _ => {}
                 }
@@ -111,15 +162,14 @@ where
             typed = keys.read(&mut buffer) => {
                 let read = typed?;
                 if read == 0 {
-                    break;
+                    return Ok(Left::Detached);
                 }
                 if let Some(at) = buffer[..read].iter().position(|byte| *byte == DETACH) {
                     // Send whatever preceded the detach, then leave.
                     if at > 0 {
                         send_input(&mut write_half, &buffer[..at]).await?;
                     }
-                    eprint!("\r\ndetached from {agent}; it is still running\r\n");
-                    return Ok(());
+                    return Ok(Left::Detached);
                 }
                 send_input(&mut write_half, &buffer[..read]).await?;
             }
@@ -134,8 +184,6 @@ where
             }
         }
     }
-    eprint!("\r\n{agent} ended\r\n");
-    Ok(())
 }
 
 async fn send_input(write_half: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> Result<()> {
@@ -187,13 +235,37 @@ mod tests {
         // loop by reaching EOF; the far end of this pair stays open.
         let (_typing, keys) = tokio::io::duplex(64);
         let mut screen = Vec::new();
-        pump(reader, write_half, "agent", keys, &mut screen)
-            .await
-            .unwrap();
+        let left = pump(reader, write_half, keys, &mut screen).await.unwrap();
+        assert_eq!(left, Left::Ended);
         assert_eq!(
             String::from_utf8_lossy(&screen),
             "hello from the agent",
             "the frame buffered behind the handshake still reached the screen"
         );
+    }
+
+    /// A connection that closes with nothing said is the daemon going
+    /// away, which `run` tells apart from the agent ending: a replaced
+    /// daemon's successor still has the same terminal to attach to.
+    #[tokio::test]
+    async fn a_silent_close_is_reported_as_lost_not_ended() {
+        let output = serde_json::to_string(&Response::Output {
+            data: protocol::encode_bytes(b"still here"),
+        })
+        .unwrap();
+        let (mut daemon, client) = tokio::io::duplex(4096);
+        daemon
+            .write_all(format!("{output}\n").as_bytes())
+            .await
+            .unwrap();
+        drop(daemon);
+        let (read_half, write_half) = tokio::io::split(client);
+        let (_typing, keys) = tokio::io::duplex(64);
+        let mut screen = Vec::new();
+        let left = pump(BufReader::new(read_half), write_half, keys, &mut screen)
+            .await
+            .unwrap();
+        assert_eq!(left, Left::Lost);
+        assert_eq!(String::from_utf8_lossy(&screen), "still here");
     }
 }

@@ -119,6 +119,23 @@ event continuity, not just a new socket or a readiness marker.
 5. **Connected clients.** Preserve or resume terminal and question/event streams,
    provider input polls, pending questions and leases across the transition.
    Reconnection must retain drafts, receipts and original question expiry.
+   *In source, for the CLI:* a request answered `transferring` is retried
+   unchanged for 35 s (longer than a handover can take), so `send`, `claim`,
+   MCP tools and hooks ride out the window; `attach`, `watch` and plain
+   `events` tell a silent close with a daemon still answering (a
+   replacement) from an `end` (the agent or stream over) and subscribe or
+   attach again, saying so; `daemon reload` waits for a mutation still
+   executing instead of surfacing `backpressure`. Pending questions and
+   leases are durable and continue under the successor; an `ask` held open
+   on the predecessor returns an error when it leaves, and its answer
+   arrives in the asker's inbox as for any `ask` that ended early. Covered
+   by a fake-daemon test file (`crates/cli/tests/client_resume.rs`) and by
+   the real chain test, which follows two handovers with a live `events`
+   stream. Still ahead: the desktop app's request worker shows
+   `transferring` rather than retrying (its event stream already resumes by
+   cursor), provider input polls and an attached terminal's unsubmitted
+   draft have not been trialled across a switch, and a checked event
+   stream's cursor replay across a switch is not yet recorded.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
    schema compatibility permits it, and report the actual serving version.
