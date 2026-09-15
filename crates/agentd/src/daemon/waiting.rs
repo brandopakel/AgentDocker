@@ -162,7 +162,7 @@ impl State {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     pub(super) fn report_input(
@@ -283,7 +283,7 @@ impl State {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     pub(super) fn report_activity(
@@ -336,7 +336,7 @@ impl State {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     /// Whether it is this waiter's turn. A claim with no ticket has not

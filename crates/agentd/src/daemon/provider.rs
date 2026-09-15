@@ -171,7 +171,7 @@ impl State {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 }
 

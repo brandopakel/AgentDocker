@@ -381,7 +381,7 @@ impl Daemon {
             &channel,
             format!("{} opened this channel: {task}", record.spec.name),
         );
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -446,7 +446,7 @@ impl Daemon {
                 state.append_journal(entry);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -484,7 +484,7 @@ impl Daemon {
             }
             Ok(())
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Pruned {
@@ -539,7 +539,7 @@ impl Daemon {
             }),
             None,
         );
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }
@@ -656,7 +656,7 @@ impl Daemon {
         ) {
             state.append_journal(entry);
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Channel { channel }

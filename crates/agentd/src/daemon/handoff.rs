@@ -223,7 +223,7 @@ impl Daemon {
         let _ = state.persist("handoff", |store| {
             store.put_document_with_event("handoff", &id, &bundle, &event)
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.next_seq += 1;
@@ -379,7 +379,7 @@ impl Daemon {
         let _ = state.persist("handoff import", |store| {
             store.import_handoff(&checkpoint, &bundle, &event)
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.next_seq += 1;

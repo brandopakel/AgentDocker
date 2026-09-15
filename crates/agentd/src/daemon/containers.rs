@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_grant_distinguishes_stopped_endpoint_from_storage_failure() {
+    async fn workspace_grant_distinguishes_stopped_endpoint_from_write_failure() {
         use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
         let tmp = tempfile::tempdir().unwrap();
         let daemon = open(tmp.path(), Arc::new(Fake::default()));

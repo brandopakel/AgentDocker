@@ -1059,16 +1059,45 @@ mod fence_tests {
                 "memory unchanged"
             );
             assert!(matches!(
-                state.storage_failure(),
+                state.write_failure(),
                 Some(Response::Error {
                     code: ErrorCode::Transferring,
                     ..
                 })
             ));
+            assert!(
+                state.storage_failure().is_none(),
+                "a skip is not a storage failure"
+            );
         }
+        // Reads are served from the projection the skip left alone: the
+        // latch refuses the next write, never a ping, a listing or an
+        // inspection.
+        assert!(matches!(
+            daemon.handle(Request::Ping).await,
+            Response::Pong { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Inspect {
+                    agent: a.to_string()
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::List {
+                    all: false,
+                    project: None,
+                    labels: Default::default(),
+                })
+                .await,
+            Response::Agents { .. }
+        ));
         assert!(daemon.abort_transfer("cleanup"));
         assert!(
-            lock(&daemon.state).storage_failure().is_none(),
+            lock(&daemon.state).write_failure().is_none(),
             "cleared by the abort"
         );
         daemon.mark_exited(&a, AgentStatus::Exited { code: Some(0) });

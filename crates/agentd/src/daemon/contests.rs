@@ -142,7 +142,7 @@ impl Daemon {
             measure: metric.measure.name().to_owned(),
             entrants: ids,
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();
@@ -178,7 +178,7 @@ impl Daemon {
                 state.channels.insert(room.id.clone(), room);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();
@@ -283,7 +283,7 @@ impl Daemon {
         {
             state.tell_channel(&room, standing_line(&contest, &standing));
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Contest { contest, standing }
@@ -455,7 +455,7 @@ impl Daemon {
                 state.append_journal(entry);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();

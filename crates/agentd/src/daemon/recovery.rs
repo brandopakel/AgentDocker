@@ -84,7 +84,7 @@ impl Daemon {
         let _ = state.persist("checkpoint prune", |store| {
             store.delete_checkpoints_with_event(&gone, &event)
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.next_seq += 1;
@@ -208,7 +208,7 @@ impl Daemon {
         let _ = state.persist("checkpoint", |store| {
             store.put_document_with_event("checkpoint", &id, &checkpoint, &event)
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.next_seq += 1;
@@ -401,7 +401,7 @@ impl Daemon {
                         &events,
                     )
                 });
-                if let Some(error) = state.storage_failure() {
+                if let Some(error) = state.write_failure() {
                     // The table already moved these leases; put exactly
                     // them back so memory matches what was (not) written.
                     if let Some(b) = &bundle {
@@ -563,7 +563,7 @@ impl Daemon {
             let _ = state.persist("validation start", |store| {
                 store.put_document_with_event("validation", &id, &validation, &event)
             });
-            if let Some(error) = state.storage_failure() {
+            if let Some(error) = state.write_failure() {
                 return error;
             }
             state.next_seq += 1;
@@ -631,7 +631,7 @@ impl Daemon {
         let _ = state.persist("validation finish", |store| {
             store.put_document_with_event("validation", &id, &validation, &event)
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.next_seq += 1;
@@ -955,7 +955,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(state.leases.by_holder(&owner).len(), 1);
-        assert!(state.storage_failure().is_some());
+        assert!(state.write_failure().is_some());
     }
 
     #[tokio::test]
@@ -1007,7 +1007,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(state.storage_failure().is_some());
+        assert!(state.write_failure().is_some());
     }
 
     #[tokio::test]

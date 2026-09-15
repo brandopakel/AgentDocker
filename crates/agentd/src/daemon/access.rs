@@ -35,7 +35,7 @@ impl State {
         let _ = self.persist("access transition", |store| {
             store.put_document_with_event("access", id, grant, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return Err(Box::new(error));
         }
         self.next_seq += 1;
@@ -47,7 +47,7 @@ impl State {
         self.store_op("access read", |store| store.document("access", id))
             .ok_or_else(|| {
                 Box::new(
-                    self.storage_failure()
+                    self.write_failure()
                         .expect("failed read records storage failure"),
                 )
             })

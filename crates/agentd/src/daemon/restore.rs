@@ -369,14 +369,14 @@ impl Daemon {
     /// so in the record itself rather than in state nobody can see.
     pub(super) fn clear_restore(self: &Arc<Self>, id: &AgentId) {
         let mut state = lock(&self.state);
-        let Some(record) = state.registry.get_mut(id) else {
+        let Some(current) = state.registry.get(id) else {
             return;
         };
-        if !record.spec.restore {
+        if !current.spec.restore {
             return;
         }
+        let mut record = current.clone();
         record.spec.restore = false;
-        let record = record.clone();
         let mut event = Event::new(
             EventKind::AgentRestoreCleared {
                 agent: record.id.clone(),
@@ -388,7 +388,10 @@ impl Daemon {
             store.agent_transition(&record, &event)?;
             store.delete_document("restore_point", id.as_str())
         });
+        // The intent stays until its clearing is durable: a fenced or
+        // failed write leaves memory saying what the disk still says.
         if committed == Persisted::Committed {
+            *state.registry.get_mut(id).expect("resolved agent") = record;
             state.next_seq += 1;
             let _ = state.events.send(event);
         }
@@ -452,14 +455,15 @@ impl Daemon {
                 Utc::now(),
             );
             event.seq = state.next_seq;
-            if !cancelled {
-                let _ = state.persist("restore completion", |store| {
+            // The supervisor owns the child/PID on every path. Expose the
+            // Running record only alongside its committed restore event: a
+            // write the fence skipped commits nothing, so nothing is exposed
+            // and the child is stopped below like any failed completion.
+            let committed = !cancelled
+                && state.persist("restore completion", |store| {
                     store.finish_restore(&running, &event)
-                });
-            }
-            if state.storage_error.is_none() && !cancelled {
-                // The supervisor owns the child/PID on every path. Expose the
-                // Running record only alongside its committed restore event.
+                }) == Persisted::Committed;
+            if committed {
                 *state
                     .registry
                     .get_mut(&id)
@@ -474,7 +478,7 @@ impl Daemon {
                     None,
                 );
             }
-            !cancelled && state.storage_error.is_none()
+            committed
         };
         let activation_error = if persisted {
             spawned.activate("restored").await.err()
@@ -614,10 +618,12 @@ impl Daemon {
         for (index, event) in events.iter_mut().enumerate() {
             event.seq = state.next_seq + index as u64;
         }
-        let _ = state.persist("restore preparation", |store| {
+        let committed = state.persist("restore preparation", |store| {
             store.prepare_restore(&record, &point, &leases, &events)
         });
-        storage_ready(&state)?;
+        if committed != Persisted::Committed {
+            return Err(storage_error(&state));
+        }
         state.leases = planned;
         *state
             .registry
@@ -680,6 +686,11 @@ impl Daemon {
 }
 
 fn storage_error(state: &State) -> anyhow::Error {
+    if state.storage_error.is_none() && state.fenced() {
+        return anyhow::anyhow!(
+            "coordination is being transferred; restoration is left to the daemon that writes next"
+        );
+    }
     anyhow::anyhow!(
         "storage unavailable: {}",
         state.storage_error.as_deref().unwrap_or("unknown failure")
@@ -1488,6 +1499,75 @@ mod tests {
         restoring.await.unwrap();
         assert!(!marker.exists(), "no worker on failed attachment");
         assert!(lock(&daemon.state).supervised.is_empty());
+    }
+
+    /// While coordination is offered to a successor, a restore writes
+    /// nothing and changes nothing: no lease moves in memory, no writer
+    /// starts, the restore point stays, and the store has no fault. The
+    /// daemon that writes next — this one after an abort — restores it.
+    #[tokio::test]
+    async fn a_fenced_restore_leaves_the_intent_for_the_daemon_that_writes_next() {
+        let (_dir, daemon, record, marker) = saved().await;
+        let leases_before = lock(&daemon.state).leases.by_holder(&record.id).len();
+        let seq_before = lock(&daemon.state).next_seq;
+        daemon.offer_transfer(1).expect("nothing in flight");
+
+        daemon.restore_agents().await;
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.storage_error.is_none(),
+                "a fenced skip is not a fault"
+            );
+            assert!(!marker.exists(), "no writer starts while fenced");
+            assert!(state.supervised.is_empty());
+            assert_eq!(state.leases.by_holder(&record.id).len(), leases_before);
+            assert_eq!(
+                state.registry.get(&record.id).unwrap().status,
+                record.status,
+                "not even the starting identity moved"
+            );
+            assert!(
+                state
+                    .store
+                    .document::<RestorePoint>("restore_point", record.id.as_str())
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                state.next_seq,
+                seq_before + 1,
+                "only the offer itself was recorded"
+            );
+        }
+        // An explicit stop while fenced cannot clear the intent either:
+        // memory keeps saying what the disk says.
+        daemon.clear_restore(&record.id);
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&record.id)
+                .unwrap()
+                .spec
+                .restore,
+            "restore intent survives a fenced clear"
+        );
+
+        assert!(daemon.abort_transfer("test"));
+        daemon.restore_agents().await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !marker.exists() {
+            assert!(
+                deadline > std::time::Instant::now(),
+                "restored after the abort"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            lock(&daemon.state).registry.get(&record.id).unwrap().status,
+            AgentStatus::Running
+        );
+        daemon.stop_all().await;
     }
 
     #[tokio::test]

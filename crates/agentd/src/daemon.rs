@@ -294,9 +294,10 @@ struct State {
     /// side effect it might otherwise race.
     in_flight: usize,
     /// The last write was skipped by the fence. Every existing "did it
-    /// land" check reads `storage_failure()`, so a skip is reported there
+    /// land" check reads `write_failure()`, so a skip is reported there
     /// as `transferring` until a later write lands or the offer is
-    /// aborted; unlike a storage failure it is not latched for good.
+    /// aborted; unlike a storage failure it is not latched for good, and
+    /// unlike one it never refuses a read.
     skipped_write: bool,
     registry: Registry,
     leases: LeaseTable,
@@ -1291,8 +1292,14 @@ impl Daemon {
         // caller that awaits a `handle` inside its own async fn pays for
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
+        let control = !admitted;
         let response = Box::pin(self.handle_healthy(request)).await;
-        lock(&self.state).storage_failure().unwrap_or(response)
+        if control {
+            // Reads and control requests answer for themselves: a write the
+            // fence skipped meanwhile is not their failure.
+            return response;
+        }
+        lock(&self.state).write_failure().unwrap_or(response)
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -1783,7 +1790,7 @@ impl Daemon {
                         None
                     }
                 };
-                let failed = lock(&self.state).storage_failure().or(admission_error);
+                let failed = lock(&self.state).write_failure().or(admission_error);
                 let activation_error = if failed.is_none() && updated.is_some() {
                     spawned.activate("launched").await.err()
                 } else {
@@ -3084,7 +3091,7 @@ impl Daemon {
                     Some(Some(seq)) => Some(seq),
                     Some(None) => return Response::Pruned { removed: 0 },
                     None => {
-                        return state.storage_failure().unwrap_or_else(|| {
+                        return state.write_failure().unwrap_or_else(|| {
                             Response::error(ErrorCode::Internal, "journal prune failed")
                         });
                     }
@@ -3438,12 +3445,12 @@ impl Daemon {
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
-                if let Some(error) = state.storage_failure() {
+                if let Some(error) = state.write_failure() {
                     return error;
                 }
                 let now = Utc::now();
                 state.expire_leases_at(now);
-                if let Some(error) = state.storage_failure() {
+                if let Some(error) = state.write_failure() {
                     return error;
                 }
                 // Fairness: a waiter with somebody ahead of it on an
@@ -3461,7 +3468,7 @@ impl Daemon {
                     let committed = state.leases.committed(&resource);
                     if committed.saturating_add(want) > capacity {
                         state.touch(&holder);
-                        if let Some(error) = state.storage_failure() {
+                        if let Some(error) = state.write_failure() {
                             return error;
                         }
                         return Response::Error {
@@ -3522,7 +3529,7 @@ impl Daemon {
                             now,
                         ) {
                             return state
-                                .storage_failure()
+                                .write_failure()
                                 .expect("failed lease commit freezes storage");
                         }
                         drop(state);
@@ -3539,7 +3546,7 @@ impl Daemon {
                             now,
                         ) {
                             return state
-                                .storage_failure()
+                                .write_failure()
                                 .expect("failed lease commit freezes storage");
                         }
                         drop(state);
@@ -3562,7 +3569,7 @@ impl Daemon {
                 });
                 if !state.commit_lease_activity(&holder, None, conflict, now) {
                     return state
-                        .storage_failure()
+                        .write_failure()
                         .expect("failed conflict commit freezes storage");
                 }
                 if !reported_conflict {
@@ -3764,7 +3771,7 @@ impl State {
     /// failure is latched (nothing here is trustworthy to hand over) or
     /// while another offer is open.
     fn offer_transfer(&mut self, successor_pid: u32) -> Result<Transfer, Box<Response>> {
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return Err(Box::new(error));
         }
         if self.fenced() {
@@ -3817,7 +3824,7 @@ impl State {
                 ErrorCode::Conflict,
                 "another coordination transfer is still offered in the database",
             ))),
-            None => Err(Box::new(self.storage_failure().unwrap_or_else(|| {
+            None => Err(Box::new(self.write_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::Internal, "cannot record the offer")
             }))),
         }
@@ -3871,16 +3878,27 @@ impl State {
         self.store.transfer().ok().flatten()
     }
 
+    /// Storage has failed for good: nothing may be served from this
+    /// projection, reads included, until a restart reloads durable state.
     fn storage_failure(&self) -> Option<Response> {
-        if let Some(error) = &self.storage_error {
-            return Some(Response::error(
+        self.storage_error.as_ref().map(|error| {
+            Response::error(
                 ErrorCode::StorageUnavailable,
                 format!("storage failed ({error}); coordination disabled until daemon restart"),
-            ));
+            )
+        })
+    }
+
+    /// Did the last write land? A storage failure, or a write the fence
+    /// skipped: whatever the caller was about to apply in memory must not
+    /// be, and the client must retry later. A skip is not the reads'
+    /// concern: they keep being served from the projection the skip left
+    /// as it was.
+    fn write_failure(&self) -> Option<Response> {
+        if let Some(error) = self.storage_failure() {
+            return Some(error);
         }
         if self.skipped_write {
-            // A fenced write did not land: whatever the caller was about to
-            // apply in memory must not be, and the client must retry later.
             return self.transferring();
         }
         None
@@ -3900,7 +3918,7 @@ impl State {
         if self.fenced() {
             // Not an error: the caller's request was refused before it got
             // here, and a tick writer simply skips its turn. Nothing lands,
-            // and `storage_failure()` says so until a write does.
+            // and `write_failure()` says so until a write does.
             debug!(%what, "write skipped: coordination is being transferred");
             self.skipped_write = true;
             return Persisted::Skipped;
@@ -4015,7 +4033,7 @@ impl State {
         let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
         event.seq = self.next_seq;
         let _ = self.persist("agent removal", |store| store.delete_agent(&id, &event));
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         self.registry.remove(&id);
@@ -4233,7 +4251,7 @@ impl State {
         let _ = self.persist("inbox acknowledgement", |store| {
             store.ack_inbox(&id, &messages, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
@@ -4328,7 +4346,7 @@ impl State {
         }
         let now = Utc::now();
         self.expire_leases_at(now);
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         let result = self
@@ -4346,7 +4364,7 @@ impl State {
                     now,
                 ) {
                     return self
-                        .storage_failure()
+                        .write_failure()
                         .expect("failed renewal freezes storage");
                 }
                 Response::Lease { lease }
@@ -4990,7 +5008,7 @@ impl State {
                 Response::Pruned { removed }
             }
             None => self
-                .storage_failure()
+                .write_failure()
                 .unwrap_or_else(|| Response::error(ErrorCode::Internal, "journal prune failed")),
         }
     }
@@ -5065,11 +5083,11 @@ impl State {
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
     ) -> Response {
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         self.expire_questions(Utc::now());
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
@@ -5176,7 +5194,7 @@ impl State {
                 &events,
             )
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         for id in &recipients {
@@ -5223,7 +5241,7 @@ impl State {
         mut record: AgentRecord,
         announce_start: bool,
     ) -> Response {
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if record.spec.name.is_empty() {
@@ -5362,7 +5380,7 @@ impl State {
                 let _ = self.persist("session binding", |store| {
                     store.agent_transition(&updated, &event)
                 });
-                if let Some(error) = self.storage_failure() {
+                if let Some(error) = self.write_failure() {
                     return error;
                 }
                 *self.registry.get_mut(&id).expect("just found") = updated;
@@ -5418,7 +5436,7 @@ impl State {
             self.move_cursor(record.id.as_str(), &project_id, seed);
             self.journal_event(&record, JournalKind::Join, what);
         }
-        self.storage_failure()
+        self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
 }
@@ -13868,7 +13886,7 @@ deny = ["send:all"]
         *state.registry.get_mut(&owner.id).unwrap() = before.clone();
         state.store.reject_agent_writes_for_test();
         state.touch(&owner.id);
-        assert!(state.storage_failure().is_some());
+        assert!(state.write_failure().is_some());
         assert_eq!(state.registry.get(&owner.id).unwrap(), &before);
         assert_eq!(state.store.load_agents().unwrap(), [before]);
     }
@@ -13956,7 +13974,7 @@ deny = ["send:all"]
                 } else {
                     state.journal_add("owner", "must roll back".into());
                 }
-                assert!(state.storage_failure().is_some());
+                assert!(state.write_failure().is_some());
             }
             assert!(live.try_recv().is_err());
             drop(daemon);

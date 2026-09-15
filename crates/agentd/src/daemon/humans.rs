@@ -452,7 +452,7 @@ impl Daemon {
             Ok(agent) => agent,
             Err(response) => return *response,
         };
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let Some(question) = state.questions.get(message) else {
@@ -475,7 +475,7 @@ impl Daemon {
         let _ = state.persist("question cancellation", |store| {
             store.close_questions(std::slice::from_ref(message), std::slice::from_ref(&event))
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.questions.remove(message);
@@ -513,7 +513,7 @@ impl Daemon {
         };
         let mut state = lock(&self.state);
         state.expire_questions(Utc::now());
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         if !state.questions.contains_key(&message) {
@@ -1059,7 +1059,7 @@ mod tests {
             let mut pending = question(300);
             pending.to = Destination::Agent(recipient.id);
             assert!(!remember(&mut state, pending));
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.is_empty());
             assert!(state.inboxes.values().all(VecDeque::is_empty));
             assert!(state.store.load_inboxes().unwrap().is_empty());
@@ -1118,7 +1118,7 @@ mod tests {
             let mut state = lock(&daemon.state);
             state.store.reject_event_for_test("question_closed");
             state.expire_questions(pending.expires_at);
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.contains_key(&pending.id));
             assert_eq!(
                 state.store.documents::<Question>("question", None).unwrap(),
