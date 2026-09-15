@@ -69,7 +69,12 @@ impl Daemon {
         }
     }
 
-    pub(super) fn thread(&self, message: MessageId) -> Response {
+    pub(super) fn thread(
+        &self,
+        message: MessageId,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> Response {
         let state = lock(&self.state);
         let root = match state.store.archived(&message) {
             Ok(Some(root)) => root,
@@ -83,7 +88,7 @@ impl Daemon {
         };
         match state
             .store
-            .thread_replies(&root.envelope.id, &root.conversation, 500)
+            .thread_replies(&root.envelope.id, &root.conversation, after_seq, limit)
         {
             Ok(replies) => Response::Thread { root, replies },
             Err(error) => Response::error(ErrorCode::StorageUnavailable, error.to_string()),
@@ -451,9 +456,19 @@ impl State {
             // Read already: a cursor never moves back.
             return Response::Ok;
         }
-        let covered = match self.store.message_ids_through(conversation, through) {
-            Ok(ids) => ids,
-            Err(error) => return Response::error(ErrorCode::StorageUnavailable, error.to_string()),
+        // A cursor is the reader's; the queue may not be. A queue with an
+        // owner (a bound controller, the daemon's own bridge) is drained
+        // only by that owner's receipts, so reading moves the cursor and
+        // leaves every row where it is.
+        let covered = if self.input_owner(reader).is_some() {
+            Vec::new()
+        } else {
+            match self.store.message_ids_through(conversation, through) {
+                Ok(ids) => ids,
+                Err(error) => {
+                    return Response::error(ErrorCode::StorageUnavailable, error.to_string());
+                }
+            }
         };
         let acknowledged: Vec<MessageId> = self
             .inboxes
@@ -610,6 +625,8 @@ mod tests {
         let Response::Thread { root, replies } = daemon
             .handle(Request::Thread {
                 message: first.clone(),
+                after_seq: None,
+                limit: 100,
             })
             .await
         else {
@@ -636,8 +653,13 @@ mod tests {
             Some(first.clone()),
             "kept as data"
         );
-        let Response::Thread { replies, .. } =
-            daemon.handle(Request::Thread { message: first }).await
+        let Response::Thread { replies, .. } = daemon
+            .handle(Request::Thread {
+                message: first,
+                after_seq: None,
+                limit: 100,
+            })
+            .await
         else {
             panic!()
         };
@@ -647,7 +669,9 @@ mod tests {
         assert!(matches!(
             daemon
                 .handle(Request::Thread {
-                    message: MessageId::generate()
+                    message: MessageId::generate(),
+                    after_seq: None,
+                    limit: 100,
                 })
                 .await,
             Response::Error {
@@ -896,5 +920,79 @@ mod tests {
                 .any(|c| c.conversation == ConversationId::notices(&alice.id)),
             "alice's notices are not bob's"
         );
+    }
+
+    /// A reader whose queue has an owner keeps its cursor like anyone, but
+    /// reading drains nothing: the owner's receipts do that.
+    #[tokio::test]
+    async fn reading_never_drains_a_queue_that_has_an_owner() {
+        use agentdocker_core::{ProcessIdentity, ProviderGeneration};
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let mut spec = AgentSpec {
+            name: "receiver".into(),
+            runtime: "custom".into(),
+            workdir: Some(work.clone()),
+            ..Default::default()
+        };
+        spec.labels.insert("session_id".into(), "sess".into());
+        let Response::Agent { agent: receiver } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed");
+        };
+        let me = std::process::id();
+        let identity = ProcessIdentity {
+            pid: me,
+            started_at: agentdocker_host::procinfo::start_time(me).unwrap(),
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: identity.clone(),
+                        session: "sess".into(),
+                        profile: "/etc/hosts".into(),
+                    },
+                    controller: identity,
+                    token: "0123456789abcdef0123456789abcdef".into(),
+                    launch: None,
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        send(&daemon, "alice", "receiver", "for the model", None).await;
+        let dm = ConversationId::dm(alice.id.as_str(), receiver.id.as_str());
+        let seq = history(&daemon, &dm).await[0].seq;
+        assert!(matches!(
+            daemon
+                .handle(Request::MarkRead {
+                    conversation: dm.clone(),
+                    through: seq,
+                    reader: Some("receiver".into()),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(
+            lock(&daemon.state).inboxes[&receiver.id].len(),
+            1,
+            "the bound queue keeps its row for the controller's receipt"
+        );
+        let mine = conversations(&daemon, "receiver")
+            .await
+            .into_iter()
+            .find(|c| c.conversation == dm)
+            .unwrap();
+        assert_eq!(mine.unread, 0, "the cursor moved all the same");
     }
 }

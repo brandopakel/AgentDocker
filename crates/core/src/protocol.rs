@@ -634,10 +634,15 @@ pub enum Request {
         #[serde(default = "default_history_limit")]
         limit: usize,
     },
-    /// A thread: one root and the replies under it, in its conversation.
+    /// A thread: one root and the replies under it, in its conversation,
+    /// after `after_seq`, at most `limit`; page by the last reply's seq.
     /// Answers `thread`.
     Thread {
         message: MessageId,
+        #[serde(default)]
+        after_seq: Option<u64>,
+        #[serde(default = "default_history_limit")]
+        limit: usize,
     },
     /// A reader has read a conversation through an archived seq: the
     /// cursor moves forward, never back, and only the reader's own queued

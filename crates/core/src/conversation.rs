@@ -199,9 +199,12 @@ pub struct ReadCursor {
 
 /// The text of a message as a line: the payload's `text`, or the JSON.
 pub fn line_of(envelope: &Envelope) -> String {
-    match envelope.payload.get("text").and_then(|t| t.as_str()) {
-        Some(text) => text.to_owned(),
-        None => envelope.payload.to_string(),
+    match &envelope.payload {
+        serde_json::Value::String(text) => text.clone(),
+        payload => match payload.get("text").and_then(|t| t.as_str()) {
+            Some(text) => text.to_owned(),
+            None => payload.to_string(),
+        },
     }
 }
 

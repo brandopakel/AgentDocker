@@ -105,6 +105,22 @@ enum Cmd {
     /// Text from the person to every agent in a project, receipted under
     /// the agent whose conversation it was typed in.
     ProjectSend(String, String, String),
+    /// The person's conversations, in one project (a selector) or everywhere.
+    Conversations(Option<String>),
+    /// The archived history of one conversation.
+    History(String),
+    /// One root and its replies.
+    Thread(MessageId),
+    /// The person read a conversation through an archive seq.
+    MarkRead(String, u64),
+    /// Text from the person into a conversation: `to` is the destination
+    /// the conversation stands for, `reply_to` a thread root.
+    ConversationSend {
+        conversation: String,
+        to: String,
+        text: String,
+        reply_to: Option<MessageId>,
+    },
 }
 
 /// A bounded, read-only log snapshot. No console command is constructed, and
@@ -198,6 +214,14 @@ enum Msg {
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
     SessionSent(String, Result<MessageId, String>),
+    /// `Err` when the daemon does not know conversations at all.
+    Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
+    History(String, Vec<agentdocker_core::ArchivedMessage>),
+    Thread(
+        agentdocker_core::ArchivedMessage,
+        Vec<agentdocker_core::ArchivedMessage>,
+    ),
+    ConversationSent(String, Result<MessageId, String>),
 }
 
 pub struct App {
@@ -247,6 +271,17 @@ pub struct App {
     /// shows.
     channels: Vec<agentdocker_core::Channel>,
     inbox: Vec<agentdocker_core::Envelope>,
+    /// What the person can read, as the daemon lists it; `None` until the
+    /// daemon has answered, `Some(false)` from a daemon without it.
+    conversations: Vec<agentdocker_core::ConversationSummary>,
+    conversations_supported: Option<bool>,
+    /// Archived history per conversation, oldest first, as last fetched.
+    history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
+    /// The open thread: its root and replies.
+    thread: Option<(
+        agentdocker_core::ArchivedMessage,
+        Vec<agentdocker_core::ArchivedMessage>,
+    )>,
     /// Confirmed sends from this window. Inbox polling must not erase them.
     /// Receipt times are local; this bounded cache is not durable channel history.
     sent_channels: std::collections::VecDeque<agentdocker_core::Envelope>,
@@ -350,6 +385,10 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            conversations: Vec::new(),
+            conversations_supported: None,
+            history: BTreeMap::new(),
+            thread: None,
             sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
@@ -404,6 +443,10 @@ impl App {
             journal_project: None,
             channels: Vec::new(),
             inbox: Vec::new(),
+            conversations: Vec::new(),
+            conversations_supported: None,
+            history: BTreeMap::new(),
+            thread: None,
             sent_channels: Default::default(),
             smoke: None,
             setup_plan: None,
@@ -739,6 +782,72 @@ impl App {
                         Err(error) => self.shell.error = Some(error),
                     }
                 }
+                Msg::Conversations(result) => match result {
+                    Ok(conversations) => {
+                        self.conversations_supported = Some(true);
+                        self.conversations = conversations;
+                        // Reading the open conversation as its history arrives
+                        // marks it read; a conversation that gained unread
+                        // words while open is fetched again.
+                        if let Some(open) = self.shell.conversation.clone()
+                            && self.screen == Screen::Questions
+                        {
+                            self.send(Cmd::History(open));
+                        }
+                    }
+                    Err(error) => {
+                        if self.conversations_supported.is_none() {
+                            eprintln!("conversations unavailable, the inbox stays: {error}");
+                        }
+                        self.conversations_supported = Some(false);
+                    }
+                },
+                Msg::History(conversation, messages) => {
+                    let open = self.shell.conversation.as_deref() == Some(conversation.as_str());
+                    if open
+                        && self.screen == Screen::Questions
+                        && let Some(last) = messages.last()
+                        && self
+                            .conversations
+                            .iter()
+                            .any(|c| c.conversation.as_str() == conversation && c.unread > 0)
+                    {
+                        self.send(Cmd::MarkRead(conversation.clone(), last.seq));
+                    }
+                    self.history.insert(conversation, messages);
+                    while self.history.len() > 32
+                        && let Some(oldest) = self
+                            .history
+                            .keys()
+                            .find(|k| Some(k.as_str()) != self.shell.conversation.as_deref())
+                            .cloned()
+                    {
+                        self.history.remove(&oldest);
+                    }
+                }
+                Msg::Thread(root, replies) => {
+                    if self.shell.thread.as_ref() == Some(&root.envelope.id) {
+                        self.thread = Some((root, replies));
+                    }
+                }
+                Msg::ConversationSent(conversation, result) => {
+                    let draft = self
+                        .shell
+                        .conversation_drafts
+                        .entry(conversation.clone())
+                        .or_default();
+                    match result {
+                        Ok(_) => {
+                            draft.complete(Ok(()));
+                            self.send(Cmd::History(conversation.clone()));
+                            if let Some(root) = self.shell.thread.clone() {
+                                self.send(Cmd::Thread(root));
+                            }
+                            self.send(Cmd::Conversations(self.conversation_scope()));
+                        }
+                        Err(error) => draft.complete(Err(error)),
+                    }
+                }
                 Msg::SessionSent(id, result) => {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
                         match result {
@@ -791,6 +900,9 @@ impl App {
         // worker. Coming back re-reads everything anyway.
         if self.connected.is_ok() && self.last_refresh.elapsed() >= REFRESH {
             self.last_refresh = Instant::now();
+            if self.conversations_supported != Some(false) {
+                self.send(Cmd::Conversations(self.conversation_scope()));
+            }
             for cmd in [
                 Cmd::Agents,
                 Cmd::Leases,
@@ -875,7 +987,13 @@ impl App {
             // the next two-second sweep: somebody is blocked on it.
             EventKind::MessageSent { kind, .. } if kind == "question" || kind == "answer" => {
                 self.send(Cmd::Questions);
+                self.on_conversation_activity();
             }
+            EventKind::MessageSent { .. }
+            | EventKind::ConversationRead { .. }
+            | EventKind::ChannelOpened { .. }
+            | EventKind::ChannelJoined { .. }
+            | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
             EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
                 self.send(Cmd::Questions)
             }
@@ -1037,6 +1155,61 @@ impl App {
         let selector = self.project_selector(&id);
         self.send(Cmd::Channels(id, selector));
     }
+    /// The project the sidebar is scoped to, as a selector, or none for
+    /// everywhere.
+    pub(crate) fn conversation_scope(&self) -> Option<String> {
+        self.shell
+            .catalog
+            .selected()
+            .map(|entry| entry.project.dir().display().to_string())
+    }
+
+    /// Where a message typed into a conversation goes: the destination the
+    /// conversation stands for, or none for the daemon's own notices.
+    pub(crate) fn conversation_destination(&self, conversation: &str) -> Option<String> {
+        use agentdocker_core::{ConversationId, ConversationKind};
+        let id = ConversationId::from(conversation);
+        match id.kind()? {
+            ConversationKind::Everyone => id
+                .everyone_project()
+                .map(|p| format!("project:{}", p.as_str())),
+            ConversationKind::All => Some("all".to_owned()),
+            ConversationKind::Channel | ConversationKind::Collision => {
+                id.channel_id().map(|c| format!("channel:{c}"))
+            }
+            ConversationKind::Dm => {
+                let human = self
+                    .agents
+                    .iter()
+                    .find(|a| a.spec.runtime == "human")
+                    .map(|a| a.id.as_str().to_owned())
+                    .unwrap_or_else(|| agentdocker_core::HUMAN.to_owned());
+                let (a, b) = id.dm_parties()?;
+                Some(if a == human {
+                    b.to_owned()
+                } else {
+                    a.to_owned()
+                })
+            }
+            ConversationKind::Notices => None,
+        }
+    }
+
+    /// Something was said or read: the sidebar and the open conversation
+    /// are fetched again, if this daemon has conversations at all.
+    fn on_conversation_activity(&mut self) {
+        if self.conversations_supported == Some(false) {
+            return;
+        }
+        self.send(Cmd::Conversations(self.conversation_scope()));
+        if let Some(open) = self.shell.conversation.clone() {
+            self.send(Cmd::History(open));
+        }
+        if let Some(root) = self.shell.thread.clone() {
+            self.send(Cmd::Thread(root));
+        }
+    }
+
     fn request_journal(&mut self, id: String) {
         let selector = self.project_selector(&id);
         self.send(Cmd::Journal(id, selector));
@@ -1561,6 +1734,61 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
         },
+        Cmd::Conversations(project) => match client.call(&Request::Conversations {
+            project,
+            reader: None,
+        }) {
+            Ok(Response::Conversations { conversations }) => {
+                Some(Msg::Conversations(Ok(conversations)))
+            }
+            Ok(_) => None,
+            // An older daemon answers `invalid` for a request it has never
+            // heard of; that is "no conversations here", not a failure.
+            Err(error) => Some(Msg::Conversations(Err(error.to_string()))),
+        },
+        Cmd::History(conversation) => match client.call(&Request::History {
+            conversation: agentdocker_core::ConversationId::from(conversation.clone()),
+            before_seq: None,
+            limit: 200,
+        })? {
+            Response::History { messages } => Some(Msg::History(conversation, messages)),
+            _ => None,
+        },
+        Cmd::Thread(message) => match client.call(&Request::Thread {
+            message,
+            after_seq: None,
+            limit: 200,
+        })? {
+            Response::Thread { root, replies } => Some(Msg::Thread(root, replies)),
+            _ => None,
+        },
+        Cmd::MarkRead(conversation, through) => {
+            client.call(&Request::MarkRead {
+                conversation: agentdocker_core::ConversationId::from(conversation),
+                through,
+                reader: None,
+            })?;
+            None
+        }
+        Cmd::ConversationSend {
+            conversation,
+            to,
+            text,
+            reply_to,
+        } => {
+            let response = client.call(&Request::Send {
+                from: agentdocker_core::HUMAN.into(),
+                to,
+                kind: "message".into(),
+                payload: serde_json::json!({ "text": text }),
+                reply_to,
+            })?;
+            let result = match response {
+                Response::Sent { message, .. } => Ok(message),
+                other => Err(format!("Unexpected send response: {other:?}")),
+            };
+            Some(Msg::ConversationSent(conversation, result))
+        }
         Cmd::SessionSend(agent, text) => {
             let response = client.call(&Request::Send {
                 from: agentdocker_core::HUMAN.into(),

@@ -35,6 +35,17 @@ pub(super) struct State {
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
     pub message_detail: Option<MessageId>,
+    /// The conversation open in Messages, by its id (`everyone:<project>`,
+    /// `channel:<id>`, `dm:<a>:<b>`, ...), and the thread root open beside
+    /// it, if any.
+    pub conversation: Option<String>,
+    pub thread: Option<MessageId>,
+    pub conversation_drafts: BTreeMap<String, ChannelDraft>,
+    /// The sidebar's filter text.
+    pub messages_search: String,
+    /// Whether the collapsed sidebar groups are open.
+    pub collisions_open: bool,
+    pub earlier_open: bool,
     /// The conversation open in Inbox: one agent, or every agent at once.
     pub inbox_thread: Option<String>,
     /// In a narrow window Inbox shows either the list or one conversation;
@@ -188,6 +199,14 @@ pub enum Message {
     QuestionDetails(MessageId),
     /// Open one agent's conversation in Inbox, or all of them.
     SelectThread(Option<String>),
+    SelectConversation(String),
+    ConversationDraft(String, String),
+    SendConversation(String),
+    OpenThread(MessageId),
+    CloseThread,
+    MessagesSearch(String),
+    ToggleCollisions,
+    ToggleEarlier,
     /// Back from a conversation to the list, in a narrow window.
     InboxList,
     /// Send the agent's draft to everyone in its project as well.
@@ -319,7 +338,9 @@ impl App {
             &message,
             Message::Draft(..)
                 | Message::SessionDraft(..)
+                | Message::ConversationDraft(..)
                 | Message::SelectThread(_)
+                | Message::SelectConversation(_)
                 | Message::InboxList
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
@@ -577,6 +598,63 @@ impl App {
                         Some("Finish or clear an earlier message draft first.".into());
                 }
             }
+            Message::SelectConversation(id) => {
+                if self.shell.conversation.as_deref() != Some(id.as_str()) {
+                    self.shell.thread = None;
+                    self.thread = None;
+                }
+                self.shell.conversation = Some(id.clone());
+                self.shell.inbox_open = true;
+                if self.connected.is_ok() {
+                    self.send(Cmd::History(id));
+                }
+            }
+            Message::ConversationDraft(id, text) => {
+                if self.shell.conversation_drafts.contains_key(&id)
+                    || self.shell.conversation_drafts.len() < 128
+                {
+                    self.shell
+                        .conversation_drafts
+                        .entry(id)
+                        .or_default()
+                        .edit(text);
+                } else {
+                    self.shell.error =
+                        Some("Finish or clear an earlier message draft first.".into());
+                }
+            }
+            Message::SendConversation(id) => {
+                let to = self.conversation_destination(&id);
+                if self.connected.is_ok()
+                    && let Some(to) = to
+                    && let Some(draft) = self.shell.conversation_drafts.get_mut(&id)
+                    && let Some(text) = draft.begin()
+                {
+                    let reply_to = self.shell.thread.clone();
+                    self.send(Cmd::ConversationSend {
+                        conversation: id,
+                        to,
+                        text,
+                        reply_to,
+                    });
+                }
+            }
+            Message::OpenThread(root) => {
+                self.shell.thread = Some(root.clone());
+                self.thread = None;
+                if self.connected.is_ok() {
+                    self.send(Cmd::Thread(root));
+                }
+            }
+            Message::CloseThread => {
+                self.shell.thread = None;
+                self.thread = None;
+            }
+            Message::MessagesSearch(text) => {
+                self.shell.messages_search = text.chars().take(200).collect();
+            }
+            Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
+            Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
             Message::SendSession(id) => {
                 if self.connected.is_ok()
                     && self.agents.iter().any(|a| {

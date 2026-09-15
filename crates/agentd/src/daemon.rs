@@ -1614,7 +1614,11 @@ impl Daemon {
                 before_seq,
                 limit,
             } => self.history(conversation, before_seq, limit),
-            Request::Thread { message } => self.thread(message),
+            Request::Thread {
+                message,
+                after_seq,
+                limit,
+            } => self.thread(message, after_seq, limit),
             Request::MarkRead {
                 conversation,
                 through,

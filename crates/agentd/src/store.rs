@@ -156,6 +156,10 @@ pub struct Store {
     conn: Connection,
     /// Whether the SQLite build gave us FTS5; `--grep` falls back to LIKE.
     fts: bool,
+    /// Whether the message index is usable: off from the first index error
+    /// until restart, when the bootstrap rebuilds it, so search falls back
+    /// to LIKE at once rather than read an incomplete index.
+    messages_fts: std::cell::Cell<bool>,
 }
 
 /// A journal query; see [`Store::journal`].
@@ -713,7 +717,11 @@ impl Store {
                 tx.commit()?;
             }
         }
-        Ok(Self { conn, fts })
+        Ok(Self {
+            messages_fts: std::cell::Cell::new(fts),
+            conn,
+            fts,
+        })
     }
 
     // ----- agents ---------------------------------------------------------
@@ -988,13 +996,14 @@ impl Store {
                 serde_json::to_string(message)?,
             ],
         )?;
-        if inserted == 1 && self.fts {
+        if inserted == 1 && self.messages_fts.get() {
             let seq = conn.last_insert_rowid();
             if let Err(err) = conn.execute(
                 "INSERT INTO messages_fts (rowid, line) VALUES (?1, ?2)",
                 params![seq, line],
             ) {
-                tracing::warn!(%err, "messages_fts insert failed; search falls back to LIKE");
+                tracing::warn!(%err, "messages_fts insert failed; search falls back to LIKE until restart");
+                self.messages_fts.set(false);
                 conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
             }
         }
@@ -1090,15 +1099,17 @@ impl Store {
             .optional()?)
     }
 
-    /// The replies threaded under a root: same conversation, oldest first.
+    /// The replies threaded under a root: same conversation, oldest first,
+    /// after `after_seq`, at most `limit`; page by the last seq shown.
     pub fn thread_replies(
         &self,
         root: &MessageId,
         conversation: &ConversationId,
+        after_seq: Option<u64>,
         limit: usize,
     ) -> Result<Vec<ArchivedMessage>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {} FROM messages m WHERE m.reply_to = ?1 AND m.conversation = ?2 ORDER BY m.seq LIMIT ?3",
+            "SELECT {} FROM messages m WHERE m.reply_to = ?1 AND m.conversation = ?2 AND m.seq > ?3 ORDER BY m.seq LIMIT ?4",
             Self::ARCHIVED_COLUMNS
         ))?;
         Ok(stmt
@@ -1106,6 +1117,7 @@ impl Store {
                 params![
                     root.as_str(),
                     conversation.as_str(),
+                    after_seq.map_or(0, |s| i64::try_from(s).unwrap_or(i64::MAX)),
                     i64::try_from(limit.clamp(1, 500)).unwrap_or(500)
                 ],
                 Self::archived_row,
@@ -1257,7 +1269,8 @@ impl Store {
             ),
             None => String::new(),
         };
-        let sql = if self.fts {
+        let indexed = self.messages_fts.get();
+        let sql = if indexed {
             format!(
                 "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2) ORDER BY m.seq DESC LIMIT ?3",
                 Self::ARCHIVED_COLUMNS
@@ -1268,19 +1281,38 @@ impl Store {
                 Self::ARCHIVED_COLUMNS
             )
         };
-        let mut stmt = self.conn.prepare(&sql)?;
-        let term = if self.fts {
+        let term = if indexed {
             format!("\"{}\"", query.replace('"', ""))
         } else {
             query.to_owned()
         };
-        Ok(stmt
-            .query_map(params![before, term, limit], Self::archived_row)?
-            .collect::<std::result::Result<_, _>>()?)
+        let rows = self.conn.prepare(&sql).and_then(|mut stmt| {
+            stmt.query_map(params![before, term, limit], Self::archived_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+        });
+        match rows {
+            Ok(rows) => Ok(rows),
+            // An index that fails to answer is unusable: say so once, and
+            // answer this and every later search by LIKE.
+            Err(err) if indexed => {
+                tracing::warn!(%err, "messages_fts query failed; search falls back to LIKE until restart");
+                self.messages_fts.set(false);
+                self.search_messages(
+                    query,
+                    conversations,
+                    before_seq,
+                    usize::try_from(limit).unwrap_or(200),
+                )
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Drop archived messages older than `cutoff`, and beyond the cap per
-    /// conversation, in one bounded batch. Returns how many went.
+    /// conversation, within one budget of `batch` rows for the whole tick,
+    /// never a conversation's last message: the head stays, so the sidebar
+    /// keeps its last line and the sequence its meaning. Returns how many
+    /// went.
     pub fn prune_messages(
         &self,
         cutoff: Option<DateTime<Utc>>,
@@ -1288,34 +1320,45 @@ impl Store {
         batch: usize,
     ) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
-        let batch = i64::try_from(batch).unwrap_or(i64::MAX);
+        let mut budget = i64::try_from(batch).unwrap_or(i64::MAX);
         let mut removed = 0usize;
-        if let Some(cutoff) = cutoff {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT seq FROM messages WHERE sent_at < ?1 ORDER BY seq LIMIT ?2")?;
+        // A row is a head when it is its conversation's newest.
+        const NOT_HEAD: &str = "seq < (SELECT MAX(h.seq) FROM messages h WHERE h.conversation = messages.conversation)";
+        if let Some(cutoff) = cutoff
+            && budget > 0
+        {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT seq FROM messages WHERE sent_at < ?1 AND {NOT_HEAD} ORDER BY seq LIMIT ?2"
+            ))?;
             let seqs: Vec<i64> = stmt
-                .query_map(params![cutoff.to_rfc3339(), batch], |row| row.get(0))?
+                .query_map(params![cutoff.to_rfc3339(), budget], |row| row.get(0))?
                 .collect::<std::result::Result<_, _>>()?;
-            removed += self.delete_archived(&seqs)?;
+            let went = self.delete_archived(&seqs)?;
+            removed += went;
+            budget -= i64::try_from(went).unwrap_or(i64::MAX);
         }
         let cap_i = i64::try_from(cap).unwrap_or(i64::MAX);
         let mut over = self.conn.prepare(
-            "SELECT conversation, COUNT(*) FROM messages GROUP BY conversation HAVING COUNT(*) > ?1",
+            "SELECT conversation, COUNT(*) FROM messages GROUP BY conversation HAVING COUNT(*) > ?1 ORDER BY conversation",
         )?;
         let crowded: Vec<(String, i64)> = over
             .query_map([cap_i], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?;
         drop(over);
         for (conversation, count) in crowded {
-            let excess = (count - cap_i).min(batch);
-            let mut stmt = self.conn.prepare(
-                "SELECT seq FROM messages WHERE conversation = ?1 ORDER BY seq LIMIT ?2",
-            )?;
+            if budget <= 0 {
+                break;
+            }
+            let excess = (count - cap_i).min(budget);
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT seq FROM messages WHERE conversation = ?1 AND {NOT_HEAD} ORDER BY seq LIMIT ?2"
+            ))?;
             let seqs: Vec<i64> = stmt
                 .query_map(params![conversation, excess], |row| row.get(0))?
                 .collect::<std::result::Result<_, _>>()?;
-            removed += self.delete_archived(&seqs)?;
+            let went = self.delete_archived(&seqs)?;
+            removed += went;
+            budget -= i64::try_from(went).unwrap_or(i64::MAX);
         }
         tx.commit()?;
         Ok(removed)
@@ -1327,10 +1370,15 @@ impl Store {
             removed += self
                 .conn
                 .execute("DELETE FROM messages WHERE seq = ?1", [seq])?;
-            if self.fts {
-                let _ = self
+            if self.messages_fts.get()
+                && let Err(err) = self
                     .conn
-                    .execute("DELETE FROM messages_fts WHERE rowid = ?1", [seq]);
+                    .execute("DELETE FROM messages_fts WHERE rowid = ?1", [seq])
+            {
+                tracing::warn!(%err, "messages_fts delete failed; search falls back to LIKE until restart");
+                self.messages_fts.set(false);
+                self.conn
+                    .execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
             }
         }
         Ok(removed)
@@ -2179,6 +2227,162 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(version, SCHEMA_VERSION.to_string());
+        }
+    }
+
+    fn archive_fixture() -> (Store, Vec<Envelope>) {
+        use agentdocker_core::{AgentSpec, Destination};
+        let conn = Connection::open_in_memory().unwrap();
+        let store = Store::init(conn).unwrap();
+        let a = AgentRecord::new(AgentSpec::default(), false, Utc::now());
+        let b = AgentRecord::new(AgentSpec::default(), false, Utc::now());
+        let mut sent = Vec::new();
+        // Twelve in one direct conversation, spaced a minute apart and old,
+        // then three in a channel, recent.
+        for n in 0..12 {
+            let at = Utc::now() - chrono::Duration::hours(2) + chrono::Duration::minutes(n);
+            let envelope = Envelope::new(
+                a.id.as_str(),
+                Destination::Agent(b.id.clone()),
+                "chat",
+                serde_json::json!({ "text": format!("old {n} lantern") }),
+                None,
+                at,
+            );
+            store
+                .publish_message(
+                    &envelope,
+                    std::slice::from_ref(&b.id),
+                    1000,
+                    None,
+                    None,
+                    None,
+                    &[],
+                )
+                .unwrap();
+            sent.push(envelope);
+        }
+        for n in 0..3 {
+            let envelope = Envelope::new(
+                b.id.as_str(),
+                Destination::Channel(agentdocker_core::ChannelId::from("room".to_owned())),
+                "chat",
+                serde_json::json!({ "text": format!("new {n}") }),
+                None,
+                Utc::now(),
+            );
+            store
+                .publish_message(
+                    &envelope,
+                    std::slice::from_ref(&a.id),
+                    1000,
+                    None,
+                    None,
+                    None,
+                    &[],
+                )
+                .unwrap();
+            sent.push(envelope);
+        }
+        (store, sent)
+    }
+
+    /// Pruning spends one budget for the whole tick across the age cutoff
+    /// and every crowded conversation, and never takes a conversation's
+    /// newest message, so its head and last line survive.
+    #[test]
+    fn pruning_keeps_heads_and_spends_one_budget_per_tick() {
+        let (store, sent) = archive_fixture();
+        let dm = ConversationId::of(&sent[0]).unwrap();
+        let room = ConversationId::of(&sent[12]).unwrap();
+        let cutoff = Some(Utc::now() - chrono::Duration::hours(1));
+        // Age would take eleven old rows (the twelfth is the head); the cap
+        // of one would take two of the room's three; the budget allows five.
+        let removed = store.prune_messages(cutoff, 1, 5).unwrap();
+        assert_eq!(
+            removed, 5,
+            "the budget bounds the tick, not each conversation"
+        );
+        let removed = store.prune_messages(cutoff, 1, 100).unwrap();
+        assert_eq!(
+            removed,
+            6 + 2,
+            "the rest of the old rows, then the room's excess"
+        );
+        let heads = store.conversation_heads().unwrap();
+        let head_of = |c: &ConversationId| heads.iter().find(|m| m.conversation == *c).cloned();
+        assert_eq!(
+            head_of(&dm).map(|m| m.envelope.id),
+            Some(sent[11].id.clone()),
+            "the direct conversation kept its newest message"
+        );
+        assert_eq!(
+            head_of(&room).map(|m| m.envelope.id),
+            Some(sent[14].id.clone()),
+            "the room kept its newest message"
+        );
+        assert_eq!(store.history(&dm, None, 100).unwrap().len(), 1);
+        assert_eq!(store.history(&room, None, 100).unwrap().len(), 1);
+        assert_eq!(
+            store.prune_messages(cutoff, 1, 100).unwrap(),
+            0,
+            "nothing more to take"
+        );
+    }
+
+    /// Search uses the index while it answers and falls back to LIKE the
+    /// moment it fails, without a restart.
+    #[test]
+    fn search_falls_back_to_like_when_the_index_fails() {
+        let (store, sent) = archive_fixture();
+        let found = store.search_messages("lantern", None, None, 50).unwrap();
+        assert_eq!(found.len(), 12);
+        assert!(
+            found.windows(2).all(|w| w[0].seq > w[1].seq),
+            "newest first"
+        );
+        let scoped = store
+            .search_messages(
+                "lantern",
+                Some(&[ConversationId::of(&sent[12]).unwrap()]),
+                None,
+                50,
+            )
+            .unwrap();
+        assert!(
+            scoped.is_empty(),
+            "scoped to the room, where nobody said it"
+        );
+        assert!(
+            store
+                .search_messages("lantern", Some(&[]), None, 50)
+                .unwrap()
+                .is_empty()
+        );
+        if store.fts {
+            store.conn.execute("DROP TABLE messages_fts", []).unwrap();
+            let found = store.search_messages("lantern", None, None, 50).unwrap();
+            assert_eq!(found.len(), 12, "answered by LIKE once the index failed");
+            assert!(!store.messages_fts.get());
+            // Later writes and searches keep working without the index.
+            let extra = Envelope::new(
+                "x",
+                agentdocker_core::Destination::Broadcast,
+                "chat",
+                serde_json::json!({ "text": "lantern again" }),
+                None,
+                Utc::now(),
+            );
+            store
+                .publish_message(&extra, &[], 1000, None, None, None, &[])
+                .unwrap();
+            assert_eq!(
+                store
+                    .search_messages("lantern", None, None, 50)
+                    .unwrap()
+                    .len(),
+                13
+            );
         }
     }
 

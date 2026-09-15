@@ -367,6 +367,11 @@ enum Command {
     Thread {
         /// The root message id.
         message: String,
+        /// Only replies after this archive sequence, for paging.
+        #[arg(long)]
+        after: Option<u64>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
     },
     /// Search the archived messages.
     Search {
@@ -1614,10 +1619,16 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Command::Thread { message } => {
+        Command::Thread {
+            message,
+            after,
+            limit,
+        } => {
             if let Response::Thread { root, replies } = client
                 .call(&Request::Thread {
                     message: MessageId::from(message),
+                    after_seq: after,
+                    limit,
                 })
                 .await?
             {
