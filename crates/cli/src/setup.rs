@@ -72,39 +72,6 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         let Some(spec) = spec(&runtime.name) else {
             continue;
         };
-        if let Some(path) = crate::skill::path(spec.name, &roots) {
-            if let Some(mutation) = &mutation {
-                mutation.covers(&path)?;
-            }
-            let before = guided::read_config(&path)?;
-            let after = crate::skill::installed_document();
-            if before.as_deref() == Some(after.as_str()) {
-                report(spec.name, "coordination skill", &path, Outcome::Present);
-            } else if before
-                .as_deref()
-                .is_some_and(|text| !crate::skill::unmodified_install(text))
-            {
-                eprintln!(
-                    "{}: existing coordination skill preserved at {}; use `agentdocker skill` to compare",
-                    spec.name,
-                    path.display()
-                );
-            } else {
-                if !dry_run {
-                    write_config(&path, before.as_deref(), &after)?;
-                }
-                report(
-                    spec.name,
-                    "coordination skill",
-                    &path,
-                    if dry_run {
-                        Outcome::Planned
-                    } else {
-                        Outcome::Added
-                    },
-                );
-            }
-        }
         match (
             spec.mcp,
             agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
@@ -164,6 +131,39 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                             .expect("non-preview setup owns mutation locks"),
                     )?;
                 }
+            }
+        }
+        if let Some(path) = crate::skill::path(spec.name, &roots) {
+            if let Some(mutation) = &mutation {
+                mutation.covers(&path)?;
+            }
+            let before = guided::read_config(&path)?;
+            let after = crate::skill::installed_document();
+            if before.as_deref() == Some(after.as_str()) {
+                report(spec.name, "coordination skill", &path, Outcome::Present);
+            } else if before
+                .as_deref()
+                .is_some_and(|text| !crate::skill::unmodified_install(text))
+            {
+                eprintln!(
+                    "{}: existing coordination skill preserved at {}; use `agentdocker skill` to compare",
+                    spec.name,
+                    path.display()
+                );
+            } else {
+                if !dry_run {
+                    write_config(&path, before.as_deref(), &after)?;
+                }
+                report(
+                    spec.name,
+                    "coordination skill",
+                    &path,
+                    if dry_run {
+                        Outcome::Planned
+                    } else {
+                        Outcome::Added
+                    },
+                );
             }
         }
     }
