@@ -740,17 +740,42 @@ impl State {
         launch: ControllerLaunch,
         now: DateTime<Utc>,
     ) -> Response {
-        let id = match self.resolve(reference) {
-            Ok(id) => id,
-            Err(response) => return *response,
-        };
-        let caller = self.registry.get(&id).expect("resolved agent").clone();
         if !launch.valid() || !provider.valid() || !Path::new(&provider.profile).is_absolute() {
             return Response::error(
                 ErrorCode::Invalid,
                 "resuming needs a valid provider generation with an absolute profile path and a valid launch descriptor",
             );
         }
+        // A lost reply, asked again: the caller's id is an alias by now.
+        // The same request gets the same answer; a different one is not
+        // a repeat, and there is no record left to resume from.
+        let retired = AgentId::from(reference);
+        if let Some(canonical) = self.registry.aliases().get(&retired).cloned() {
+            let binding = self
+                .registry
+                .get(&canonical)
+                .and_then(|r| r.input_binding.clone());
+            return match binding {
+                Some(binding)
+                    if binding.provider == provider && binding.launch.as_ref() == Some(&launch) =>
+                {
+                    Response::InputResumed {
+                        agent: canonical,
+                        retired,
+                        binding,
+                    }
+                }
+                _ => Response::error(
+                    ErrorCode::Conflict,
+                    "this id was already resumed into another record with a different generation or descriptor",
+                ),
+            };
+        }
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let caller = self.registry.get(&id).expect("resolved agent").clone();
         if !caller.status.is_live() || caller.managed || caller.input_binding.is_some() {
             return Response::error(
                 ErrorCode::Invalid,
@@ -834,14 +859,25 @@ impl State {
                 "the caller already holds leases or channel membership; resolve by hand",
             );
         }
-        if matches!(
-            self.store.document::<Vec<agentdocker_core::ReadMark>>("reads", caller.id.as_str()),
-            Ok(Some(reads)) if !reads.is_empty()
-        ) {
-            return Response::error(
-                ErrorCode::Conflict,
-                "the caller has recorded observations of its own; resolve by hand",
-            );
+        // Fail closed: a store that cannot say whether the caller observed
+        // anything must not authorise retiring it.
+        match self
+            .store
+            .document::<Vec<agentdocker_core::ReadMark>>("reads", caller.id.as_str())
+        {
+            Ok(Some(reads)) if !reads.is_empty() => {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the caller has recorded observations of its own; resolve by hand",
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Response::error(
+                    ErrorCode::StorageUnavailable,
+                    format!("the caller's observations could not be read: {error}"),
+                );
+            }
         }
         let (pid, started_at) = (provider.process.pid, provider.process.started_at);
         // The prior record with the caller's process, and its binding on
@@ -893,9 +929,14 @@ impl State {
         }
         binding.uncertain.retain(|m| queued.contains(m));
         canonical.input_binding = Some(binding.clone());
-        // The new descriptor may run from another release: hold that one.
-        self.controller_pins.remove(&prior.id);
+        // The new descriptor may run from another release: hold that one
+        // before letting go of the old, and put the old back if the
+        // resume does not commit.
+        let previous_pin = self.controller_pins.remove(&prior.id);
         if let Err(error) = self.pin_controller(&prior.id, &launch) {
+            if let Some(pin) = previous_pin {
+                self.controller_pins.insert(prior.id.clone(), pin);
+            }
             return Response::error(
                 ErrorCode::Invalid,
                 format!("the launch descriptor's release cannot be held: {error}"),
@@ -920,6 +961,9 @@ impl State {
         });
         if let Some(error) = self.storage_failure() {
             self.controller_pins.remove(&prior.id);
+            if let Some(pin) = previous_pin {
+                self.controller_pins.insert(prior.id.clone(), pin);
+            }
             return error;
         }
         if let Err(error) = self.registry.retire_into(&caller.id, &prior.id) {
@@ -1612,6 +1656,38 @@ mod tests {
             Response::InputBound { resumed: true, agent, .. } if agent == prior.id
         ));
         signal(&launched, Signal::SIGKILL);
+        // A lost reply asked again is answered the same way, with nothing
+        // new recorded; a different request through the alias is refused.
+        let seq = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeInput {
+                    agent: fresh.id.to_string(),
+                    predecessor: prior.id.to_string(),
+                    provider: generation(profile.clone()),
+                    launch: descriptor(&dir),
+                })
+                .await,
+            Response::InputResumed { agent, retired, .. } if agent == prior.id && retired == fresh.id
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, seq);
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeInput {
+                    agent: fresh.id.to_string(),
+                    predecessor: prior.id.to_string(),
+                    provider: generation(profile.clone()),
+                    launch: ControllerLaunch {
+                        args: vec!["-c".into(), "true".into()],
+                        ..descriptor(&dir)
+                    },
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
         // Durable: a reopened daemon knows the alias and the joined queue.
         drop(daemon);
         let daemon = open(&dir);
