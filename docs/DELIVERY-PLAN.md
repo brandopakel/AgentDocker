@@ -102,6 +102,14 @@ event do not complete this requirement, and an inbox acknowledgement does not
 prove provider acceptance. The audit document defines the required artifacts and
 negative-path acceptance cases.
 
+September 15 blocking checkpoint: the native Codex candidate at `5f72f37`
+falsely paused delivery while a direct user turn was still running beyond
+45 seconds. Queued input remained retained without resubmission. PRs #148/#149
+are draft; merge and installation wait for a corrected live-activity decision
+and actual long-busy, idle-wake and recovery acceptance. Earlier short-busy
+passes do not close this failure; the existing
+[native queue evidence](verification/2026-09-15-native-codex-queue.json) retains it.
+
 The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.
 
 The [September 11 Claude adapter checkpoint](verification/2026-09-11-claude-channel-input.json)

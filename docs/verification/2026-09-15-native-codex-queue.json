@@ -1556,5 +1556,120 @@
     "raw_result_sha256": "fc18a853850c927e40065fc86ad17ff1e41b24552221fc7b58bf1837ea8a4670",
     "binary_build_source": "bb1e50c",
     "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
+  },
+  "long_busy_blocker_5f72f37": {
+    "status": "open",
+    "merge_and_installation": "PRs 148 and 149 are draft; do not merge/install until fixed and actual acceptance passes.",
+    "trials": [
+      {
+        "started_at": "2026-09-15T22:02:06.817556+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "61f188d22da2fdd1e4181b09338d9fae7cc1b43f8b4d82dc55205d1668cfcc26",
+        "source": {
+          "commit": "5f72f370cdd7dd1393a46bba331825d74027652d",
+          "dirty": false,
+          "rust_and_driver_sha256": "490f7b4217635edcd4e0195af07da58a9f5737419e0a2ec8fb06ae85bbf2cd18"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 94309,
+        "thread": "01a0a717-73cc-7791-a5fa-eeb515cb2d8d",
+        "agent": "d941865459dc4fbb84c568b004a6f92c",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.633691166993231,
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "07385edc2eb7c2d4e845abf2aecd426d5eee1b010951f1f88264c90cdbe9bbf2",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy25-2026-09-15/result.json",
+        "artifact_sha256": "3fbaac08418a0ee884df8f128017e06f03a5322bd604928d541e82991a7c14ca",
+        "classification": "fixture-input-failure",
+        "finding": "Text and Enter in the same PTY burst left the busy-start prompt as a draft. Corrected trial 26 separated text, a 0.5-second delay, and Enter."
+      },
+      {
+        "started_at": "2026-09-15T22:04:17.793266+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "967fe1783a87a31f80395e2d0d8eddf8059d44ddecfba6cf467da7a92c063114",
+        "source": {
+          "commit": "5f72f370cdd7dd1393a46bba331825d74027652d",
+          "dirty": false,
+          "rust_and_driver_sha256": "1874e1f9b9c2f1b1be711f52fce124f5179939854da0dcd22ac4159b29179fd5"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 1866,
+        "thread": "01a0a719-734b-7483-933b-6c7835e74e12",
+        "agent": "c4c8393d0ff242c4a9508198a4bc2b00",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.632111749990145,
+        "long_busy_samples": [
+          {
+            "at_seconds": 5.005241000006208,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 10.006393750023562,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 15.007043209014228,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 20.00886983401142,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 25.012740792008117,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 30.01485329202842,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 35.01994862500578,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 40.02208662501653,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 45.025295459025074,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          }
+        ],
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "9c22393a89ccd9ae8b41bb21a960de0ea23404083d8e6db7bc86a90dd964805e",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy26-2026-09-15/result.json",
+        "artifact_sha256": "e6c789b123d5e2808bf3e71feca5c88c7bee2e90c48a09d34c55eacadecc7d47",
+        "classification": "application-defect",
+        "finding": "A real direct user turn stayed active while peer input remained in the native queue without a receipt. At about 50 seconds the receiver falsely paused it as idle. The copied rollout records task_started without task_complete for this turn. Historical turn status is not sufficient evidence of live TUI idleness."
+      }
+    ],
+    "follow_up_diagnostic": "A read-only sidecar over only the copied rollout returned notLoaded metadata and an empty turn page. The private profile/database had already been retired, so this reconstruction does not reproduce the live sidecar response. Capture live responses in the next isolated trial; do not infer an idle session from absent history."
   }
 }

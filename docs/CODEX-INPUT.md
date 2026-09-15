@@ -73,8 +73,14 @@ Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
 those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
 open; historical schema-19 answer migration passed its bounded fixture.
-An idle native queue entry without a provider receipt pauses after 45 seconds;
-active turns and permission waits retain their normal ordering.
+The candidate's 45-second idle guard is **blocked by a real long-busy failure**.
+At `5f72f37`, a direct user turn held open for over 45 seconds retained peer input
+in the native queue, but the receiver incorrectly classified the turn as idle
+and paused delivery. Its historical turn query does not establish live TUI
+idleness. PRs #148/#149 are draft and installation is on hold until this is fixed
+and the long-busy, idle-wake and recovery trials pass together. Trial 25 was a
+separate fixture input failure; trial 26 is the application defect. Both are
+retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
 
 ## New managed conversations
 
