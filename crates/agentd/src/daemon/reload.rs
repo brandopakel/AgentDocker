@@ -71,9 +71,24 @@ pub fn enabled() -> bool {
     std::env::var(ENABLE).ok().as_deref() == Some("1")
 }
 
-/// The executable a reload hands over to. Absent, the daemon's own; an
-/// installer sets it to the reviewed release it just activated.
+/// The executable a reload hands over to. Absent, the release the
+/// managed installation has activated since this daemon started, if any;
+/// otherwise the daemon's own executable.
 pub const CANDIDATE: &str = "AGENTDOCKER_RELOAD_CANDIDATE";
+
+/// Which executable a reload hands over to, and why.
+pub fn candidate() -> std::io::Result<(PathBuf, &'static str)> {
+    if let Some(path) = std::env::var_os(CANDIDATE) {
+        return Ok((PathBuf::from(path), "named by the environment"));
+    }
+    // Resolved, not as invoked: a daemon started through the launcher link
+    // must still know which release directory it runs from.
+    let own = agentdocker_host::procinfo::executable_path()?;
+    match agentdocker_host::installation::activated_daemon(&own) {
+        Some(activated) => Ok((activated, "the release the installation activated")),
+        None => Ok((own, "this daemon's own executable")),
+    }
+}
 
 /// What the predecessor hands over, beside the descriptors themselves.
 ///
@@ -363,12 +378,9 @@ impl Daemon {
     /// serving. On any failure take authority back if the store still
     /// lets us.
     async fn replace(self: &Arc<Self>, held: &Held) -> Result<(), Box<Response>> {
-        let candidate = match std::env::var_os(CANDIDATE) {
-            Some(path) => PathBuf::from(path),
-            None => std::env::current_exe().map_err(|e| {
-                Self::unavailable(format!("cannot find this daemon's executable: {e}"))
-            })?,
-        };
+        let (candidate, chosen) = candidate()
+            .map_err(|e| Self::unavailable(format!("cannot find this daemon's executable: {e}")))?;
+        info!(candidate = %candidate.display(), chosen, "reload candidate");
         let info = tokio::task::spawn_blocking({
             let candidate = candidate.clone();
             move || build_info(&candidate, BUILD_INFO_WITHIN)

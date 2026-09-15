@@ -847,6 +847,13 @@ pub enum Response {
         /// absent when it is off or still starting.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         restricted: Option<std::path::PathBuf>,
+        /// The serving daemon's process, and the executable it runs from:
+        /// after a reload these say which release actually serves, which
+        /// the version alone cannot when two releases share one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        executable: Option<std::path::PathBuf>,
     },
     Agent {
         agent: AgentRecord,

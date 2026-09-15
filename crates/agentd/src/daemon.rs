@@ -1443,6 +1443,8 @@ impl Daemon {
                     RestrictedEndpoint::On(socket) => Some(socket),
                     _ => None,
                 },
+                pid: Some(std::process::id()),
+                executable: agentdocker_host::procinfo::executable_path().ok(),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {

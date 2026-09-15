@@ -625,12 +625,18 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     version,
                     uptime_secs,
                     restricted,
+                    pid,
+                    executable,
                 }) => {
                     println!(
-                        "daemon    agentd {version} up {} at {}",
+                        "daemon    agentd {version} up {} at {}{}",
                         format::span_secs(uptime_secs),
-                        socket.display()
+                        socket.display(),
+                        pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
                     );
+                    if let Some(executable) = executable {
+                        println!("serving   {}", executable.display());
+                    }
                     match restricted {
                         Some(path) => println!("container {}", path.display()),
                         None => println!(

@@ -139,6 +139,29 @@ event continuity, not just a new socket or a readiness marker.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
    schema compatibility permits it, and report the actual serving version.
+   *In source, gated:* a daemon started from a managed installation runs
+   from its pinned version directory, so its own path always names the
+   release it started from; a reload now hands over to the release the
+   installation has activated since (`current/payload`), resolved through
+   the kernel's path for the running executable, and only otherwise to its
+   own executable. `desktop install`, `update --apply` and `rollback` ask a
+   running daemon to reload once the release is activated and report the
+   daemon's own answer under `daemon`: `reloaded` with what serves now, or
+   the refusal and what keeps serving; nothing is started. `pong` carries
+   the serving pid and executable, and `daemon status` and `desktop
+   status` show them. Pins are unchanged: the predecessor releases its
+   own pin when it leaves, the successor pins its release at startup, and
+   session owners keep theirs until their agents end, so retention still
+   cannot remove a release anything runs from. Rollback reloads to the
+   previous release only within the same state schema, as before.
+   Covered by `scripts/desktop_reload_smoke.py` (in the desktop
+   workflow): a gated daemon started through the launcher link is
+   reloaded by an install of a second generation and again by the
+   rollback, keeping its agent's process both times, and the reports and
+   `daemon status` name the release that serves. Still ahead: the
+   installed launchd/systemd service does not set the gate, so an
+   installation today reports the refusal and keeps the previous daemon
+   serving until a restart; that changes when the gate is removed.
 
 ## Acceptance before enabling reload
 
