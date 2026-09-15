@@ -1506,5 +1506,55 @@
       "agentd": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9"
     },
     "scope": "Final review corrections after965-test integrated baseline; actual provider acceptance follows on frozen release binaries."
+  },
+  "release_review_legacy_reply_b2c3938": {
+    "started_at": "2026-09-15T21:23:03.415859+00:00",
+    "scenario": "legacy-reply",
+    "result": "passed",
+    "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+    "driver_sha256": "055fd9333a8e84f530b460b8c8de96bb74025532a0442262b2783d10da30575f",
+    "source": {
+      "commit": "b2c3938382866820eaff9f8bcbdbea856bcb6c4b",
+      "dirty": false,
+      "rust_and_driver_sha256": "7d2260392f798f57341a94995fbe19f9b604d50b58616602f36fa1b81bb16470"
+    },
+    "provider_version": "codex-cli 0.154.0",
+    "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+    "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+    "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+    "pid": 8012,
+    "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+    "agent": "3fb86841580f4429854b1edd93319741",
+    "automatic_hook_bootstrap": true,
+    "idle_wake_seconds": 7.352060540986713,
+    "cross_process_receipt": {
+      "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+      "turn": "01a0a6f3-da3e-7310-bd0d-7fd28cf0f9a4",
+      "item": "01a0a6f3-da4e-7313-a91f-1397ce56162f"
+    },
+    "no_conversation_resume": true,
+    "daemon_receipt": {
+      "messages": [
+        "627d8c58445a493d"
+      ],
+      "receipt": {
+        "provider": "codex",
+        "thread": "01a0a6f3-b331-76b3-96b1-c73de720f65c",
+        "turn": "01a0a6f4-4f7b-7703-bd91-ec3fba906a36",
+        "item": "01a0a6f4-4f8d-7a43-b7b7-277d4e65ee20"
+      }
+    },
+    "completed_receipts": 5,
+    "automatic_receiver_restart_no_replay": true,
+    "legacy_mcp_answer_not_resubmitted": true,
+    "question_id": "027b9bcebab744d6",
+    "same_live_tui": true,
+    "draft_preserved": true,
+    "busy_order_preserved": true,
+    "model_requests": 9,
+    "agentdocker_integration": true,
+    "raw_result_sha256": "fc18a853850c927e40065fc86ad17ff1e41b24552221fc7b58bf1837ea8a4670",
+    "binary_build_source": "bb1e50c",
+    "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
   }
 }
