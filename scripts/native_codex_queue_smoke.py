@@ -379,7 +379,7 @@ try:
             AGENTDOCKER_SOCKET=str(sock),
             AGENTDOCKER_NO_AUTOSTART="1",
         )
-        log = (out / "agentdocker-daemon.log").open("w")
+        daemon_log = (out / "agentdocker-daemon.log").open("w")
         daemon_env = {
             key: value for key, value in env.items() if key not in ("CODEX_HOME", "AGENTDOCKER_FIXTURE_KEY")
         }
@@ -388,8 +388,8 @@ try:
             cwd=repo,
             env=daemon_env,
             stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
+            stdout=daemon_log,
+            stderr=daemon_log,
             start_new_session=True,
         )
 
@@ -939,8 +939,8 @@ try:
                         cwd=repo,
                         env=daemon_env,
                         stdin=subprocess.DEVNULL,
-                        stdout=log,
-                        stderr=log,
+                        stdout=daemon_log,
+                        stderr=daemon_log,
                         start_new_session=True,
                     )
                     wait(lambda: sock.exists() and daemon.poll() is None, 10)

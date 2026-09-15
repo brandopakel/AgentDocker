@@ -14,8 +14,11 @@ native queue API (tested with CLI 0.154.0). It is under integration and acceptan
 test and is **not yet the installed application's behavior**. An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup now
 includes `SessionStart`, which verifies identity and starts the receiver without
-asserting working/idle activity or consuming hook context. Its no-prompt startup
-and reopen acceptance is in progress. The provider still requires review/trust
+asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
+delays this hook until a turn starts, even after reopening an existing thread.
+The initial-turn hook bootstrap passes; **startup/reopen with no prompt remains
+an observed gap**. MCP startup supplies no thread/profile identity in its
+environment, so it cannot safely infer that binding. The provider still requires review/trust
 of new hook definitions through `/hooks`. Merely
 installing MCP or receiving a hook event does not prove idle wake.
 The receiver probes the read-only queue/history APIs before taking ownership.
@@ -54,7 +57,8 @@ long-duration or every-provider acceptance. Combined `7133023` passed the full
 962-Rust/70-Python gate and six release-binary trials: disconnected questions,
 generic legacy replies, canonical process resume, new MCP questions, rate limits
 and ambiguous-submission recovery. The schema-20 historical-answer migration
-and SessionStart follow-up require fresh validation, final CI and installation;
+requires fresh fixture validation. The later `2a7656c` source passed the full
+964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
 see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
@@ -66,8 +70,8 @@ its exact provider tool receipt. An unoffered answer from a CLI-posted question
 or disconnected ask uses ordinary input when the daemon confirms answer routing.
 Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
-those passed on the recorded sources. Startup without a prompt and historical
-schema-19 answer migration remain under acceptance.
+those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
+open; historical schema-19 answer migration remains under acceptance.
 An idle native queue entry without a provider receipt pauses after 45 seconds;
 active turns and permission waits retain their normal ordering.
 

@@ -2,7 +2,7 @@
   "date_utc": "2026-09-15",
   "date_local": "2026-09-14",
   "timezone": "America/Los_Angeles",
-  "scope": "Native Codex queue integration, daemon-supervised recovery, canonical same-thread resume and answer routing passed at recorded sources; startup-without-prompt and schema20 migration under acceptance; final CI and installation pending.",
+  "scope": "Native Codex queue integration and canonical resume with a prompt passed at recorded sources; actual lifecycle bootstrap verified after a first turn, zero-prompt startup/reopen remains an observed gap. Schema20 migration trial, final CI and installation pending.",
   "provider_version": "codex-cli 0.154.0",
   "agentdocker_forwarding_implemented": true,
   "trials": [
@@ -350,7 +350,8 @@
     "Earlier preliminary trials preceded daemon-supervised restart; supervised_native_trials records later combined source/binaries separately.",
     "The Responses model is a loopback fixture; this does not validate paid provider availability, real account resets, other versions or other providers.",
     "The real hook is invoked from a provider tool; provider hook configuration and trust UX still require installed-session acceptance.",
-    "CLI-posted answers and explicit same-thread TUI resume passed at 33cbccd. Disconnected-ask and generic send-reply fixes still need combined acceptance. Unknown legacy offers, renamed/overridden historical MCP bindings, sustained workloads and actual installation remain open."
+    "CLI-posted answers and explicit same-thread TUI resume passed at 33cbccd. Disconnected-ask and generic send-reply fixes still need combined acceptance. Unknown legacy offers, renamed/overridden historical MCP bindings, sustained workloads and actual installation remain open.",
+    "Actual Codex 0.154.0 delays SessionStart until a turn, including reopening an existing TUI without a prompt. Trusted-hook initial-turn bootstrap works; zero-prompt startup/reopen is an observed unclosed gap, and MCP startup supplies no thread/profile identity in its environment."
   ],
   "supervised_native_trials": [
     {
@@ -1112,5 +1113,198 @@
     ],
     "private_log": "/private/tmp/agentdocker-native-combined-gate14.log",
     "log_sha256": "2d35d8d1dcfacf387e1b9000af2828805dc1cb56c515c87ce953a75426e54f2e"
+  },
+  "startup_and_migration_diagnostics": [
+    {
+      "started_at": "2026-09-15T20:19:08.745990+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "0d2bdaf979d2cd4a9050c1be1d2e52b79850ceb46b403361c753bc8a6973de15",
+      "source": {
+        "commit": "6e04a0910ca201a8a1e88ae9a64b9c601fecd63b",
+        "dirty": false,
+        "rust_and_driver_sha256": "89b6f8da4fecab4280d94ca74e019b5dca0597cd30ac4b6ef9da1f3faa24ca7a"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 47984,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "314c60f573502091253a47bfb1c410a32446cd044c47a9fcfe91d939a4efbf0f",
+      "diagnosis": "No-prompt fresh TUI did not register/bind within30s; no model request.",
+      "private_result": "/private/tmp/agentdocker-native-startup15-2026-09-15/result.json",
+      "result_sha256": "34b1967360fbe81c26b7f38659a1fbffba61ba847d9f4364ff238a4fde987d26"
+    },
+    {
+      "started_at": "2026-09-15T20:20:16.883483+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "6de2f22d556653085f75b03def2dd3de1a837388ab025a8bfe0611b21fba8d6d",
+      "source": {
+        "commit": "1677258e85cfe108e1c519eb106e3c69da919b96",
+        "dirty": false,
+        "rust_and_driver_sha256": "cca96a6f2bb769c835e4f3f1de8273b091aeac9933510f67ab94d9afc6496ea4"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 50739,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "89581a73be28751b85d449b8542129265d46b2fa68b81a73606c84621aba3144",
+      "diagnosis": "Explicit lifecycle hooks feature still emitted no SessionStart before first input.",
+      "private_result": "/private/tmp/agentdocker-native-startup16-2026-09-15/result.json",
+      "result_sha256": "09c4f0701761c3767bf04a7bcfaaed9fd2034914de8b81f959fbe92c1f41c7bd"
+    },
+    {
+      "started_at": "2026-09-15T20:21:46.803725+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "70f41ea0d7bcbfb9d89aa6265f094fcb5a10e9f1e697a5ce7a65b1af4b9a8f9b",
+      "source": {
+        "commit": "e62305554090fa4b41cb9a31aeb500b78b8624e8",
+        "dirty": false,
+        "rust_and_driver_sha256": "4eb84fbfe0a328f5e79360ad09bc1a93730b617b59be5502da01e82bdddfcb1b"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 54187,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "441c3b07267da41d73a6c3cdf87409223f50fb4e7f0fa304f61a10c3e65b9c72",
+      "diagnosis": "Private command capture confirmed no SessionStart invocation before first input.",
+      "private_result": "/private/tmp/agentdocker-native-startup17-2026-09-15/result.json",
+      "result_sha256": "de5259390069da6111ff77694b3d1d39f05bc0c588268ef4df37edd09a4774de"
+    },
+    {
+      "started_at": "2026-09-15T20:22:38.707903+00:00",
+      "scenario": "lifecycle",
+      "result": "failed",
+      "driver_sha256": "76acabbf92d4a3c10c61732733d080f0b4499bb2a7f4d9789b7729b17edc4ffb",
+      "source": {
+        "commit": "8a153b38015afb93b84fa68cebee7eeae7e69373",
+        "dirty": false,
+        "rust_and_driver_sha256": "a1aec02fa6355cb4841cd72714fde198ff0c8bb79f36162f9ec4a90867478dcc"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "956ffb84b1dc1ab0dbb73abfa8708d1da4355bd81a6ed62fc691977a361e716e",
+      "daemon_sha256": "6c5f2afff78c54267a19f2a54ba21d8fc3161934d12d7b785433b669470ce50e",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 56333,
+      "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+      "agent": "c705cf31af4040bca9a577cc39a16018",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.665050167008303,
+      "cross_process_receipt": {
+        "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+        "turn": "01a0a6bc-89f8-7b01-83f2-a734f1bdcf2a",
+        "item": "01a0a6bc-8a10-73d0-b8c1-96478fa1e007"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "b161ebea62ae495c"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6bc-62eb-7f31-aaa5-50ecd6bb939f",
+          "turn": "01a0a6bc-ff40-7fb0-85ab-89e58e7fa6c1",
+          "item": "01a0a6bc-ff4f-7fa1-98ca-2dc49802b4b1"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "cf0ed425ee924b2d",
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "bd7e94dbfb863a57a55b06b65b35570dec6ad75103911f2ca0e1a998553c7fcf",
+      "diagnosis": "Actual SessionStart hook after first input bootstrapped receiver; idle/draft/FIFO/controller crash passed. Reopen without prompt emitted no resume hook and retained the old queue.",
+      "private_result": "/private/tmp/agentdocker-native-lifecycle18-2026-09-15/result.json",
+      "result_sha256": "aa0e23acc778ba0d13cf81bb1d78edf8ce40fe3c629119a8037f0c657de00b9c"
+    },
+    {
+      "started_at": "2026-09-15T20:26:18.917778+00:00",
+      "scenario": "startup",
+      "result": "failed",
+      "driver_sha256": "484709c5cef368c0e3c90a906a8233a372e4edfa18142af0dd36f76608bf7ff8",
+      "source": {
+        "commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+        "dirty": false,
+        "rust_and_driver_sha256": "67f09ba86c7abb7cc7ec2e6de42b66d479960d1a30a08c0410bd30f01a2d1cbd"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "1f667b4e9205f567358f2a16b18b96a5c3fa98190cf0961e2549bd39fd2ab33b",
+      "daemon_sha256": "87dfa01cec7c6914dfda82e2f493b0aa413aeaa5353c1e6e5ea2bb7cff152158",
+      "fixture_hook_trust": "one-off vetted private SessionStart command; no saved user policy changed",
+      "pid": 71253,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "acc4a0499b9f73b14ed10152d19a484325e6903dc70c55b3ab6793f4f5d1044a",
+      "diagnosis": "Eager MCP startup confirmed CODEX_THREAD_ID and CODEX_HOME are absent from its filtered environment; cannot infer exact binding.",
+      "private_result": "/private/tmp/agentdocker-native-startup19-2026-09-15/result.json",
+      "result_sha256": "c62fe98cbbf7898f2eb03bc58d246a5262e6c154d7800fb10648e0b8e11778ed"
+    },
+    {
+      "started_at": "2026-09-15T20:27:07.981968+00:00",
+      "scenario": "migration",
+      "result": "failed",
+      "driver_sha256": "484709c5cef368c0e3c90a906a8233a372e4edfa18142af0dd36f76608bf7ff8",
+      "source": {
+        "commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+        "dirty": false,
+        "rust_and_driver_sha256": "67f09ba86c7abb7cc7ec2e6de42b66d479960d1a30a08c0410bd30f01a2d1cbd"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "1f667b4e9205f567358f2a16b18b96a5c3fa98190cf0961e2549bd39fd2ab33b",
+      "daemon_sha256": "87dfa01cec7c6914dfda82e2f493b0aa413aeaa5353c1e6e5ea2bb7cff152158",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 73292,
+      "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+      "agent": "5a90d6d33af345acae05a2bb686027da",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.582779667020077,
+      "cross_process_receipt": {
+        "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+        "turn": "01a0a6c0-a5f2-78a2-87a8-977f2359e0ff",
+        "item": "01a0a6c0-a615-7283-83d8-aba48fdca12a"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "6f84657bf17f4ce6"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c0-7ee4-7f23-8b1b-3512538102b0",
+          "turn": "01a0a6c1-1b31-7ea3-bd60-d5e88180e275",
+          "item": "01a0a6c1-1b46-7c20-9d12-76240db8a65a"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "a910a66b92882902623128188b25a4824c7eb1ea30ae96d0b4682e4655dbac02",
+      "diagnosis": "Fixture failure: daemon restart reused a closed API observer log handle; corrected to a dedicated daemon log. Migration receipt behavior not established by this failed run.",
+      "private_result": "/private/tmp/agentdocker-native-migration19-2026-09-15/result.json",
+      "result_sha256": "b0ea3dd313fdd069bfc3250e23169f2d69bcd30a7b3f2bb0f0e4afe742c3af02"
+    }
+  ],
+  "combined_gate_2a7656c": {
+    "source_commit": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6",
+    "rust_passed": 964,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "result": "passed",
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace tests",
+      "doctests",
+      "Python",
+      "package",
+      "release build"
+    ],
+    "private_log": "/private/tmp/agentdocker-native-combined-gate19.log",
+    "log_sha256": "e09a4094ae59b58bd9c1965988fcb3b60cb84187aff113cd815e95e875331810"
   }
 }

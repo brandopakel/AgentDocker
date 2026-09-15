@@ -25,7 +25,7 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 ### September 15: AgentDocker native queue implementation
 
 The native Codex receiver is implemented on `codex/native-external-queue`, using
-Claude's provider-neutral schema-19 input binding from PR #142. The existing
+Claude's provider-neutral input binding from PR #142 and schema-20 answer routing from PR #147. The existing
 Codex hook verifies the provider process and thread and starts a detached
 receiver. It uses `thread/queue/add` and read-only queue/history APIs, with no
 `thread/resume`, second conversation, terminal keystrokes or profile rewrite.
@@ -58,8 +58,18 @@ aliases the new registration, and preserves the receiver token, outstanding
 attempt and receipt history. The daemon also settles synchronous versus queued
 answers: tool-result offers stay uncertain until exact provider receipt proof;
 unoffered posted/disconnected answers use ordinary input. Later messages wait
-behind a held answer so cancellation cannot reorder the queue. Final combined
-restart/answer acceptance, review, CI and installation remain in progress.
+behind a held answer so cancellation cannot reorder the queue. Six release trials
+at `7133023` passed, including explicit resume with a prompt and disconnected/generic
+legacy replies. Later `2a7656c` passed the full 964-Rust/70-Python gate.
+
+The actual trusted `SessionStart` hook bootstraps after an initial prompt and then
+passes idle wake, draft/FIFO and controller crash recovery. Codex 0.154.0 emits no
+SessionStart before a first turn, including after reopening an existing thread
+without a prompt. The no-prompt lifecycle trial failed with its queue preserved.
+MCP starts eagerly but supplies no thread/profile identity in its environment.
+That exact-binding gap remains open; inferring it from a display name or PID
+would not be safe. The original diagnostic trials are retained. Schema-20
+migration fixture acceptance, review, final CI and installation remain pending.
 These trials do not mean that the installed app or every provider can already wake.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
