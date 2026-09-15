@@ -1,0 +1,106 @@
+{
+  "date": "2026-09-14",
+  "status": "Passed at 001e818 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the container endpoint inherited; an older-schema candidate was refused before any offer, a dying candidate and a silent one were aborted with the same daemon still serving, its agent untouched and writes resumed, and no successor session left behind. This is boundary 4 of LIVE-DAEMON-UPGRADES.md; connected-client resumption, installation integration and the rest of the acceptance list remain, and the gate stays on.",
+  "scope": "Successor readiness behind AGENTDOCKER_EXPERIMENTAL_RELOAD: candidate validation, coordinator offer, SCM_RIGHTS handover of the listening socket, daemon lock and container endpoint, readiness answer after owner reattachment, and abort on every failing outcome. Connected-client resumption and installation integration are not covered.",
+  "build": {
+    "source_commit": "001e81842fefda47d89b8ac4b20249e3535b6ff2",
+    "source_tree": "0ee5fe1f6834fd573f868729d71a1c789688ab91",
+    "source_input_sha256": "d9b022db003bd84780beb3ec550e2ef71fb4e28226ad37554f99574c6b11ade1",
+    "source_dirty": false,
+    "binary_directory": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/p3-final-bin",
+    "binary_sha256": {
+      "agentdocker": "9813245c1a537963da90054a68dfdc9367643a6f17cb2f2afaaef3e3b6bff061",
+      "agentd": "706efa7495cdc1779b827ddd7fa1e60a2591758500a9fe7892c787e8d26fee79"
+    },
+    "build_info": {
+      "arch": "aarch64",
+      "format": 1,
+      "installation_lock": 1,
+      "os": "macos",
+      "state_schema": 18,
+      "version": "0.1.0"
+    }
+  },
+  "method": "Private state under /private/tmp/ad-p3-*; each trial starts its own release agentd with the gate set and a supervised batch agent (and a PTY agent in the chain). The chain reloads twice through `agentdocker daemon reload`, checks the coordinator row, the agents' pids and states through the new daemon, then releases the agents and reads their exact exits and complete logs under the third daemon. Each failing candidate is a shell script answering --build-info and then either exiting 1 with schema 16, exiting 3 at once, or sleeping past the 30 s deadline.",
+  "candidates": {
+    "old-schema": "#!/bin/sh\n[ \"$1\" = \"--build-info\" ] && { printf '{\"arch\":\"aarch64\",\"format\":1,\"installation_lock\":1,\"os\":\"macos\",\"state_schema\":16,\"version\":\"0.1.0\"}\\n'; exit 0; }\nexit 1\n",
+    "dies": "#!/bin/sh\n[ \"$1\" = \"--build-info\" ] && { printf '{\"arch\":\"aarch64\",\"format\":1,\"installation_lock\":1,\"os\":\"macos\",\"state_schema\":18,\"version\":\"0.1.0\"}\\n'; exit 0; }\nexit 3\n",
+    "hangs": "#!/bin/sh\n[ \"$1\" = \"--build-info\" ] && { printf '{\"arch\":\"aarch64\",\"format\":1,\"installation_lock\":1,\"os\":\"macos\",\"state_schema\":18,\"version\":\"0.1.0\"}\\n'; exit 0; }\nsleep 120\n"
+  },
+  "results": {
+    "success_chain": {
+      "daemon_pids": [
+        67028,
+        67137,
+        67140
+      ],
+      "reload_seconds": [
+        0.357,
+        0.016
+      ],
+      "agents": {
+        "batch": {
+          "id": "96b1880974534a94bdd0d9c8c77f6396",
+          "pid": 67041,
+          "exit": 7
+        },
+        "terminal": {
+          "id": "fb8ce85e05f549538f1050ffc84d6066",
+          "pid": 67044,
+          "exit": 3
+        }
+      },
+      "exit_codes_under_third_daemon": {
+        "batch": 7,
+        "terminal": 3
+      },
+      "logs_complete_across_switches": true,
+      "container_endpoint_inherited": true,
+      "writes_resumed_under_successor": "02f2b662494043599aa6a1fe6dea5899",
+      "final_transfer_row": {
+        "id": "865a8c05680a4bd4b220421ecb925293",
+        "predecessor_pid": 67137,
+        "successor_pid": 67140,
+        "state": "accepted",
+        "offered_at": "2026-09-15T05:43:33.633627Z",
+        "settled_at": "2026-09-15T05:43:33.638961Z"
+      }
+    },
+    "failing_candidates": {
+      "old-schema": {
+        "reload_seconds": 0.009,
+        "refusal": "candidate state schema 16 is older than the database's 18; a successor cannot roll the database back (Unavailable)",
+        "daemon_pid_unchanged": true,
+        "still_serving": true,
+        "transfer_row_state": null,
+        "agent_pid_unchanged": true,
+        "writes_resumed_under_same_daemon": "4a43da1d5d314057afe3cf4c3ffc84fd",
+        "successor_session_left_behind": []
+      },
+      "dies": {
+        "reload_seconds": 0.013,
+        "refusal": "successor failed and the offer was withdrawn: the successor said nothing: handoff ended before its header (Unavailable)",
+        "daemon_pid_unchanged": true,
+        "still_serving": true,
+        "transfer_row_state": "aborted",
+        "agent_pid_unchanged": true,
+        "writes_resumed_under_same_daemon": "40d621dfeeab42698f35dbbb8a26cd7c",
+        "successor_session_left_behind": []
+      },
+      "hangs": {
+        "reload_seconds": 30.016,
+        "refusal": "successor failed and the offer was withdrawn: the successor did not say it was serving within 30s (Unavailable)",
+        "daemon_pid_unchanged": true,
+        "still_serving": true,
+        "transfer_row_state": "aborted",
+        "agent_pid_unchanged": true,
+        "writes_resumed_under_same_daemon": "590f5d28da8d4c55ad658995dd40c835",
+        "successor_session_left_behind": []
+      }
+    }
+  },
+  "local_check": {
+    "log": "scripts/verify.sh check at 8cc5612 plus the docs and takeover cleanup in 001e818: 953 Rust tests passed (6 skipped), 70 Python checks, fmt, strict clippy, doctests, installer tests, packaging and release build; the takeover change was re-run through clippy, its unit tests and the real-binary reload test before this record."
+  },
+  "ci_test": "crates/cli/tests/native_restore.rs::enabled_reload_hands_real_processes_to_a_successor_and_leaves repeats the success chain on every CI run; the failing-candidate paths are covered by unit tests on the handover protocol and this record."
+}

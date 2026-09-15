@@ -104,10 +104,12 @@ event continuity, not just a new socket or a readiness marker.
    leaves. See [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence).
    Real-binary coverage: `enabled_reload_hands_real_processes_to_a_successor_and_leaves`
    reloads three daemons in a row with a batch and a PTY agent keeping their
-   processes and logs. Recorded private trials: an older-schema candidate
-   refused before any offer (no coordinator row), a candidate that died
-   (offer aborted, same daemon serving, writes resumed), and one that never
-   answered (aborted at the deadline, same daemon serving).
+   processes and logs. The [successor-readiness record](verification/2026-09-15-successor-readiness.json)
+   repeats that chain on release binaries and adds the failing candidates:
+   an older-schema candidate refused before any offer (no coordinator row),
+   a candidate that died (offer aborted in 13 ms, same daemon serving,
+   writes resumed) and one that never answered (aborted at the 30 s
+   deadline, same daemon serving, nothing of its session left behind).
 5. **Connected clients.** Preserve or resume terminal and question/event streams,
    provider input polls, pending questions and leases across the transition.
    Reconnection must retain drafts, receipts and original question expiry.
@@ -123,10 +125,11 @@ an in-process Tokio test cannot establish this boundary.
 
 - Batch and PTY children continue through replacement with the same PID/birth,
   complete ordered output and retained logs/scrollback, then report exact exit
-  status and clean descendants before releasing leases. *Passed* on a frozen
-  successor-readiness build: two successive reloads with a batch and a PTY
-  agent keeping their child pids, exact exits 7/3 under the third daemon, the
-  container endpoint inherited; the CI test above repeats the chain.
+  status and clean descendants before releasing leases. *Passed* in the
+  [successor-readiness record](verification/2026-09-15-successor-readiness.json):
+  two successive reloads with a batch and a PTY agent keeping their child
+  pids, exact exits 7/3 under the third daemon, the container endpoint
+  inherited; the CI test above repeats the chain.
 - Human and peer messages queued before/during transfer retain order and exact
   provider receipts; pending approval answers follow their original route once.
 - Active Claude and Codex conversations survive, including an idle wake, a busy
