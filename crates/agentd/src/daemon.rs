@@ -1086,6 +1086,13 @@ impl Daemon {
         lock(&self.state).events.subscribe()
     }
 
+    /// Whether a synchronous `ask` is waiting on its connection for this
+    /// question right now.
+    #[cfg(test)]
+    pub(crate) fn question_waiting(&self, question: &MessageId) -> bool {
+        lock(&self.state).question_waiters.contains(question)
+    }
+
     /// Subscribe and validate durable history in the same state snapshot.
     pub(crate) fn resume_events(
         &self,
@@ -4954,6 +4961,22 @@ impl State {
         // A recipient must consume one slot and one durable row per message.
         recipients.sort();
         recipients.dedup();
+        // A reply that closes a question is its answer whichever request
+        // carried it: `send --reply-to` and `answer` are one act, so the
+        // kind says so before it is sized, stored or routed, and the route
+        // is chosen here for both. With an `ask` waiting the answer is held
+        // for it; otherwise the queue is its route, said at once.
+        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+            .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
+            .map(|pending| pending.id.clone());
+        let mut envelope = envelope;
+        if closed.is_some() {
+            envelope.kind = "answer".to_owned();
+        }
+        let held = closed
+            .as_ref()
+            .is_some_and(|question| self.question_waiters.contains(question));
         let bytes = message_bytes(&envelope);
         if let Some(full) = recipients.iter().find(|id| {
             self.inboxes
@@ -4976,10 +4999,6 @@ impl State {
                 ),
             );
         }
-        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
-            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
-            .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
-            .map(|pending| pending.id.clone());
         let sender = self
             .registry
             .get(&AgentId::from(envelope.from.as_str()))
@@ -5044,12 +5063,24 @@ impl State {
         if let Some(question) = question {
             self.questions.insert(question.id.clone(), question);
         }
-        if let Some(closed) = closed {
-            self.questions.remove(&closed);
+        if let Some(closed) = &closed {
+            self.questions.remove(closed);
         }
         self.next_seq += events.len() as u64;
         for event in events {
             let _ = self.events.send(event);
+        }
+        if let Some(question) = closed {
+            if held {
+                self.held_answers
+                    .insert(envelope.id.clone(), question);
+            } else {
+                self.emit(EventKind::AnswerRouted {
+                    question,
+                    answer: envelope.id.clone(),
+                    route: agentdocker_core::AnswerRoute::Queue,
+                });
+            }
         }
         self.notify_humans(&envelope, &recipients);
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);

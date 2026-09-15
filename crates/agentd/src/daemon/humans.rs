@@ -637,33 +637,15 @@ impl Daemon {
                 return state.refuse(&sender, &action, ruling);
             }
         }
-        let waiting = state.question_waiters.contains(&message);
-        let response = state.send(
+        // The route is chosen where the question closes, in the send path
+        // shared with `send --reply-to`.
+        state.send(
             from,
             to,
             "answer".to_owned(),
             json!({ "text": text }),
-            Some(message.clone()),
-        );
-        // One answer travels one way. With an ask waiting it is held for
-        // that ask, under the guard that queued it, so no reader sees it
-        // before the ask has it or has given up; with nobody waiting the
-        // queue is its route, said so at once.
-        if let Response::Sent {
-            message: answer, ..
-        } = &response
-        {
-            if waiting {
-                state.held_answers.insert(answer.clone(), message);
-            } else {
-                state.emit(EventKind::AnswerRouted {
-                    question: message,
-                    answer: answer.clone(),
-                    route: AnswerRoute::Queue,
-                });
-            }
-        }
-        response
+            Some(message),
+        )
     }
 
     /// `questions`: what is waiting, for whoever wants to answer it.
@@ -1135,6 +1117,67 @@ mod tests {
         assert_eq!(
             routes(&daemon).last(),
             Some(&(posted.clone(), queued.clone(), AnswerRoute::Queue))
+        );
+
+        // A plain send with reply_to that closes the question is the
+        // answer, whichever request carried it: normalised to kind answer,
+        // and held the same way while an ask waits.
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from: "asker".into(),
+                        to: "recipient".into(),
+                        question: "Which font?".into(),
+                        timeout_secs: 300,
+                    })
+                    .await
+            }
+        });
+        let font = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(question) = lock(&daemon.state)
+                    .questions
+                    .values()
+                    .find(|q| q.text == "Which font?")
+                    .cloned()
+                {
+                    break question;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let Response::Sent { message: reply, .. } = daemon
+            .handle(Request::Send {
+                from: "recipient".into(),
+                to: "asker".into(),
+                kind: "chat".into(),
+                payload: serde_json::json!({ "text": "Mono" }),
+                reply_to: Some(font.id.clone()),
+            })
+            .await
+        else {
+            panic!("send failed");
+        };
+        assert!(matches!(
+            tokio::time::timeout(StdDuration::from_secs(5), waiting)
+                .await
+                .unwrap()
+                .unwrap(),
+            Response::Answer { message, text, .. } if message == reply && text == "Mono"
+        ));
+        let stored = lock(&daemon.state).inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == reply)
+            .cloned()
+            .expect("the reply stays queued as an offer");
+        assert_eq!(stored.kind, "answer", "normalised where the question closed");
+        assert_eq!(
+            routes(&daemon).last(),
+            Some(&(font.id.clone(), reply.clone(), AnswerRoute::ToolResult))
         );
 
         // Held for an ask that ends without it: released to the queue.
