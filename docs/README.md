@@ -168,6 +168,6 @@ fails when it and the records disagree.
 | [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
 | [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
 | [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance. |
-| [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial on release binaries, 10 registered agents, journal retention 120s applied by the daemon itself, checkpoint pruning of finished agents, bounded database and memory growth after retenti... |
+| [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the d... |
 
 <!-- verification-index:end -->
