@@ -193,6 +193,7 @@ fn mutates(request: &Request) -> bool {
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
             | Request::DeliveryQueue { .. }
+            | Request::PeekInput { .. }
             | Request::Subscribe { .. }
             | Request::Attach { .. }
             | Request::AttachInput { .. }

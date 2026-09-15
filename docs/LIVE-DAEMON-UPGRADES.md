@@ -113,17 +113,21 @@ an in-process Tokio test cannot establish this boundary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
-- Input bindings (schema 19, the external controller and its supervision):
-  every binding transition and the legacy-offer bookkeeping must gate on
-  `Persisted::Committed`, not only on `storage_error`, because a fenced
-  daemon's `persist` answers `Skipped` without an error; controller
-  supervision (`tend_controllers`) must not note an end, launch a descriptor
-  or take an installation pin while fenced, and must recheck the fence under
-  the launch lock; a launched-but-unbound controller, its pin and the
-  restart episode are part of what a successor accepts, and the acceptance
-  trial must cover a controller ending and being started again across a
-  handover. Found in source review of #142 against #134; not yet in the
-  combined tests.
+- Input bindings (schema 19 and 20, the external controller, its supervision
+  and the answer route): every binding transition and the legacy-offer
+  bookkeeping gates on `Persisted::Committed`, not only on `storage_error`,
+  because a fenced daemon's `persist` answers `Skipped` without an error;
+  controller supervision (`tend_controllers`) neither notes an end nor
+  launches a descriptor nor takes an installation pin while fenced, and
+  rechecks the fence under the launch lock; the notice tick
+  (`flush_notices`) sends nothing and forgets nothing while fenced;
+  `peek_input` is a read and is served through the fence; a `bind_input`
+  while fenced is refused as `transferring`. Held pins stay held until the
+  predecessor exits and the successor takes its own before serving. Covered
+  by `a_fenced_tick_neither_notes_an_end_nor_launches` and the fenced part
+  of `stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read`. Still
+  ahead: a launched-but-unbound controller, its pin and the restart episode
+  across an actual handover, in the reload acceptance trial.
 
 An old installed daemon that lacks this protocol cannot gain live transfer from
 an updated launcher. Its first switch still waits for active sessions to finish.

@@ -134,6 +134,11 @@ impl Daemon {
         self.pin_controllers();
         let bindings: Vec<(AgentId, InputBinding)> = {
             let state = lock(&self.state);
+            if state.fenced() {
+                // A fenced coordinator writes nothing and starts nothing:
+                // the successor tends the controllers once it serves.
+                return;
+            }
             state
                 .registry
                 .list(true)
@@ -202,11 +207,12 @@ impl Daemon {
                     // itself already noted as the launched process, so its
                     // bind resumes the binding rather than overtaking it.
                     let mut state = lock(&self.state);
-                    if state
-                        .registry
-                        .get(&id)
-                        .and_then(|r| r.input_binding.as_ref())
-                        != Some(&binding)
+                    if state.fenced()
+                        || state
+                            .registry
+                            .get(&id)
+                            .and_then(|r| r.input_binding.as_ref())
+                            != Some(&binding)
                     {
                         continue;
                     }
@@ -255,6 +261,10 @@ impl Daemon {
     pub fn pin_controllers(&self) {
         let wanted: Vec<(AgentId, ControllerLaunch)> = {
             let state = lock(&self.state);
+            if state.fenced() {
+                // Held pins stay held; new ones are the successor's to take.
+                return;
+            }
             state
                 .registry
                 .list(true)
@@ -376,8 +386,9 @@ impl State {
         {
             return;
         }
-        self.persist("legacy offers", |store| store.upsert_agent(&record));
-        if self.storage_error.is_none() {
+        if self.persist("legacy offers", |store| store.upsert_agent(&record))
+            == Persisted::Committed
+        {
             *self.registry.get_mut(id).expect("resolved agent") = record;
         }
     }
@@ -402,8 +413,9 @@ impl State {
         }
         // Stored first, then in memory, so the two never disagree about
         // what is still uncertain.
-        self.persist("input bookkeeping", |store| store.upsert_agent(&record));
-        if self.storage_error.is_none() {
+        if self.persist("input bookkeeping", |store| store.upsert_agent(&record))
+            == Persisted::Committed
+        {
             *self.registry.get_mut(id).expect("resolved agent") = record;
         }
     }
@@ -466,10 +478,10 @@ impl State {
         let mut record = record.clone();
         let mut event = Event::new(change(&mut record), now);
         event.seq = self.next_seq;
-        self.persist("controller restart", |store| {
+        if self.persist("controller restart", |store| {
             store.agent_transition(&record, &event)
-        });
-        if self.storage_error.is_some() {
+        }) != Persisted::Committed
+        {
             return false;
         }
         *self.registry.get_mut(id).expect("resolved agent") = record;
@@ -655,10 +667,12 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input binding", |store| {
+        let committed = self.persist("input binding", |store| {
             store.agent_transition(&record, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if committed != Persisted::Committed
+            && let Some(error) = self.write_failure()
+        {
             return error;
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
@@ -725,10 +739,12 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input unbinding", |store| {
+        let committed = self.persist("input unbinding", |store| {
             store.agent_transition(&record, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if committed != Persisted::Committed
+            && let Some(error) = self.write_failure()
+        {
             return error;
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
@@ -977,10 +993,12 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input resume", |store| {
+        let committed = self.persist("input resume", |store| {
             store.resume_input(&canonical, &alias, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if committed != Persisted::Committed
+            && let Some(error) = self.write_failure()
+        {
             self.controller_pins.remove(&prior.id);
             if let Some(pin) = previous_pin {
                 self.controller_pins.insert(prior.id.clone(), pin);
@@ -1890,7 +1908,10 @@ mod tests {
             let binding = record.input_binding.as_mut().unwrap();
             binding.restart.attempts = agentdocker_core::CONTROLLER_RESTARTS;
             binding.restart.exhausted = true;
-            state.persist("test", |store| store.upsert_agent(&record));
+            assert_eq!(
+                state.persist("test", |store| store.upsert_agent(&record)),
+                Persisted::Committed
+            );
             *state.registry.get_mut(&receiver.id).unwrap() = record;
         }
         let seq = lock(&daemon.state).next_seq;
@@ -1953,6 +1974,72 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A fenced coordinator neither notes an end nor launches anything:
+    /// the tick leaves memory and disk as they are, and the successor,
+    /// or this daemon once it takes authority back, does the work.
+    #[tokio::test]
+    async fn a_fenced_tick_neither_notes_an_end_nor_launches() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let controller = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        drop(controller);
+        daemon.offer_transfer(1).unwrap();
+        let seq = lock(&daemon.state).next_seq;
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let binding = binding_of(&daemon, &receiver.id);
+        assert_eq!(binding.restart.ended_at, None, "nothing noted while fenced");
+        assert_eq!(
+            binding.restart.launched, None,
+            "nothing launched while fenced"
+        );
+        assert_eq!(lock(&daemon.state).next_seq, seq, "no event while fenced");
+        assert!(
+            !dir.path().join("mark").exists(),
+            "the descriptor did not run"
+        );
+        // A bind while fenced is refused as transferring, memory untouched.
+        let other = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: other.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        drop(other);
+        assert!(daemon.abort_transfer("cleanup"));
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let launched = binding_of(&daemon, &receiver.id)
+            .restart
+            .launched
+            .expect("launched once authority is back");
+        assert!(is_running(&launched));
+        signal(&launched, Signal::SIGKILL);
     }
 
     /// The restart record is on the agent record: a daemon opened again
