@@ -57,10 +57,19 @@ pub const READY_WITHIN: Duration = Duration::from_secs(30);
 pub const FORMAT: u32 = 2;
 
 /// The environment variable that lets `reload` actually replace the
-/// daemon. Absent, `reload` refuses as it always has: the mechanism is
-/// complete but its acceptance matrix is still being run, and nobody
-/// should be replaced by accident.
+/// daemon, when set to exactly `1`. Otherwise `reload` refuses as it
+/// always has: the mechanism is complete but its acceptance matrix is
+/// still being run, and nobody should be replaced by accident.
 pub const ENABLE: &str = "AGENTDOCKER_EXPERIMENTAL_RELOAD";
+
+/// How long a candidate gets to answer `--build-info`. A candidate that
+/// hangs there would otherwise hold the reload, and its thread, for ever.
+pub const BUILD_INFO_WITHIN: Duration = Duration::from_secs(10);
+
+/// Whether the gate is open: exactly `1`, as the documentation says.
+pub fn enabled() -> bool {
+    std::env::var(ENABLE).ok().as_deref() == Some("1")
+}
 
 /// The executable a reload hands over to. Absent, the daemon's own; an
 /// installer sets it to the reviewed release it just activated.
@@ -286,11 +295,15 @@ pub struct Held {
     pub lock: std::os::fd::OwnedFd,
     /// The restricted endpoint's listener, once it is up.
     pub restricted: Option<std::os::fd::OwnedFd>,
+    /// The restricted endpoint is up but its listener could not be kept
+    /// for a handover: a successor would find the path busy and come up
+    /// without container access, so a reload is refused instead.
+    pub restricted_unavailable: Option<String>,
 }
 
 impl Daemon {
     pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
-        if std::env::var_os(ENABLE).is_none() {
+        if !enabled() {
             // The mechanism is in place; its acceptance matrix is still
             // being run. Refusing is not a failure: the daemon and its
             // agents keep running, which is exactly what the earliest
@@ -310,6 +323,17 @@ impl Daemon {
                 "this daemon holds no listener or lock to hand over",
             );
         };
+        if let Some(reason) = &held.restricted_unavailable {
+            let refusal = Response::error(
+                ErrorCode::Unavailable,
+                format!(
+                    "the container endpoint's listener cannot be handed over ({reason}); a \
+                     successor would come up without container access, so this daemon keeps serving"
+                ),
+            );
+            *lock(&self.held) = Some(held);
+            return refusal;
+        }
         let outcome = self.replace(&held).await;
         match outcome {
             Ok(()) => {
@@ -321,36 +345,43 @@ impl Daemon {
                 self.transferred_exit.notify_one();
                 Response::Ok
             }
-            Err(reason) => {
+            Err(refusal) => {
                 // Nothing was given up unless the store says it was.
                 *lock(&self.held) = Some(held);
-                Response::error(ErrorCode::Unavailable, reason)
+                *refusal
             }
         }
+    }
+
+    /// A refusal from the daemon's own side, before or after the offer.
+    fn unavailable(reason: impl Into<String>) -> Box<Response> {
+        Box::new(Response::error(ErrorCode::Unavailable, reason))
     }
 
     /// Validate the installed candidate, offer the transfer, spawn the
     /// successor with the listener and lock, and wait until it says it is
     /// serving. On any failure take authority back if the store still
     /// lets us.
-    async fn replace(self: &Arc<Self>, held: &Held) -> Result<(), String> {
+    async fn replace(self: &Arc<Self>, held: &Held) -> Result<(), Box<Response>> {
         let candidate = match std::env::var_os(CANDIDATE) {
             Some(path) => PathBuf::from(path),
-            None => std::env::current_exe()
-                .map_err(|e| format!("cannot find this daemon's executable: {e}"))?,
+            None => std::env::current_exe().map_err(|e| {
+                Self::unavailable(format!("cannot find this daemon's executable: {e}"))
+            })?,
         };
         let info = tokio::task::spawn_blocking({
             let candidate = candidate.clone();
-            move || build_info(&candidate)
+            move || build_info(&candidate, BUILD_INFO_WITHIN)
         })
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| Self::unavailable(e.to_string()))?
+        .map_err(Self::unavailable)?;
         let schema = lock(&self.state).store.schema_version();
         if info.format != 1
             || info.os != std::env::consts::OS
             || info.arch != std::env::consts::ARCH
         {
-            return Err(format!(
+            return Err(Self::unavailable(format!(
                 "candidate {} is for {}/{} (format {}); this host is {}/{}",
                 candidate.display(),
                 info.os,
@@ -358,20 +389,20 @@ impl Daemon {
                 info.format,
                 std::env::consts::OS,
                 std::env::consts::ARCH
-            ));
+            )));
         }
         if info.state_schema < schema {
-            return Err(format!(
+            return Err(Self::unavailable(format!(
                 "candidate state schema {} is older than the database's {schema}; a successor cannot roll the database back",
                 info.state_schema
-            ));
+            )));
         }
         // Pair first, so a successor that cannot be spawned costs nothing.
-        let (ours, theirs) =
-            UnixStream::pair().map_err(|e| format!("cannot make the handover socket: {e}"))?;
-        let transfer = self
-            .offer_transfer(std::process::id())
-            .map_err(|response| format!("{response:?}"))?;
+        let (ours, theirs) = UnixStream::pair()
+            .map_err(|e| Self::unavailable(format!("cannot make the handover socket: {e}")))?;
+        // The offer's own refusal keeps its code: `backpressure` while a
+        // mutation is still executing, `conflict` over another offer.
+        let transfer = self.offer_transfer(std::process::id())?;
         let transfer_id = transfer.id.clone();
         // The successor's pid is not known until spawn; the offer named
         // ours as a placeholder and is corrected under the same fence.
@@ -381,15 +412,29 @@ impl Daemon {
             .arg("3")
             .env("AGENTDOCKER_HOME", &self.home)
             .env("AGENTDOCKER_SOCKET", &self.socket)
+            // The successor's log continues where this daemon's does: the
+            // subscriber writes to stdout, and a service manager captures
+            // both streams, so both are inherited.
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit());
         let theirs_fd = theirs.as_raw_fd();
-        // SAFETY: `dup2` and `close` are async-signal-safe and act only on
-        // descriptors this process owns.
+        // SAFETY: `dup2`, `fcntl` and `setsid` are async-signal-safe and act
+        // only on descriptors this process owns.
         unsafe {
             command.pre_exec(move || {
-                if nix::libc::dup2(theirs_fd, 3) < 0 {
+                if theirs_fd == 3 {
+                    // Already where it must be: `dup2` onto itself would
+                    // leave close-on-exec set and the successor would find
+                    // descriptor 3 closed. Clear the flag instead.
+                    let flags = nix::libc::fcntl(3, nix::libc::F_GETFD);
+                    if flags < 0
+                        || nix::libc::fcntl(3, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC)
+                            < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else if nix::libc::dup2(theirs_fd, 3) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 nix::libc::setsid();
@@ -400,7 +445,9 @@ impl Daemon {
             Ok(child) => child,
             Err(e) => {
                 self.abort_transfer("successor did not spawn");
-                return Err(format!("cannot spawn the successor: {e}"));
+                return Err(Self::unavailable(format!(
+                    "cannot spawn the successor: {e}"
+                )));
             }
         };
         drop(theirs);
@@ -408,7 +455,9 @@ impl Daemon {
         if !lock(&self.state).readdress_offer(&transfer_id, successor_pid) {
             let _ = kill_child(child);
             self.abort_transfer("offer could not be addressed to the successor");
-            return Err("could not address the offer to the spawned successor".into());
+            return Err(Self::unavailable(
+                "could not address the offer to the spawned successor",
+            ));
         }
         let mut fds = vec![held.listener.as_fd(), held.lock.as_fd()];
         let restricted = held.restricted.as_ref().map(|fd| {
@@ -430,11 +479,11 @@ impl Daemon {
         if let Err(e) = offered {
             let _ = kill_child(child);
             self.abort_transfer("handover could not be sent");
-            return Err(format!("cannot send the handover: {e}"));
+            return Err(Self::unavailable(format!("cannot send the handover: {e}")));
         }
         let ready = tokio::task::spawn_blocking(move || await_ready(&ours, READY_WITHIN))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Self::unavailable(e.to_string()))?;
         match ready {
             Ok(()) => Ok(()),
             Err(reason) => {
@@ -449,13 +498,13 @@ impl Daemon {
                     _ => {
                         let _ = kill_child(child);
                         if self.abort_transfer(&reason) {
-                            Err(format!(
+                            Err(Self::unavailable(format!(
                                 "successor failed and the offer was withdrawn: {reason}"
-                            ))
+                            )))
                         } else {
-                            Err(format!(
+                            Err(Self::unavailable(format!(
                                 "successor failed and the offer could not be withdrawn; check `daemon status`: {reason}"
-                            ))
+                            )))
                         }
                     }
                 }
@@ -473,10 +522,18 @@ impl Daemon {
         *lock(&self.held) = Some(held);
     }
 
-    /// The restricted endpoint came up: keep its listener to hand over.
-    pub fn hold_restricted(&self, fd: std::os::fd::OwnedFd) {
+    /// The restricted endpoint came up: keep its listener to hand over,
+    /// or remember that it could not be kept, which refuses reloads
+    /// rather than handing over to a daemon without container access.
+    pub fn hold_restricted(&self, fd: std::io::Result<std::os::fd::OwnedFd>) {
         if let Some(held) = lock(&self.held).as_mut() {
-            held.restricted = Some(fd);
+            match fd {
+                Ok(fd) => held.restricted = Some(fd),
+                Err(e) => {
+                    warn!(%e, "cannot keep the restricted listener for a handover; reload is refused until restart");
+                    held.restricted_unavailable = Some(e.to_string());
+                }
+            }
         }
     }
 
@@ -492,6 +549,12 @@ impl Daemon {
     /// whether this daemon is writing again.
     pub fn abort_transfer(&self, reason: &str) -> bool {
         lock(&self.state).abort_transfer(reason)
+    }
+
+    /// Whether this daemon is not the coordinator right now: an offer is
+    /// open, or has been accepted by a successor.
+    pub fn fenced(&self) -> bool {
+        lock(&self.state).fenced()
     }
 
     /// Whether this daemon has ceded coordination for good.
@@ -549,18 +612,25 @@ impl Daemon {
     }
 }
 
-fn build_info(candidate: &std::path::Path) -> Result<BuildInfo, String> {
-    let output = std::process::Command::new(candidate)
-        .arg("--build-info")
-        .output()
-        .map_err(|e| format!("cannot run the candidate: {e}"))?;
-    if !output.status.success() {
+/// `candidate --build-info`, read once, within [`BUILD_INFO_WITHIN`]: the
+/// bounded host runner ends the whole process group on the deadline, so
+/// a candidate that hangs costs a reload, not a thread.
+fn build_info(candidate: &std::path::Path, within: Duration) -> Result<BuildInfo, String> {
+    let root = candidate
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let argv = [candidate.display().to_string(), "--build-info".to_owned()];
+    let output = agentdocker_host::command::run(&root, &argv, within)
+        .map_err(|e| format!("cannot run the candidate for --build-info: {e}"))?;
+    if !output.success {
         return Err(format!(
-            "candidate exited {} for --build-info",
-            output.status
+            "candidate failed --build-info: {}",
+            output.text.trim()
         ));
     }
-    serde_json::from_slice(&output.stdout)
+    serde_json::from_str(&output.stdout)
         .map_err(|e| format!("candidate build info unreadable: {e}"))
 }
 
@@ -967,6 +1037,52 @@ mod tests {
         }
     }
 
+    fn candidate_script(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A candidate that hangs on `--build-info` costs a reload, not a
+    /// thread: the read is bounded and the whole process group is ended.
+    #[test]
+    fn a_candidate_that_hangs_on_build_info_is_ended_at_the_deadline() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let hangs = candidate_script(&dir, "hangs", "sleep 30");
+        let started = Instant::now();
+        let reason = build_info(&hangs, Duration::from_millis(300)).unwrap_err();
+        assert!(reason.contains("timed out"), "{reason}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// What a candidate says on `--build-info` is read as is; a refusal
+    /// or nonsense is named rather than guessed at.
+    #[test]
+    fn build_info_reads_a_candidate_s_answer_and_names_a_bad_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let good = candidate_script(
+            &dir,
+            "good",
+            r#"printf '{"arch":"x","format":1,"os":"y","state_schema":7,"version":"0"}\n'"#,
+        );
+        let info = build_info(&good, Duration::from_secs(5)).unwrap();
+        assert_eq!((info.format, info.state_schema), (1, 7));
+        assert_eq!((info.os.as_str(), info.arch.as_str()), ("y", "x"));
+
+        let fails = candidate_script(&dir, "fails", "echo nope >&2; exit 3");
+        let reason = build_info(&fails, Duration::from_secs(5)).unwrap_err();
+        assert!(
+            reason.contains("failed --build-info") && reason.contains("nope"),
+            "{reason}"
+        );
+
+        let babbles = candidate_script(&dir, "babbles", "echo hello");
+        let reason = build_info(&babbles, Duration::from_secs(5)).unwrap_err();
+        assert!(reason.contains("unreadable"), "{reason}");
+    }
+
     /// A successor speaking a different format refuses rather than
     /// guessing what the descriptors mean.
     #[test]
@@ -1028,6 +1144,9 @@ mod fence_tests {
             .into_iter()
             .filter_map(|e| match e.kind {
                 EventKind::DaemonTransferOffered { .. } => Some("offered".to_owned()),
+                EventKind::DaemonTransferReaddressed { successor_pid, .. } => {
+                    Some(format!("readdressed to {successor_pid}"))
+                }
                 EventKind::DaemonTransferAccepted { .. } => Some("accepted".to_owned()),
                 EventKind::DaemonTransferAborted { .. } => Some("aborted".to_owned()),
                 _ => None,
@@ -1208,6 +1327,25 @@ mod fence_tests {
             "offered to pid 1, not to this process"
         );
         assert!(stranger.accept_transfer("no-such-transfer").is_err());
+        // Readdressing names the process that was actually started, still
+        // offered, with its own event in the same transaction; a
+        // successor named earlier can no longer accept.
+        assert!(lock(&predecessor.state).readdress_offer(&transfer.id, 7));
+        assert_eq!(
+            predecessor
+                .transfer_state()
+                .map(|t| (t.successor_pid, t.state)),
+            Some((Some(7), TransferState::Offered))
+        );
+        assert!(
+            transfer_events(&predecessor).contains(&"readdressed to 7".to_owned()),
+            "{:?}",
+            transfer_events(&predecessor)
+        );
+        assert!(
+            !lock(&predecessor.state).readdress_offer("no-such-transfer", 8),
+            "only the open offer can be readdressed"
+        );
         let second = predecessor.offer_transfer(2).unwrap_err();
         assert!(
             matches!(

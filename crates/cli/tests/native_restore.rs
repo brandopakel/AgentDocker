@@ -138,12 +138,23 @@ fn build_info_reports_compiled_contract_without_opening_state() {
 type Fixture = (&'static str, String, Value, PathBuf);
 
 fn start_batch_and_terminal(home: &Path, socket: &Path, work: &Path) -> Vec<Fixture> {
+    start_batch_and_terminal_then(home, socket, work, |_| "exec sleep 30".to_owned())
+}
+
+/// The same fixtures, each ending with `tail(name)` once released.
+fn start_batch_and_terminal_then(
+    home: &Path,
+    socket: &Path,
+    work: &Path,
+    tail: impl Fn(&str) -> String,
+) -> Vec<Fixture> {
     let mut agents = Vec::new();
     for tty in [false, true] {
         let name = if tty { "terminal" } else { "batch" };
         let script = format!(
             "printf '{name}-before\\n'; while ! test -f {name}-go; do sleep 0.05; done; \
-             printf '{name}-after\\n'; printf survived > {name}-survived; exec sleep 30"
+             printf '{name}-after\\n'; printf survived > {name}-survived; {}",
+            tail(name)
         );
         let response = rpc(
             socket,
@@ -219,6 +230,24 @@ fn refused_reload_preserves_real_batch_and_terminal_processes_and_logs() {
     assert!(cli.stdout.is_empty());
     release_and_check_survivors(&socket, &work, &agents);
     daemon.stop();
+    // The gate opens for exactly `1`: `0` and an empty value refuse too.
+    for value in ["0", ""] {
+        let gated_home = root.join(format!("gated{}", value.len()));
+        let gated_socket = root.join(format!("gated{}.sock", value.len()));
+        let mut gated = RunningDaemon::start_with(
+            &gated_home,
+            &gated_socket,
+            &[("AGENTDOCKER_EXPERIMENTAL_RELOAD", value)],
+        );
+        let response = rpc(&gated_socket, json!({"op":"reload"})).unwrap();
+        assert_eq!(response["type"], "error", "value {value:?}: {response}");
+        assert_eq!(
+            response["code"], "unavailable",
+            "value {value:?}: {response}"
+        );
+        assert!(gated.child.try_wait().unwrap().is_none());
+        gated.stop();
+    }
     let absent_home = root.join("not-created");
     let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
         .args(["daemon", "reload"])
@@ -250,7 +279,48 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     std::fs::create_dir(&work).unwrap();
     let mut daemon =
         RunningDaemon::start_with(&home, &socket, &[("AGENTDOCKER_EXPERIMENTAL_RELOAD", "1")]);
-    let agents = start_batch_and_terminal(&home, &socket, &work);
+    let agents = start_batch_and_terminal_then(&home, &socket, &work, |name| {
+        format!(
+            "while ! test -f {name}-done; do sleep 0.05; done; exit {}",
+            if name == "batch" { 7 } else { 3 }
+        )
+    });
+    let container = home.join("container.sock");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(&container).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "container endpoint never came up"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A mutation still executing refuses the offer with its own code, so
+    // a caller can tell "try again shortly" from "cannot".
+    let validator = rpc(
+        &socket,
+        json!({"op":"register", "spec": {"name":"validator", "workdir":work}, "pid":null, "session":null}),
+    )
+    .unwrap();
+    assert_eq!(validator["type"], "agent", "{validator}");
+    let validator_id = validator["agent"]["id"].as_str().unwrap().to_owned();
+    let validating = std::thread::spawn({
+        let socket = socket.clone();
+        move || {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            let request = json!({"op":"validate", "agent":validator_id,
+                "command":["sh","-c","sleep 2"], "timeout_secs":30});
+            writeln!(stream, "{request}").unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        }
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let busy = rpc(&socket, json!({"op":"reload"})).unwrap();
+    assert_eq!(busy["type"], "error", "{busy}");
+    assert_eq!(busy["code"], "backpressure", "{busy}");
+    assert_eq!(validating.join().unwrap()["type"], "validation");
 
     let response = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(response["type"], "ok", "{response}");
@@ -291,10 +361,46 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     );
     let pong = rpc(&socket, json!({"op":"ping"})).unwrap();
     assert_eq!(pong["type"], "pong", "{pong}");
+    assert!(
+        pong["restricted"] != Value::Null,
+        "the successor reports its container endpoint: {pong}"
+    );
     for (_, id, pid, _) in &agents {
         let inspected = rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap();
         assert_eq!(&inspected["agent"]["pid"], pid);
         assert_eq!(inspected["agent"]["status"]["state"], "running");
+    }
+    // The container endpoint travelled with the listener: the third daemon
+    // answers on it without having bound it.
+    UnixStream::connect(&container).expect("container endpoint inherited across two handovers");
+
+    // Released for good, each fixture ends with its exact exit under the
+    // third daemon, its log complete from before the first reload to the
+    // end, since the session owner never changed hands.
+    for (name, id, _, log) in &agents {
+        std::fs::write(work.join(format!("{name}-done")), b"").unwrap();
+        let expected = if *name == "batch" { 7 } else { 3 };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let inspected = rpc(&socket, json!({"op":"inspect", "agent":id})).unwrap();
+            if inspected["agent"]["status"]["state"] == "exited" {
+                assert_eq!(
+                    inspected["agent"]["status"]["code"], expected,
+                    "{inspected}"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{name} did not exit: {inspected}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text = std::fs::read_to_string(log).unwrap();
+        assert!(
+            text.contains(&format!("{name}-before")) && text.contains(&format!("{name}-after")),
+            "{name} log incomplete: {text:?}"
+        );
     }
 
     // The third daemon is nobody's child here; stop it over the socket and

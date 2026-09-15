@@ -504,6 +504,20 @@ impl Store {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, true)
+    }
+
+    /// Open as a successor that has not yet accepted coordination: the
+    /// schema is brought forward (every migration adds; none rewrites),
+    /// but the recorded version is left as the predecessor's until
+    /// [`Store::settle_transfer`] accepts, in the same transaction. An
+    /// aborted takeover therefore leaves a database the predecessor still
+    /// opens.
+    pub fn open_pending(path: &Path) -> Result<Self> {
+        Self::open_with(path, false)
+    }
+
+    fn open_with(path: &Path, bump_version: bool) -> Result<Self> {
         // Secure the database before SQLite can create a journal/WAL. Existing
         // companion files are checked without following links as well.
         agentdocker_host::dirs::private_file(path, true, false)?;
@@ -521,13 +535,13 @@ impl Store {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
-        Self::init(conn)
+        Self::init(conn, bump_version)
     }
 
     /// A throwaway database for tests.
     #[cfg(test)]
     pub fn in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, true)
     }
 
     /// Behave as if the SQLite build lacked FTS5, to exercise the fallback.
@@ -537,7 +551,7 @@ impl Store {
         self
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(conn: Connection, bump_version: bool) -> Result<Self> {
         // Check compatibility before DDL or journal pragmas mutate the file.
         let has_meta: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
@@ -595,10 +609,12 @@ impl Store {
                 // records dedicated process groups. Legacy groups default to
                 // None. v4 distinguishes container lifetime from host PIDs.
                 // The daemon maps legacy file keys idempotently on load.
-                conn.execute(
-                    "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-                    params![SCHEMA_VERSION.to_string()],
-                )?;
+                if bump_version {
+                    conn.execute(
+                        "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                        params![SCHEMA_VERSION.to_string()],
+                    )?;
+                }
             }
             Some(other) => anyhow::bail!(
                 "state database has schema version {other:?}; this build expects {SCHEMA_VERSION}"
@@ -1343,8 +1359,9 @@ impl Store {
         Ok(true)
     }
 
-    /// Rewrite an offer's successor pid while it is still offered.
-    pub fn readdress_transfer(&self, id: &str, successor_pid: u32) -> Result<bool> {
+    /// Rewrite an offer's successor pid while it is still offered, with
+    /// the event that says so in the same transaction.
+    pub fn readdress_transfer(&self, id: &str, successor_pid: u32, event: &Event) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         let Some(mut current) = self.transfer()? else {
             return Ok(false);
@@ -1357,14 +1374,27 @@ impl Store {
             "UPDATE coordinator SET json = ?1 WHERE one = 1",
             params![serde_json::to_string(&current)?],
         )?;
+        self.append_event(event)?;
         tx.commit()?;
         Ok(true)
     }
 
-    /// The schema this store is at: the compiled version, since open
-    /// upgrades or refuses.
+    /// The schema this build writes: the compiled version, which open
+    /// brings the database to, or refuses.
     pub fn schema_version(&self) -> i64 {
         SCHEMA_VERSION
+    }
+
+    /// The schema version the database records right now; behind
+    /// [`Store::schema_version`] only for a successor that has opened
+    /// pending and not yet accepted.
+    pub fn recorded_schema_version(&self) -> Result<i64> {
+        let raw: String = self.conn.query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(raw.parse()?)
     }
 
     /// Move the transfer `id` from `Offered` to `to`, only if it is still
@@ -1398,6 +1428,15 @@ impl Store {
             "UPDATE coordinator SET json = ?1 WHERE one = 1",
             params![serde_json::to_string(&current)?],
         )?;
+        if to == TransferState::Accepted {
+            // The database is this build's from here: a successor that
+            // opened pending brings the recorded version forward with the
+            // same write that makes it the coordinator.
+            self.conn.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                params![SCHEMA_VERSION.to_string()],
+            )?;
+        }
         self.append_event(event)?;
         tx.commit()?;
         Ok(true)
@@ -1718,7 +1757,124 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(Store::init(conn).is_err());
+        assert!(Store::init(conn, true).is_err());
+    }
+
+    /// A successor that opens pending brings the schema forward but not
+    /// its recorded version: an aborted takeover leaves the number the
+    /// predecessor wrote, and only acceptance moves it, in the same
+    /// transaction that makes the successor the coordinator.
+    #[test]
+    fn a_pending_open_records_the_new_schema_version_only_on_acceptance() {
+        use agentdocker_core::session::{Transfer, TransferState};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+                params![(SCHEMA_VERSION - 1).to_string()],
+            )
+            .unwrap();
+        }
+        let now = Utc::now();
+        let seq = std::cell::Cell::new(0_u64);
+        let event = |kind: EventKind| {
+            let mut event = Event::new(kind, now);
+            seq.set(seq.get() + 1);
+            event.seq = seq.get();
+            event
+        };
+        let transfer = |id: &str| Transfer {
+            id: id.into(),
+            predecessor_pid: 1,
+            successor_pid: Some(2),
+            state: TransferState::Offered,
+            offered_at: now,
+            settled_at: None,
+        };
+
+        // Offered, opened pending, aborted: the number never moved.
+        let pending = Store::open_pending(&path).unwrap();
+        assert_eq!(
+            pending.recorded_schema_version().unwrap(),
+            SCHEMA_VERSION - 1
+        );
+        assert!(
+            pending
+                .offer_transfer(
+                    &transfer("t1"),
+                    &event(EventKind::DaemonTransferOffered {
+                        transfer: "t1".into(),
+                        successor_pid: 2
+                    })
+                )
+                .unwrap()
+        );
+        assert!(
+            pending
+                .settle_transfer(
+                    "t1",
+                    None,
+                    TransferState::Aborted,
+                    now,
+                    &event(EventKind::DaemonTransferAborted {
+                        transfer: "t1".into(),
+                        reason: "test".into()
+                    })
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            pending.recorded_schema_version().unwrap(),
+            SCHEMA_VERSION - 1
+        );
+        drop(pending);
+        assert_eq!(
+            Store::open_pending(&path)
+                .unwrap()
+                .recorded_schema_version()
+                .unwrap(),
+            SCHEMA_VERSION - 1,
+            "reopening pending still leaves it"
+        );
+
+        // Accepted: the number comes forward with the acceptance.
+        let pending = Store::open_pending(&path).unwrap();
+        assert!(
+            pending
+                .offer_transfer(
+                    &transfer("t2"),
+                    &event(EventKind::DaemonTransferOffered {
+                        transfer: "t2".into(),
+                        successor_pid: 2
+                    })
+                )
+                .unwrap()
+        );
+        assert!(
+            pending
+                .settle_transfer(
+                    "t2",
+                    Some(2),
+                    TransferState::Accepted,
+                    now,
+                    &event(EventKind::DaemonTransferAccepted {
+                        transfer: "t2".into()
+                    })
+                )
+                .unwrap()
+        );
+        assert_eq!(pending.recorded_schema_version().unwrap(), SCHEMA_VERSION);
+        drop(pending);
+        assert_eq!(
+            Store::open(&path)
+                .unwrap()
+                .recorded_schema_version()
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -1743,7 +1899,7 @@ mod tests {
                 [version.to_string()],
             )
             .unwrap();
-            let store = Store::init(conn).unwrap();
+            let store = Store::init(conn, true).unwrap();
             let version: String = store
                 .conn
                 .query_row(
@@ -2116,7 +2272,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        let store = Store::init(legacy).unwrap().without_fts();
+        let store = Store::init(legacy, true).unwrap().without_fts();
         store.append_journal(&entry(2, "100% of a_b done")).unwrap();
 
         let q = |grep: &str| {

@@ -581,9 +581,7 @@ pub async fn serve_restricted(
     };
     info!(socket = %socket.display(), "restricted endpoint listening");
     daemon.restricted_listening(socket.clone());
-    if let Ok(dup) = listener_fd(&listener) {
-        daemon.hold_restricted(dup);
-    }
+    daemon.hold_restricted(listener_fd(&listener));
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();

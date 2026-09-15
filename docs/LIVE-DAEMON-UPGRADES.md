@@ -89,19 +89,25 @@ event continuity, not just a new socket or a readiness marker.
    serving loop, watcher and session routes to be usable before reporting
    success. A lost readiness response requires inspecting the committed transfer
    identity; timeout alone cannot authorize two coordinators to resume writing.
-   *In source, gated:* `reload` reads the candidate's `--build-info` and
-   refuses another host or an older state schema before any offer; it offers
-   the transfer, spawns the candidate with `--take-over` in its own session,
+   *In source, gated (`AGENTDOCKER_EXPERIMENTAL_RELOAD=1`, exactly):*
+   `reload` reads the candidate's `--build-info` within 10 s and refuses
+   another host or an older state schema before any offer; it offers the
+   transfer (the offer's own `backpressure` or `conflict` refusal is passed
+   through), spawns the candidate with `--take-over` in its own session,
    sends a FORMAT 2 handover (listening socket, daemon lock, container
    endpoint) over `SCM_RIGHTS`, and waits up to 30 s for *serving*. The
-   successor accepts the transfer as its first write, serves on the inherited
-   listener and answers once its session owners are reattached. On any other
-   outcome the predecessor kills the successor's whole session and aborts the
-   offer, unless the store says the successor accepted, in which case it
-   leaves anyway. The watcher and session routes come up with the successor's
-   normal startup; the readiness answer follows owner reattachment, so a
-   managed agent is reachable through the successor before the predecessor
-   leaves. See [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence).
+   successor opens the database pending (schema forward, recorded version
+   not), reattaches every session owner while still fenced, and only then
+   accepts the transfer as its first write, which also records the new
+   schema version; it answers *serving* at once, so acceptance and
+   readiness are the same moment. A fenced predecessor does not reconnect
+   to owners, so the successor's attachment is never superseded. On any
+   other outcome the predecessor kills the successor's whole session and
+   aborts the offer, and the database is as the predecessor left it; if
+   the store says the successor accepted, it was serving, and a death
+   after that is a crashed daemon for the service manager. The watcher
+   and session routes come up with the successor's normal startup.
+   See [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence).
    Real-binary coverage: `enabled_reload_hands_real_processes_to_a_successor_and_leaves`
    reloads three daemons in a row with a batch and a PTY agent keeping their
    processes and logs. The [successor-readiness record](verification/2026-09-15-successor-readiness.json)

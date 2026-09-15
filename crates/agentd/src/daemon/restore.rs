@@ -63,18 +63,6 @@ impl Daemon {
     /// previous daemon. Runs before the liveness sweep, so an agent with a
     /// live owner is never retired for lacking a supervisor here.
     pub async fn reattach_owners(self: &Arc<Self>) {
-        self.reattach_owners_inner().await;
-        self.owners_reattached.notify_waiters();
-        self.owners_reattached.notify_one();
-    }
-
-    /// Resolves once startup has tried every owner once (retries for
-    /// slow owners continue in the background).
-    pub async fn owners_reattached(&self) {
-        self.owners_reattached.notified().await;
-    }
-
-    async fn reattach_owners_inner(self: &Arc<Self>) {
         let candidates: Vec<AgentRecord> = lock(&self.state)
             .registry
             .live()

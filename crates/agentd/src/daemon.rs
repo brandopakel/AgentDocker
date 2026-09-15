@@ -239,9 +239,6 @@ pub struct Daemon {
     held: Mutex<Option<reload::Held>>,
     /// Signalled once a successor is serving and this daemon may leave.
     transferred_exit: Notify,
-    /// Signalled once startup has reattached every owner, so a successor
-    /// tells its predecessor it is serving only after that.
-    owners_reattached: Notify,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -925,7 +922,22 @@ impl Daemon {
 
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
-        agentdocker_host::dirs::secure_state_dir(&home)?;
+        Self::secure_home(&home)?;
+        let store = Store::open(&home.join("state.db"))?;
+        Self::with_store(home, socket, store)
+    }
+
+    /// Open the store as a successor that has not accepted yet: the
+    /// schema is brought forward but its recorded version is not, so an
+    /// aborted takeover leaves a database the predecessor still opens.
+    pub fn open_pending(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
+        Self::secure_home(&home)?;
+        let store = Store::open_pending(&home.join("state.db"))?;
+        Self::with_store(home, socket, store)
+    }
+
+    fn secure_home(home: &Path) -> anyhow::Result<()> {
+        agentdocker_host::dirs::secure_state_dir(home)?;
         let logs = home.join("logs");
         agentdocker_host::dirs::secure_state_dir(&logs)?;
         for entry in std::fs::read_dir(&logs)? {
@@ -934,12 +946,11 @@ impl Daemon {
                 agentdocker_host::dirs::private_file(&path, false, false)?;
             }
         }
-        let daemon_log = paths::daemon_log(&home);
+        let daemon_log = paths::daemon_log(home);
         if std::fs::symlink_metadata(&daemon_log).is_ok() {
             agentdocker_host::dirs::private_file(&daemon_log, false, false)?;
         }
-        let store = Store::open(&home.join("state.db"))?;
-        Self::with_store(home, socket, store)
+        Ok(())
     }
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
@@ -1205,7 +1216,6 @@ impl Daemon {
             owner_mode: supervisor::OwnerMode::detect(),
             held: Mutex::new(None),
             transferred_exit: Notify::new(),
-            owners_reattached: Notify::new(),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -3902,8 +3912,24 @@ impl State {
         if current != transfer {
             return false;
         }
-        match self.store.readdress_transfer(transfer, successor_pid) {
-            Ok(done) => done,
+        let mut event = Event::new(
+            EventKind::DaemonTransferReaddressed {
+                transfer: transfer.to_owned(),
+                successor_pid,
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        match self
+            .store
+            .readdress_transfer(transfer, successor_pid, &event)
+        {
+            Ok(true) => {
+                self.next_seq += 1;
+                let _ = self.events.send(event);
+                true
+            }
+            Ok(false) => false,
             Err(err) => {
                 error!(%err, "cannot readdress the transfer offer");
                 false
