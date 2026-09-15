@@ -8,6 +8,8 @@
     "1": {
       "agents": 1,
       "requested_seconds": 9000,
+      "duration_seconds": 9000.5,
+      "startup_seconds": 0.22464933400624432,
       "checkout_files": 10000,
       "result": "passed",
       "cycles": 35050,
@@ -17,18 +19,36 @@
         "0.99": 5.23,
         "1": 25.387
       },
+      "latency_sample_count": 100000,
+      "latency_sample_scope": "last at most 100000 requests; all cycles counted",
       "daemon_rss_kib": {
         "first": 14048,
         "last": 18864,
         "maximum": 20096,
         "median": 19248
       },
+      "maximum_descriptors": 22,
       "samples": 1785,
+      "daemon_exit": 0,
+      "remaining_child_pids": [],
+      "interrupted": false,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
       "error": null
     },
     "10": {
       "agents": 10,
       "requested_seconds": 9000,
+      "duration_seconds": 9000.3,
+      "startup_seconds": 0.07442695801728405,
       "checkout_files": 10000,
       "result": "passed",
       "cycles": 350118,
@@ -38,18 +58,36 @@
         "0.99": 9.657,
         "1": 34.081
       },
+      "latency_sample_count": 100000,
+      "latency_sample_scope": "last at most 100000 requests; all cycles counted",
       "daemon_rss_kib": {
         "first": 15568,
         "last": 20768,
         "maximum": 22080,
         "median": 21296.0
       },
+      "maximum_descriptors": 50,
       "samples": 1784,
+      "daemon_exit": 0,
+      "remaining_child_pids": [],
+      "interrupted": false,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
       "error": null
     },
     "100": {
       "agents": 100,
       "requested_seconds": 9000,
+      "duration_seconds": 9000.6,
+      "startup_seconds": 0.2316277500067372,
       "checkout_files": 10000,
       "result": "passed",
       "cycles": 3470242,
@@ -59,13 +97,29 @@
         "0.99": 3.554,
         "1": 69.847
       },
+      "latency_sample_count": 100000,
+      "latency_sample_scope": "last at most 100000 requests; all cycles counted",
       "daemon_rss_kib": {
         "first": 21888,
         "last": 30208,
         "maximum": 32832,
         "median": 30208
       },
+      "maximum_descriptors": 434,
       "samples": 1785,
+      "daemon_exit": 0,
+      "remaining_child_pids": [],
+      "interrupted": false,
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0,
+        "fixtures": {
+          "signals": [],
+          "remaining": [],
+          "errors": []
+        }
+      },
       "error": null
     }
   },
@@ -107,6 +161,7 @@
   "raw_result_private": "session scratchpad (not committed)",
   "raw_result_sha256": "626910b045a8fd290bc367d66e7b6a77b98d69dcfca5b18e5f1104fdee69d10f",
   "limits": [
+    "request_ms percentiles are computed over the last at most 100,000 requests of each population, not over every cycle; cycle counts cover the whole run",
     "daemon-only synthetic supervised sleep processes plus concurrent IPC clients; no provider, no user daemon, no journal retention configured",
     "the host also ran two provider sessions and several full cargo gates during the run, so latency tails include foreign load",
     "the binary predates session owners (PR #130) and provider availability (PR #131); it does not cover their sustained behaviour",
