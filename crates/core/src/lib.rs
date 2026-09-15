@@ -11,8 +11,10 @@ pub mod event;
 pub mod identity;
 pub mod input;
 pub use input::{
-    AdapterContact, AdapterKind, InputDelivery, InputReadiness, InputReceipt, InputReport,
-    ReceivedInput,
+    AdapterContact, AdapterKind, CONTROLLER_BIND_GRACE, CONTROLLER_KILL_AFTER, CONTROLLER_RESTARTS,
+    CONTROLLER_STABLE, ControllerLaunch, ControllerRestart, ControllerStep, InputBinding,
+    InputDelivery, InputReadiness, InputReceipt, InputReport, ProcessIdentity, ProviderGeneration,
+    ReceivedInput, controller_backoff,
 };
 pub mod journal;
 pub mod lease;
@@ -36,8 +38,9 @@ pub use event::{Event, EventCursor, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use message::{
-    Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question, QuestionFileChange,
-    QuestionFileChangeKind, QuestionOption, QuestionPresentation, topic_matches,
+    AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question,
+    QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
+    topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{

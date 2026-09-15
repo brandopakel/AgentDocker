@@ -761,7 +761,11 @@ impl<B: Backend> McpServer<B> {
             }
             "ask_human" => {
                 let args: AskArgs = parse(arguments)?;
-                if self.claude_channel {
+                let native_queue = !self.claude_channel
+                    && !self.codex_input
+                    && matches!(self.backend.call(Request::Inspect { agent: me.clone() }).await,
+                        Ok(Response::Agent { agent }) if agent.input_binding.is_some());
+                if self.claude_channel || native_queue {
                     let response = self
                         .backend
                         .call(Request::PostQuestion {
@@ -775,7 +779,7 @@ impl<B: Backend> McpServer<B> {
                         .map_err(transport)?;
                     return Ok(match response {
                         Response::Sent { message, .. } => text_result(
-                            &json!({"posted":true,"question_id":message,"answer_delivery":"channel"}),
+                            &json!({"posted":true,"question_id":message,"answer_delivery": if native_queue { "native_queue" } else { "channel" }}),
                             false,
                         ),
                         other => render(other, false),
@@ -2036,11 +2040,18 @@ mod tests {
         let initialized = channel.initialize(&json!({}));
         let instructions = initialized["instructions"].as_str().unwrap();
         assert!(instructions.contains("reply_to") && !instructions.contains("Use `read_inbox`"));
-        let ordinary = server(vec![Response::Answer {
-            message: "answer".to_owned().into(),
-            from: "human".into(),
-            text: "Blue".into(),
-        }]);
+        let ordinary = server(vec![
+            Response::Error {
+                code: agentdocker_core::ErrorCode::NotFound,
+                message: "fixture has no binding".into(),
+                details: None,
+            },
+            Response::Answer {
+                message: "answer".to_owned().into(),
+                from: "human".into(),
+                text: "Blue".into(),
+            },
+        ]);
         let response = ordinary
             .tool("ask_human", json!({"question":"Which color?"}))
             .await
@@ -2050,7 +2061,7 @@ mod tests {
         assert_eq!(value["answered"], true);
         assert!(matches!(
             ordinary.backend.requests().as_slice(),
-            [Request::Ask { .. }]
+            [Request::Inspect { .. }, Request::Ask { .. }]
         ));
     }
 
@@ -2325,6 +2336,7 @@ mod tests {
                             receipt: InputReceipt::ClaudeChannel,
                         }
                     },
+                    token: None,
                 }
             );
             if expected_requests == 2 {

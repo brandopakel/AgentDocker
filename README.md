@@ -58,6 +58,8 @@ Inbox, and advanced actions under More.
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
+Idle message delivery needs a provider input adapter as well. Managed Claude channels and the Codex bridge provide it; the existing-terminal Codex native queue is under acceptance and is not yet installed. Other runtimes' coordination support does not establish idle wake. Current capabilities and remaining acceptance are in the [message audit](docs/MESSAGE-DELIVERY-AUDIT.md).
+
 ## Install
 
 End users download native executables; Rust build caches are only development
@@ -292,7 +294,7 @@ agentdocker logs -f writer                             # or just watch, without 
 
 The terminal belongs to the daemon, so attaching and detaching are only a client coming and going: the agent does not notice, and its output still lands in the log either way. The window size follows yours, so full-screen agents lay themselves out correctly.
 
-Closing the client window or detaching keeps a managed PTY session running while the daemon remains alive. A clean daemon shutdown stops managed agents; a crash can close their terminal or output pipes, so process survival is not guaranteed. `--restore` relaunches a command under the same identity; it does not preserve a process, terminal or model conversation. Restore readiness, transactional protection and failed-launch cleanup are covered by the [native delivery checks](docs/NATIVE-DELIVERY.md); command relaunch still has a smaller scope than seamless recovery. Planned descriptor handoff is [roadmap row 28](docs/ARCHITECTURE.md#sessions-and-persistence).
+Closing the client window or detaching keeps a managed PTY session running. Independent session owners retain child identity, terminal I/O, logs and exit status across a coordinator crash; a clean daemon shutdown still stops managed agents. `--restore` relaunches a command under the same identity and does not preserve a model conversation. Restore readiness and failed-launch cleanup are covered by the [native delivery checks](docs/NATIVE-DELIVERY.md). Automatic live daemon replacement remains under [implementation and acceptance](docs/LIVE-DAEMON-UPGRADES.md).
 
 ### Channels: when two agents are on the same thing
 

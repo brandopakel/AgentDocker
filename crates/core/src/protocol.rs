@@ -259,6 +259,60 @@ pub enum Request {
         process_started_at: chrono::DateTime<chrono::Utc>,
         observed_at: chrono::DateTime<chrono::Utc>,
         report: crate::InputReport,
+        /// The bound controller's token, required while an input binding
+        /// stands so nobody else can report readiness or a receipt for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
+    /// Make one external controller process the sole consumer of an agent's
+    /// queued input, bound to one exact provider generation. The token is
+    /// the caller's, generated and kept before the first bind, so a lost
+    /// reply is recoverable: the same provider, controller and token bind
+    /// again as a no-op, and a restarted controller with the same token
+    /// resumes the binding. Answers `input_bound`.
+    BindInput {
+        agent: String,
+        provider: crate::ProviderGeneration,
+        controller: crate::ProcessIdentity,
+        token: String,
+        /// How the daemon starts the controller again once it has ended.
+        /// Fixed at the first bind: a resume sends the same one or none.
+        #[serde(default)]
+        launch: Option<crate::ControllerLaunch>,
+    },
+    /// Release an input binding. The token is required unless `force`,
+    /// which is accepted only while the bound controller process is gone.
+    UnbindInput {
+        agent: String,
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        force: bool,
+    },
+    /// A provider session came back as a new process and registered as a
+    /// new record, while its thread's queue, binding and controller ledger
+    /// sit on the record of the process that ended. The caller is the new
+    /// record and names the prior one; the daemon checks it is the one
+    /// record bound to the same thread, profile and checkout and that its
+    /// processes are all gone, keeps it as the canonical identity with the
+    /// caller's process, gives its binding the new generation and this
+    /// launch descriptor, and retires the caller's id into an alias of it.
+    /// Answers `input_resumed`.
+    ResumeInput {
+        agent: String,
+        /// The prior record, named rather than searched for.
+        predecessor: String,
+        /// The new generation: the caller's own process, the same thread
+        /// and profile.
+        provider: crate::ProviderGeneration,
+        launch: crate::ControllerLaunch,
+    },
+    /// A person's retry after the daemon gave up starting a bound
+    /// controller: the restart episode starts over on the same binding,
+    /// with the queue kept and the provider untouched. Refused while the
+    /// bound or a launched controller is running.
+    RetryController {
+        agent: String,
     },
     /// Provider availability, separate from receiver readiness and receipts.
     ReportProvider {
@@ -331,6 +385,13 @@ pub enum Request {
         agent: String,
         messages: Vec<MessageId>,
     },
+    /// Look at an agent's queue without consuming it or counting as a
+    /// delivery: for a person or the app, never for the session's own
+    /// reader. Answers `messages` whoever consumes the queue, and records
+    /// no offer, so a bound controller's reconciliation is not disturbed.
+    PeekInput {
+        agent: String,
+    },
 
     /// The sole input controller of a managed Codex session acknowledges exact
     /// provider receipts, then reads the same durable queue used by human/peer
@@ -341,6 +402,10 @@ pub enum Request {
         agent: String,
         #[serde(default)]
         acknowledge: Vec<MessageId>,
+        /// The bound controller's token, required while an input binding
+        /// stands; a bound read answers `input_batch`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
 
     /// Register the person at the keyboard as a persistent agent named
@@ -877,6 +942,51 @@ pub enum Response {
     },
     Messages {
         messages: Vec<Envelope>,
+    },
+    /// A bound controller's read of the queue: every queued message, and
+    /// which of them a legacy reader had already been offered before the
+    /// binding, so the controller reconciles those against the provider
+    /// before enqueueing them anywhere.
+    InputBatch {
+        agent: AgentId,
+        messages: Vec<Envelope>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uncertain: Vec<MessageId>,
+        /// This daemon settles how an answer travels: an answer in
+        /// `messages` that is not `uncertain` is for the queue; one a
+        /// synchronous `ask` was handed appears only flagged `uncertain`,
+        /// for the controller to settle against the provider's own record
+        /// of the tool call, and never while the `ask` is still waiting.
+        /// Absent from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answers_routed: bool,
+    },
+    /// A legacy consumer asked for input that belongs to someone else: the
+    /// agent's queue is consumed by its bound controller or its managed
+    /// bridge. Not an error; there is nothing for the caller to deliver.
+    InputOwned {
+        agent: AgentId,
+        /// `controller` or `bridge`.
+        owner: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<crate::ProcessIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// The outcome of `resume_input`: the prior record, canonical now for
+    /// the retired caller's id too, with its binding on the new generation.
+    InputResumed {
+        agent: AgentId,
+        retired: AgentId,
+        binding: crate::InputBinding,
+    },
+    /// The outcome of `bind_input`.
+    InputBound {
+        agent: AgentId,
+        binding: crate::InputBinding,
+        /// A controller took over an existing binding with its token,
+        /// rather than making a new one.
+        resumed: bool,
     },
     InputWaiting {
         agent: AgentId,

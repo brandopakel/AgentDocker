@@ -91,6 +91,8 @@ enum Cmd {
     AdoptAll,
     Stop(String),
     ResumeProvider(String, chrono::DateTime<Utc>),
+    /// Start a session's bound input receiver again after the daemon gave up.
+    RetryController(String),
     Setup(Vec<String>),
     Desktop(Vec<String>),
     UpdateCheck,
@@ -479,7 +481,11 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
-                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) | Cmd::ResumeProvider(..) => {}
+                Cmd::Adopt(_)
+                | Cmd::AdoptAll
+                | Cmd::Stop(_)
+                | Cmd::ResumeProvider(..)
+                | Cmd::RetryController(_) => {}
                 // Full queues may omit refreshes: events and periodic refresh
                 // request another snapshot. User actions get an explicit error.
                 _ => return,
@@ -822,7 +828,15 @@ impl App {
             | EventKind::AgentReconciled { .. }
             | EventKind::AgentVcsChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
-            EventKind::InputDeliveryReported { .. } => {
+            EventKind::InputDeliveryReported { .. }
+            | EventKind::InputBound { .. }
+            | EventKind::InputUnbound { .. }
+            | EventKind::InputControllerEnded { .. }
+            | EventKind::InputControllerLaunched { .. }
+            | EventKind::InputControllerLaunchFailed { .. }
+            | EventKind::InputRestartsExhausted { .. }
+            | EventKind::InputRestartsReset { .. }
+            | EventKind::InputResumed { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
@@ -1530,6 +1544,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             );
             Some(Msg::Status(
                 "Delivery resumed; previously received input will not be replayed".into(),
+            ))
+        }
+        Cmd::RetryController(agent) => {
+            let response = client.call(&Request::RetryController { agent })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "Receiver retry refused: {response:?}"
+            );
+            Some(Msg::Status(
+                "The receiver will be started again within a second; queued input waits for it"
+                    .into(),
             ))
         }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {

@@ -18,7 +18,7 @@
 use std::time::Duration as StdDuration;
 
 use super::*;
-use agentdocker_core::{HUMAN, HUMAN_RUNTIME, Question, QuestionPresentation};
+use agentdocker_core::{AnswerRoute, HUMAN, HUMAN_RUNTIME, Question, QuestionPresentation};
 use agentdocker_host::notify::{self, Notification};
 
 /// Enough outstanding questions that a busy fleet is never refused, few
@@ -219,6 +219,91 @@ fn title(from: &str, kind: &str) -> String {
     }
 }
 
+/// A synchronous `ask` waiting on its connection. While it lives, an
+/// answer to its question is held for it; when it ends, whatever is still
+/// held is released to the asker's queue. Dropped on every exit from
+/// `ask`, including a client that went away.
+struct Waiter {
+    daemon: Arc<Daemon>,
+    question: MessageId,
+}
+
+impl Waiter {
+    /// The ask has the answer: the offer and the route are recorded before
+    /// the reply goes out. False means they could not be, and the answer
+    /// is still held.
+    fn hand_over(&mut self, asker: &str, answer: &MessageId) -> bool {
+        lock(&self.daemon.state).answer_handed_over(asker, &self.question, answer)
+    }
+}
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        lock(&self.daemon.state).waiter_ended(&self.question);
+    }
+}
+
+impl State {
+    /// The waiting ask took its answer. The daemon wrote a reply, which is
+    /// not a receipt: the client may be gone before it reads it, so the
+    /// row stays queued and is recorded as offered, like any message a
+    /// non-receipting path may have put in front of the model. A bound
+    /// controller sees it flagged `uncertain` and settles it against the
+    /// provider's own record of the tool call; a legacy reader gets it
+    /// again, which is the duplicate that has always been safer than the
+    /// loss. An answer nobody held stays where it is.
+    fn answer_handed_over(
+        &mut self,
+        asker: &str,
+        question: &MessageId,
+        answer: &MessageId,
+    ) -> bool {
+        if !self.held_answers.contains_key(answer) {
+            return true;
+        }
+        // Stored first: the offer, then the route; only then does the
+        // answer become visible. A store that takes neither leaves it
+        // held, to go to the queue when the wait ends.
+        let Ok(id) = self.resolve(asker) else {
+            return false;
+        };
+        self.note_legacy_offers(&id, std::slice::from_ref(answer), Utc::now());
+        if self.storage_error.is_some() {
+            return false;
+        }
+        self.emit(EventKind::AnswerRouted {
+            question: question.clone(),
+            answer: answer.clone(),
+            route: AnswerRoute::ToolResult,
+        });
+        if self.storage_error.is_some() {
+            return false;
+        }
+        self.held_answers.remove(answer);
+        true
+    }
+
+    /// The ask is over. Anything still held for its question is the
+    /// queue's now.
+    fn waiter_ended(&mut self, question: &MessageId) {
+        self.question_waiters.remove(question);
+        let released: Vec<MessageId> = self
+            .held_answers
+            .iter()
+            .filter(|(_, q)| *q == question)
+            .map(|(answer, _)| answer.clone())
+            .collect();
+        for answer in released {
+            self.held_answers.remove(&answer);
+            self.emit(EventKind::AnswerRouted {
+                question: question.clone(),
+                answer,
+                route: AnswerRoute::Queue,
+            });
+        }
+    }
+}
+
 /// Post notifications off the state lock, at most one per sender per
 /// minute. Runs until the daemon drops its sender.
 pub async fn notifier(mut notices: mpsc::Receiver<Notice>, home: PathBuf, socket: PathBuf) {
@@ -352,17 +437,23 @@ impl Daemon {
             Err(response) => return *response,
         };
         // Subscribe before sending, so an answer that arrives while the
-        // question is still being routed cannot be missed.
+        // question is still being routed cannot be missed; and register as
+        // the waiter under the same guard, so an answer can never be
+        // published between the question and the wait for it.
         let (mut answers, mut events, sent) = {
             let mut state = lock(&self.state);
-            (
-                state.bus.subscribe(),
-                state.events.subscribe(),
-                state.open_question(from.clone(), to.clone(), question, None, timeout),
-            )
+            let sent = state.open_question(from.clone(), to.clone(), question, None, timeout);
+            if let Response::Sent { message, .. } = &sent {
+                state.question_waiters.insert(message.clone());
+            }
+            (state.bus.subscribe(), state.events.subscribe(), sent)
         };
         let Response::Sent { message, .. } = sent else {
             return sent;
+        };
+        let mut waiter = Waiter {
+            daemon: self.clone(),
+            question: message.clone(),
         };
 
         let waited = tokio::time::timeout(timeout, async {
@@ -372,6 +463,16 @@ impl Daemon {
                 if let Some(envelope) = &candidate
                     && accepted.as_ref() == Some(&envelope.id)
                 {
+                    // Handed over here, and only here, once the offer is
+                    // stored: an answer whose bookkeeping failed stays held
+                    // and goes to the queue when this wait ends, so it is
+                    // never returned unrecorded.
+                    if !waiter.hand_over(&from, &envelope.id) {
+                        return Response::error(
+                            ErrorCode::StorageUnavailable,
+                            "the answer could not be recorded as delivered; it remains queued",
+                        );
+                    }
                     return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: message_text(&envelope.payload) };
                 }
                 tokio::select! {
@@ -403,6 +504,9 @@ impl Daemon {
         })
         .await;
 
+        // Whatever happened, the wait is over: an answer still held goes
+        // to the queue.
+        drop(waiter);
         lock(&self.state).expire_questions(Utc::now());
         match waited {
             Ok(response) => response,
@@ -533,6 +637,8 @@ impl Daemon {
                 return state.refuse(&sender, &action, ruling);
             }
         }
+        // The route is chosen where the question closes, in the send path
+        // shared with `send --reply-to`.
         state.send(
             from,
             to,
@@ -876,6 +982,410 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// One answer travels one way at a time. While a synchronous ask waits
+    /// the queue never shows its answer; once handed over the row stays as
+    /// an offer, since the reply is not a receipt; an answer nobody waits
+    /// for is the queue's, and so is one held for an ask that ends without
+    /// it.
+    #[tokio::test]
+    async fn an_answer_reaches_the_waiting_ask_or_the_queue_never_both() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let inbox = |daemon: Arc<Daemon>| async move {
+            match daemon
+                .handle(Request::Inbox {
+                    agent: "asker".into(),
+                    drain: false,
+                })
+                .await
+            {
+                Response::Messages { messages } => messages,
+                other => panic!("{other:?}"),
+            }
+        };
+        let routes = |daemon: &Arc<Daemon>| {
+            daemon
+                .recent_events(50)
+                .into_iter()
+                .filter_map(|e| match e.kind {
+                    EventKind::AnswerRouted {
+                        question,
+                        answer,
+                        route,
+                    } => Some((question, answer, route)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // A waiting ask.
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from: "asker".into(),
+                        to: "recipient".into(),
+                        question: "Which colour?".into(),
+                        timeout_secs: 300,
+                    })
+                    .await
+            }
+        });
+        let pending = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(question) = lock(&daemon.state).questions.values().next().cloned() {
+                    break question;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(lock(&daemon.state).question_waiters.contains(&pending.id));
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.id.clone(),
+                text: "Blue".into(),
+            })
+            .await
+        else {
+            panic!("answer failed");
+        };
+        let handed = tokio::time::timeout(StdDuration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&handed, Response::Answer { message, text, .. } if *message == answer && text == "Blue"),
+            "{handed:?}"
+        );
+        // Handed over: the row stays, recorded as offered, because the
+        // written reply is not a receipt.
+        let visible = inbox(daemon.clone()).await;
+        assert!(visible.iter().any(|m| m.id == answer), "{visible:?}");
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&asker.id)
+                .unwrap()
+                .legacy_offers
+                .contains_key(&answer)
+        );
+        assert!(lock(&daemon.state).held_answers.is_empty());
+        assert!(!lock(&daemon.state).question_waiters.contains(&pending.id));
+        assert_eq!(
+            routes(&daemon),
+            vec![(pending.id.clone(), answer.clone(), AnswerRoute::ToolResult)]
+        );
+
+        // Nobody waiting: the queue's, said so at once.
+        let Response::Sent {
+            message: posted, ..
+        } = daemon
+            .handle(Request::PostQuestion {
+                from: "asker".into(),
+                to: "recipient".into(),
+                question: "And the size?".into(),
+                presentation: None,
+                timeout_secs: 300,
+            })
+            .await
+        else {
+            panic!("post failed");
+        };
+        let Response::Sent {
+            message: queued, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: posted.clone(),
+                text: "Large".into(),
+            })
+            .await
+        else {
+            panic!("answer failed");
+        };
+        let visible = inbox(daemon.clone()).await;
+        assert!(visible.iter().any(|m| m.id == queued), "{visible:?}");
+        assert_eq!(
+            routes(&daemon).last(),
+            Some(&(posted.clone(), queued.clone(), AnswerRoute::Queue))
+        );
+
+        // A plain send with reply_to that closes the question is the
+        // answer, whichever request carried it: normalised to kind answer,
+        // and held the same way while an ask waits.
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from: "asker".into(),
+                        to: "recipient".into(),
+                        question: "Which font?".into(),
+                        timeout_secs: 300,
+                    })
+                    .await
+            }
+        });
+        let font = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(question) = lock(&daemon.state)
+                    .questions
+                    .values()
+                    .find(|q| q.text == "Which font?")
+                    .cloned()
+                {
+                    break question;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let Response::Sent { message: reply, .. } = daemon
+            .handle(Request::Send {
+                from: "recipient".into(),
+                to: "asker".into(),
+                kind: "chat".into(),
+                payload: serde_json::json!({ "text": "Mono" }),
+                reply_to: Some(font.id.clone()),
+            })
+            .await
+        else {
+            panic!("send failed");
+        };
+        assert!(matches!(
+            tokio::time::timeout(StdDuration::from_secs(5), waiting)
+                .await
+                .unwrap()
+                .unwrap(),
+            Response::Answer { message, text, .. } if message == reply && text == "Mono"
+        ));
+        let stored = lock(&daemon.state).inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == reply)
+            .cloned()
+            .expect("the reply stays queued as an offer");
+        assert_eq!(
+            stored.kind, "answer",
+            "normalised where the question closed"
+        );
+        assert_eq!(
+            routes(&daemon).last(),
+            Some(&(font.id.clone(), reply.clone(), AnswerRoute::ToolResult))
+        );
+
+        // Held for an ask that ends without it: released to the queue.
+        let Response::Sent {
+            message: late_question,
+            ..
+        } = daemon
+            .handle(Request::PostQuestion {
+                from: "asker".into(),
+                to: "recipient".into(),
+                question: "Ship it?".into(),
+                presentation: None,
+                timeout_secs: 300,
+            })
+            .await
+        else {
+            panic!("post failed");
+        };
+        lock(&daemon.state)
+            .question_waiters
+            .insert(late_question.clone());
+        let Response::Sent { message: held, .. } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: late_question.clone(),
+                text: "Yes".into(),
+            })
+            .await
+        else {
+            panic!("answer failed");
+        };
+        assert!(
+            !inbox(daemon.clone()).await.iter().any(|m| m.id == held),
+            "held while the ask waits"
+        );
+        assert!(
+            lock(&daemon.state).inboxes[&asker.id]
+                .iter()
+                .any(|m| m.id == held),
+            "but durable"
+        );
+        // Nothing behind it is shown either: the queue keeps its order
+        // for an answer that comes back to it.
+        let Response::Sent { message: later, .. } = daemon
+            .handle(Request::Send {
+                from: "recipient".into(),
+                to: "asker".into(),
+                kind: "chat".into(),
+                payload: serde_json::json!({ "text": "by the way" }),
+                reply_to: None,
+            })
+            .await
+        else {
+            panic!("send failed");
+        };
+        assert!(
+            !inbox(daemon.clone()).await.iter().any(|m| m.id == later),
+            "behind the held answer"
+        );
+        // A hand-over whose bookkeeping cannot be stored does not happen:
+        // the answer stays held, to go to the queue when the wait ends.
+        {
+            let mut state = lock(&daemon.state);
+            state.storage_error = Some("disk gone".to_owned());
+            assert!(!state.answer_handed_over("asker", &late_question, &held));
+            assert!(state.held_answers.contains_key(&held));
+            state.storage_error = None;
+        }
+        assert!(
+            !inbox(daemon.clone()).await.iter().any(|m| m.id == held),
+            "still held"
+        );
+        lock(&daemon.state).waiter_ended(&late_question);
+        let visible: Vec<MessageId> = inbox(daemon.clone())
+            .await
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert!(
+            visible.ends_with(&[held.clone(), later]),
+            "released to the queue, in order: {visible:?}"
+        );
+        assert_eq!(
+            routes(&daemon).last(),
+            Some(&(late_question, held, AnswerRoute::Queue))
+        );
+        assert!(lock(&daemon.state).held_answers.is_empty());
+    }
+
+    /// An asker with a bound controller keeps a handed-over answer in the
+    /// queue as uncertain: the reply the daemon wrote is not a receipt, and
+    /// the controller reconciles it against the provider's record of the
+    /// tool call before it delivers or acknowledges it.
+    #[tokio::test]
+    async fn a_bound_asker_keeps_a_handed_over_answer_as_uncertain() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        register(&daemon, "recipient").await;
+        let mut spec = AgentSpec {
+            name: "asker".into(),
+            runtime: "custom".into(),
+            ..Default::default()
+        };
+        spec.labels.insert("session_id".into(), "thread-1".into());
+        let Response::Agent { agent: asker } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed");
+        };
+        let me = std::process::id();
+        let identity = agentdocker_core::ProcessIdentity {
+            pid: me,
+            started_at: agentdocker_host::procinfo::start_time(me).unwrap(),
+        };
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: asker.id.to_string(),
+                    provider: agentdocker_core::ProviderGeneration {
+                        process: identity.clone(),
+                        session: "thread-1".into(),
+                        profile: "/etc/hosts".into(),
+                    },
+                    controller: identity,
+                    token: TOKEN.into(),
+                    launch: None,
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let waiting = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Ask {
+                        from: "asker".into(),
+                        to: "recipient".into(),
+                        question: "Which colour?".into(),
+                        timeout_secs: 300,
+                    })
+                    .await
+            }
+        });
+        let pending = tokio::time::timeout(StdDuration::from_secs(5), async {
+            loop {
+                if let Some(question) = lock(&daemon.state).questions.values().next().cloned() {
+                    break question;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.id.clone(),
+                text: "Blue".into(),
+            })
+            .await
+        else {
+            panic!("answer failed");
+        };
+        // Held: the controller's read shows nothing while the ask waits.
+        let batch = daemon
+            .handle(Request::ProviderInbox {
+                agent: asker.id.to_string(),
+                acknowledge: Vec::new(),
+                token: Some(TOKEN.into()),
+            })
+            .await;
+        assert!(
+            matches!(&batch, Response::InputBatch { messages, answers_routed: true, .. } if messages.is_empty()),
+            "{batch:?}"
+        );
+        assert!(matches!(
+            tokio::time::timeout(StdDuration::from_secs(5), waiting)
+                .await
+                .unwrap()
+                .unwrap(),
+            Response::Answer { .. }
+        ));
+        // Handed over: in the queue, flagged, for the controller to settle.
+        let batch = daemon
+            .handle(Request::ProviderInbox {
+                agent: asker.id.to_string(),
+                acknowledge: Vec::new(),
+                token: Some(TOKEN.into()),
+            })
+            .await;
+        assert!(
+            matches!(&batch, Response::InputBatch { messages, uncertain, answers_routed: true, .. }
+                if messages.iter().map(|m| &m.id).eq([&answer]) && *uncertain == vec![answer.clone()]),
+            "{batch:?}"
+        );
+        assert!(daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
+            EventKind::AnswerRouted { answer: a, route: AnswerRoute::ToolResult, .. } if *a == answer)));
     }
 
     #[tokio::test]

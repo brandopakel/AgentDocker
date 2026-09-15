@@ -64,7 +64,8 @@ messages. It cannot wake an already idle process by itself. MCP agents must call
 `read_inbox` or `wait_for_messages`; configured MCP does not make agents poll or
 answer.
 
-Codex hooks now deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
+Codex `SessionStart` verifies the session and starts a supported native receiver
+without claiming turn activity. Other Codex hooks deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
 and request one `Stop` continuation when messages wait. `stop_hook_active`
 prevents repeated continuations. Interrupt, compaction and pre-tool observations
 do not read inboxes. Post-tool context preserves the original tool result.
@@ -81,6 +82,44 @@ receipt. See [integration acceptance](INTEGRATION-ACCEPTANCE.md). This historica
 hook path does not wake an already idle provider; the separate managed bridge
 described above supplies that behavior for its owned conversation. Neither path
 replaces the provider's tool approval decisions.
+
+### One consumer for an externally registered session
+
+A session that registered itself through hooks or MCP has no single consumer:
+whichever hook or explicit read takes the queue delivers. An **input binding**
+(`bind_input`, see the [protocol table](ARCHITECTURE.md#protocol)) gives such a
+session one: an external controller process, bound to the exact provider
+generation (the registered pid and birth, the registered `session_id`, an
+absolute profile path) and identified by a token the controller made and
+keeps (a coordination identifier between processes of one OS user, not a
+security boundary). While the binding stands, every legacy read, draining or not, is answered
+`input_owned` instead of messages (a person or the app looks with
+`peek_input`, which records nothing), the controller's `provider_inbox` reads
+(with the token) take the queue as `input_batch`, and its `report_input` is
+the only readiness and receipt evidence accepted. A controller that restarts
+resumes the binding with its token; another provider generation waits for an
+explicit `unbind_input`. Messages a hook had already been offered before the
+binding travel flagged as `uncertain`, so the controller reconciles them
+against the provider before enqueueing anything, and a hook finishing that
+in-flight delivery may still acknowledge exactly those.
+
+A controller that ends leaves an idle provider with no hook to start it again,
+so a bind may carry a **launch descriptor**: the exact command the controller
+was started with. The daemon then watches the bound controller by pid and
+birth; when it is gone it says so (`input_controller_ended`), pauses the
+agent's delivery evidence, and starts the descriptor again with backoff (0, 2,
+4, 8, 16 seconds; five launches per episode, then `input_restarts_exhausted`;
+a controller that stayed bound for a minute starts the count over), while the
+provider process is still running. After the daemon gave up, `agentdocker
+provider retry <agent>` or the selected session's **Retry receiver** action in
+the desktop app starts the episode over on the same binding, queue and
+provider; nothing in the inbox controls repairs a receiver. The started process binds itself with the
+same token: the daemon restarts receivers, never provider sessions, and never
+rebinds or changes the provider generation on its own. The descriptor is kept
+on the agent record in the open, so the token belongs in a private file, not
+in its arguments or environment. Both the daemon supervisor and the Codex 0.154 native-queue receiver are in source.
+See [Codex input](CODEX-INPUT.md) for the supported hook bootstrap, idle delivery,
+receipt recovery and the retained no-prompt startup/resume limitation.
 
 ## Channels and reviews
 
