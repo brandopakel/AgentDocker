@@ -223,7 +223,7 @@
     "skill_validator": "passed",
     "installable_skill_sha256": "2854737f9970ce3be9b2cf5653d9cf319e4f1ed7e285df0976929508d32d820f",
     "actual_claude_setup": {
-      "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+      "scope": "Actual debug-binary preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
       "source_commit": "8fd95af3426515b98335b1753ebe200e161265e9",
       "source_tree": "d5549e98e22a364523cfaf72af02c322957a5b38",
       "binary_sha256": "288f2cabaa3b69a37c17e38aaaebd0409b7860af17245602bb58fe700341cf50",
@@ -300,7 +300,8 @@
         "scratch_removed": true,
         "user_configuration_hashes_unchanged": true,
         "model_invoked": false
-      }
+      },
+      "scope_correction": "The original driver generically labelled every binary packaged. This trial used the debug binaries identified by binary_provenance; no packaged-app acceptance is claimed."
     },
     "actual_claude_setup_result_sha256": "f17fbda70049783ebc1e97da28b882786ff9361457110788622f3178486cb153",
     "discovery": [
@@ -359,7 +360,7 @@
       },
       "installable_skill_sha256": "edb8b8ef46a468312aa24309f3fc67ba78b98dd7e880030db4cdd07deaa9c04c",
       "actual_claude_setup": {
-        "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+        "scope": "Actual release-binary preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
         "source_commit": "d7bd90cc3915ffecf5eb1f419f2ab83fd2c4d28e",
         "source_tree": "190865ab73e8e44bb24764952e4fcb951f3edc84",
         "binary_sha256": "29754c9be64384bbbfe75a6593870dc62134e5f34d9c68cc3c43691088ef31ec",
@@ -436,7 +437,8 @@
           "scratch_removed": true,
           "user_configuration_hashes_unchanged": true,
           "model_invoked": false
-        }
+        },
+        "scope_correction": "The CLI was built by the release gate and copied directly for this trial; this result does not test installation from an app package."
       },
       "discovery": [
         {
