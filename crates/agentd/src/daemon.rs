@@ -244,6 +244,14 @@ struct State {
     /// from is not pruned while the controller is dead and waiting to be
     /// started again.
     controller_pins: HashMap<AgentId, agentdocker_host::lock::Lock>,
+    /// Questions whose synchronous `ask` is waiting on its connection now.
+    /// An answer to one of these is held for that ask rather than shown to
+    /// the asker's queue; the ask hands it over or, ending without it,
+    /// releases it. In memory only: a daemon that restarts has no asks
+    /// waiting, and everything held goes to the queue.
+    question_waiters: HashSet<MessageId>,
+    /// Answers held for a waiting ask, by answer id, with their question.
+    held_answers: HashMap<MessageId, MessageId>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -1032,6 +1040,8 @@ impl Daemon {
                 committing: std::collections::BTreeSet::new(),
                 reported_duplicates: std::collections::BTreeSet::new(),
                 controller_pins: HashMap::new(),
+                question_waiters: HashSet::new(),
+                held_answers: HashMap::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
@@ -4122,10 +4132,17 @@ impl State {
         if let Some(error) = self.storage_failure() {
             return Err(Box::new(error));
         }
+        // An answer held for a waiting ask is not in the queue for anyone.
         let messages: Vec<Envelope> = self
             .inboxes
             .get(id)
-            .map(|queue| queue.iter().cloned().collect())
+            .map(|queue| {
+                queue
+                    .iter()
+                    .filter(|m| !self.held_answers.contains_key(&m.id))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         if drain && !messages.is_empty() {
             let ids = messages

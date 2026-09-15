@@ -67,6 +67,15 @@ pub enum EventKind {
         question: MessageId,
         answer: Option<MessageId>,
     },
+    /// How an answer reached its asker: handed over as the result of the
+    /// synchronous `ask` that was waiting for it (and taken out of the
+    /// asker's queue), or left in the queue because no `ask` was waiting
+    /// or the one that was ended without it.
+    AnswerRouted {
+        question: MessageId,
+        answer: MessageId,
+        route: crate::AnswerRoute,
+    },
     /// The asker closed an unanswered question. Inbox messages remain.
     QuestionCancelled {
         question: MessageId,

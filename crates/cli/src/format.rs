@@ -543,6 +543,19 @@ pub fn event_line(event: &Event) -> String {
         } => {
             format!("question opened  {question} until {expires_at}")
         }
+        EventKind::AnswerRouted {
+            question,
+            answer,
+            route,
+        } => format!(
+            "answer routed    {} for {} via {}",
+            answer.as_str(),
+            question.as_str(),
+            match route {
+                agentdocker_core::AnswerRoute::ToolResult => "the waiting ask",
+                agentdocker_core::AnswerRoute::Queue => "the queue",
+            }
+        ),
         EventKind::QuestionClosed { question, answer } => match answer {
             Some(answer) => format!("question answered {question} by message {answer}"),
             None => format!("question expired {question}"),

@@ -1068,12 +1068,14 @@ impl State {
                     agent: id,
                     messages,
                     uncertain,
+                    answers_routed: true,
                 }
             }
             Response::InputWaiting { .. } => Response::InputBatch {
                 agent: id,
                 messages: Vec::new(),
                 uncertain: Vec::new(),
+                answers_routed: true,
             },
             other => other,
         }
