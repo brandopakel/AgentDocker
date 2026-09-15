@@ -325,7 +325,7 @@ def wait(fn, timeout=30):
 
 try:
     with tempfile.TemporaryDirectory(prefix="ad-native-queue-", dir="/tmp") as tmp:
-        root = Path(tmp)
+        root = Path(tmp).resolve()
         profile = root / "profile"
         profile.mkdir()
         repo = root / "project"
