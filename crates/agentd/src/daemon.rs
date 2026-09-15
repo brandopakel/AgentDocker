@@ -113,6 +113,20 @@ const OVERLAP_PAGE: usize = 2_000;
 /// Maximum foreground wait while failed-launch supervision stops its owned group.
 const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// What became of a write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+enum Persisted {
+    Committed,
+    /// Fenced: nothing was written and nothing is wrong. Memory stays.
+    Skipped,
+    /// The store failed and the failure is latched.
+    Failed,
+}
+
+/// A recovery write held back until this process is allowed to write.
+type DeferredWrite = Box<dyn FnOnce(&Store) -> anyhow::Result<()> + Send>;
+
 /// Who may write the database from this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Coordination {
@@ -258,7 +272,16 @@ struct State {
     /// ordinary case. Offering a transfer stops every writer here,
     /// request or tick, until the successor accepts (this process exits
     /// without touching agents) or the offer is aborted (writing resumes).
+    /// A process that opened the database while an offer was pending
+    /// starts fenced and may write only after accepting as the successor.
     coordination: Coordination,
+    /// Startup recovery writes held back by a fenced open; the successor
+    /// runs them immediately after accepting, before serving anything.
+    deferred_recovery: Vec<DeferredWrite>,
+    /// Mutating requests admitted past the fence and still executing. An
+    /// offer waits for this to reach zero so its final write follows every
+    /// side effect it might otherwise race.
+    in_flight: usize,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
@@ -687,7 +710,7 @@ impl Daemon {
                             .registry
                             .set_status(&candidate.id, AgentStatus::Stopping, Utc::now())
                             .unwrap();
-                        state.persist("agent", |store| store.upsert_agent(&agent));
+                        let _ = state.persist("agent", |store| store.upsert_agent(&agent));
                         state.emit(EventKind::AgentStopping {
                             agent: candidate.id,
                             force: false,
@@ -755,7 +778,7 @@ impl Daemon {
                     .registry
                     .set_status(&id, AgentStatus::Stopping, Utc::now())
                     .unwrap();
-                state.persist("agent", |store| store.upsert_agent(&agent));
+                let _ = state.persist("agent", |store| store.upsert_agent(&agent));
                 state.emit(EventKind::AgentStopping { agent: id, force });
                 return Response::Agent { agent };
             }
@@ -841,7 +864,7 @@ impl Daemon {
             .registry
             .set_status(&record.id, AgentStatus::Stopping, Utc::now())
             .unwrap();
-        state.persist("agent", |store| store.upsert_agent(&agent));
+        let _ = state.persist("agent", |store| store.upsert_agent(&agent));
         state.emit(EventKind::AgentStopping {
             agent: record.id,
             force,
@@ -884,6 +907,17 @@ impl Daemon {
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
         let now = Utc::now();
+        // Before any recovery write: is coordination already offered to
+        // someone? Then this process may not write until it has accepted
+        // that offer as the named successor. Recovery still corrects memory
+        // so the projection is right; the writes wait in `deferred` and land
+        // as the successor's first act after acceptance. A stranger never
+        // gets to run them at all.
+        let pending_transfer = store
+            .transfer()?
+            .filter(|transfer| transfer.state == TransferState::Offered);
+        let fenced = pending_transfer.is_some();
+        let mut deferred: Vec<DeferredWrite> = Vec::new();
         let records = store.load_agents()?;
         // A shared name does not prove a shared identity. Refuse before any
         // recovery writes: retiring either record can strand its inbox and
@@ -937,7 +971,14 @@ impl Daemon {
                     now,
                 );
                 event.seq = next_seq;
-                store.agent_transition(&record, &event)?;
+                if fenced {
+                    let record = record.clone();
+                    deferred.push(Box::new(move |store| {
+                        store.agent_transition(&record, &event)
+                    }));
+                } else {
+                    store.agent_transition(&record, &event)?;
+                }
                 next_seq += 1;
             }
             let stored = registry.get_mut(&record.id).expect("record was validated");
@@ -967,7 +1008,14 @@ impl Daemon {
                 };
                 let mut event = Event::new(kind, now);
                 event.seq = next_seq;
-                store.delete_lease_with_event(&lease.id, &event)?;
+                if fenced {
+                    let id = lease.id.clone();
+                    deferred.push(Box::new(move |store| {
+                        store.delete_lease_with_event(&id, &event)
+                    }));
+                } else {
+                    store.delete_lease_with_event(&lease.id, &event)?;
+                }
                 next_seq += 1;
                 continue;
             }
@@ -981,7 +1029,12 @@ impl Daemon {
                 })?;
                 lease.resource =
                     ResourceKey::new(format!("path:{}", project::try_canonical(&path)?.display()));
-                store.upsert_lease(&lease)?;
+                if fenced {
+                    let lease = lease.clone();
+                    deferred.push(Box::new(move |store| store.upsert_lease(&lease)));
+                } else {
+                    store.upsert_lease(&lease)?;
+                }
             }
             if leases.holders_of(&lease.resource).iter().any(|held| {
                 held.holder != lease.holder
@@ -1044,8 +1097,15 @@ impl Daemon {
                 event
             })
             .collect();
-        store.close_questions(&expired, &expiration_events)?;
         next_seq += expiration_events.len() as u64;
+        if fenced {
+            let expired = expired.clone();
+            deferred.push(Box::new(move |store| {
+                store.close_questions(&expired, &expiration_events)
+            }));
+        } else {
+            store.close_questions(&expired, &expiration_events)?;
+        }
         for id in expired {
             questions.remove(&id);
         }
@@ -1064,7 +1124,14 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
-                coordination: Coordination::Serving,
+                coordination: match pending_transfer {
+                    Some(transfer) => Coordination::Quiescing {
+                        transfer: transfer.id,
+                    },
+                    None => Coordination::Serving,
+                },
+                deferred_recovery: deferred,
+                in_flight: 0,
                 registry,
                 leases,
                 inboxes,
@@ -1183,10 +1250,16 @@ impl Daemon {
         if let Some(error) = lock(&self.state).storage_failure() {
             return error;
         }
-        if mutates(&request)
-            && let Some(refusal) = lock(&self.state).transferring()
-        {
-            return refusal;
+        // Admission and the in-flight count move together under the lock:
+        // an offer that finds the count at zero knows no admitted mutation
+        // is still executing, so its final write follows every side effect.
+        let admitted = mutates(&request);
+        if admitted {
+            let mut state = lock(&self.state);
+            if let Some(refusal) = state.transferring() {
+                return refusal;
+            }
+            state.in_flight += 1;
         }
         // Boxed: `handle_healthy` is one match over every request the
         // protocol has, so the future it returns is as large as the
@@ -1196,7 +1269,11 @@ impl Daemon {
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
         let response = Box::pin(self.handle_healthy(request)).await;
-        lock(&self.state).storage_failure().unwrap_or(response)
+        let mut state = lock(&self.state);
+        if admitted {
+            state.in_flight -= 1;
+        }
+        state.storage_failure().unwrap_or(response)
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -1669,10 +1746,10 @@ impl Daemon {
                             now,
                         );
                         event.seq = state.next_seq;
-                        state.persist("launch completion", |store| {
+                        let committed = state.persist("launch completion", |store| {
                             store.agent_transition(&running, &event)
                         });
-                        if state.storage_error.is_none() {
+                        if committed == Persisted::Committed {
                             *state
                                 .registry
                                 .get_mut(&record.id)
@@ -3131,7 +3208,7 @@ impl Daemon {
         if fresh {
             match &project.fingerprint {
                 Some(fingerprint) => {
-                    state.persist("project", |store| {
+                    let _ = state.persist("project", |store| {
                         store.upsert_project(&project.root, fingerprint)
                     });
                 }
@@ -3676,6 +3753,17 @@ impl State {
                 "a coordination transfer is already in flight",
             )));
         }
+        if self.in_flight > 0 {
+            // A mutation admitted before this offer is still executing and
+            // may still write; the offer's last write must follow it.
+            return Err(Box::new(Response::error(
+                ErrorCode::Backpressure,
+                format!(
+                    "{} mutating request(s) still executing; offer again once they finish",
+                    self.in_flight
+                ),
+            )));
+        }
         let transfer = Transfer {
             id: AgentId::generate().to_string(),
             predecessor_pid: std::process::id(),
@@ -3693,11 +3781,7 @@ impl State {
         );
         event.seq = self.next_seq;
         let offered = self.store_op("transfer offer", |store| {
-            let offered = store.offer_transfer(&transfer)?;
-            if offered {
-                store.append_event(&event)?;
-            }
-            Ok(offered)
+            store.offer_transfer(&transfer, &event)
         });
         match offered {
             Some(true) => {
@@ -3729,25 +3813,22 @@ impl State {
         // Written past the fence on purpose: settling is the one write a
         // fenced coordinator may make, and only as a compare-and-set.
         let now = Utc::now();
-        let settled = self
-            .store
-            .settle_transfer(&transfer, None, TransferState::Aborted, now);
+        let mut event = Event::new(
+            EventKind::DaemonTransferAborted {
+                transfer: transfer.clone(),
+                reason: reason.to_owned(),
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        let settled =
+            self.store
+                .settle_transfer(&transfer, None, TransferState::Aborted, now, &event);
         match settled {
             Ok(true) => {
                 self.coordination = Coordination::Serving;
-                let mut event = Event::new(
-                    EventKind::DaemonTransferAborted {
-                        transfer: transfer.clone(),
-                        reason: reason.to_owned(),
-                    },
-                    now,
-                );
-                event.seq = self.next_seq;
-                self.persist("transfer abort", |store| store.append_event(&event));
-                if self.storage_error.is_none() {
-                    self.next_seq += 1;
-                    let _ = self.events.send(event);
-                }
+                self.next_seq += 1;
+                let _ = self.events.send(event);
                 warn!(%transfer, reason, "coordination transfer aborted; writing resumed");
                 true
             }
@@ -3778,20 +3859,29 @@ impl State {
         })
     }
 
-    fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+    /// Write, and say what happened. Callers move memory and publish only
+    /// on `Committed`; a `Skipped` write (fenced) is not a failure and not
+    /// a success, and the caller must leave memory as it was.
+    fn persist(
+        &mut self,
+        what: &str,
+        write: impl FnOnce(&Store) -> anyhow::Result<()>,
+    ) -> Persisted {
         if self.storage_error.is_some() {
-            return;
+            return Persisted::Failed;
         }
         if self.fenced() {
             // Not an error: the caller's request was refused before it got
             // here, and a tick writer simply skips its turn. Nothing lands.
             debug!(%what, "write skipped: coordination is being transferred");
-            return;
+            return Persisted::Skipped;
         }
         if let Err(err) = write(&self.store) {
             error!(%what, %err, "storage failed; disabling coordination until restart");
             self.storage_error = Some(format!("{what}: {err}"));
+            return Persisted::Failed;
         }
+        Persisted::Committed
     }
 
     pub fn emit(&mut self, kind: EventKind) {
@@ -3800,8 +3890,8 @@ impl State {
         }
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("event", |store| store.append_event(&event));
-        if self.storage_error.is_none() {
+        let committed = self.persist("event", |store| store.append_event(&event));
+        if committed == Persisted::Committed {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
@@ -3846,7 +3936,7 @@ impl State {
         };
         if changed {
             info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
-            self.persist("agent", |store| store.upsert_agent(&record));
+            let _ = self.persist("agent", |store| store.upsert_agent(&record));
             self.emit(EventKind::AgentVcsChanged {
                 agent: id.clone(),
                 vcs,
@@ -3894,7 +3984,7 @@ impl State {
         }
         let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
         event.seq = self.next_seq;
-        self.persist("agent removal", |store| store.delete_agent(&id, &event));
+        let _ = self.persist("agent removal", |store| store.delete_agent(&id, &event));
         if let Some(error) = self.storage_failure() {
             return error;
         }
@@ -3989,7 +4079,7 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
-        self.persist("agent exit", |store| {
+        let _ = self.persist("agent exit", |store| {
             store.agent_exit(&record, &leases, &journal, &channels, &events)
         });
         if self.storage_error.is_some() {
@@ -4015,8 +4105,8 @@ impl State {
     fn touch(&mut self, id: &AgentId) {
         if let Some(mut record) = self.registry.get(id).cloned() {
             record.last_seen = Utc::now();
-            self.persist("agent", |store| store.upsert_agent(&record));
-            if self.storage_error.is_none() {
+            let committed = self.persist("agent", |store| store.upsert_agent(&record));
+            if committed == Persisted::Committed {
                 *self
                     .registry
                     .get_mut(id)
@@ -4043,7 +4133,7 @@ impl State {
             event.seq = self.next_seq;
             event
         });
-        self.persist("lease activity", |store| {
+        let _ = self.persist("lease activity", |store| {
             store.lease_activity(&record, lease, event.as_ref())
         });
         if self.storage_error.is_some() {
@@ -4110,7 +4200,7 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("inbox acknowledgement", |store| {
+        let _ = self.persist("inbox acknowledgement", |store| {
             store.ack_inbox(&id, &messages, &event)
         });
         if let Some(error) = self.storage_failure() {
@@ -4342,10 +4432,10 @@ impl State {
             event.seq = self.next_seq + events.len() as u64;
             events.push(event);
         }
-        self.persist("release", |store| {
+        let committed = self.persist("release", |store| {
             store.release_leases(&ids, entry.as_ref(), &events)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             for lease in &released {
                 self.leases
                     .release(&lease.id, &lease.holder)
@@ -4499,10 +4589,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("journal", |store| {
+        let committed = self.persist("journal", |store| {
             store.append_journal_with_event(&entry, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.cache_journal(entry.clone());
             self.next_seq += 1;
             let _ = self.events.send(event);
@@ -4809,10 +4899,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("journal cursor", |store| {
+        let committed = self.persist("journal cursor", |store| {
             store.set_journal_cursor_with_event(key, project, seq, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.journal_cursors
                 .insert((key.to_owned(), project.clone()), seq);
             self.next_seq += 1;
@@ -4891,16 +4981,22 @@ impl State {
         };
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("lease removal", |store| {
+        let committed = self.persist("lease removal", |store| {
             store.delete_lease_with_event(&lease.id, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
     }
 
     fn expire_leases_at(&mut self, now: DateTime<Utc>) {
+        if self.fenced() {
+            // Expiry is memory first, then the write; while fenced the
+            // write cannot land, so the tick is skipped whole rather than
+            // leaving memory without a lease the database still holds.
+            return;
+        }
         let expired = self.leases.expire(now);
         for lease in expired {
             info!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "lease expired");
@@ -5039,7 +5135,7 @@ impl State {
                 event
             })
             .collect();
-        self.persist("message", |store| {
+        let _ = self.persist("message", |store| {
             store.publish_message(
                 &envelope,
                 &recipients,
@@ -5233,7 +5329,7 @@ impl State {
                     Utc::now(),
                 );
                 event.seq = self.next_seq;
-                self.persist("session binding", |store| {
+                let _ = self.persist("session binding", |store| {
                     store.agent_transition(&updated, &event)
                 });
                 if let Some(error) = self.storage_failure() {
@@ -5249,7 +5345,7 @@ impl State {
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
         }
-        self.persist("agent", |store| store.upsert_agent(&record));
+        let _ = self.persist("agent", |store| store.upsert_agent(&record));
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
@@ -6638,7 +6734,7 @@ mod tests {
             let record = state.registry.get_mut(&broken.id).unwrap();
             record.spec.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
             let record = record.clone();
-            state.persist("agent", |store| store.upsert_agent(&record));
+            let _ = state.persist("agent", |store| store.upsert_agent(&record));
         }
         daemon.restore_agents().await;
 

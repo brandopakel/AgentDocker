@@ -1326,7 +1326,7 @@ impl Store {
 
     /// Record an offer. Refused while another transfer is still offered:
     /// two successors must never be invited at once.
-    pub fn offer_transfer(&self, transfer: &Transfer) -> Result<bool> {
+    pub fn offer_transfer(&self, transfer: &Transfer, event: &Event) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         if let Some(current) = self.transfer()?
             && current.state == TransferState::Offered
@@ -1338,6 +1338,7 @@ impl Store {
             "INSERT INTO coordinator (one, json) VALUES (1, ?1) ON CONFLICT(one) DO UPDATE SET json = excluded.json",
             params![serde_json::to_string(transfer)?],
         )?;
+        self.append_event(event)?;
         tx.commit()?;
         Ok(true)
     }
@@ -1353,6 +1354,7 @@ impl Store {
         successor_pid: Option<u32>,
         to: TransferState,
         settled_at: DateTime<Utc>,
+        event: &Event,
     ) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         let Some(mut current) = self.transfer()? else {
@@ -1372,6 +1374,7 @@ impl Store {
             "UPDATE coordinator SET json = ?1 WHERE one = 1",
             params![serde_json::to_string(&current)?],
         )?;
+        self.append_event(event)?;
         tx.commit()?;
         Ok(true)
     }

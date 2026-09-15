@@ -32,7 +32,7 @@ impl State {
     ) -> Result<(), Box<Response>> {
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("access transition", |store| {
+        let _ = self.persist("access transition", |store| {
             store.put_document_with_event("access", id, grant, &event)
         });
         if let Some(error) = self.storage_failure() {
@@ -174,7 +174,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("workspace grant", |store| {
+        let _ = state.persist("workspace grant", |store| {
             store.put_document_with_event("access", &id, &grant, &event)
         });
         if let Some(error) = &state.storage_error {

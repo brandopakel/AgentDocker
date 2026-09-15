@@ -25,7 +25,7 @@ impl State {
     }
 
     fn save_contest(&mut self, contest: &Contest) {
-        self.persist("contest", |store| {
+        let _ = self.persist("contest", |store| {
             store.put_document("contest", contest.id.as_str(), contest)
         });
     }
@@ -172,7 +172,7 @@ impl Daemon {
                 && let Some(mut room) = state.channels.get(&channel).cloned()
                 && room.admit(agent)
             {
-                state.persist("channel", |store| {
+                let _ = state.persist("channel", |store| {
                     store.put_document("channel", room.id.as_str(), &room)
                 });
                 state.channels.insert(room.id.clone(), room);

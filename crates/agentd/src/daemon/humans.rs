@@ -164,7 +164,7 @@ impl State {
                 event
             })
             .collect();
-        self.persist("question expiration", |store| {
+        let _ = self.persist("question expiration", |store| {
             store.close_questions(&expired, &events)
         });
         if self.storage_error.is_some() {
@@ -318,7 +318,7 @@ impl Daemon {
                 record.project = project;
                 record.vcs = vcs;
                 let record = record.clone();
-                state.persist("agent", |store| store.upsert_agent(&record));
+                let _ = state.persist("agent", |store| store.upsert_agent(&record));
             }
         }
         let mut state = lock(&self.state);
@@ -472,7 +472,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("question cancellation", |store| {
+        let _ = state.persist("question cancellation", |store| {
             store.close_questions(std::slice::from_ref(message), std::slice::from_ref(&event))
         });
         if let Some(error) = state.storage_failure() {

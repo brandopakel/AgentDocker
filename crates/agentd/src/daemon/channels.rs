@@ -100,7 +100,7 @@ impl State {
                 return;
             }
             let channel = channel.clone();
-            self.persist("channel", |store| {
+            let _ = self.persist("channel", |store| {
                 store.put_document("channel", channel.id.as_str(), &channel)
             });
             for agent in joined {
@@ -151,7 +151,7 @@ impl State {
     /// Store, announce and journal a new channel.
     pub(super) fn install_channel(&mut self, channel: Channel, members: &[AgentRecord]) {
         self.channels.insert(channel.id.clone(), channel.clone());
-        self.persist("channel", |store| {
+        let _ = self.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
         self.emit(EventKind::ChannelOpened {
@@ -409,7 +409,7 @@ impl Daemon {
         channel.closed_at = Some(Utc::now());
         channel.resolution = resolution.clone();
         let channel = channel.clone();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
         state.tell_channel(
@@ -469,7 +469,7 @@ impl Daemon {
             state.channels.remove(id);
         }
         let ids: Vec<String> = gone.iter().map(|id| id.to_string()).collect();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             for id in &ids {
                 store.delete_document("channel", id)?;
             }
@@ -615,7 +615,7 @@ impl Daemon {
         };
         channel.reviews.push(review.clone());
         let channel = channel.clone();
-        state.persist("channel", |store| {
+        let _ = state.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
         state.emit(EventKind::ReviewSubmitted {

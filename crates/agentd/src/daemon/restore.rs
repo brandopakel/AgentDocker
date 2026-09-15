@@ -377,7 +377,7 @@ impl Daemon {
         }
         record.spec.restore = false;
         let record = record.clone();
-        state.persist("agent", |store| store.upsert_agent(&record));
+        let _ = state.persist("agent", |store| store.upsert_agent(&record));
         state.store_op("restore_point", |store| {
             store.delete_document("restore_point", id.as_str())
         });
@@ -442,7 +442,7 @@ impl Daemon {
             );
             event.seq = state.next_seq;
             if !cancelled {
-                state.persist("restore completion", |store| {
+                let _ = state.persist("restore completion", |store| {
                     store.finish_restore(&running, &event)
                 });
             }
@@ -603,7 +603,7 @@ impl Daemon {
         for (index, event) in events.iter_mut().enumerate() {
             event.seq = state.next_seq + index as u64;
         }
-        state.persist("restore preparation", |store| {
+        let _ = state.persist("restore preparation", |store| {
             store.prepare_restore(&record, &point, &leases, &events)
         });
         storage_ready(&state)?;
@@ -790,7 +790,7 @@ mod tests {
             let mut state = lock(&daemon.state);
             state.store.reject_writes_for_test();
             if already_failed {
-                state.persist("prior failure", |store| store.upsert_agent(&agent));
+                let _ = state.persist("prior failure", |store| store.upsert_agent(&agent));
             }
             assert_eq!(state.storage_error.is_some(), already_failed);
         }
@@ -888,7 +888,7 @@ mod tests {
                 state.store.reject_writes_for_test();
             }
             if storage_failure == 2 {
-                state.persist("previous failure", |store| store.upsert_agent(&agent));
+                let _ = state.persist("previous failure", |store| store.upsert_agent(&agent));
             }
             assert_eq!(state.storage_error.is_some(), storage_failure == 2);
         }

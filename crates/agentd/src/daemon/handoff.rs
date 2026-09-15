@@ -220,7 +220,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("handoff", |store| {
+        let _ = state.persist("handoff", |store| {
             store.put_document_with_event("handoff", &id, &bundle, &event)
         });
         if let Some(error) = state.storage_failure() {
@@ -376,7 +376,7 @@ impl Daemon {
             now,
         );
         event.seq = state.next_seq;
-        state.persist("handoff import", |store| {
+        let _ = state.persist("handoff import", |store| {
             store.import_handoff(&checkpoint, &bundle, &event)
         });
         if let Some(error) = state.storage_failure() {

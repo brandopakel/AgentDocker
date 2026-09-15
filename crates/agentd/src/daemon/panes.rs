@@ -189,7 +189,7 @@ impl Daemon {
                 .registry
                 .set_status(&record.id, AgentStatus::Running, Utc::now());
             if let Some(agent) = &updated {
-                state.persist("agent", |store| store.upsert_agent(agent));
+                let _ = state.persist("agent", |store| store.upsert_agent(agent));
             }
             state.emit(EventKind::AgentStarted {
                 agent: record.id.clone(),

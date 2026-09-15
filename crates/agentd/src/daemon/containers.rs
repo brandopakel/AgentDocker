@@ -602,7 +602,7 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|l| l.id.clone()).collect();
-        self.persist("container transition", |store| {
+        let _ = self.persist("container transition", |store| {
             store.container_transition(&record, &leases, &journal, &events)
         });
         if self.storage_error.is_some() {

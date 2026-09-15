@@ -81,7 +81,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("checkpoint prune", |store| {
+        let _ = state.persist("checkpoint prune", |store| {
             store.delete_checkpoints_with_event(&gone, &event)
         });
         if let Some(error) = state.storage_failure() {
@@ -205,7 +205,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("checkpoint", |store| {
+        let _ = state.persist("checkpoint", |store| {
             store.put_document_with_event("checkpoint", &id, &checkpoint, &event)
         });
         if let Some(error) = state.storage_failure() {
@@ -389,7 +389,7 @@ impl Daemon {
                 for (offset, event) in events.iter_mut().enumerate() {
                     event.seq = state.next_seq + offset as u64;
                 }
-                state.persist("handoff acceptance", |store| {
+                let _ = state.persist("handoff acceptance", |store| {
                     store.accept_handoff(
                         &checkpoint,
                         &agent,
@@ -560,7 +560,7 @@ impl Daemon {
                 Utc::now(),
             );
             event.seq = state.next_seq;
-            state.persist("validation start", |store| {
+            let _ = state.persist("validation start", |store| {
                 store.put_document_with_event("validation", &id, &validation, &event)
             });
             if let Some(error) = state.storage_failure() {
@@ -628,7 +628,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("validation finish", |store| {
+        let _ = state.persist("validation finish", |store| {
             store.put_document_with_event("validation", &id, &validation, &event)
         });
         if let Some(error) = state.storage_failure() {

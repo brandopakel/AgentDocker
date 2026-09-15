@@ -285,28 +285,33 @@ impl Daemon {
     /// learn it must not write. Called on a fresh `Daemon` opened over the
     /// same database before it serves anything.
     pub fn accept_transfer(&self, transfer: &str) -> Result<(), String> {
-        let state = lock(&self.state);
+        let mut state = lock(&self.state);
         let now = Utc::now();
+        let mut event = Event::new(
+            EventKind::DaemonTransferAccepted {
+                transfer: transfer.to_owned(),
+            },
+            now,
+        );
+        event.seq = state.next_seq;
         match state.store.settle_transfer(
             transfer,
             Some(std::process::id()),
             TransferState::Accepted,
             now,
+            &event,
         ) {
             Ok(true) => {
-                let mut event = Event::new(
-                    EventKind::DaemonTransferAccepted {
-                        transfer: transfer.to_owned(),
-                    },
-                    now,
-                );
-                event.seq = state.next_seq;
-                drop(state);
-                let mut state = lock(&self.state);
-                state.persist("transfer accept", |store| store.append_event(&event));
-                if state.storage_error.is_none() {
-                    state.next_seq += 1;
-                    let _ = state.events.send(event);
+                state.next_seq += 1;
+                let _ = state.events.send(event);
+                // Authority is ours: run the recovery a fenced open held
+                // back, in the order it was decided.
+                state.coordination = Coordination::Serving;
+                let deferred = std::mem::take(&mut state.deferred_recovery);
+                for write in deferred {
+                    if state.persist("deferred recovery", write) == Persisted::Failed {
+                        return Err("deferred recovery write failed; storage disabled".into());
+                    }
                 }
                 Ok(())
             }
@@ -847,6 +852,151 @@ mod fence_tests {
         assert!(predecessor.abort_transfer("cleanup"));
     }
 
+    /// Opening a database whose transfer is still offered starts fenced:
+    /// startup recovery corrects memory but writes nothing, a stranger
+    /// never writes, and the named successor's accept runs the held-back
+    /// recovery as its first act.
+    #[tokio::test]
+    async fn a_fenced_open_defers_recovery_until_the_successor_accepts() {
+        let dir = TempDir::new().unwrap();
+        let predecessor = open(&dir);
+        let a = register(&predecessor, "holder").await;
+        assert!(matches!(
+            predecessor.handle(claim(&a, "task:held")).await,
+            Response::Lease { .. }
+        ));
+        // Make the holder look dead on disk so startup recovery has a
+        // write to make (dropping its lease), then offer to this pid.
+        {
+            let state = lock(&predecessor.state);
+            let mut record = state.registry.get(&a).unwrap().clone();
+            record.status = AgentStatus::Exited { code: Some(0) };
+            state.store.upsert_agent(&record).unwrap();
+        }
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        let events_before = predecessor.recent_events(1)[0].seq;
+
+        // A successor opens: fenced, the lease is gone from memory but still
+        // on disk, and no event was written.
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        assert!(lock(&successor.state).fenced(), "opened fenced");
+        assert!(
+            lock(&successor.state).leases.by_holder(&a).is_empty(),
+            "memory corrected"
+        );
+        assert_eq!(
+            lock(&successor.state).store.load_leases().unwrap().len(),
+            1,
+            "disk untouched"
+        );
+        assert!(matches!(
+            successor.handle(claim(&a, "task:blocked")).await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        // Accept: the deferred lease drop lands, and writes work.
+        successor.accept_transfer(&transfer.id).unwrap();
+        assert!(!lock(&successor.state).fenced());
+        assert!(
+            lock(&successor.state)
+                .store
+                .load_leases()
+                .unwrap()
+                .is_empty(),
+            "deferred recovery ran"
+        );
+        let after = successor.recent_events(10);
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::DaemonTransferAccepted { .. }))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::LeaseReleased { .. }))
+        );
+        assert!(after.iter().map(|e| e.seq).max().unwrap() > events_before);
+        register(&successor, "after-accept").await;
+    }
+
+    /// An offer must not overtake a mutation the gate already admitted.
+    #[tokio::test]
+    async fn an_offer_waits_for_admitted_mutations() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // Simulate an admitted, still-executing mutation.
+        lock(&daemon.state).in_flight = 1;
+        let refused = daemon.offer_transfer(1).unwrap_err();
+        assert!(
+            matches!(
+                *refused,
+                Response::Error {
+                    code: ErrorCode::Backpressure,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        lock(&daemon.state).in_flight = 0;
+        daemon
+            .offer_transfer(1)
+            .expect("offered once nothing is in flight");
+        assert!(daemon.abort_transfer("cleanup"));
+    }
+
+    /// A fenced expiry tick changes nothing: the lease stays in memory and
+    /// on disk together, and no event is published for a write that did
+    /// not happen.
+    #[tokio::test]
+    async fn a_fenced_expiry_tick_leaves_memory_and_disk_agreeing() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let a = register(&daemon, "expiring").await;
+        let Response::Lease { lease } = daemon
+            .handle(Request::Claim {
+                agent: a.to_string(),
+                resource: "task:short".into(),
+                mode: LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 1,
+                note: None,
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!()
+        };
+        daemon.offer_transfer(1).unwrap();
+        let seq = daemon.recent_events(1)[0].seq;
+        // Well past expiry, but fenced.
+        lock(&daemon.state).expire_leases_at(Utc::now() + chrono::Duration::seconds(60));
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.leases.by_holder(&a).len(), 1, "memory kept the lease");
+            assert_eq!(
+                state.store.load_leases().unwrap().len(),
+                1,
+                "disk kept the lease"
+            );
+        }
+        assert_eq!(
+            daemon.recent_events(1)[0].seq,
+            seq,
+            "no event for a skipped write"
+        );
+        assert!(daemon.abort_transfer("cleanup"));
+        lock(&daemon.state).expire_leases_at(Utc::now() + chrono::Duration::seconds(60));
+        assert!(
+            lock(&daemon.state).leases.by_holder(&a).is_empty(),
+            "expiry resumes after abort"
+        );
+        let _ = lease;
+    }
+
     /// A store that has already failed has nothing trustworthy to hand
     /// over: the offer is refused with the storage error.
     #[tokio::test]
@@ -858,7 +1008,7 @@ mod fence_tests {
             state.store.reject_writes_for_test();
             let a = state.registry.all().next().cloned();
             if let Some(a) = a {
-                state.persist("poison", |store| store.upsert_agent(&a));
+                let _ = state.persist("poison", |store| store.upsert_agent(&a));
             } else {
                 state.storage_error = Some("poisoned".into());
             }

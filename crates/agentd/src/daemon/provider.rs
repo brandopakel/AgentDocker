@@ -163,10 +163,10 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("provider availability", |store| {
+        let committed = self.persist("provider availability", |store| {
             store.agent_transition(&record, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             *self.registry.get_mut(&id).expect("resolved") = record;
             self.next_seq += 1;
             let _ = self.events.send(event);

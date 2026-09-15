@@ -72,8 +72,11 @@ event continuity, not just a new socket or a readiness marker.
    cannot be silently replayed after a lost response.
    *In source:* `offer_transfer` / `abort_transfer` / `accept_transfer` on the
    daemon, the single-row `coordinator` table settled by compare-and-set, the
-   `Transferring` error for refused mutations, and the fence inside every
-   write path (`persist`, `store_op`) so tick writers skip too; see
+   `Transferring` error for refused mutations, the fence inside every
+   write path (`persist`, `store_op`) so tick writers skip too and a
+   skipped write is never mistaken for a commit, an offer that waits for
+   admitted mutations to finish, and a fenced startup that defers recovery
+   writes until the successor has accepted; see
    [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
    exclusion during a transfer rides on the daemon lock the successor will
    inherit in the next phase; until then nothing calls `offer_transfer`
