@@ -1257,7 +1257,6 @@ fn required_state_schema(active: Option<&Activation>, home: &Path) -> Result<u32
 /// the part of an install that does not care where the payload came from.
 /// Returns the report the command prints.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn perform(
     layout: &Layout,
     active: Option<Activation>,
