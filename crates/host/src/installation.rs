@@ -110,7 +110,6 @@ mod tests {
         assert!(lock::try_exclusive(&path).unwrap().is_some());
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     /// A daemon running from release A reloads to the release the
     /// installation activates, B, and to nothing when A is still the one
     /// activated, or when the executable is not managed at all.
@@ -167,6 +166,7 @@ mod tests {
         assert_eq!(activated_daemon(&elsewhere), None);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn launch_alias_pins_loaded_release_after_activation() {
         use std::os::unix::fs::symlink;
