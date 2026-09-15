@@ -5072,8 +5072,7 @@ impl State {
         }
         if let Some(question) = closed {
             if held {
-                self.held_answers
-                    .insert(envelope.id.clone(), question);
+                self.held_answers.insert(envelope.id.clone(), question);
             } else {
                 self.emit(EventKind::AnswerRouted {
                     question,
