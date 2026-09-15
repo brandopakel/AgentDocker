@@ -27,9 +27,11 @@ a verified owner stopped for 12 seconds during successor startup, 80 controller
 replacements, installation-lock pinning and durable exit/report retirement.
 Disk cleanup completed 28 ms after owner retirement. An earlier test stopped
 its successor 13 ms after launch and asserted cleanup prematurely; the original
-failure is retained, followed by bounded completion at the same binary. These
-trials restart the same immutable binary. Distinct-source transfer and the full
-reload sequence below are still separate acceptance gates.
+failure is retained, followed by bounded completion at the same binary. The later distinct-source `880e111` → `5120f03` trial also passed: batch/PTY
+children survived a 12-second owner outage with unchanged identities/lease,
+40 FIFO messages, 100 ordered log lines per child and exact exit codes 7/3.
+All owners and fixture daemons exited. The full coordinated reload sequence
+below remains separate work.
 
 The earlier [output-drain checkpoint](verification/2026-09-12-output-drain.json)
 remains evidence for the predecessor implementation's pipe/PTY EOF and final
@@ -53,15 +55,15 @@ event continuity, not just a new socket or a readiness marker.
    status once and accept identity-bound stop/resize/input commands after the
    coordinator changes. A crash or failed handover must not disarm ownership.
    *Implemented and merged in PR #130:* the session owner (`agentd --session-owner`, see
-   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); actual
-   distinct-binary acceptance of batch and PTY continuity through a daemon
-   restart is still to be recorded.
+   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); bounded actual
+   distinct-source batch/PTY continuity passed from `880e111` to `5120f03`,
+   including delayed owner contact, queue/lease retention and exact exits.
    Disk exit recovery now requires a durable record before acknowledgement,
    validates the responding agent/owner/child, and cleans the matching report
    under the stable owner lock after retirement. Regression cases cover both
    earlier storage failure and failure during the exit write, a different agent
    answering on the socket, and a newer generation's report. Actual same-binary restart and final integration checks passed at `5120f03`;
-   distinct-source acceptance remains, and this does not enable reload.
+   the distinct-source trial above also passed. This does not enable reload.
 3. **Coordinator fencing.** Quiesce mutations and background writers before
    releasing database authority. Exclude an unrelated autostart during transfer.
    Only one coordinator may write. New requests must either complete under a

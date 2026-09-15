@@ -216,8 +216,8 @@ action, retains drafts, and suppresses Done for known blocked turns.
 
 | Adapter | Implemented detection and queue handling | Evidence and remaining boundary |
 | --- | --- | --- |
-| Claude Code | Async `StopFailure` normalizes typed rate/billing/authentication/transport codes; other codes remain unknown. Failure does not release leases, drain input or block Stop to force a new turn. Successful Stop or explicit resume can clear the exact known block. Channel offers stop during a block; actual receipt ACKs remain possible. | Actual installed 2.1.270 produced the loopback 429 signal above. Hook and channel regressions cover queue retention, no offers over repeated polling, exact receipts while blocked and FIFO recovery. Automatic detection requires the newly installed hook to be loaded. Actual integrated recovery remains to be recorded. |
-| Managed Codex | Structured app-server `CodexErrorInfo` handles usage/rate/budget/context/authentication/transport and HTTP status classes. Failed `turn/start` retains the owned provider and uncertain attempt. Queue remains blocked until explicit recovery and receipt reconciliation. | Classifier and queue-contract tests pass; schema derived from installed Codex 0.154. Unknown/unreceipted attempts remain blocked rather than replayed. Actual provider-failure/recovery trials remain to be recorded. |
+| Claude Code | Async `StopFailure` normalizes typed rate/billing/authentication/transport codes; other codes remain unknown. Failure does not release leases, drain input or block Stop to force a new turn. Successful Stop or explicit resume can clear the exact known block. Channel offers stop during a block; actual receipt ACKs remain possible. | Actual installed 2.1.270 produced the loopback 429 signal above. Hook and channel regressions cover queue retention, no offers over repeated polling, exact receipts while blocked and FIFO recovery. Automatic detection requires the newly installed hook to be loaded. Actual 2.1.270 through the final hook/daemon retained two inputs after a loopback 429, without a receipt or wake output; the user account reset/recovery remains untested. |
+| Managed Codex | Structured app-server `CodexErrorInfo` handles usage/rate/budget/context/authentication/transport and HTTP status classes. Failed `turn/start` retains the owned provider and uncertain attempt. Queue remains blocked until explicit recovery and receipt reconciliation. | Classifier and queue-contract tests pass; schema derived from installed Codex 0.154. Unknown/unreceipted attempts remain blocked rather than replayed. Actual Codex 0.154.0 through the final bridge paused on loopback 429, retained two later inputs without retrying, then completed them after explicit resume in the same process/conversation; all three input receipts stayed ordered. |
 | Codex hooks | Lifecycle input reads the same gated queue; a blocked read yields no context or acknowledgement. | No automatic typed limit signal is claimed from lifecycle hooks alone. Use an authoritative explicit report or the managed bridge. |
 | MCP-only and custom/local | `report_provider_status` binds the reporting process generation; `read_inbox`/`wait_for_messages` use the gated queue. Administrative inspection and proven ACKs remain available. | Contract tested for all 14 catalog runtimes plus a custom runtime, across nine interruption classes. Generic MCP is not automatic detection of every provider's private limit semantics; version-specific integrations must supply a supported signal. |
 
@@ -232,6 +232,18 @@ shared contract, not real quota exhaustion at every provider/company/model.
 Mid-tool and pending-answer provider interruption, explicit replacement-session
 recovery and sustained actual-provider acceptance remain open. Existing uncertain
 input, question expiry and permission checks continue to apply.
+
+Final-source acceptance at `64f8e58` is recorded on [PR #131](https://github.com/brandopakel/AgentDocker/pull/131#issuecomment-5672982318):
+924 Rust tests, 70 Python checks and 181 native workflow steps passed. Real
+Claude and Codex executables used private loopback error/recovery servers and
+synthetic credentials, without paid model calls. The real-daemon matrix passed
+135 cases, two restarts and 2,080 accepted messages; all 1,000 accepted inputs at
+capacity survived backpressure and restart. 8,255 local RPCs measured p50/p95/p99
+0.039/0.129/0.228 ms. Native resume preserved the unsent draft, prior receipt and
+exact queue. All fixtures exited and binaries remained unchanged. This closes
+the bounded adapter integration and queue-pressure/restart cases; it does not
+establish every provider's detection, actual account reset, or sustained-use
+acceptance. Original failed gates and private reports remain retained.
 
 ## Initial source audit
 
