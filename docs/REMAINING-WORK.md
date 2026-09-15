@@ -108,6 +108,14 @@ replacement acceptance.
 
 | Later | Existing optional proposals | Federation/host namespaces and cross-host leases/routing are unbuilt. Additional adapters, container log following and proposed CLI conveniences remain deferred behind the single-host desktop. They are existing scope, not prerequisites invented by this audit. See [product direction](PRODUCT-DIRECTION.md), [architecture proposals](ARCHITECTURE.md#planned-protocol-and-event-additions) and [containers](CONTAINER-ENGINES.md). |
 
+## Requested September 15
+
+| Priority | Work remaining | Completion condition and evidence |
+| --- | --- | --- |
+| Next | Messaging as a workspace (Slack/Discord shape) | Model and protocol as proposed in [architecture](ARCHITECTURE.md#messaging-as-a-workspace-proposed-september-15): conversations (everyone, named channels, collision rooms, direct messages), a bounded message archive with retention and search, per-conversation read cursors, threads by `reply_to`, mentions found not routed, humans no longer admitted to collision rooms. App: one Messages screen with the sidebar, an always-present composer, threads, unread and mention counts, no identifiers outside Details. CLI: `channel open --name`, `conversations`, `history`, `thread`. Done when the person opens any conversation and replies in place, unread counts are per conversation, and a branch switch adds nothing to the person's count. |
+| Next | Portable coordination skill | One instruction source in the repo from which both the MCP server instructions and a `SKILL.md` (frontmatter name/description, harness-agnostic body, execution through the `agentdocker` CLI) are generated; `agentdocker setup` installs the skill into each supported harness's skill directory, and the setup check reports which harnesses load skills at all. Done when a fresh Claude Code or Codex session in a coordinated checkout uses AgentDocker without being told, and the two texts cannot drift. |
+| Next | Token usage by agent, model and provider | A host collector reads each runtime's own local log (Codex rollouts under `~/.codex/sessions`, Claude Code transcripts under `~/.claude/projects`), attributes turns to registered agents by session id, and the daemon aggregates input, cached, output and reasoning tokens by agent, model and provider over a time range; a Usage screen and `agentdocker usage` show tokens (never money unless the user configures prices), with AgentDocker's own overhead (bytes it injected as hook context, MCP results and queued messages, with an estimated token count labelled as such) kept apart from provider tokens, and coverage explicit: a runtime whose log is not read shows unknown, not zero. |
+
 ## Manual and operational steps
 
 | Step | What remains |
