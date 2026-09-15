@@ -1906,7 +1906,7 @@ impl App {
             } else if let Some(error) = entry.and_then(|e| e.draft.error.as_ref()) {
                 composer = composer.push(text(error.clone()).size(13).color(c.amber));
             } else if entry.is_some_and(|e| e.queued.is_some()) && !sending {
-                composer = composer.push(small("Delivered to the agent's queue.", c));
+                composer = composer.push(small("Queued for the agent.", c));
             } else {
                 composer = composer.push(small(
                     "Send goes to this agent. Send to everyone reaches every agent in its project.",

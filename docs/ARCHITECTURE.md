@@ -772,6 +772,18 @@ Row 26 therefore makes our own output lean, and it is done: MCP tool results are
 
 #### Derived activity
 
+Compact agent projections also include `provider_availability` when recorded
+and derived `input_readiness`; verbose records retain both. Readiness is
+`session_ended`, `unverified`, `paused`, `stale`, `awaiting_first_receipt` or
+`verified`. Verified requires a fresh receiver report and a prior receipt from
+the same process generation. It does not confirm a particular message or
+override provider limits. Hook/MCP contact alone cannot establish idle wake.
+MCP sends report `accepted_by_agentdocker` with provider receipt and idle wake
+unconfirmed. The daemon-wide bus subscriber count is omitted because it says
+nothing about the recipient. CLI send prints only the message ID on stdout;
+the acceptance notice goes to stderr. Topics and empty broadcasts may have no
+queued recipient.
+
 Recognising a herdr session is row 25, above. Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; fresh provider observations distinguish working from idle, and an agent with neither fresh provider evidence nor recent coordination is unknown. Silence is not proof of idle; blocked resource evidence takes precedence. Row 24 derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
 
 ### Phase 6 — Windows and federation

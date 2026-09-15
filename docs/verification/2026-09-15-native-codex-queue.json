@@ -1,0 +1,97 @@
+{
+  "date_utc": "2026-09-15",
+  "date_local": "2026-09-14",
+  "timezone": "America/Los_Angeles",
+  "scope": "Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance.",
+  "provider_version": "codex-cli 0.154.0",
+  "agentdocker_forwarding_implemented": false,
+  "trials": [
+    {
+      "result": "failed",
+      "driver_sha256": "793ba5dbfb805204763069dbb44a866f8565c1338b9f40e25b783bd162f244a4",
+      "provider_version": "codex-cli 0.154.0",
+      "error": "condition not reached",
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-native-codex-queue-result-2026-09-15/result-private.json",
+        "sha256": "fb0c33d395ac676cba76d2d960f9e957338961af02072c0b92d8a8859e603b79"
+      }
+    },
+    {
+      "result": "passed",
+      "driver_sha256": "1bdb8e4ff7808167c64abd4734051e7eca76c07aec78cc0e9f16312da891c6b1",
+      "provider_version": "codex-cli 0.154.0",
+      "thread": "01a0a35b-a744-75a0-943b-d9c18074db47",
+      "idle_wake_seconds": 7.881274917017436,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 7,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-native-codex-queue-result2-2026-09-15/result-private.json",
+        "sha256": "7acc28c1f65265b9edb0ed4096a691bcecf96995742bdecc818ed5a29af554f9"
+      }
+    },
+    {
+      "result": "passed",
+      "driver_sha256": "209e4884e79ddbfcf2feaac63a9c61e87801693d41d855414dd1894bfcff01b9",
+      "provider_version": "codex-cli 0.154.0",
+      "thread": "01a0a360-7e38-7d00-9624-c4696b5728b9",
+      "idle_wake_seconds": 7.875285874994006,
+      "cross_process_receipt": {
+        "thread": "01a0a360-7e38-7d00-9624-c4696b5728b9",
+        "turn": "01a0a360-a546-7be3-8ded-56bf7cd41e8f",
+        "item": "01a0a360-a554-7411-84d0-69e3d46b23d8"
+      },
+      "no_conversation_resume": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 7,
+      "raw_result": {
+        "path": "/private/tmp/agentdocker-native-codex-queue-api-result-2026-09-15/result-private.json",
+        "sha256": "146c4b1821ad7754dd2c2c6b55c20f411d6053f12afd755c91a0e2c1eb1dac19"
+      }
+    }
+  ],
+  "first_trial_failure": "The harness counted Codex automatic title generation as a conversation turn; the corrected trials exclude those requests. This is a harness correction, not a provider delivery failure.",
+  "feedback_validation": {
+    "source_commit": "f56ca6a79524d52a75e68ee717fbee0911816a28",
+    "rust_tests": 937,
+    "skipped": 6,
+    "python_checks": 70,
+    "result": "passed",
+    "log_sha256": "e52c76edf859bfc5ec59f3ab219edca3b556564fec4ce7c7f0eae6e2c0c2026d",
+    "log_path": "/private/tmp/agentdocker-idle-feedback-final-gate-2026-09-15.log",
+    "includes": [
+      "format",
+      "clippy",
+      "nextest",
+      "doctests",
+      "Python checks",
+      "cargo package",
+      "release build"
+    ],
+    "scope": "Feedback/core-readiness code only; does not prove a provider adapter exists."
+  },
+  "mcp_receipt_smoke": {
+    "result": "passed",
+    "scope": "Exercise real MCP stdio receipt boundaries using isolated daemon state.\n\nThis is transport acceptance, not an actual model or provider idle-wake trial.\n",
+    "steps": [
+      "wait/read results retained IDs across MCP process death and reconnect",
+      "selective repeated receipt preserved newer arrivals and refused a foreign-agent argument",
+      "broken MCP output retained messages for explicit receipt after reconnect",
+      "plain CLI inbox exposed receipt IDs without consuming; selective acknowledgement retained a later arrival and refused simultaneous drain"
+    ],
+    "binary_sha256": {
+      "agentd": "f8034b1905ac80b8fa538d3966863f731017df666bfc2833e762a3007c4449ee",
+      "agentdocker": "7f812da9556d8eecc55660435d8aef609996f7522a73b0197f0ac21a66598f26"
+    },
+    "driver_sha256": {
+      "mcp_receipt_smoke.py": "b83e2435f89908ada173e4b2b41496a17845d0ea73061a15b6901e42958be196",
+      "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+      "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+    },
+    "remaining_owned_processes": 0,
+    "duration_seconds": 0.6701691669877619
+  }
+}

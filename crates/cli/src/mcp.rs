@@ -1206,6 +1206,16 @@ fn brief_agent(agent: &agentdocker_core::AgentRecord) -> Value {
     }))
 }
 
+/// Verbose records keep derived readiness alongside the persisted evidence.
+fn whole_agent(agent: &agentdocker_core::AgentRecord) -> Value {
+    let mut record = json!(agent);
+    record["input_readiness"] = json!(agentdocker_core::InputReadiness::for_agent(
+        agent,
+        chrono::Utc::now()
+    ));
+    record
+}
+
 /// A lease as a claimant reads it: who holds what, in which mode, until
 /// when, and why.
 fn brief_lease(lease: &agentdocker_core::Lease) -> Value {
@@ -1301,13 +1311,16 @@ fn render_whole(response: Response) -> Value {
             &json!({ "error": message, "code": code, "details": details }),
             true,
         ),
-        Response::Agent { agent } => text_result(&json!(agent), false),
-        Response::Agents { agents, .. } => text_result(&json!({ "agents": agents }), false),
+        Response::Agent { agent } => text_result(&whole_agent(&agent), false),
+        Response::Agents { agents, .. } => text_result(
+            &json!({ "agents": agents.iter().map(whole_agent).collect::<Vec<_>>() }),
+            false,
+        ),
         Response::Sent {
             message,
-            subscribers,
+            subscribers: _,
         } => text_result(
-            &json!({ "sent": true, "message_id": message, "live_subscribers": subscribers,
+            &json!({ "sent": true, "message_id": message,
                 "delivery": "accepted_by_agentdocker", "provider_receipt": "unconfirmed", "idle_wake": "unconfirmed" }),
             false,
         ),
@@ -1475,7 +1488,7 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "inspect_agent",
-            "description": "Inspect an agent by id, id prefix, or name. input_readiness describes receiver evidence, not receipt of your message; provider_availability reports known limits. Hooks/MCP contact alone cannot prove idle wake. Use verbose for full records.",
+            "description": "Inspect an agent by id, id prefix, or name. input_readiness is session_ended, unverified, paused, stale, awaiting_first_receipt or verified. Verified means a fresh receiver and a prior receipt for this process, not receipt of your message or provider availability. provider_availability reports known limits. Hooks/MCP contact alone cannot prove idle wake. Use verbose for full records plus derived readiness.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "agent": { "type": "string" }, "verbose": verbose.clone() },
@@ -1485,7 +1498,7 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "send_message",
-            "description": "Send a message to an agent (id or name), this project (`project`), a topic (`topic:name`), or everyone (`all`). Give text or a structured payload. Success confirms routing acceptance only, not provider receipt or idle wake; live_subscribers counts transport listeners. Topics and empty broadcasts may have no queued recipient. Check an agent with inspect_agent before depending on a reply.",
+            "description": "Send a message to an agent (id or name), this project (`project`), a topic (`topic:name`), or everyone (`all`). Give text or a structured payload. Success confirms routing acceptance only, not provider receipt or idle wake. Topics and empty broadcasts may have no queued recipient. Check an agent with inspect_agent before depending on a reply.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1877,6 +1890,7 @@ mod tests {
         assert!(whole.contains("last_seen"), "{whole}");
         let verbose: Value = serde_json::from_str(&whole).unwrap();
         assert_eq!(verbose["agents"][0]["pid"], 4321);
+        assert_eq!(verbose["agents"][0]["input_readiness"], "unverified");
         assert!(
             whole.len() > brief.len(),
             "the projection is smaller: {} vs {}",
@@ -2208,6 +2222,7 @@ mod tests {
             assert_eq!(text["delivery"], "accepted_by_agentdocker");
             assert_eq!(text["provider_receipt"], "unconfirmed");
             assert_eq!(text["idle_wake"], "unconfirmed");
+            assert!(text.get("live_subscribers").is_none());
         }
     }
 

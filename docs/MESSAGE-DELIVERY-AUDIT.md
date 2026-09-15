@@ -22,7 +22,11 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
-### September 14: current sessions and the native Codex queue
+### September 14 PDT / September 15 UTC: current sessions and the native Codex queue
+
+The [retained verification report](verification/2026-09-15-native-codex-queue.json)
+records the trial outcomes, receipt IDs, source, hashes and the first harness
+failure. Private raw files below supplement that committed evidence.
 
 The user's live-session report is reproduced: Codex `50fd100f…` and Claude
 `0042a5aa…` are external sessions with hook registration and no recorded input
