@@ -26,8 +26,12 @@ dependency for further engineering.
 
 Installation checkpoints below are historical. Use `agentdocker desktop status`
 and `agentdocker daemon status` for the actual installed and serving versions;
-an app update does not replace the daemon serving active sessions. The combined
-source passed 931 Rust tests, 70 Python checks and 225 native workflow steps.
+an app update does not replace the daemon serving active sessions. Combined
+`ec45cea` passed 931 Rust tests, 70 Python checks and 225 native workflow steps.
+The final review corrections add regression coverage for legacy queue replies,
+lease release before rejected recovery and runtime-specific generated names;
+935 Rust tests and 70 Python checks pass. Final-source native acceptance and
+integration results are recorded on PR #132.
 The [message audit](MESSAGE-DELIVERY-AUDIT.md) closes bounded provider queue,
 mid-tool, pending-answer and same-identity controller-replacement acceptance.
 

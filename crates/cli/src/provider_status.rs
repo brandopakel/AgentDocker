@@ -18,20 +18,29 @@ pub struct ProviderArgs {
 enum ProviderCommand {
     /// Report a provider limit or interruption for the current process.
     Report {
+        /// Agent id/name, or the current AgentDocker session from the environment.
+        #[arg(env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
+        /// usage, rate, budget, billing, concurrency, context, authentication, transport or unknown.
         #[arg(long)]
         kind: String,
         /// Only a reset time explicitly supplied by the provider, with offset.
         #[arg(long)]
         reset_at: Option<DateTime<Utc>>,
+        /// Explicit non-secret group matching the agent's provider-quota label.
         #[arg(long)]
         quota_group: Option<String>,
+        /// Scope the report to this model; must match the agent's registered model.
         #[arg(long)]
         model: Option<String>,
     },
     /// Resume queued delivery after checking provider availability. Received
     /// input is not replayed, and existing uncertain-input protection remains.
-    Resume { agent: String },
+    Resume {
+        /// Agent id/name, or the current AgentDocker session from the environment.
+        #[arg(env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+    },
 }
 
 pub async fn run(client: &Client, args: ProviderArgs) -> Result<()> {

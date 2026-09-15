@@ -319,6 +319,7 @@ pub enum Request {
         topics: Vec<String>,
     },
     /// Unacknowledged messages, including those offered to live subscribers.
+    /// A blocked destructive read returns Conflict and retains every message.
     Inbox {
         agent: String,
         #[serde(default)]
@@ -334,6 +335,8 @@ pub enum Request {
     /// The sole input controller of a managed Codex session acknowledges exact
     /// provider receipts, then reads the same durable queue used by human/peer
     /// Send. Legacy inbox consumers are refused for sessions using this mode.
+    /// A provider block returns an empty Messages offer without draining the
+    /// queue, preserving the reply contract of older owned controllers.
     ProviderInbox {
         agent: String,
         #[serde(default)]

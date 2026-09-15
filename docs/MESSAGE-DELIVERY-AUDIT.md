@@ -214,6 +214,12 @@ and supported success signals name the exact blocked observation. Failed storage
 preserves the block and queue. Record removal and identity repair cannot erase
 an unresolved block. The desktop shows the reason, queue count and a resume
 action, retains drafts, and suppresses Done for known blocked turns.
+Legacy destructive Inbox reads return Conflict while blocked; owned Codex
+polls keep their existing Messages response with an empty offer, retaining the
+queue and allowing proven acknowledgements. Only DeliveryQueue opts into the
+new InputWaiting response. A successful Claude Stop releases leases before
+attempting exact-observation recovery; refused recovery keeps the newer block
+and does not trigger a wake. Failed lease release does not clear availability.
 The Needs you strip names the provider interruption and opens its recovery
 details; ordinary delivery review is reserved for uncertain transport receipts.
 

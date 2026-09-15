@@ -16,7 +16,7 @@ The [product direction](PRODUCT-DIRECTION.md) sets the next delivery priorities:
 
 ### `agentdocker-core` (`crates/core`)
 
-Coordination types and state machines are pure; time-dependent operations accept `now: DateTime<Utc>`. The architectural target is no host I/O or environment lookup here. The current `paths` module still reads home/socket environment defaults; moving that host policy into `crates/host` is an audit follow-up. Core has no async runtime.
+Coordination types and state machines are pure; time-dependent operations accept `now: DateTime<Utc>`. Core has no host I/O, environment lookup or async runtime. The `paths` module derives paths from a supplied home; environment defaults live in `agentdocker_host::dirs`. The audited environment-boundary cleanup is complete.
 
 | Module | Contents |
 |---|---|
@@ -27,7 +27,7 @@ Coordination types and state machines are pure; time-dependent operations accept
 | `event` | `Event`, `EventKind` — everything the daemon announces |
 | `protocol` | `Request`, `Response`, `ErrorCode` — the wire format |
 | `project` | `ProjectRef`, `ProjectId`, `ProjectSource` — the project an agent works in and how it becomes an id |
-| `paths` | Socket/data path calculations and legacy environment-default helpers |
+| `paths` | Pure socket/data path calculations from a supplied home |
 | `runtime` | Curated tool inventory and supported setup formats |
 | `working_set`, `change`, `journal` | Read marks, change records, journal entries and digest logic |
 | `recovery`, `handoff` | Checkpoints, validation evidence and portable handoff records |
@@ -246,9 +246,9 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `vacuum {force?}` | `vacuumed {before_bytes, after_bytes}` | SQLite `VACUUM` on the state database; nothing else is answered while it runs, so it is a `conflict` while sessions are live unless `force` |
 | `send {from, to, kind, payload, reply_to?}` | `sent` or `error(backpressure)` | `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | replays unacknowledged inbox messages, then streams live; neither step consumes the inbox |
-| `inbox {agent, drain?}` | `messages` | snapshot; only explicit `drain: true` acknowledges its message IDs |
+| `inbox {agent, drain?}` | `messages`, `error(conflict)` | snapshot; only explicit `drain: true` acknowledges its message IDs. A provider-blocked destructive read returns the legacy-compatible conflict shape without consuming input. |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
-| `provider_inbox {agent, acknowledge?: MessageId[]}` | `messages`, `input_waiting` | managed Codex input only: acknowledge exact provider receipts and return the same retained Send queue; legacy inbox consumers are refused for this mode |
+| `provider_inbox {agent, acknowledge?: MessageId[]}` | `messages` | managed Codex input only: acknowledge exact provider receipts and return the same retained Send queue. During a provider block, return an empty offer without draining retained rows, preserving older controller reply compatibility. Legacy inbox consumers are refused for this mode. |
 | `me {workdir?}` | `agent` | register the person at the keyboard as the agent `user`, runtime `human`, or return the one already registered; `workdir` moves them to that project. No pid, so liveness never expires it |
 | `ask {from, to, question, timeout_secs?}` | `answer {message, from, text}` or `error(timeout/cancelled)` | sends a `question` message and waits for the exact answer confirmed by its committed closure; timeout defaults to 300 s and is clamped to 1–86,400 |
 | `post_question {from, to, question, presentation?, timeout_secs?}` | `sent` | creates the same durable question and returns its ID immediately; optional structured command/choice controls must exactly match the full fallback text; answers use the shared inbox; CLI `ask --no-wait` |

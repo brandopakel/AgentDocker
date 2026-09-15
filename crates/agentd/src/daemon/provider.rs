@@ -282,7 +282,10 @@ mod tests {
                 assert_eq!(state.inboxes[&agent.id], before);
                 assert!(matches!(
                     state.inbox(agent.id.as_str(), true),
-                    Response::InputWaiting { .. }
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        ..
+                    }
                 ));
                 assert!(
                     matches!(state.inbox(agent.id.as_str(), false), Response::Messages { messages } if messages.len() == 8)
@@ -307,6 +310,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_legacy_queue_replies_remain_decodable_without_draining_input() {
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum LegacyReply {
+            Messages { messages: Vec<serde_json::Value> },
+            Error { code: ErrorCode },
+        }
+        let (_dir, daemon, mut agent, now) = fixture("codex");
+        let ids = {
+            let mut state = lock(&daemon.state);
+            for sender in ["user", "peer"] {
+                state.send(
+                    sender.into(),
+                    Destination::Agent(agent.id.clone()),
+                    "chat".into(),
+                    json!({"text":"keep this input"}),
+                    None,
+                );
+            }
+            assert!(matches!(
+                block(&mut state, &agent, ProviderIssue::local(Kind::Usage), now),
+                Response::Ok
+            ));
+            let response = state.inbox(agent.id.as_str(), true);
+            assert!(matches!(
+                serde_json::from_value::<LegacyReply>(serde_json::to_value(response).unwrap())
+                    .unwrap(),
+                LegacyReply::Error {
+                    code: ErrorCode::Conflict
+                }
+            ));
+            let ids = state.inboxes[&agent.id]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>();
+            agent = state.registry.get(&agent.id).unwrap().clone();
+            agent.managed = true;
+            agent.spec.env.insert(
+                agentdocker_host::provider_input::CODEX_INPUT_ENV.into(),
+                "1".into(),
+            );
+            *state.registry.get_mut(&agent.id).unwrap() = agent.clone();
+            state.store.upsert_agent(&agent).unwrap();
+            ids
+        };
+        for acknowledge in [vec![], vec![ids[0].clone()]] {
+            let response = daemon
+                .handle(Request::ProviderInbox {
+                    agent: agent.id.to_string(),
+                    acknowledge,
+                })
+                .await;
+            assert!(
+                matches!(serde_json::from_value::<LegacyReply>(serde_json::to_value(response).unwrap()).unwrap(),
+                LegacyReply::Messages { messages } if messages.is_empty())
+            );
+        }
+        let mut state = lock(&daemon.state);
+        assert_eq!(
+            state.inboxes[&agent.id]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>(),
+            ids[1..]
+        );
+        assert!(
+            state
+                .registry
+                .get(&agent.id)
+                .unwrap()
+                .provider_availability
+                .as_ref()
+                .unwrap()
+                .issue
+                .is_some()
+        );
+        assert!(matches!(
+            state.resume_provider(agent.id.as_str(), now, now + Duration::seconds(1)),
+            Response::Ok
+        ));
+        assert!(
+            matches!(state.delivery_queue(agent.id.as_str()), Response::Messages { messages }
+            if messages.len()==1 && messages[0].id==ids[1])
+        );
     }
 
     #[test]

@@ -384,7 +384,9 @@ impl AgentRecord {
         {
             return true;
         }
-        if let Some(session) = self.spec.labels.get("session_id") {
+        if self.spec.runtime == "claude-code"
+            && let Some(session) = self.spec.labels.get("session_id")
+        {
             let end = session
                 .char_indices()
                 .nth(8)
@@ -395,7 +397,7 @@ impl AgentRecord {
         }
         name == format!(
             "agent-{}",
-            &self.id.as_str()[..self.id.as_str().len().min(6)]
+            self.id.as_str().chars().take(6).collect::<String>()
         )
     }
 
@@ -430,6 +432,33 @@ impl AgentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_claude_names_do_not_replace_other_runtimes_chosen_names() {
+        let now = chrono::DateTime::from_timestamp(1000, 0).unwrap();
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "claude-12345678".into(),
+                runtime: "custom-runtime".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        record
+            .spec
+            .labels
+            .insert("session_id".into(), "12345678-rest".into());
+        assert!(!record.name_is_generated());
+        record.spec.runtime = "claude-code".into();
+        assert!(record.name_is_generated());
+        record.id = AgentId::from("ééééééé");
+        record.spec.name = "chosen name".into();
+        assert!(
+            !record.name_is_generated(),
+            "non-ASCII retained ids must not panic"
+        );
+    }
 
     #[test]
     fn short_id_is_twelve_chars() {

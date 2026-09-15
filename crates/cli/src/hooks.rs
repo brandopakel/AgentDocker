@@ -521,7 +521,6 @@ pub async fn claude_code<B: Backend>(
             let Some(me) = session_agent(backend, input).await? else {
                 return Ok(None);
             };
-            crate::provider_status::recovered(backend, &me).await?;
             // What the model last said is what the release entry quotes.
             let summary = input
                 .transcript_path
@@ -529,6 +528,13 @@ pub async fn claude_code<B: Backend>(
                 .and_then(transcript_tail)
                 .and_then(|tail| transcript_summary(&tail));
             release_all(backend, &me, summary).await?;
+            // A newer limit may supersede this snapshot while Stop is running.
+            // Keep that block, but do not let a rejected recovery retain leases
+            // or produce another wake attempt.
+            if let Err(error) = crate::provider_status::recovered(backend, &me).await {
+                eprintln!("agentdocker hook: provider recovery not recorded: {error:#}");
+                return Ok(None);
+            }
             if opts.no_wake || input.stop_hook_active {
                 return Ok(None);
             }
@@ -919,13 +925,17 @@ async fn release_all<B: Backend>(
     } else {
         SummarySource::Explicit
     };
-    backend
+    let response = backend
         .call(Request::ReleaseAll {
             agent: me.id.to_string(),
             summary,
             summary_source,
         })
         .await?;
+    anyhow::ensure!(
+        matches!(response, Response::Leases { .. }),
+        "lease release refused: {response:?}"
+    );
     Ok(())
 }
 
@@ -1448,14 +1458,81 @@ mod tests {
             );
             assert_eq!(
                 backend.requests().len(),
-                2,
+                if host_pid().is_some() { 2 } else { 1 },
                 "failure must not read the queue, release leases, close questions or create completion summaries"
             );
-            assert!(
-                matches!(&backend.requests()[1], Request::ReportProvider { agent, process_started_at, report: agentdocker_core::ProviderReport::Blocked { issue }, .. }
+            if host_pid().is_some() {
+                assert!(
+                    matches!(&backend.requests()[1], Request::ReportProvider { agent, process_started_at, report: agentdocker_core::ProviderReport::Blocked { issue }, .. }
                 if agent == me.id.as_str() && Some(*process_started_at) == me.process_started_at && issue.kind == kind && issue.reset_at.is_none())
-            );
+                );
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn refused_stop_recovery_releases_leases_but_does_not_wake_or_clear_newer_limits() {
+        if host_pid().is_none() {
+            return; // This environment cannot establish the lifecycle identity.
+        }
+        let mut me = agent("claude-01234567", true);
+        let blocked_at = Utc::now();
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
+            process_started_at: me.process_started_at.unwrap(),
+            observed_at: blocked_at,
+            issue: Some(agentdocker_core::ProviderIssue::local(
+                agentdocker_core::ProviderIssueKind::Usage,
+            )),
+            cleared_observation: None,
+        });
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::Leases { leases: vec![] },
+            Response::error(ErrorCode::Conflict, "a newer provider limit is active"),
+        ]);
+        assert!(
+            claude_code(&backend, &input("Stop"), &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let requests = backend.requests();
+        assert_eq!(
+            requests.len(),
+            3,
+            "failed recovery must not read or wake the queue"
+        );
+        assert!(matches!(requests[1], Request::ReleaseAll { .. }));
+        assert!(matches!(&requests[2], Request::ReportProvider {
+            report: agentdocker_core::ProviderReport::Recovered { blocked_at: observed }, ..
+        } if *observed == blocked_at));
+    }
+
+    #[tokio::test]
+    async fn failed_stop_lease_release_does_not_report_recovery() {
+        if host_pid().is_none() {
+            return;
+        }
+        let mut me = agent("claude-01234567", true);
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
+            process_started_at: me.process_started_at.unwrap(),
+            observed_at: Utc::now(),
+            issue: Some(agentdocker_core::ProviderIssue::local(
+                agentdocker_core::ProviderIssueKind::Usage,
+            )),
+            cleared_observation: None,
+        });
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::error(ErrorCode::Internal, "release transaction failed"),
+        ]);
+        assert!(
+            claude_code(&backend, &input("Stop"), &opts())
+                .await
+                .is_err()
+        );
+        assert_eq!(backend.requests().len(), 2);
+        assert!(matches!(backend.requests()[1], Request::ReleaseAll { .. }));
     }
 
     #[tokio::test]

@@ -1395,7 +1395,15 @@ impl Daemon {
                 let mut state = lock(&self.state);
                 match state.input_consumer(&agent, true) {
                     Ok(()) => match state.ack_inbox(&agent, &acknowledge) {
-                        Response::Ok => state.delivery_queue(&agent),
+                        Response::Ok => match state.delivery_queue(&agent) {
+                            // Existing owned consumers predate InputWaiting.
+                            // A gated poll offers no input and retains all rows;
+                            // proven acknowledgements above still complete.
+                            Response::InputWaiting { .. } => Response::Messages {
+                                messages: Vec::new(),
+                            },
+                            response => response,
+                        },
                         error => error,
                     },
                     Err(error) => *error,
@@ -3939,7 +3947,12 @@ impl State {
             )
             .is_some()
         {
-            return self.delivery_queue(reference);
+            // Keep the original Inbox response shape for older clients. Only
+            // the explicit DeliveryQueue request opts into InputWaiting.
+            return Response::error(
+                ErrorCode::Conflict,
+                "provider unavailable; queued messages are retained until delivery resumes",
+            );
         }
         // A failed liveness write must stop the operation before queue removal.
         self.touch(&id);

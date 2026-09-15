@@ -47,7 +47,9 @@ covers all 37 Markdown files and 61 existing verification reports. The sequence
 and crosswalk below now distinguish passed source-specific checks from partial
 acceptance. Newly identified omissions are existing promises: verified input
 capabilities, automatic journal retention/vacuum/checkpoint maintenance and the
-pure-core environment boundary. They remain open until code and tests exist.
+pure-core environment boundary. Their implementations and regression checks are
+now complete; broader capability and retention acceptance remains in the current
+tracker. Host environment defaults live in `agentdocker_host::dirs`.
 
 The following dated requirements/checkpoints preserve what was known then.
 Their old PR-review, launcher-install and adapter-implementation pending states
@@ -154,6 +156,11 @@ through a block, same-identity controller replacement, FIFO recovery and queue
 pressure all passed. The full gate passed 931 Rust tests and 70 Python checks;
 native acceptance passed 225 steps. Account resets, broader adapters and
 unrelated replacement identities retain their acceptance scope below.
+
+Final source-review corrections preserve the existing reply formats for legacy
+queue readers, release Claude leases before attempting exact recovery, and keep
+chosen names in other runtimes. Their regressions pass in the 935-test Rust suite
+and 70 Python checks; PR #132 records final native acceptance and integration.
 
 - Apply this contract to every supported provider, company, model and runtime,
   including OpenAI/Codex, Anthropic/Claude, Google/Gemini, integrations such as
@@ -335,7 +342,7 @@ integrations, GUI, full platform parity and live-upgrade work continue afterward
 | Step | Work and completion condition | Current state |
 |---|---|---|
 | 1. Renew the engineering review | Review recent merged work and every open PR, its commits, review threads, tests and docs. Identify overlapping stacks and regressions at their integrated head. Record every finding with a reproducible failure or explicitly label it an unconfirmed lead. | Audit complete for merged `aaa1b61`: 37 Markdown files, 61 verification reports, all prior PRs closed and main CI green. The docs index records each file. New changes still require their own final review. |
-| 2. Finish correctness and privacy | Restore must wait for durable protection and serving/watcher readiness. Failed persistence must not leave an uncontrolled writer or remove protection prematurely. Children must use their owning daemon. Close the process-spawn/database crash boundary and investigate retained unexplained failures. | Implemented restore readiness, private state, pre-exec launch gating, durable questions and output-drain fixes are merged and regression-tested. Sleep/reboot/crash breadth, retention maintenance, pure-core cleanup and retained unexplained failures remain partial. |
+| 2. Finish correctness and privacy | Restore must wait for durable protection and serving/watcher readiness. Failed persistence must not leave an uncontrolled writer or remove protection prematurely. Children must use their owning daemon. Close the process-spawn/database crash boundary and investigate retained unexplained failures. | Implemented restore readiness, private state, pre-exec launch gating, durable questions and output-drain fixes are merged and regression-tested. Pure-core cleanup and retention maintenance implementation are complete. Sleep/reboot/crash breadth, sustained retention acceptance and retained unexplained failures remain partial. |
 | 3. Complete native install and onboarding | Verify app/archive packaging, final signatures, preview/apply/undo, connection diagnostics, stable provider paths, pinned installation/update/rollback, uninstall and retention. Exercise interrupted activation and schema compatibility with live sessions. | Local app/CLI installation and legacy hook/MCP compatibility passed at PR #119; UI is installed in /Applications. Update consumer, scheduler, preview/apply/undo and rollback exist. Per-session configuration/contact/receiver/receipt states and required-provider guidance are implemented; PR #125 passed 165 native steps and a 90-second actual Codex queue/idle-heartbeat trial. Final review and installed-candidate readiness acceptance remain pending. Signed hosted distribution and broader acceptance remain. |
 | 4. Verify real integrations and discovery | Run fresh Claude Code hooks and Codex MCP sessions on the integrated candidate; prove actual inbox consumption, observation/staleness, conflicts and journal continuity. Expand desktop identities, installation locations and accurate capability reporting. | Managed Codex and Claude channels have actual shared human/peer queue, idle/busy/question and bounded recovery evidence. Broader review/elicitation forms, installed-version trials and longer sessions remain. Production duplicate repair awaits a safe daemon stop. |
 | 5. Deliver platform parity | Finish native Windows host/IPC/process/terminal/service/path/installer adapters and runtime CI. Complete Linux desktop inventory/packages and target-distribution GUI/service tests. Repeat the same semantic tests on each OS. | Four Mac/Linux desktop CI targets and Windows core/host/named-pipe foundations pass on main. Target-distribution/service, second-Mac/physical-Intel and full native Windows daemon/GUI/ConPTY/service/installer acceptance remain. |
