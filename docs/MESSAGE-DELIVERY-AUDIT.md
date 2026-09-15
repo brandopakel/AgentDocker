@@ -243,9 +243,32 @@ The command completed exactly once, two later human/peer inputs stayed queued,
 and explicit recovery completed those inputs in the same process/conversation
 with three ordered input receipts and no replay. All owned processes retired.
 This closes the bounded mid-tool case; it does not establish every provider's
-tool cancellation or account-reset behavior. Pending-answer provider interruption, explicit replacement-session
-recovery and sustained actual-provider acceptance remain open. Existing uncertain
-input, question expiry and permission checks continue to apply.
+tool cancellation or account-reset behavior. Existing uncertain input, question
+expiry and permission checks continue to apply.
+
+The combined `ec45cea` source passed 931 Rust tests (six skipped), 70 Python
+checks and 225 native workflow steps, plus the full lint/package/release gate.
+Actual isolated Claude error delivery, Codex mid-tool recovery and the 135-case
+daemon matrix were rerun against its frozen binaries. Two further Codex 0.154.0
+acceptance cases passed:
+
+- While a command question was pending, an explicit availability report held
+  its denial and two later human/peer inputs. Resume delivered the exact denial;
+  the denied command never ran. Deny cancelled that turn, and the next input
+  received the loopback 429. A second recovery preserved four ordered input
+  receipts and one exact question/answer receipt; the answer did not become
+  a new input turn. Earlier fixture assertions used the wrong response type
+  and assumed Deny continued the first turn; both diagnosed failures are retained.
+- Replacing the blocked owned controller produced a new PID/birth while keeping
+  the same agent and durable Codex conversation. The limit and two pending inputs
+  survived replacement. Explicit recovery completed those inputs once with three
+  ordered receipts. This covers supported restoration under the same identity;
+  it does not establish transfer to an unrelated new agent record.
+
+All owned trial processes retired. Actual account resets, broader provider
+versions and adapter-specific detection, unrelated replacement identities and
+sustained actual-provider acceptance remain open. Complete source and deployment
+evidence is attached to [PR #132](https://github.com/brandopakel/AgentDocker/pull/132).
 
 Final-source acceptance at `64f8e58` is recorded on [PR #131](https://github.com/brandopakel/AgentDocker/pull/131#issuecomment-5672982318):
 924 Rust tests, 70 Python checks and 181 native workflow steps passed. Real

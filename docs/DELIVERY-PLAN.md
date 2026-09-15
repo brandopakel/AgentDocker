@@ -16,9 +16,10 @@ Latest closeout: PRs #127, #128 and #130 are merged after final-source review
 and five successful CI workflows each. PR #130 closes independent process
 ownership and durable exit recovery, with 911 Rust tests, 70 Python checks and
 real owned-process restart/retirement/pressure trials at `5120f03`. Full reload
-fencing, successor readiness and transfer acceptance remain open. The installed
-app/CLI remain PR #127's reviewed `723e794`; active sessions still use the old
-schema15 daemon. PR #129's narrow Inbox/readable-name work and PR #131's provider
+fencing, successor readiness and transfer acceptance remain open. Current
+installed/serving versions are reported by `agentdocker desktop status` and
+`agentdocker daemon status`; source updates do not replace an active daemon.
+PR #129's narrow Inbox/readable-name work and PR #131's provider
 availability/queue recovery are implemented and included in this combined
 closeout. Remaining review, installation and acceptance limits are recorded in
 [Remaining work](REMAINING-WORK.md); neither implementation waits for Claude.
@@ -146,6 +147,13 @@ Claude/Codex structured signals and desktop status. Focused tests pass across
 all catalog runtimes plus custom integrations. Actual-provider recovery and
 remaining adapter acceptance are tracked below; a live process or connected
 transport does not establish that the model can accept or finish work.
+
+Bounded implementation acceptance is complete at combined `ec45cea`: actual
+Claude/Codex error paths, Codex mid-tool interruption, a pending denial held
+through a block, same-identity controller replacement, FIFO recovery and queue
+pressure all passed. The full gate passed 931 Rust tests and 70 Python checks;
+native acceptance passed 225 steps. Account resets, broader adapters and
+unrelated replacement identities retain their acceptance scope below.
 
 - Apply this contract to every supported provider, company, model and runtime,
   including OpenAI/Codex, Anthropic/Claude, Google/Gemini, integrations such as
