@@ -121,10 +121,14 @@ fn spawn_controller(
 
 impl Daemon {
     /// Once a second: note a bound controller that ended and, when the
-    /// binding says how, start it again. Liveness and spawning happen
-    /// off the lock; each transition re-reads the binding and skips when
-    /// a bind or unbind changed it in between.
+    /// binding says how, start it again. Liveness is read off the lock;
+    /// each transition re-reads the binding under it and skips when a
+    /// bind or unbind changed it in between. A launch happens under the
+    /// lock too, so the process is recorded before it can bind.
     pub fn tend_controllers(&self) {
+        // Pins first: a daemon that restored bindings holds their releases
+        // before it could start anything from them.
+        self.pin_controllers();
         let bindings: Vec<(AgentId, InputBinding)> = {
             let state = lock(&self.state);
             state
@@ -186,11 +190,26 @@ impl Daemon {
                     }
                 }
                 ControllerStep::Launch { attempt } => {
-                    let Some(launch) = &binding.launch else {
+                    let Some(launch) = binding.launch.clone() else {
                         continue;
                     };
-                    let spawned = spawn_controller(&self.home, &id, launch);
+                    // Under one guard: the binding is still the one decided
+                    // on, the release is held, the process is started and
+                    // the launch recorded. A child that binds at once finds
+                    // itself already noted as the launched process, so its
+                    // bind resumes the binding rather than overtaking it.
                     let mut state = lock(&self.state);
+                    if state
+                        .registry
+                        .get(&id)
+                        .and_then(|r| r.input_binding.as_ref())
+                        != Some(&binding)
+                    {
+                        continue;
+                    }
+                    let spawned = state
+                        .pin_controller(&id, &launch)
+                        .and_then(|()| spawn_controller(&self.home, &id, &launch));
                     let recorded = state.transition_binding(&id, &binding, now, |record| {
                         let b = record.input_binding.as_mut().expect("checked");
                         b.note_launch(spawned.as_ref().ok().cloned(), now);
@@ -207,25 +226,30 @@ impl Daemon {
                             },
                         }
                     });
-                    if let Ok(controller) = &spawned {
-                        if recorded {
+                    match &spawned {
+                        Ok(controller) if recorded => {
                             info!(agent = %id, pid = controller.pid, attempt, "launched the bound controller");
-                        } else {
-                            // The binding moved on while the process was
-                            // starting; it would be refused a bind anyway.
+                        }
+                        Ok(controller) => {
+                            // Storage refused the record: nothing says this
+                            // process was launched, so it must not stay.
                             signal(controller, Signal::SIGTERM);
+                        }
+                        Err(error) => {
+                            warn!(agent = %id, attempt, %error, "could not launch the bound controller");
                         }
                     }
                 }
             }
         }
-        self.pin_controllers();
     }
 
     /// Hold a shared installation pin on every launch descriptor's
     /// executable, and only those: a binding that ended drops its pin.
-    fn pin_controllers(&self) {
-        let wanted: Vec<(AgentId, PathBuf)> = {
+    /// Called before serving and on every tick; a pin that cannot be
+    /// taken is logged here and refused at the launch that needs it.
+    pub fn pin_controllers(&self) {
+        let wanted: Vec<(AgentId, ControllerLaunch)> = {
             let state = lock(&self.state);
             state
                 .registry
@@ -234,21 +258,18 @@ impl Daemon {
                 .filter_map(|r| {
                     r.input_binding
                         .as_ref()
-                        .and_then(|b| b.launch.as_ref())
+                        .and_then(|b| b.launch.clone())
                         .filter(|_| !state.controller_pins.contains_key(&r.id))
-                        .map(|l| (r.id.clone(), l.executable.clone()))
+                        .map(|launch| (r.id.clone(), launch))
                 })
                 .collect()
         };
-        let mut taken = Vec::new();
-        for (id, executable) in wanted {
-            match agentdocker_host::installation::pin_executable(&executable) {
-                Ok(Some(pin)) => taken.push((id, pin)),
-                Ok(None) => {}
-                Err(error) => warn!(agent = %id, %error, "could not pin the controller's release"),
+        let mut state = lock(&self.state);
+        for (id, launch) in wanted {
+            if let Err(error) = state.pin_controller(&id, &launch) {
+                warn!(agent = %id, %error, "could not pin the controller's release");
             }
         }
-        let mut state = lock(&self.state);
         let managed: HashSet<AgentId> = state
             .registry
             .list(true)
@@ -257,11 +278,6 @@ impl Daemon {
             .map(|r| r.id.clone())
             .collect();
         state.controller_pins.retain(|id, _| managed.contains(id));
-        for (id, pin) in taken {
-            if managed.contains(&id) {
-                state.controller_pins.insert(id, pin);
-            }
-        }
     }
 }
 
@@ -380,6 +396,27 @@ impl State {
         if changed {
             let record = record.clone();
             self.persist("input bookkeeping", |store| store.upsert_agent(&record));
+        }
+    }
+
+    /// Hold the release a launch descriptor's executable belongs to, if it
+    /// is inside a managed installation and not held already. An error
+    /// means the release is being removed or is gone: nothing may be
+    /// started from it.
+    fn pin_controller(&mut self, id: &AgentId, launch: &ControllerLaunch) -> Result<(), String> {
+        if self.controller_pins.contains_key(id) {
+            return Ok(());
+        }
+        match agentdocker_host::installation::pin_executable(&launch.executable) {
+            Ok(Some(pin)) => {
+                self.controller_pins.insert(id.clone(), pin);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) => Err(format!(
+                "release of {}: {error}",
+                launch.executable.display()
+            )),
         }
     }
 
@@ -546,23 +583,17 @@ impl State {
                 resumed_binding
             }
         };
+        let mut record = record.clone();
         // The release the controller runs from stays installed for as
-        // long as the daemon may have to start it again.
+        // long as the daemon may have to start it again: held before the
+        // binding is accepted, and refused when it cannot be.
         if let Some(launch) = &binding.launch
-            && !self.controller_pins.contains_key(&id)
+            && let Err(error) = self.pin_controller(&id, launch)
         {
-            match agentdocker_host::installation::pin_executable(&launch.executable) {
-                Ok(Some(pin)) => {
-                    self.controller_pins.insert(id.clone(), pin);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    return Response::error(
-                        ErrorCode::Invalid,
-                        format!("the launch descriptor's release cannot be held: {error}"),
-                    );
-                }
-            }
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("the launch descriptor's release cannot be held: {error}"),
+            );
         }
         // Uncertainty is only ever about messages still queued.
         let queued: HashSet<&MessageId> = self
@@ -573,7 +604,6 @@ impl State {
             .map(|m| &m.id)
             .collect();
         binding.uncertain.retain(|m| queued.contains(m));
-        let mut record = record.clone();
         record.input_binding = Some(binding.clone());
         let mut event = Event::new(
             EventKind::InputBound {
@@ -1080,6 +1110,54 @@ mod tests {
         }
         assert!(!is_running(&second));
         assert!(lock(&daemon.state).controller_pins.is_empty());
+    }
+
+    /// The restart record is on the agent record: a daemon opened again
+    /// on the same state continues where the last one stopped.
+    #[tokio::test]
+    async fn a_reopened_daemon_continues_the_restart_it_restored() {
+        let dir = TempDir::new().unwrap();
+        let receiver = {
+            let daemon = open(&dir);
+            let receiver = provider(&daemon, "receiver", "sess-1").await;
+            let controller = Other::spawn();
+            assert!(matches!(
+                daemon
+                    .handle(Request::BindInput {
+                        agent: receiver.id.to_string(),
+                        provider: generation(&receiver, "sess-1"),
+                        controller: controller.identity(),
+                        token: TOKEN.into(),
+                        launch: Some(descriptor(&dir)),
+                    })
+                    .await,
+                Response::InputBound { .. }
+            ));
+            drop(controller);
+            daemon.tend_controllers();
+            let binding = binding_of(&daemon, &receiver.id);
+            assert!(binding.restart.ended_at.is_some());
+            receiver
+        };
+        let daemon = open(&dir);
+        let binding = binding_of(&daemon, &receiver.id);
+        assert!(binding.launch.is_some());
+        assert!(binding.restart.ended_at.is_some());
+        let seq = lock(&daemon.state).next_seq;
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        let launched = match &events[..] {
+            [
+                EventKind::InputControllerLaunched {
+                    controller,
+                    attempt: 1,
+                    ..
+                },
+            ] => controller.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(is_running(&launched));
+        signal(&launched, Signal::SIGKILL);
     }
 
     /// A descriptor that cannot start counts as an attempt and waits out
