@@ -33,18 +33,17 @@ pub fn receive(fd: i32) -> anyhow::Result<Takeover> {
     // SAFETY: the predecessor dup'd its end of a socketpair onto this
     // descriptor before exec; nothing else in this process owns it.
     let socket = unsafe { UnixStream::from_raw_fd(fd) };
-    let (handover, mut fds) = reload::accept(&socket).context("cannot receive the handover")?;
+    let (handover, fds) = reload::accept(&socket).context("cannot receive the handover")?;
     anyhow::ensure!(
         handover.terminals.is_empty() && handover.adopted.is_empty(),
         "a handover with terminals or adopted processes predates session owners"
     );
-    // Take the two named descriptors out of the list; `accept` already
-    // proved both indices exist and differ.
-    let mut take = |index: usize| -> OwnedFd {
-        // Replace with a harmless duplicate of stderr so indices stay valid.
-        let placeholder = unsafe { OwnedFd::from_raw_fd(nix::libc::dup(2)) };
-        std::mem::replace(&mut fds[index], placeholder)
-    };
+    // Take the named descriptors out of the list; `accept` already proved
+    // every index exists and that no two names share one. Anything left
+    // unnamed closes with the list.
+    let mut fds: Vec<Option<OwnedFd>> = fds.into_iter().map(Some).collect();
+    let mut take =
+        |index: usize| -> OwnedFd { fds[index].take().expect("accept checked the index") };
     let listener = take(handover.listener);
     let lock = take(handover.lock);
     let restricted = handover.restricted.map(&mut take);

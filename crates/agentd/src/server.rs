@@ -714,6 +714,13 @@ async fn restricted_connection(daemon: Arc<Daemon>, stream: Stream) -> io::Resul
     restricted_reply(&mut reader, &response).await
 }
 
+/// A second handle on a listening socket, for a later handover.
+#[cfg(unix)]
+pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::AsFd;
+    listener.as_fd().try_clone_to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1219,11 +1226,4 @@ mod tests {
         assert!(up.is_ok(), "restricted endpoint reported once serving");
         endpoint.abort();
     }
-}
-
-/// A second handle on a listening socket, for a later handover.
-#[cfg(unix)]
-pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::OwnedFd> {
-    use std::os::fd::AsFd;
-    listener.as_fd().try_clone_to_owned()
 }

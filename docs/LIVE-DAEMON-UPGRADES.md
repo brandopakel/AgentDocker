@@ -7,8 +7,10 @@ passed 837 Rust tests, 65 Python checks and an actual immutable CLI/daemon
 restart, question-answer replay and schema-upgrade trial. PR #109 passed final
 CI and source review and merged as `ebaba5be`. The provider event worker's
 bounded reconnect is implemented with an actual pending-approval cut trial;
-PR #110 passed final CI/source inspection and merged as `d89a85c`. Production `reload` continues to refuse without
-changing the running daemon or agents. This document records the concrete
+PR #110 passed final CI/source inspection and merged as `d89a85c`. Production `reload` refuses without
+changing the running daemon or agents unless the daemon was started with
+`AGENTDOCKER_EXPERIMENTAL_RELOAD=1`; the gate stays until the acceptance list
+below is recorded. This document records the concrete
 ownership and recovery requirements behind the open item in
 [Remaining work](REMAINING-WORK.md).
 
@@ -87,6 +89,25 @@ event continuity, not just a new socket or a readiness marker.
    serving loop, watcher and session routes to be usable before reporting
    success. A lost readiness response requires inspecting the committed transfer
    identity; timeout alone cannot authorize two coordinators to resume writing.
+   *In source, gated:* `reload` reads the candidate's `--build-info` and
+   refuses another host or an older state schema before any offer; it offers
+   the transfer, spawns the candidate with `--take-over` in its own session,
+   sends a FORMAT 2 handover (listening socket, daemon lock, container
+   endpoint) over `SCM_RIGHTS`, and waits up to 30 s for *serving*. The
+   successor accepts the transfer as its first write, serves on the inherited
+   listener and answers once its session owners are reattached. On any other
+   outcome the predecessor kills the successor's whole session and aborts the
+   offer, unless the store says the successor accepted, in which case it
+   leaves anyway. The watcher and session routes come up with the successor's
+   normal startup; the readiness answer follows owner reattachment, so a
+   managed agent is reachable through the successor before the predecessor
+   leaves. See [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence).
+   Real-binary coverage: `enabled_reload_hands_real_processes_to_a_successor_and_leaves`
+   reloads three daemons in a row with a batch and a PTY agent keeping their
+   processes and logs. Recorded private trials: an older-schema candidate
+   refused before any offer (no coordinator row), a candidate that died
+   (offer aborted, same daemon serving, writes resumed), and one that never
+   answered (aborted at the deadline, same daemon serving).
 5. **Connected clients.** Preserve or resume terminal and question/event streams,
    provider input polls, pending questions and leases across the transition.
    Reconnection must retain drafts, receipts and original question expiry.
@@ -102,7 +123,10 @@ an in-process Tokio test cannot establish this boundary.
 
 - Batch and PTY children continue through replacement with the same PID/birth,
   complete ordered output and retained logs/scrollback, then report exact exit
-  status and clean descendants before releasing leases.
+  status and clean descendants before releasing leases. *Passed* on a frozen
+  successor-readiness build: two successive reloads with a batch and a PTY
+  agent keeping their child pids, exact exits 7/3 under the third daemon, the
+  container endpoint inherited; the CI test above repeats the chain.
 - Human and peer messages queued before/during transfer retain order and exact
   provider receipts; pending approval answers follow their original route once.
 - Active Claude and Codex conversations survive, including an idle wake, a busy
@@ -110,6 +134,10 @@ an in-process Tokio test cannot establish this boundary.
 - Wrong/incompatible candidates, unavailable state, lost/trickled readiness,
   candidate death and failed ownership transfer leave one identifiable serving
   coordinator or an explicit recoverable state with protection retained.
+  *Passed* for an older-schema candidate, a dying candidate and a silent one;
+  trickled readiness and a failed store are covered by unit tests. Wrong-host
+  candidates are refused by the same `--build-info` check but have not been
+  trialled with a real foreign binary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
