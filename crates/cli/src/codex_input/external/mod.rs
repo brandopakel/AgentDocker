@@ -25,18 +25,25 @@ use std::{
 
 #[derive(clap::Args)]
 pub struct Args {
+    /// Canonical AgentDocker record ID for the verified provider session.
     #[arg(long)]
     pub agent: String,
+    /// Existing Codex provider process ID; the receiver never starts that session.
     #[arg(long)]
     pub pid: u32,
+    /// Exact provider process birth in RFC3339 format.
     #[arg(long)]
     pub started_at: DateTime<Utc>,
+    /// Persisted Codex conversation ID verified by the provider hook.
     #[arg(long)]
     pub thread: String,
+    /// Absolute path to the existing provider configuration profile.
     #[arg(long)]
     pub profile: PathBuf,
+    /// Absolute physical checkout path for the verified provider session.
     #[arg(long)]
     pub cwd: PathBuf,
+    /// Absolute path to the existing provider executable.
     #[arg(long)]
     pub program: PathBuf,
     /// A verified prior binding to this persisted conversation.

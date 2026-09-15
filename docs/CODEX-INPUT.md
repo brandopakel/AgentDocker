@@ -382,3 +382,13 @@ the current one-outstanding-offer receiver follows Codex's queue polling cadence
 This proves bounded durability/order, not low-latency burst handling or paid-model
 throughput. The retained [native trial record](verification/2026-09-15-native-codex-queue.json)
 includes the exact source, driver and binary hashes.
+
+Final review corrections preserve a live bootstrap marker but allow a dead
+receiver generation's marker to be replaced after a successful launch; the
+private ledger still validates the provider generation independently. Both
+receipt-history and provider-queue scans now have a one-minute total bound.
+The receiver flags document their verified identity/path inputs. The fixture
+serializes bootstrap/question claims and response numbering, including auxiliary
+requests. The preceding `153fad3` integration gate passed 965 Rust tests (six
+skipped),70 Python checks and release packaging; the corrected source requires
+its own final gate and actual-provider trial.

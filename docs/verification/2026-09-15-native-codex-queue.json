@@ -1462,5 +1462,27 @@
     "acceptance_limit": "Thirty ordinary queued turns were delivered exactly once and in FIFO order, but the one-outstanding-offer receiver follows the provider queue polling cadence: last arrival took299.15seconds. These are local loopback fixture waiting times, not paid model performance or low-latency acceptance.",
     "result_file_sha256": "f7fb1ec99470742b33a1865ea94c8b6d59a358f5c51bfc039926f78fdde7b1c5",
     "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
+  },
+  "combined_gate_153fad3": {
+    "source_commit": "153fad32d3dd69ba656fb22155879db1248a9fc0",
+    "result": "passed",
+    "rust_passed": 965,
+    "rust_skipped": 6,
+    "python_passed": 70,
+    "checks": [
+      "format",
+      "strict clippy",
+      "workspace nextest",
+      "doctests",
+      "Python",
+      "workspace packaging",
+      "release build"
+    ],
+    "log_sha256": "47f377de5bfd2bf1d0d12801027f5285b48acbbf14feb6519b231e28bb28f11a",
+    "binary_sha256": {
+      "agentdocker": "7879099e3c5d1052766a90dfd04eb5c3fcd972b5f9e72b4f26ba034a3828ca0d",
+      "agentd": "cbb1d90570baad20764e3189663ccd6b6f911f13eec713a085b66223254c43d8"
+    },
+    "scope": "Actual142/147 parents integrated with merged146 coalescing; precedes final native review corrections."
   }
 }

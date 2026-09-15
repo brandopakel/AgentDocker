@@ -50,6 +50,17 @@ pub(super) fn launch(binding: &Binding) -> Result<ControllerLaunch> {
     Ok(descriptor)
 }
 
+fn marker_running(previous: &Binding, current: &Binding, process: ProcessIdentity) -> Result<bool> {
+    if procinfo::start_time(process.pid) != Some(process.started_at) {
+        return Ok(false);
+    }
+    ensure!(
+        previous == current,
+        "native controller marker belongs to another live provider generation"
+    );
+    Ok(true)
+}
+
 pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool> {
     if agent.managed || agent.spec.runtime != "codex" {
         return Ok(false);
@@ -151,11 +162,7 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
         );
         if let Ok((previous, process)) = serde_json::from_slice::<(Binding, ProcessIdentity)>(&data)
         {
-            ensure!(
-                previous == binding,
-                "native controller marker belongs to another provider generation"
-            );
-            if procinfo::start_time(process.pid) == Some(process.started_at) {
+            if marker_running(&previous, &binding, process)? {
                 // A starting helper has not proved queue capability or bound
                 // ownership. Let the daemon arbitrate a legacy read until it
                 // actually does; a mere process launch is not input readiness.
@@ -212,6 +219,36 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_a_live_marker_can_block_a_new_bootstrap_generation() {
+        let process = ProcessIdentity {
+            pid: std::process::id(),
+            started_at: procinfo::start_time(std::process::id()).unwrap(),
+        };
+        let current = Binding {
+            agent: "agent".into(),
+            provider: ProviderGeneration {
+                process: process.clone(),
+                session: "thread".into(),
+                profile: "/profile".into(),
+            },
+            socket: "/socket".into(),
+            cwd: "/checkout".into(),
+            executable: "/codex".into(),
+        };
+        assert!(marker_running(&current, &current, process.clone()).unwrap());
+        let mut previous = current.clone();
+        previous.provider.session = "previous-thread".into();
+        assert!(marker_running(&previous, &current, process.clone()).is_err());
+        let reused_pid = ProcessIdentity {
+            started_at: process.started_at - chrono::Duration::seconds(1),
+            ..process
+        };
+        assert!(!marker_running(&previous, &current, reused_pid).unwrap());
+        // The stale marker is atomically replaced only after launch succeeds;
+        // the private ledger still independently validates generation changes.
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn older_daemon_keeps_legacy_delivery_but_other_failures_do_not_claim_support() {

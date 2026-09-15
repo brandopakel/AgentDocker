@@ -106,6 +106,8 @@ impl Registry {
             Some("canonical record is missing")
         } else if !self.agents.contains_key(retired) {
             Some("retired ID owns no record")
+        } else if self.aliases.values().any(|target| target == retired) {
+            Some("retired ID is already a canonical alias target")
         } else {
             None
         };
@@ -329,6 +331,23 @@ mod tests {
             ..AgentSpec::default()
         };
         AgentRecord::new(spec, true, Utc::now())
+    }
+
+    #[test]
+    fn retiring_a_canonical_target_cannot_break_existing_aliases() {
+        let mut registry = Registry::new();
+        let old = record("old");
+        let current = record("current");
+        let later = record("later");
+        for record in [&old, &current, &later] {
+            registry.insert(record.clone()).unwrap();
+        }
+        registry.retire_into(&old.id, &current.id).unwrap();
+        assert!(registry.retire_into(&current.id, &later.id).is_err());
+        assert_eq!(registry.resolve(old.id.as_str()).unwrap(), current.id);
+        assert_eq!(registry.get(&current.id).unwrap().id, current.id);
+        assert_eq!(registry.get(&later.id).unwrap().id, later.id);
+        assert_eq!(registry.aliases().len(), 1);
     }
 
     #[test]

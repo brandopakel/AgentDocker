@@ -117,8 +117,9 @@ provider; nothing in the inbox controls repairs a receiver. The started process 
 same token: the daemon restarts receivers, never provider sessions, and never
 rebinds or changes the provider generation on its own. The descriptor is kept
 on the agent record in the open, so the token belongs in a private file, not
-in its arguments or environment. The daemon side is in source; the Codex
-native-queue controller that uses it is separate work.
+in its arguments or environment. Both the daemon supervisor and the Codex 0.154 native-queue receiver are in source.
+See [Codex input](CODEX-INPUT.md) for the supported hook bootstrap, idle delivery,
+receipt recovery and the retained no-prompt startup/resume limitation.
 
 ## Channels and reviews
 

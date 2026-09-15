@@ -106,32 +106,36 @@ pub(super) async fn queued(
     thread: &str,
     attempt: &Attempt,
 ) -> Result<Option<String>> {
-    let mut cursor: Option<String> = None;
-    let mut cursors = HashSet::new();
-    let mut found = None;
-    for _ in 0..100 {
-        let value = provider
-            .request(
-                "thread/queue/list",
-                json!({"threadId":thread,"limit":50,"cursor":cursor}),
-            )
-            .await?;
-        let (items, next) = recovery::page(&value, &mut cursors)?;
-        for item in items {
-            if let Some(id) = queued_id(item, attempt)? {
-                ensure!(
-                    found.is_none(),
-                    "multiple native queue entries match one input"
-                );
-                found = Some(id);
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut cursor: Option<String> = None;
+        let mut cursors = HashSet::new();
+        let mut found = None;
+        for _ in 0..100 {
+            let value = provider
+                .request(
+                    "thread/queue/list",
+                    json!({"threadId":thread,"limit":50,"cursor":cursor}),
+                )
+                .await?;
+            let (items, next) = recovery::page(&value, &mut cursors)?;
+            for item in items {
+                if let Some(id) = queued_id(item, attempt)? {
+                    ensure!(
+                        found.is_none(),
+                        "multiple native queue entries match one input"
+                    );
+                    found = Some(id);
+                }
+            }
+            cursor = next;
+            if cursor.is_none() {
+                return Ok(found);
             }
         }
-        cursor = next;
-        if cursor.is_none() {
-            return Ok(found);
-        }
-    }
-    bail!("native provider queue exceeds the recovery limit")
+        bail!("native provider queue exceeds the recovery limit")
+    })
+    .await
+    .context("native provider queue lookup exceeded one minute")?
 }
 
 #[cfg(test)]

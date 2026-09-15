@@ -105,6 +105,7 @@ def source_manifest():
     checkout = Path(__file__).resolve().parent.parent
     paths = sorted((checkout / "crates").rglob("*.rs"))
     paths += sorted((checkout / "crates").rglob("Cargo.toml"))
+    paths += sorted((checkout / "crates").rglob("SKILL.md"))
     paths += [checkout / "Cargo.toml", checkout / "Cargo.lock", Path(__file__).resolve()]
     digest = hashlib.sha256()
     for path in paths:
@@ -119,6 +120,8 @@ def source_manifest():
 report["source"] = source_manifest()
 bootstrap_called = args.scenario in ("startup", "lifecycle")
 question_called = False
+request_lock = threading.Lock()
+request_sequence = 0
 limit_active = args.scenario == "rate-limit"
 block = threading.Event()
 release = threading.Event()
@@ -130,19 +133,29 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        global bootstrap_called, question_called
+        global bootstrap_called, question_called, request_sequence
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers.get("Authorization") == "Bearer fixture-only"
-        bootstrap = not bootstrap_called
-        bootstrap_called = True
-        auxiliary = bootstrap or "Generate a concise, single-line task title" in json.dumps(
-            body.get("input", [])
-        )
-        if not auxiliary:
-            report["requests"].append({"at": time.monotonic(), "body": body})
-        n = len(report["requests"])
-        rid = "resp_fixture_" + str(n)
-        mid = "msg_fixture_" + str(n)
+        title = "Generate a concise, single-line task title" in json.dumps(body.get("input", []))
+        users = [v for v in body.get("input", []) if v.get("role") == "user"]
+        with request_lock:
+            bootstrap = not title and not bootstrap_called
+            bootstrap_called |= bootstrap
+            auxiliary = bootstrap or title
+            if not auxiliary:
+                report["requests"].append({"at": time.monotonic(), "body": body})
+            n = len(report["requests"])
+            request_sequence += 1
+            rid = "resp_fixture_" + str(request_sequence)
+            mid = "msg_fixture_" + str(request_sequence)
+            ask_question = (
+                args.scenario in ("question", "legacy-question", "legacy-reply", "migration")
+                and users
+                and "ASK_QUESTION_NONCE" in json.dumps(users[-1])
+                and not question_called
+            )
+            if ask_question:
+                question_called = True
         if block.is_set() and (not auxiliary):
             release.wait(35)
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
@@ -259,13 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"type": "response.completed", "response": response},
             ]
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
-        if (
-            args.scenario in ("question", "legacy-question", "legacy-reply", "migration")
-            and users
-            and ("ASK_QUESTION_NONCE" in json.dumps(users[-1]))
-            and (not question_called)
-        ):
-            question_called = True
+        if ask_question:
             report["question_tools"] = [
                 {
                     "type": t.get("type"),
