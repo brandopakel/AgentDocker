@@ -1176,6 +1176,24 @@ mod tests {
                 .any(|m| m.id == held),
             "but durable"
         );
+        // Nothing behind it is shown either: the queue keeps its order
+        // for an answer that comes back to it.
+        let Response::Sent { message: later, .. } = daemon
+            .handle(Request::Send {
+                from: "recipient".into(),
+                to: "asker".into(),
+                kind: "chat".into(),
+                payload: serde_json::json!({ "text": "by the way" }),
+                reply_to: None,
+            })
+            .await
+        else {
+            panic!("send failed");
+        };
+        assert!(
+            !inbox(daemon.clone()).await.iter().any(|m| m.id == later),
+            "behind the held answer"
+        );
         // A hand-over whose bookkeeping cannot be stored does not happen:
         // the answer stays held, to go to the queue when the wait ends.
         {
@@ -1190,9 +1208,14 @@ mod tests {
             "still held"
         );
         lock(&daemon.state).waiter_ended(&late_question);
+        let visible: Vec<MessageId> = inbox(daemon.clone())
+            .await
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert!(
-            inbox(daemon.clone()).await.iter().any(|m| m.id == held),
-            "released to the queue"
+            visible.ends_with(&[held.clone(), later]),
+            "released to the queue, in order: {visible:?}"
         );
         assert_eq!(
             routes(&daemon).last(),
