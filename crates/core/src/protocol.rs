@@ -275,6 +275,10 @@ pub enum Request {
         provider: crate::ProviderGeneration,
         controller: crate::ProcessIdentity,
         token: String,
+        /// How the daemon starts the controller again once it has ended.
+        /// Fixed at the first bind: a resume sends the same one or none.
+        #[serde(default)]
+        launch: Option<crate::ControllerLaunch>,
     },
     /// Release an input binding. The token is required unless `force`,
     /// which is accepted only while the bound controller process is gone.

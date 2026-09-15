@@ -97,6 +97,30 @@ pub enum EventKind {
         agent: AgentId,
         reason: String,
     },
+    /// The bound controller, or a process launched to replace it, is gone.
+    InputControllerEnded {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+    },
+    /// The daemon started the binding's launch descriptor; the process
+    /// binds itself with the controller's token.
+    InputControllerLaunched {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        attempt: u32,
+    },
+    /// A launch attempt failed before the process started.
+    InputControllerLaunchFailed {
+        agent: AgentId,
+        attempt: u32,
+        error: String,
+    },
+    /// The episode's launches are used up; the binding stands, dead,
+    /// until a controller binds by itself or somebody unbinds it.
+    InputRestartsExhausted {
+        agent: AgentId,
+        attempts: u32,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,

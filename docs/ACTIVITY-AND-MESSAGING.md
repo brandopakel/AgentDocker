@@ -99,8 +99,21 @@ resumes the binding with its token; another provider generation waits for an
 explicit `unbind_input`. Messages a hook had already been offered before the
 binding travel flagged as `uncertain`, so the controller reconciles them
 against the provider before enqueueing anything, and a hook finishing that
-in-flight delivery may still acknowledge exactly those. The daemon side is in
-source; the Codex native-queue controller that uses it is separate work.
+in-flight delivery may still acknowledge exactly those.
+
+A controller that ends leaves an idle provider with no hook to start it again,
+so a bind may carry a **launch descriptor**: the exact command the controller
+was started with. The daemon then watches the bound controller by pid and
+birth; when it is gone it says so (`input_controller_ended`), pauses the
+agent's delivery evidence, and starts the descriptor again with backoff (0, 2,
+4, 8, 16 seconds; five launches per episode, then `input_restarts_exhausted`;
+a controller that stayed bound for a minute starts the count over), while the
+provider process is still running. The started process binds itself with the
+same token: the daemon restarts receivers, never provider sessions, and never
+rebinds or changes the provider generation on its own. The descriptor is kept
+on the agent record in the open, so the token belongs in a private file, not
+in its arguments or environment. The daemon side is in source; the Codex
+native-queue controller that uses it is separate work.
 
 ## Channels and reviews
 

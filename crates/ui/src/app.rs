@@ -822,7 +822,10 @@ impl App {
             | EventKind::AgentReconciled { .. }
             | EventKind::AgentVcsChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
-            EventKind::InputDeliveryReported { .. } => {
+            EventKind::InputDeliveryReported { .. }
+            | EventKind::InputControllerEnded { .. }
+            | EventKind::InputControllerLaunched { .. }
+            | EventKind::InputRestartsExhausted { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }

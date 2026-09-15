@@ -239,6 +239,11 @@ struct State {
     /// Duplicate pairs already announced, so a finding that lasts as
     /// long as a session is said once rather than every sweep.
     reported_duplicates: std::collections::BTreeSet<(AgentId, AgentId)>,
+    /// A shared installation pin per binding that has a launch descriptor,
+    /// held for the binding's life so the release its controller runs
+    /// from is not pruned while the controller is dead and waiting to be
+    /// started again.
+    controller_pins: HashMap<AgentId, agentdocker_host::lock::Lock>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,
@@ -1026,6 +1031,7 @@ impl Daemon {
                 project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 reported_duplicates: std::collections::BTreeSet::new(),
+                controller_pins: HashMap::new(),
                 journal_cursors: HashMap::new(),
                 channels,
                 contested: HashMap::new(),
@@ -1296,7 +1302,15 @@ impl Daemon {
                 provider,
                 controller,
                 token,
-            } => lock(&self.state).bind_input(&agent, provider, controller, &token, Utc::now()),
+                launch,
+            } => lock(&self.state).bind_input(
+                &agent,
+                provider,
+                controller,
+                &token,
+                launch,
+                Utc::now(),
+            ),
             Request::UnbindInput {
                 agent,
                 token,

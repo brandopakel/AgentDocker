@@ -185,6 +185,30 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InputUnbound { agent, reason } => {
             format!("input unbound    {} ({reason})", agent.short())
         }
+        EventKind::InputControllerEnded { agent, controller } => {
+            format!("controller ended {} pid {}", agent.short(), controller.pid)
+        }
+        EventKind::InputControllerLaunched {
+            agent,
+            controller,
+            attempt,
+        } => format!(
+            "controller launched {} pid {} (attempt {attempt})",
+            agent.short(),
+            controller.pid
+        ),
+        EventKind::InputControllerLaunchFailed {
+            agent,
+            attempt,
+            error,
+        } => format!(
+            "controller launch failed {} (attempt {attempt}): {error}",
+            agent.short()
+        ),
+        EventKind::InputRestartsExhausted { agent, attempts } => format!(
+            "controller restarts exhausted {} after {attempts}",
+            agent.short()
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

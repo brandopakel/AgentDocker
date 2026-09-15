@@ -11,11 +11,19 @@
 //! reader had already been offered before the binding travels flagged, so
 //! the controller reconciles it against the provider rather than enqueue
 //! it twice or drop it.
+//!
+//! A controller that ends leaves an idle provider with no hook to start it
+//! again, so a binding may carry a launch descriptor: the exact command
+//! the controller was started with. Once a second the daemon looks at the
+//! bound controller by pid and birth; when it is gone the daemon starts
+//! the descriptor again, a bounded number of times with backoff, and the
+//! new process binds itself with the same token. The daemon restarts
+//! receivers, never provider sessions, and never rebinds anything itself.
 use std::collections::HashSet;
 
 use agentdocker_core::{
-    AgentId, ErrorCode, EventKind, InputBinding, MessageId, ProcessIdentity, ProviderGeneration,
-    Response,
+    AgentId, AgentRecord, ControllerLaunch, ControllerStep, ErrorCode, EventKind, InputBinding,
+    MessageId, ProcessIdentity, ProviderGeneration, Response,
 };
 use chrono::{DateTime, Utc};
 
@@ -36,6 +44,225 @@ fn token_valid(token: &str) -> bool {
 fn is_running(process: &ProcessIdentity) -> bool {
     agentdocker_host::procinfo::alive(process.pid)
         && agentdocker_host::procinfo::start_time(process.pid) == Some(process.started_at)
+}
+
+/// Signal a process the daemon launched, if it is still the one launched.
+fn signal(process: &ProcessIdentity, signal: Signal) {
+    if is_running(process) {
+        let _ = kill(Pid::from_raw(process.pid as i32), signal);
+    }
+}
+
+/// Delivery evidence stops at the controller's end: whatever it last
+/// reported, nothing receives input now.
+fn pause_delivery(record: &mut AgentRecord, reason: &str, now: DateTime<Utc>) {
+    let delivery = record
+        .input_delivery
+        .get_or_insert_with(|| agentdocker_core::InputDelivery {
+            process_started_at: record.process_started_at.unwrap_or(now),
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+    delivery.paused = true;
+    delivery.pause_reason = Some(reason.to_owned());
+    delivery.reported_at = now;
+}
+
+/// Where a launched controller's output goes: appended, next to the
+/// daemon's other logs, so a controller that keeps dying leaves a trace.
+fn controller_log(home: &Path, id: &AgentId) -> PathBuf {
+    home.join("logs").join(format!("{id}.controller.log"))
+}
+
+/// Start a launch descriptor, detached: its own process group, nothing on
+/// stdin, output appended to the controller log, the daemon's environment
+/// plus the descriptor's, and `AGENTDOCKER_HOME` pointing at this daemon
+/// so the new process binds here. Tokio reaps the child in the background.
+fn spawn_controller(
+    home: &Path,
+    id: &AgentId,
+    launch: &ControllerLaunch,
+) -> Result<ProcessIdentity, String> {
+    let path = controller_log(home, id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("controller log: {e}"))?;
+    }
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("controller log: {e}"))?;
+    let stderr = log
+        .try_clone()
+        .map_err(|e| format!("controller log: {e}"))?;
+    let mut command = tokio::process::Command::new(&launch.executable);
+    command
+        .args(&launch.args)
+        .current_dir(&launch.cwd)
+        .envs(&launch.env)
+        .env("AGENTDOCKER_HOME", home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(stderr))
+        .process_group(0);
+    let child = command
+        .spawn()
+        .map_err(|e| format!("{}: {e}", launch.executable.display()))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| "the process ended at once".to_owned())?;
+    let started_at = agentdocker_host::procinfo::start_time(pid)
+        .ok_or_else(|| format!("pid {pid}: start time unreadable"))?;
+    Ok(ProcessIdentity { pid, started_at })
+}
+
+impl Daemon {
+    /// Once a second: note a bound controller that ended and, when the
+    /// binding says how, start it again. Liveness and spawning happen
+    /// off the lock; each transition re-reads the binding and skips when
+    /// a bind or unbind changed it in between.
+    pub fn tend_controllers(&self) {
+        let bindings: Vec<(AgentId, InputBinding)> = {
+            let state = lock(&self.state);
+            state
+                .registry
+                .list(true)
+                .into_iter()
+                .filter_map(|r| r.input_binding.clone().map(|b| (r.id.clone(), b)))
+                .collect()
+        };
+        for (id, binding) in bindings {
+            let now = Utc::now();
+            match binding.controller_step(now, is_running) {
+                ControllerStep::Keep => {}
+                ControllerStep::Ended => {
+                    let controller = binding
+                        .restart
+                        .launched
+                        .clone()
+                        .unwrap_or_else(|| binding.controller.clone());
+                    let mut state = lock(&self.state);
+                    state.transition_binding(&id, &binding, now, |record| {
+                        // A fresh heartbeat from the controller that just
+                        // died must not keep showing delivery as verified.
+                        pause_delivery(record, "the bound controller ended", now);
+                        record
+                            .input_binding
+                            .as_mut()
+                            .expect("checked")
+                            .note_controller_ended(now);
+                        EventKind::InputControllerEnded {
+                            agent: id.clone(),
+                            controller,
+                        }
+                    });
+                }
+                ControllerStep::Exhausted => {
+                    let mut state = lock(&self.state);
+                    state.transition_binding(&id, &binding, now, |record| {
+                        pause_delivery(record, "the bound controller could not be restarted", now);
+                        let binding = record.input_binding.as_mut().expect("checked");
+                        binding.restart.exhausted = true;
+                        EventKind::InputRestartsExhausted {
+                            agent: id.clone(),
+                            attempts: binding.restart.attempts,
+                        }
+                    });
+                }
+                ControllerStep::Terminate { kill: hard } => {
+                    if let Some(launched) = &binding.restart.launched {
+                        warn!(agent = %id, pid = launched.pid, "launched controller did not bind in time");
+                        signal(
+                            launched,
+                            if hard {
+                                Signal::SIGKILL
+                            } else {
+                                Signal::SIGTERM
+                            },
+                        );
+                    }
+                }
+                ControllerStep::Launch { attempt } => {
+                    let Some(launch) = &binding.launch else {
+                        continue;
+                    };
+                    let spawned = spawn_controller(&self.home, &id, launch);
+                    let mut state = lock(&self.state);
+                    let recorded = state.transition_binding(&id, &binding, now, |record| {
+                        let b = record.input_binding.as_mut().expect("checked");
+                        b.note_launch(spawned.as_ref().ok().cloned(), now);
+                        match &spawned {
+                            Ok(controller) => EventKind::InputControllerLaunched {
+                                agent: id.clone(),
+                                controller: controller.clone(),
+                                attempt,
+                            },
+                            Err(error) => EventKind::InputControllerLaunchFailed {
+                                agent: id.clone(),
+                                attempt,
+                                error: error.clone(),
+                            },
+                        }
+                    });
+                    if let Ok(controller) = &spawned {
+                        if recorded {
+                            info!(agent = %id, pid = controller.pid, attempt, "launched the bound controller");
+                        } else {
+                            // The binding moved on while the process was
+                            // starting; it would be refused a bind anyway.
+                            signal(controller, Signal::SIGTERM);
+                        }
+                    }
+                }
+            }
+        }
+        self.pin_controllers();
+    }
+
+    /// Hold a shared installation pin on every launch descriptor's
+    /// executable, and only those: a binding that ended drops its pin.
+    fn pin_controllers(&self) {
+        let wanted: Vec<(AgentId, PathBuf)> = {
+            let state = lock(&self.state);
+            state
+                .registry
+                .list(true)
+                .into_iter()
+                .filter_map(|r| {
+                    r.input_binding
+                        .as_ref()
+                        .and_then(|b| b.launch.as_ref())
+                        .filter(|_| !state.controller_pins.contains_key(&r.id))
+                        .map(|l| (r.id.clone(), l.executable.clone()))
+                })
+                .collect()
+        };
+        let mut taken = Vec::new();
+        for (id, executable) in wanted {
+            match agentdocker_host::installation::pin_executable(&executable) {
+                Ok(Some(pin)) => taken.push((id, pin)),
+                Ok(None) => {}
+                Err(error) => warn!(agent = %id, %error, "could not pin the controller's release"),
+            }
+        }
+        let mut state = lock(&self.state);
+        let managed: HashSet<AgentId> = state
+            .registry
+            .list(true)
+            .into_iter()
+            .filter(|r| r.input_binding.as_ref().is_some_and(|b| b.launch.is_some()))
+            .map(|r| r.id.clone())
+            .collect();
+        state.controller_pins.retain(|id, _| managed.contains(id));
+        for (id, pin) in taken {
+            if managed.contains(&id) {
+                state.controller_pins.insert(id, pin);
+            }
+        }
+    }
 }
 
 impl State {
@@ -156,12 +383,43 @@ impl State {
         }
     }
 
+    /// One restart transition, applied only when the binding is still the
+    /// one the decision was made from. Returns whether it was applied.
+    fn transition_binding(
+        &mut self,
+        id: &AgentId,
+        expected: &InputBinding,
+        now: DateTime<Utc>,
+        change: impl FnOnce(&mut AgentRecord) -> EventKind,
+    ) -> bool {
+        let Some(record) = self.registry.get(id) else {
+            return false;
+        };
+        if record.input_binding.as_ref() != Some(expected) {
+            return false;
+        }
+        let mut record = record.clone();
+        let mut event = Event::new(change(&mut record), now);
+        event.seq = self.next_seq;
+        self.persist("controller restart", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if self.storage_error.is_some() {
+            return false;
+        }
+        *self.registry.get_mut(id).expect("resolved agent") = record;
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        true
+    }
+
     pub(super) fn bind_input(
         &mut self,
         reference: &str,
         provider: ProviderGeneration,
         controller: ProcessIdentity,
         token: &str,
+        launch: Option<ControllerLaunch>,
         now: DateTime<Utc>,
     ) -> Response {
         let id = match self.resolve(reference) {
@@ -173,6 +431,12 @@ impl State {
             return Response::error(
                 ErrorCode::Invalid,
                 "a binding token is 32 to 128 printable ASCII characters, made and kept by the controller",
+            );
+        }
+        if launch.as_ref().is_some_and(|l| !l.valid()) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a launch descriptor needs an absolute executable and working directory, and bounded arguments and environment",
             );
         }
         if !provider.valid() || !std::path::Path::new(&provider.profile).is_absolute() {
@@ -219,12 +483,15 @@ impl State {
             None => InputBinding {
                 provider: provider.clone(),
                 controller: controller.clone(),
+                controller_since: now,
                 token_sha256: digest,
                 bound_at: now,
                 controller_generations: 1,
                 // Whatever a legacy reader was already offered may be inside
                 // the provider already; the controller finds out, not us.
                 uncertain: record.legacy_offers.keys().cloned().collect(),
+                launch,
+                restart: Default::default(),
             },
             Some(existing) => {
                 if !existing.accepts_digest(&digest) {
@@ -243,6 +510,12 @@ impl State {
                         details: Some(serde_json::json!({ "bound": existing.provider })),
                     };
                 }
+                if launch.is_some() && launch != existing.launch {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "the launch descriptor is fixed for the binding's life; unbind first to change it",
+                    );
+                }
                 if existing.controller == controller {
                     // The same bind again: a lost reply, answered the same way.
                     return Response::InputBound {
@@ -258,14 +531,39 @@ impl State {
                         details: Some(serde_json::json!({ "controller": existing.controller })),
                     };
                 }
+                // A process the daemon launched that is not the one binding
+                // has been overtaken; it would be refused from here on.
+                if let Some(launched) = &existing.restart.launched
+                    && *launched != controller
+                {
+                    signal(launched, Signal::SIGTERM);
+                }
                 resumed = true;
                 let mut resumed_binding = existing.clone();
-                resumed_binding.controller = controller.clone();
+                resumed_binding.note_controller_bound(controller.clone(), now);
                 resumed_binding.controller_generations =
                     existing.controller_generations.saturating_add(1);
                 resumed_binding
             }
         };
+        // The release the controller runs from stays installed for as
+        // long as the daemon may have to start it again.
+        if let Some(launch) = &binding.launch
+            && !self.controller_pins.contains_key(&id)
+        {
+            match agentdocker_host::installation::pin_executable(&launch.executable) {
+                Ok(Some(pin)) => {
+                    self.controller_pins.insert(id.clone(), pin);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!("the launch descriptor's release cannot be held: {error}"),
+                    );
+                }
+            }
+        }
         // Uncertainty is only ever about messages still queued.
         let queued: HashSet<&MessageId> = self
             .inboxes
@@ -343,6 +641,9 @@ impl State {
                 );
             }
         };
+        // A process the daemon launched that has not bound yet has nothing
+        // left to bind to.
+        let launched = binding.restart.launched.clone();
         let mut record = record.clone();
         record.input_binding = None;
         let mut event = Event::new(
@@ -360,6 +661,10 @@ impl State {
             return error;
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
+        self.controller_pins.remove(&id);
+        if let Some(launched) = launched {
+            signal(&launched, Signal::SIGTERM);
+        }
         self.next_seq += 1;
         let _ = self.events.send(event);
         Response::Ok
@@ -552,11 +857,297 @@ mod tests {
             provider: generation(record, session),
             controller,
             token: token.into(),
+            launch: None,
         }
     }
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
     const OTHER_TOKEN: &str = "fedcba9876543210fedcba9876543210";
+
+    /// A descriptor that leaves a mark when it runs and then stays alive
+    /// like a receiver waiting for input would.
+    fn descriptor(dir: &TempDir) -> ControllerLaunch {
+        ControllerLaunch {
+            executable: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo launched >> \"$MARK\"; exec sleep 30".into(),
+            ],
+            cwd: dir.path().to_path_buf(),
+            env: [(
+                "MARK".to_owned(),
+                dir.path().join("mark").display().to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    fn binding_of(daemon: &Arc<Daemon>, id: &AgentId) -> InputBinding {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .unwrap()
+            .input_binding
+            .clone()
+            .expect("bound")
+    }
+
+    /// Durable events from `since` on: what a replaying subscriber gets.
+    async fn events_since(daemon: &Arc<Daemon>, since: u64) -> Vec<EventKind> {
+        let state = lock(&daemon.state);
+        let mut events: Vec<Event> = state
+            .store
+            .recent_events(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.seq >= since)
+            .collect();
+        events.sort_by_key(|e| e.seq);
+        events.into_iter().map(|e| e.kind).collect()
+    }
+
+    /// The controller ends; the daemon notes it, pauses delivery evidence,
+    /// starts the descriptor, and the started process resumes the binding
+    /// with the same token while the episode keeps counting. A launched
+    /// process that has not bound is stopped by an unbind.
+    #[tokio::test]
+    async fn a_controller_that_ended_is_started_again_from_its_descriptor() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let controller = Other::spawn();
+        let launch = descriptor(&dir);
+        let bound = daemon
+            .handle(Request::BindInput {
+                agent: receiver.id.to_string(),
+                provider: generation(&receiver, "sess-1"),
+                controller: controller.identity(),
+                token: TOKEN.into(),
+                launch: Some(launch.clone()),
+            })
+            .await;
+        let Response::InputBound { binding, .. } = bound else {
+            panic!("{bound:?}");
+        };
+        assert_eq!(binding.launch, Some(launch.clone()));
+        // A different descriptor on a resume is refused; none keeps it.
+        let other = ControllerLaunch {
+            args: vec!["-c".into(), "true".into()],
+            ..launch.clone()
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(other),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // Alive: nothing happens.
+        let seq = lock(&daemon.state).next_seq;
+        daemon.tend_controllers();
+        assert!(events_since(&daemon, seq).await.is_empty());
+        // The controller dies.
+        let ended = controller.identity();
+        drop(controller);
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        assert!(
+            matches!(&events[..], [EventKind::InputControllerEnded { agent, controller }] if *agent == receiver.id && *controller == ended),
+            "{events:?}"
+        );
+        let record = lock(&daemon.state)
+            .registry
+            .get(&receiver.id)
+            .cloned()
+            .unwrap();
+        let delivery = record.input_delivery.expect("paused delivery");
+        assert!(delivery.paused);
+        assert_eq!(
+            delivery.pause_reason.as_deref(),
+            Some("the bound controller ended")
+        );
+        // The first launch is immediate.
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        let launched = match &events[..] {
+            [
+                _,
+                EventKind::InputControllerLaunched {
+                    agent,
+                    controller,
+                    attempt: 1,
+                },
+            ] if *agent == receiver.id => controller.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(is_running(&launched));
+        let binding = binding_of(&daemon, &receiver.id);
+        assert_eq!(binding.restart.launched, Some(launched.clone()));
+        assert_eq!(binding.restart.attempts, 1);
+        for _ in 0..50 {
+            if dir.path().join("mark").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("mark")).unwrap(),
+            "launched\n"
+        );
+        // Starting: it holds its place, nothing more is launched.
+        daemon.tend_controllers();
+        assert_eq!(events_since(&daemon, seq).await.len(), 2);
+        // The started process binds with the same token: a resume that
+        // keeps the episode's count.
+        let resumed = daemon
+            .handle(Request::BindInput {
+                agent: receiver.id.to_string(),
+                provider: generation(&receiver, "sess-1"),
+                controller: launched.clone(),
+                token: TOKEN.into(),
+                launch: Some(launch.clone()),
+            })
+            .await;
+        let Response::InputBound {
+            binding, resumed, ..
+        } = resumed
+        else {
+            panic!("{resumed:?}");
+        };
+        assert!(resumed);
+        assert_eq!(binding.controller, launched);
+        assert_eq!(binding.controller_generations, 2);
+        assert_eq!(binding.restart.attempts, 1);
+        assert_eq!(binding.restart.launched, None);
+        assert_eq!(binding.restart.ended_at, None);
+        daemon.tend_controllers();
+        assert_eq!(events_since(&daemon, seq).await.len(), 3);
+        // It dies too, within the stable window: the second launch waits
+        // out its backoff.
+        signal(&launched, Signal::SIGKILL);
+        for _ in 0..50 {
+            if !is_running(&launched) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        assert_eq!(events.len(), 4, "{events:?}");
+        assert!(matches!(events[3], EventKind::InputControllerEnded { .. }));
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        let second = match &events[..] {
+            [
+                ..,
+                EventKind::InputControllerLaunched {
+                    controller,
+                    attempt: 2,
+                    ..
+                },
+            ] => controller.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(is_running(&second));
+        // An unbind stops the process the daemon launched, since it has
+        // nothing left to bind to.
+        assert!(matches!(
+            daemon
+                .handle(Request::UnbindInput {
+                    agent: receiver.id.to_string(),
+                    token: Some(TOKEN.into()),
+                    force: false,
+                })
+                .await,
+            Response::Ok
+        ));
+        for _ in 0..50 {
+            if !is_running(&second) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(!is_running(&second));
+        assert!(lock(&daemon.state).controller_pins.is_empty());
+    }
+
+    /// A descriptor that cannot start counts as an attempt and waits out
+    /// the backoff like an ended process; invalid descriptors are refused.
+    #[tokio::test]
+    async fn a_launch_that_fails_counts_and_a_descriptor_is_checked() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let controller = Other::spawn();
+        let relative = ControllerLaunch {
+            executable: "sh".into(),
+            ..descriptor(&dir)
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(relative),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let missing = ControllerLaunch {
+            executable: dir.path().join("no-such-receiver"),
+            ..descriptor(&dir)
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(missing),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let seq = lock(&daemon.state).next_seq;
+        drop(controller);
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        assert!(
+            matches!(
+                &events[..],
+                [
+                    EventKind::InputControllerEnded { .. },
+                    EventKind::InputControllerLaunchFailed { attempt: 1, error, .. }
+                ] if error.contains("no-such-receiver")
+            ),
+            "{events:?}"
+        );
+        let binding = binding_of(&daemon, &receiver.id);
+        assert_eq!(binding.restart.attempts, 1);
+        assert_eq!(binding.restart.launched, None);
+        assert!(binding.restart.ended_at.is_some());
+        // Attempt two is not due yet.
+        daemon.tend_controllers();
+        assert_eq!(events_since(&daemon, seq).await.len(), 2);
+    }
 
     /// A controller binds once, binds again as a no-op, reads the queue
     /// with the messages a hook had already been offered flagged, and from
@@ -884,6 +1475,7 @@ mod tests {
                     provider: wrong_pid,
                     controller: me(),
                     token: TOKEN.into(),
+                    launch: None,
                 })
                 .await,
         );
@@ -897,6 +1489,7 @@ mod tests {
                     provider: relative,
                     controller: me(),
                     token: TOKEN.into(),
+                    launch: None,
                 })
                 .await,
         );
@@ -942,6 +1535,7 @@ mod tests {
                 provider: other_profile.clone(),
                 controller: me(),
                 token: TOKEN.into(),
+                launch: None,
             })
             .await;
         assert!(
@@ -1045,6 +1639,7 @@ mod tests {
                     provider: other_profile,
                     controller: me(),
                     token: OTHER_TOKEN.into(),
+                    launch: None,
                 })
                 .await,
             Response::InputBound { resumed: false, .. }

@@ -179,6 +179,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             daemon.reconcile_containers();
             daemon.expire_leases();
             daemon.check_liveness();
+            daemon.tend_controllers();
             // A `stat` per policy file, so editing one takes effect
             // within a second without a restart or a signal.
             daemon.reload_policies();
