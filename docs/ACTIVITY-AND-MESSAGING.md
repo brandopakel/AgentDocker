@@ -82,6 +82,25 @@ hook path does not wake an already idle provider; the separate managed bridge
 described above supplies that behavior for its owned conversation. Neither path
 replaces the provider's tool approval decisions.
 
+### One consumer for an externally registered session
+
+A session that registered itself through hooks or MCP has no single consumer:
+whichever hook or explicit read takes the queue delivers. An **input binding**
+(`bind_input`, see the [protocol table](ARCHITECTURE.md#protocol)) gives such a
+session one: an external controller process, bound to the exact provider
+generation (the registered pid and birth, the registered `session_id`, an
+absolute profile path) and authenticated by a token the controller made and
+keeps. While the binding stands, the hook and MCP readers are answered
+`input_owned` instead of messages, the controller's `provider_inbox` reads
+(with the token) take the queue as `input_batch`, and its `report_input` is
+the only readiness and receipt evidence accepted. A controller that restarts
+resumes the binding with its token; another provider generation waits for an
+explicit `unbind_input`. Messages a hook had already been offered before the
+binding travel flagged as `uncertain`, so the controller reconciles them
+against the provider before enqueueing anything, and a hook finishing that
+in-flight delivery may still acknowledge exactly those. The daemon side is in
+source; the Codex native-queue controller that uses it is separate work.
+
 ## Channels and reviews
 
 Ordinary channel messages use

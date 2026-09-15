@@ -259,6 +259,31 @@ pub enum Request {
         process_started_at: chrono::DateTime<chrono::Utc>,
         observed_at: chrono::DateTime<chrono::Utc>,
         report: crate::InputReport,
+        /// The bound controller's token, required while an input binding
+        /// stands so nobody else can report readiness or a receipt for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
+    /// Make one external controller process the sole consumer of an agent's
+    /// queued input, bound to one exact provider generation. The token is
+    /// the caller's, generated and kept before the first bind, so a lost
+    /// reply is recoverable: the same provider, controller and token bind
+    /// again as a no-op, and a restarted controller with the same token
+    /// resumes the binding. Answers `input_bound`.
+    BindInput {
+        agent: String,
+        provider: crate::ProviderGeneration,
+        controller: crate::ProcessIdentity,
+        token: String,
+    },
+    /// Release an input binding. The token is required unless `force`,
+    /// which is accepted only while the bound controller process is gone.
+    UnbindInput {
+        agent: String,
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        force: bool,
     },
     /// Provider availability, separate from receiver readiness and receipts.
     ReportProvider {
@@ -341,6 +366,10 @@ pub enum Request {
         agent: String,
         #[serde(default)]
         acknowledge: Vec<MessageId>,
+        /// The bound controller's token, required while an input binding
+        /// stands; a bound read answers `input_batch`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
 
     /// Register the person at the keyboard as a persistent agent named
@@ -877,6 +906,36 @@ pub enum Response {
     },
     Messages {
         messages: Vec<Envelope>,
+    },
+    /// A bound controller's read of the queue: every queued message, and
+    /// which of them a legacy reader had already been offered before the
+    /// binding, so the controller reconciles those against the provider
+    /// before enqueueing them anywhere.
+    InputBatch {
+        agent: AgentId,
+        messages: Vec<Envelope>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uncertain: Vec<MessageId>,
+    },
+    /// A legacy consumer asked for input that belongs to someone else: the
+    /// agent's queue is consumed by its bound controller or its managed
+    /// bridge. Not an error; there is nothing for the caller to deliver.
+    InputOwned {
+        agent: AgentId,
+        /// `controller` or `bridge`.
+        owner: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<crate::ProcessIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// The outcome of `bind_input`.
+    InputBound {
+        agent: AgentId,
+        binding: crate::InputBinding,
+        /// A controller took over an existing binding with its token,
+        /// rather than making a new one.
+        resumed: bool,
     },
     InputWaiting {
         agent: AgentId,

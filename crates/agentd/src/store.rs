@@ -31,7 +31,9 @@ pub(crate) use event_replay::EventReplay;
 // v15 stores complete file-change review presentations in pending questions.
 // v16 stores concrete, turn-scoped permission review presentations.
 // v17 retains independent session-owner identity; v18 retains provider blocks.
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+// v19 retains input bindings and legacy offers on the agent record: an older
+// daemon would not know a queue is a bound controller's and would drain it.
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (

@@ -40,6 +40,7 @@ use agentdocker_host::{multiplexer, procinfo, project, vcs};
 use crate::store::{ChangesQuery, JournalQuery, Store};
 use crate::supervisor;
 mod access;
+mod binding;
 mod channels;
 mod containers;
 mod contests;
@@ -1266,11 +1267,13 @@ impl Daemon {
                 process_started_at,
                 observed_at,
                 report,
+                token,
             } => lock(&self.state).report_input(
                 &agent,
                 process_started_at,
                 observed_at,
                 report,
+                token.as_deref(),
                 Utc::now(),
             ),
             Request::ReportProvider {
@@ -1288,10 +1291,25 @@ impl Daemon {
             Request::ResumeProvider { agent, blocked_at } => {
                 lock(&self.state).resume_provider(&agent, blocked_at, Utc::now())
             }
+            Request::BindInput {
+                agent,
+                provider,
+                controller,
+                token,
+            } => lock(&self.state).bind_input(&agent, provider, controller, &token, Utc::now()),
+            Request::UnbindInput {
+                agent,
+                token,
+                force,
+            } => lock(&self.state).unbind_input(&agent, token.as_deref(), force, Utc::now()),
             Request::DeliveryQueue { agent } => {
                 let mut state = lock(&self.state);
                 match state.input_consumer(&agent, false) {
-                    Ok(()) => state.delivery_queue(&agent),
+                    Ok(()) => {
+                        let response = state.delivery_queue(&agent);
+                        state.offered_to_legacy(&agent, &response);
+                        response
+                    }
                     Err(error) => *error,
                 }
             }
@@ -1379,20 +1397,65 @@ impl Daemon {
             } => self.contest_close(&agent, &contest, winner, resolution),
             Request::Inbox { agent, drain } => {
                 let mut state = lock(&self.state);
-                match state.input_consumer(&agent, false) {
-                    Ok(()) => state.inbox(&agent, drain),
+                // A read without drain stays open to a person looking at a
+                // bound agent's queue; taking from it is the consumer's.
+                let consuming = drain;
+                match if consuming {
+                    state.input_consumer(&agent, false)
+                } else {
+                    state.readable_inbox(&agent)
+                } {
+                    Ok(()) => {
+                        let response = state.inbox(&agent, drain);
+                        if !drain {
+                            state.offered_to_legacy(&agent, &response);
+                        }
+                        response
+                    }
                     Err(error) => *error,
                 }
             }
             Request::AckInbox { agent, messages } => {
                 let mut state = lock(&self.state);
-                match state.input_consumer(&agent, false) {
-                    Ok(()) => state.ack_inbox(&agent, &messages),
+                match state.legacy_ack_allowed(&agent, &messages) {
+                    Ok(()) => {
+                        let response = state.ack_inbox(&agent, &messages);
+                        if matches!(response, Response::Ok)
+                            && let Ok(id) = state.resolve(&agent)
+                        {
+                            state.forget_delivered(&id, &messages);
+                        }
+                        response
+                    }
                     Err(error) => *error,
                 }
             }
-            Request::ProviderInbox { agent, acknowledge } => {
+            Request::ProviderInbox {
+                agent,
+                acknowledge,
+                token,
+            } => {
                 let mut state = lock(&self.state);
+                if let Some(token) = token.as_deref()
+                    && state
+                        .resolve(&agent)
+                        .ok()
+                        .and_then(|id| state.registry.get(&id).map(|r| r.input_binding.is_some()))
+                        .unwrap_or(false)
+                {
+                    return state.bound_read(&agent, &acknowledge, token);
+                }
+                if let Ok(id) = state.resolve(&agent)
+                    && state
+                        .registry
+                        .get(&id)
+                        .is_some_and(|r| r.input_binding.is_some())
+                {
+                    return Response::error(
+                        ErrorCode::Forbidden,
+                        "this agent's input is bound to a controller; a token is required",
+                    );
+                }
                 match state.input_consumer(&agent, true) {
                     Ok(()) => match state.ack_inbox(&agent, &acknowledge) {
                         Response::Ok => match state.delivery_queue(&agent) {
@@ -3870,17 +3933,57 @@ impl State {
         let id = self.resolve(reference)?;
         let agent = self.registry.get(&id).expect("resolved input identity");
         let owned = agentdocker_host::provider_input::is_codex_input(agent);
-        if provider != owned {
+        if !provider {
+            // Somebody else consumes this queue: not an error, there is
+            // simply nothing here for a legacy reader to deliver.
+            if let Some(owner) = self.input_owner(&id) {
+                return Err(Box::new(owner));
+            }
+            return Ok(());
+        }
+        if !owned {
             return Err(Box::new(Response::error(
                 ErrorCode::Invalid,
-                if owned {
-                    "This agent receives queued input through its Codex bridge; legacy inbox delivery is disabled."
-                } else {
-                    "Provider input requires a managed Codex bridge session."
-                },
+                "Provider input requires a managed Codex bridge session, or a token for a bound controller.",
             )));
         }
         Ok(())
+    }
+
+    /// A person may look at any queue; only consuming it is the owner's.
+    fn readable_inbox(&mut self, reference: &str) -> Result<(), Box<Response>> {
+        self.resolve(reference).map(|_| ())
+    }
+
+    /// A legacy acknowledgement is refused for an owned queue, except for
+    /// the messages a legacy reader had been offered before the binding:
+    /// that reader finishing its in-flight delivery is exactly what the
+    /// binding wants to hear about.
+    fn legacy_ack_allowed(
+        &mut self,
+        reference: &str,
+        messages: &[MessageId],
+    ) -> Result<(), Box<Response>> {
+        let id = self.resolve(reference)?;
+        let record = self.registry.get(&id).expect("resolved input identity");
+        if let Some(binding) = &record.input_binding
+            && !messages.is_empty()
+            && messages.iter().all(|m| binding.uncertain.contains(m))
+        {
+            return Ok(());
+        }
+        self.input_consumer(reference, false)
+    }
+
+    /// The legacy read just answered with these messages: remember the
+    /// offer for a controller that may bind later.
+    fn offered_to_legacy(&mut self, reference: &str, response: &Response) {
+        if let Response::Messages { messages } = response
+            && let Ok(id) = self.resolve(reference)
+        {
+            let ids: Vec<MessageId> = messages.iter().map(|m| m.id.clone()).collect();
+            self.note_legacy_offers(&id, &ids, Utc::now());
+        }
     }
 
     fn ack_inbox(&mut self, reference: &str, messages: &[MessageId]) -> Response {
@@ -7142,6 +7245,7 @@ mod tests {
             process_started_at: generation,
             observed_at: Utc::now(),
             report,
+            token: None,
         };
         let mut events = daemon.subscribe_events();
         assert!(matches!(
@@ -7214,6 +7318,7 @@ mod tests {
                         process_started_at: generation,
                         observed_at,
                         report: InputReport::Ready,
+                        token: None,
                     })
                     .await,
                 Response::Error {
@@ -7323,6 +7428,7 @@ mod tests {
                     generation,
                     generation,
                     initial.clone(),
+                    None,
                     generation + Duration::seconds(1)
                 ),
                 Response::Ok
@@ -7342,6 +7448,7 @@ mod tests {
                     generation,
                     generation,
                     initial.clone(),
+                    None,
                     generation + Duration::seconds(2)
                 ),
                 Response::Ok
@@ -7353,6 +7460,7 @@ mod tests {
                     generation,
                     generation,
                     conflicting.clone(),
+                    None,
                     generation + Duration::seconds(2),
                 );
                 // Ready after an unpaused receipt preserves every saved field.
@@ -7394,6 +7502,7 @@ mod tests {
                     generation,
                     generation + Duration::seconds(1),
                     InputReport::Ready,
+                    None,
                     generation + Duration::seconds(2)
                 ),
                 Response::Ok
@@ -7433,6 +7542,7 @@ mod tests {
                             receipt: InputReceipt::ClaudeChannel
                         }
                     },
+                    token: None,
                 })
                 .await,
             Response::Error {
@@ -9870,11 +9980,10 @@ deny = ["send:all"]
             };
             ids.push(message);
         }
+        // Legacy consumers are told the queue is the bridge's, not
+        // refused: nothing for them to deliver. A look without draining
+        // stays open to a person.
         for request in [
-            Request::Inbox {
-                agent: "receiver".into(),
-                drain: false,
-            },
             Request::Inbox {
                 agent: "receiver".into(),
                 drain: true,
@@ -9883,19 +9992,29 @@ deny = ["send:all"]
                 agent: "receiver".into(),
                 messages: ids.clone(),
             },
+            Request::DeliveryQueue {
+                agent: "receiver".into(),
+            },
         ] {
             assert!(matches!(
                 daemon.handle(request).await,
-                Response::Error {
-                    code: ErrorCode::Invalid,
-                    ..
-                }
+                Response::InputOwned { ref owner, controller: None, .. } if owner == "bridge"
             ));
         }
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: "receiver".into(),
+                    drain: false,
+                })
+                .await,
+            Response::Messages { ref messages } if messages.len() == 3
+        ));
         assert!(daemon.subscribe(Some("receiver"), Vec::new()).is_err());
         let read = || Request::ProviderInbox {
             agent: "receiver".into(),
             acknowledge: Vec::new(),
+            token: None,
         };
         let Response::Messages { messages } = daemon.handle(read()).await else {
             panic!("missing queue");
@@ -9907,6 +10026,7 @@ deny = ["send:all"]
         let ack = || Request::ProviderInbox {
             agent: "receiver".into(),
             acknowledge: vec![ids[0].clone()],
+            token: None,
         };
         for _ in 0..2 {
             let Response::Messages { messages } = daemon.handle(ack()).await else {
@@ -9931,7 +10051,8 @@ deny = ["send:all"]
             daemon
                 .handle(Request::ProviderInbox {
                     agent: "ordinary".into(),
-                    acknowledge: Vec::new()
+                    acknowledge: Vec::new(),
+                    token: None,
                 })
                 .await,
             Response::Error {

@@ -116,6 +116,68 @@ impl ReceivedInput {
     }
 }
 
+/// One process, exactly: a pid and the moment it started, together, so a
+/// recycled pid is never mistaken for the process that bound or served.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+}
+
+/// The provider session an external controller feeds: which process,
+/// which conversation, which configuration. Provider-neutral, and none of
+/// it is secret: a profile is a name or a digest, never its contents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderGeneration {
+    pub process: ProcessIdentity,
+    /// The thread, session or conversation the controller feeds.
+    pub session: String,
+    /// The provider profile in use, by name or digest.
+    pub profile: String,
+}
+
+impl ProviderGeneration {
+    pub fn valid(&self) -> bool {
+        let id = |value: &str| {
+            !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+        };
+        self.process.pid > 0 && id(&self.session) && id(&self.profile)
+    }
+}
+
+/// Who consumes an agent's queued input: one controller process, bound to
+/// one provider generation. While a binding stands, legacy readers are
+/// answered `input_owned` and only the controller's token-bearing reads
+/// take messages. The token itself is never stored, only its digest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputBinding {
+    pub provider: ProviderGeneration,
+    pub controller: ProcessIdentity,
+    pub token_sha256: String,
+    pub bound_at: DateTime<Utc>,
+    /// How many controller processes have held this binding: one at the
+    /// first bind, one more for each controller that resumed it.
+    pub controller_generations: u32,
+    /// Queued messages a legacy reader had already been offered when the
+    /// binding was made. They are still delivered to the controller,
+    /// flagged, so it reconciles against the provider before enqueueing
+    /// them; a legacy acknowledgement is still accepted for exactly these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncertain: Vec<MessageId>,
+}
+
+impl InputBinding {
+    /// Whether a presented token's digest is the one this binding keeps.
+    /// The digest is computed by whoever holds the token; core keeps no
+    /// hashing of its own.
+    pub fn accepts_digest(&self, digest: &str) -> bool {
+        !self.token_sha256.is_empty() && self.token_sha256 == digest
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InputReport {

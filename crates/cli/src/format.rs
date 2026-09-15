@@ -172,6 +172,19 @@ pub fn event_line(event: &Event) -> String {
                 if delivery.paused { "paused" } else { "updated" }
             )
         }
+        EventKind::InputBound {
+            agent,
+            controller,
+            resumed,
+        } => format!(
+            "input bound      {} to controller pid {}{}",
+            agent.short(),
+            controller.pid,
+            if *resumed { " (resumed)" } else { "" }
+        ),
+        EventKind::InputUnbound { agent, reason } => {
+            format!("input unbound    {} ({reason})", agent.short())
+        }
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

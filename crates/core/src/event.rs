@@ -85,6 +85,18 @@ pub enum EventKind {
         agent: AgentId,
         delivery: crate::InputDelivery,
     },
+    /// An external controller became the sole consumer of the agent's
+    /// queued input, or resumed a binding it held before.
+    InputBound {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        resumed: bool,
+    },
+    /// The binding ended; legacy readers may consume the queue again.
+    InputUnbound {
+        agent: AgentId,
+        reason: String,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,
