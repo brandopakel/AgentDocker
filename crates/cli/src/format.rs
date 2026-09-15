@@ -212,6 +212,16 @@ pub fn event_line(event: &Event) -> String {
         EventKind::InputRestartsReset { agent } => {
             format!("controller restart requested {}", agent.short())
         }
+        EventKind::InputResumed {
+            agent,
+            retired,
+            provider,
+        } => format!(
+            "input resumed    {} from {} (provider pid {})",
+            agent.short(),
+            retired.short(),
+            provider.process.pid
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

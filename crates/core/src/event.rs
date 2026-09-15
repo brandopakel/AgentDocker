@@ -126,6 +126,14 @@ pub enum EventKind {
     InputRestartsReset {
         agent: AgentId,
     },
+    /// A provider session that came back as a new process was joined to
+    /// the record that holds its thread's queue and binding; the new
+    /// record's id is an alias of it from now on.
+    InputResumed {
+        agent: AgentId,
+        retired: AgentId,
+        provider: crate::ProviderGeneration,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,

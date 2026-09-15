@@ -92,6 +92,34 @@ impl Registry {
         Ok(())
     }
 
+    /// Retire one record into another: the retired record leaves, and its
+    /// id resolves to the canonical one from now on. Both must be records
+    /// of their own; a chain or a self-reference is refused.
+    pub fn retire_into(
+        &mut self,
+        retired: &AgentId,
+        canonical: &AgentId,
+    ) -> Result<AgentRecord, crate::identity::AliasError> {
+        let reason = if retired == canonical {
+            Some("self reference")
+        } else if !self.agents.contains_key(canonical) {
+            Some("canonical record is missing")
+        } else if !self.agents.contains_key(retired) {
+            Some("retired ID owns no record")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(crate::identity::AliasError {
+                retired: retired.clone(),
+                reason,
+            });
+        }
+        let record = self.agents.remove(retired).expect("checked");
+        self.aliases.insert(retired.clone(), canonical.clone());
+        Ok(record)
+    }
+
     pub fn canonical_id<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
         self.aliases.get(id).unwrap_or(id)
     }

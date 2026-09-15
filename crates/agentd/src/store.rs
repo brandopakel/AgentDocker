@@ -652,6 +652,34 @@ impl Store {
 
     // ----- agents ---------------------------------------------------------
 
+    /// A provider session's new record joins the prior record of its
+    /// thread: the prior row takes the new process and binding, the
+    /// caller's queued rows move to it, the caller's row leaves and its
+    /// id becomes an alias, all with the event, in one transaction.
+    pub fn resume_input(
+        &self,
+        canonical: &AgentRecord,
+        alias: &agentdocker_core::identity::AgentAlias,
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "UPDATE inbox SET agent=?1 WHERE agent=?2",
+            params![alias.canonical.as_str(), alias.retired.as_str()],
+        )?;
+        self.conn.execute(
+            "DELETE FROM journal_cursors WHERE agent=?1",
+            [alias.retired.as_str()],
+        )?;
+        self.upsert_agent(canonical)?;
+        self.conn
+            .execute("DELETE FROM agents WHERE id=?1", [alias.retired.as_str()])?;
+        self.put_document("identity_alias", alias.retired.as_str(), alias)?;
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Before v19 nothing recorded which queued messages a hook or MCP
     /// read had already put in front of a model without acknowledging
     /// them. Opening that state as v19 would let a controller that binds

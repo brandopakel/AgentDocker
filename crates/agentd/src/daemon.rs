@@ -1319,6 +1319,12 @@ impl Daemon {
             Request::RetryController { agent } => {
                 lock(&self.state).retry_controller(&agent, Utc::now())
             }
+            Request::ResumeInput {
+                agent,
+                predecessor,
+                provider,
+                launch,
+            } => lock(&self.state).resume_input(&agent, &predecessor, provider, launch, Utc::now()),
             Request::DeliveryQueue { agent } => {
                 let mut state = lock(&self.state);
                 match state.input_consumer(&agent, false) {
