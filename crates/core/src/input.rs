@@ -592,10 +592,11 @@ mod tests {
             bound_at: now,
             controller_generations: 1,
             uncertain: Vec::new(),
+            // Absolute on every platform, Windows included.
             launch: launch.then(|| ControllerLaunch {
-                executable: "/usr/local/bin/receiver".into(),
+                executable: std::env::temp_dir().join("receiver"),
                 args: vec!["--agent".into(), "a".into()],
-                cwd: "/work".into(),
+                cwd: std::env::temp_dir(),
                 env: Default::default(),
             }),
             restart: ControllerRestart::default(),
