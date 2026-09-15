@@ -3,7 +3,9 @@
 
 Requires the native Codex executable with thread/queue APIs. The loopback Responses
 fixture needs no provider account or network model service. A model tool invokes
-the real verified hook; this does not test provider hook configuration/trust UI.
+the real verified hook. The startup scenario uses an actual SessionStart hook
+with one-off trust for the sole vetted private fixture command; it does not
+test the hook trust UI or change the user's saved configuration.
 The original TUI retains its thread, draft and tool/permission behavior. Every
 scenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive
 queue ownership, provider receipts and automatic receiver crash recovery.
@@ -27,6 +29,7 @@ import select
 import shlex
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -56,9 +59,11 @@ parser.add_argument(
     "--scenario",
     choices=[
         "baseline",
+        "startup",
         "question",
         "legacy-question",
         "legacy-reply",
+        "migration",
         "posted-question",
         "disconnected-question",
         "rate-limit",
@@ -73,8 +78,8 @@ parser.add_argument(
     help="Older MCP CLI for the synchronous question migration trial",
 )
 args = parser.parse_args()
-if args.scenario in ("legacy-question", "legacy-reply") and (not args.legacy_cli):
-    parser.error("legacy-question and legacy-reply require --legacy-cli")
+if args.scenario in ("legacy-question", "legacy-reply", "migration") and (not args.legacy_cli):
+    parser.error("legacy-question, legacy-reply and migration require --legacy-cli")
 if os.name != "posix":
     parser.error("This PTY acceptance driver requires a Unix host")
 cli = args.cli.resolve(strict=True)
@@ -111,7 +116,7 @@ def source_manifest():
 
 
 report["source"] = source_manifest()
-bootstrap_called = False
+bootstrap_called = args.scenario == "startup"
 question_called = False
 limit_active = args.scenario == "rate-limit"
 block = threading.Event()
@@ -254,7 +259,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
         if (
-            args.scenario in ("question", "legacy-question", "legacy-reply")
+            args.scenario in ("question", "legacy-question", "legacy-reply", "migration")
             and users
             and ("ASK_QUESTION_NONCE" in json.dumps(users[-1]))
             and (not question_called)
@@ -401,7 +406,11 @@ try:
             configfile.write(
                 "\n[mcp_servers.agentdocker]\ncommand = "
                 + json.dumps(
-                    str(args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply") else cli)
+                    str(
+                        args.legacy_cli
+                        if args.scenario in ("legacy-question", "legacy-reply", "migration")
+                        else cli
+                    )
                 )
                 + '\nargs = ["mcp", "--runtime", "codex"]\n[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = '
                 + json.dumps(str(adhome))
@@ -409,10 +418,38 @@ try:
                 + json.dumps(str(sock))
                 + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
             )
+        provider_prefix = [codex, "--no-alt-screen"]
+        if args.scenario == "startup":
+            # The only hook in this private profile is this reviewed fixture
+            # command. One-off trust does not change any user's saved policy.
+            (profile / "hooks.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "SessionStart": [
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": shlex.join(
+                                                [str(cli), "--socket", str(sock), "hook", "codex"]
+                                            ),
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                )
+            )
+            provider_prefix += ["--dangerously-bypass-hook-trust"]
+            report["fixture_hook_trust"] = (
+                "one-off vetted private SessionStart command; no saved user policy changed"
+            )
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
         provider = subprocess.Popen(
-            [codex, "--no-alt-screen", "fixture warmup"],
+            provider_prefix + ([] if args.scenario == "startup" else ["fixture warmup"]),
             cwd=repo,
             env=env,
             stdin=slave,
@@ -437,6 +474,33 @@ try:
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         try:
+            if args.scenario == "startup":
+                started = wait(
+                    lambda: next(
+                        (
+                            a
+                            for a in rpc({"op": "list", "all": True})["agents"]
+                            if a.get("pid") == provider.pid and a.get("input_binding")
+                        ),
+                        None,
+                    ),
+                    30,
+                )
+                assert not report["requests"], "startup needed a model request"
+                report["receiver_started_without_prompt"] = True
+                began = time.monotonic()
+                result = rpc(
+                    {
+                        "op": "send",
+                        "from": "user",
+                        "to": started["id"],
+                        "kind": "chat",
+                        "payload": {"text": "fixture warmup"},
+                    }
+                )
+                report["queue_results"] = [
+                    {"text": "fixture warmup", "message_id": result["message"], "at": began}
+                ]
             wait(lambda: len(report["requests"]) == 1, 30)
             wait(lambda: b"FIXTURE_OK_1" in output, 10)
             files = [
@@ -701,9 +765,9 @@ try:
             )
             ledger = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())
             report["completed_receipts"] = len(ledger["completed"])
-            assert len(ledger["completed"]) == (4 if args.scenario == "recovery" else 5), len(
-                ledger["completed"]
-            )
+            assert len(ledger["completed"]) == (
+                4 if args.scenario == "recovery" else 6 if args.scenario == "startup" else 5
+            ), len(ledger["completed"])
             assert [entry["message"] for entry in ledger["completed"]] == [
                 entry["message_id"] for entry in report["queue_results"]
             ]
@@ -763,7 +827,7 @@ try:
                 assert "AFTER_PROVIDER_RESET" in json.dumps(newest)
                 report["rate_limit_holds_queue"] = True
                 report["explicit_resume_without_replay"] = True
-            elif args.scenario in ("question", "legacy-question", "legacy-reply"):
+            elif args.scenario in ("question", "legacy-question", "legacy-reply", "migration"):
                 queued("ASK_QUESTION_NONCE")
                 question = wait(
                     lambda: next(
@@ -778,6 +842,8 @@ try:
                 )
                 if args.scenario == "question":
                     wait(lambda: len(report["requests"]) == 9, 20)
+                if args.scenario == "migration":
+                    os.killpg(controller_pid, signal.SIGSTOP)
                 if args.scenario == "legacy-reply":
                     answered = rpc(
                         {
@@ -812,9 +878,61 @@ try:
                         for item in report["requests"][-1]["body"]["input"]
                         if item.get("type") == "function_call_output"
                     )
+                if args.scenario == "migration":
+                    # The real provider already consumed the synchronous tool
+                    # answer. Emulate only the pre-route daemon's stored state:
+                    # schema 19 retained that row without offer bookkeeping.
+                    # This is a private AgentDocker DB fixture, not provider DB
+                    # editing or a claim that an older binary ran here.
+                    assert (
+                        rpc({"op": "peek_input", "agent": aid})["messages"][-1]["id"] == answered["message"]
+                    )
+                    daemon.terminate()
+                    daemon.wait(timeout=10)
+                    with sqlite3.connect(adhome / "state.db") as database:
+                        saved = json.loads(
+                            database.execute("SELECT json FROM agents WHERE id=?", (aid,)).fetchone()[0]
+                        )
+                        saved["legacy_offers"].pop(answered["message"], None)
+                        saved["input_binding"]["uncertain"] = [
+                            mid
+                            for mid in saved["input_binding"].get("uncertain", [])
+                            if mid != answered["message"]
+                        ]
+                        database.execute("UPDATE agents SET json=? WHERE id=?", (json.dumps(saved), aid))
+                        database.execute("UPDATE meta SET value='19' WHERE key='schema_version'")
+                    daemon = subprocess.Popen(
+                        [str(cli.with_name("agentd"))],
+                        cwd=repo,
+                        env=daemon_env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log,
+                        stderr=log,
+                        start_new_session=True,
+                    )
+                    wait(lambda: sock.exists() and daemon.poll() is None, 10)
+
+                    def migrated():
+                        try:
+                            return rpc({"op": "inspect", "agent": aid})["agent"]
+                        except (OSError, KeyError, ValueError):
+                            return None
+
+                    saved = wait(migrated, 10)
+                    assert answered["message"] in saved["input_binding"]["uncertain"]
+                    assert answered["message"] in saved["legacy_offers"]
+                    with sqlite3.connect(adhome / "state.db") as database:
+                        assert (
+                            database.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[
+                                0
+                            ]
+                            == "20"
+                        )
+                    os.killpg(controller_pid, signal.SIGCONT)
+                    report["schema19_answer_migrated_before_receipt_reconciliation"] = True
                 wait(
                     lambda: len(rpc({"op": "peek_input", "agent": aid})["messages"]) == 0,
-                    15,
+                    40 if args.scenario == "migration" else 15,
                 )
                 time.sleep(4)
                 assert len(report["requests"]) == expected
@@ -958,7 +1076,7 @@ try:
                 assert len(report["requests"]) == 7
                 assert rpc({"op": "peek_input", "agent": aid})["messages"][0]["id"] == result["message"]
                 report["unconfirmed_attempt_paused_without_resubmission"] = True
-            elif args.scenario == "resume":
+            elif args.scenario in ("resume", "startup"):
                 old_agent = aid
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 old_provider = provider.pid
@@ -979,11 +1097,13 @@ try:
                 assert result["type"] == "sent", result
                 report["during_restart_message"] = result["message"]
                 retained = json.loads(ledgerpath.read_text())
-                bootstrap_called = False
+                bootstrap_called = args.scenario == "startup"
                 master, slave = pty.openpty()
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
                 provider = subprocess.Popen(
-                    [codex, "--no-alt-screen", "resume", tid, "RESUME_BOOTSTRAP_NONCE"],
+                    provider_prefix
+                    + ["resume", tid]
+                    + ([] if args.scenario == "startup" else ["RESUME_BOOTSTRAP_NONCE"]),
                     cwd=repo,
                     env=env,
                     stdin=slave,
@@ -1032,7 +1152,10 @@ try:
                 assert final["completed"][-1]["message"] == result["message"]
                 assert final["binding"]["provider"]["process"]["pid"] == provider.pid
                 assert final["binding"]["provider"]["session"] == tid
-                assert len(report["requests"]) == 9, len(report["requests"])
+                assert len(report["requests"]) == (8 if args.scenario == "startup" else 9), len(
+                    report["requests"]
+                )
+                report["reopen_without_prompt"] = args.scenario == "startup"
                 messages = [
                     json.dumps(v)
                     for request in report["requests"][7:]
@@ -1054,7 +1177,7 @@ try:
                 report["idle_wake_after_receiver_crash"] = True
             report.update(
                 result="passed",
-                same_live_tui=args.scenario != "resume",
+                same_live_tui=args.scenario not in ("resume", "startup"),
                 draft_preserved=True,
                 busy_order_preserved=True,
                 model_requests=len(report["requests"]),
@@ -1088,6 +1211,7 @@ try:
                     provider.wait(timeout=5)
             if "controller_pid" in locals():
                 try:
+                    os.killpg(controller_pid, signal.SIGCONT)
                     os.killpg(controller_pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass

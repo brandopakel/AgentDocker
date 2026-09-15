@@ -26,6 +26,7 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
 /// Activity observations plus prompt/tool/Stop inbox delivery. MCP also
 /// provides explicit reads and the remaining coordination tools.
 pub const CODEX_ACTIVITY_HOOKS: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
     ("UserPromptSubmit", None),
     ("PreToolUse", None),
     ("PostToolUse", None),

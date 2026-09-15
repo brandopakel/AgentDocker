@@ -9,10 +9,14 @@ checkout and daemon endpoint; it neither types into the terminal nor starts or
 resumes a conversation. Codex's native `thread/queue/add` route schedules the next
 ordinary input and preserves the terminal's unfinished draft and permission UI.
 
-This candidate requires the schema-19 controller binding and Codex's experimental
+This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
 native queue API (tested with CLI 0.154.0). It is under integration and acceptance
 test and is **not yet the installed application's behavior**. An accepted hook
-configuration is needed to start a receiver for an existing terminal. Merely
+configuration is needed to start a receiver for an existing terminal. Setup now
+includes `SessionStart`, which verifies identity and starts the receiver without
+asserting working/idle activity or consuming hook context. Its no-prompt startup
+and reopen acceptance is in progress. The provider still requires review/trust
+of new hook definitions through `/hooks`. Merely
 installing MCP or receiving a hook event does not prove idle wake.
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
@@ -46,11 +50,12 @@ passed idle wake, draft preservation, mixed human/peer busy ordering, new
 asynchronous MCP questions, old synchronous MCP answers without duplicate input,
 a typed HTTP 429 hold with explicit resumption, lost queue replies and retained
 ambiguous submissions. These bounded fixtures do not establish paid-account,
-long-duration or every-provider acceptance. The combined `8b2afe3` release passed
-automatic receiver crash recovery, legacy MCP answers, rate-limit recovery and
-ambiguous-submission retention, plus the full 954-Rust/70-Python gate. Subsequent
-same-thread process resume and answer-routing changes need their own final gate,
-CI and installation checks; see the
+long-duration or every-provider acceptance. Combined `7133023` passed the full
+962-Rust/70-Python gate and six release-binary trials: disconnected questions,
+generic legacy replies, canonical process resume, new MCP questions, rate limits
+and ambiguous-submission recovery. The schema-20 historical-answer migration
+and SessionStart follow-up require fresh validation, final CI and installation;
+see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
@@ -61,7 +66,8 @@ its exact provider tool receipt. An unoffered answer from a CLI-posted question
 or disconnected ask uses ordinary input when the daemon confirms answer routing.
 Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
-their final combined acceptance is in progress.
+those passed on the recorded sources. Startup without a prompt and historical
+schema-19 answer migration remain under acceptance.
 An idle native queue entry without a provider receipt pauses after 45 seconds;
 active turns and permission waits retain their normal ordering.
 

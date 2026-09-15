@@ -42,9 +42,10 @@ pub(super) async fn report<B: Backend>(
     process_started_at: chrono::DateTime<Utc>,
     observed_at: chrono::DateTime<Utc>,
 ) -> Result<Option<AgentRecord>> {
-    let Some(activity) = activity(&input.hook_event_name) else {
+    let activity = activity(&input.hook_event_name);
+    if activity.is_none() && input.hook_event_name != "SessionStart" {
         return Ok(None);
-    };
+    }
     ensure!(
         !input.session_id.is_empty() && input.session_id.len() <= 256,
         "invalid session identity"
@@ -159,6 +160,11 @@ pub(super) async fn report<B: Backend>(
         agentdocker_core::AdapterKind::Hooks,
     )
     .await;
+    // SessionStart also runs after compaction. It establishes the verified
+    // receiver identity, but says nothing about whether a turn is active.
+    let Some(activity) = activity else {
+        return Ok(Some(agent));
+    };
     match backend
         .call(Request::ReportActivity {
             agent: agent.id.to_string(),
@@ -179,7 +185,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     // stdin is a provider-owned pipe. Poll before every read, with bounded
     // retained bytes; a malformed or never-closed stream cannot hang a turn.
     let input = read_input(0, std::time::Duration::from_secs(1))?;
-    if activity(&input.hook_event_name).is_none() {
+    if activity(&input.hook_event_name).is_none() && input.hook_event_name != "SessionStart" {
         return Ok(());
     }
     let observed_at = Utc::now();
@@ -661,6 +667,60 @@ mod tests {
             if agent == &id && contact.process_started_at == now)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn session_start_binds_identity_without_claiming_activity_or_consuming_input() {
+        let checkout = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "codex-42".into(),
+                runtime: "codex".into(),
+                workdir: Some(checkout.path().to_owned()),
+                labels: [("session_id".into(), "fixture".into())].into(),
+                ..AgentSpec::default()
+            },
+            false,
+            now,
+        );
+        record.pid = Some(42);
+        record.process_started_at = Some(now);
+        record.status = agentdocker_core::AgentStatus::Running;
+        let backend = Mock::with(vec![
+            Response::Agent {
+                agent: record.clone(),
+            },
+            Response::Ok,
+        ]);
+        let input = Input {
+            hook_event_name: "SessionStart".into(),
+            session_id: "fixture".into(),
+            cwd: checkout.path().to_owned(),
+            stop_hook_active: false,
+        };
+        let registered = report(&backend, &input, 42, now, now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(registered.id, record.id);
+        assert_eq!(backend.requests().len(), 2);
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReportAdapter { .. }
+        ));
+        let delivery = prepare(&backend, &input, registered.id.to_string())
+            .await
+            .unwrap();
+        assert!(delivery.acknowledgement.is_none());
+        assert_eq!(backend.requests().len(), 2);
+        let other = Input {
+            session_id: "another-session".into(),
+            ..input
+        };
+        let backend = Mock::with(vec![Response::Agent { agent: record }]);
+        assert!(report(&backend, &other, 42, now, now).await.is_err());
+        assert_eq!(backend.requests().len(), 1);
     }
 
     #[tokio::test]

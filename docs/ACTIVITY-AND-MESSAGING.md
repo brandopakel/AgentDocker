@@ -64,7 +64,8 @@ messages. It cannot wake an already idle process by itself. MCP agents must call
 `read_inbox` or `wait_for_messages`; configured MCP does not make agents poll or
 answer.
 
-Codex hooks now deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
+Codex `SessionStart` verifies the session and starts a supported native receiver
+without claiming turn activity. Other Codex hooks deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
 and request one `Stop` continuation when messages wait. `stop_hook_active`
 prevents repeated continuations. Interrupt, compaction and pre-tool observations
 do not read inboxes. Post-tool context preserves the original tool result.
