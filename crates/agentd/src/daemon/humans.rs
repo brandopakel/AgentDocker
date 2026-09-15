@@ -229,10 +229,11 @@ struct Waiter {
 }
 
 impl Waiter {
-    /// The ask has the answer: it leaves the queue, and the route is
-    /// recorded, before the reply goes out.
-    fn hand_over(&mut self, asker: &str, answer: &MessageId) {
-        lock(&self.daemon.state).answer_handed_over(asker, &self.question, answer);
+    /// The ask has the answer: the offer and the route are recorded before
+    /// the reply goes out. False means they could not be, and the answer
+    /// is still held.
+    fn hand_over(&mut self, asker: &str, answer: &MessageId) -> bool {
+        lock(&self.daemon.state).answer_handed_over(asker, &self.question, answer)
     }
 }
 
@@ -251,18 +252,35 @@ impl State {
     /// provider's own record of the tool call; a legacy reader gets it
     /// again, which is the duplicate that has always been safer than the
     /// loss. An answer nobody held stays where it is.
-    fn answer_handed_over(&mut self, asker: &str, question: &MessageId, answer: &MessageId) {
-        if self.held_answers.remove(answer).is_none() {
-            return;
+    fn answer_handed_over(
+        &mut self,
+        asker: &str,
+        question: &MessageId,
+        answer: &MessageId,
+    ) -> bool {
+        if !self.held_answers.contains_key(answer) {
+            return true;
         }
-        if let Ok(id) = self.resolve(asker) {
-            self.note_legacy_offers(&id, std::slice::from_ref(answer), Utc::now());
+        // Stored first: the offer, then the route; only then does the
+        // answer become visible. A store that takes neither leaves it
+        // held, to go to the queue when the wait ends.
+        let Ok(id) = self.resolve(asker) else {
+            return false;
+        };
+        self.note_legacy_offers(&id, std::slice::from_ref(answer), Utc::now());
+        if self.storage_error.is_some() {
+            return false;
         }
         self.emit(EventKind::AnswerRouted {
             question: question.clone(),
             answer: answer.clone(),
             route: AnswerRoute::ToolResult,
         });
+        if self.storage_error.is_some() {
+            return false;
+        }
+        self.held_answers.remove(answer);
+        true
     }
 
     /// The ask is over. Anything still held for its question is the
@@ -445,9 +463,16 @@ impl Daemon {
                 if let Some(envelope) = &candidate
                     && accepted.as_ref() == Some(&envelope.id)
                 {
-                    // Handed over here, and only here: the answer leaves
-                    // the queue with the same guard that hands it over.
-                    waiter.hand_over(&from, &envelope.id);
+                    // Handed over here, and only here, once the offer is
+                    // stored: an answer whose bookkeeping failed stays held
+                    // and goes to the queue when this wait ends, so it is
+                    // never returned unrecorded.
+                    if !waiter.hand_over(&from, &envelope.id) {
+                        return Response::error(
+                            ErrorCode::StorageUnavailable,
+                            "the answer could not be recorded as delivered; it remains queued",
+                        );
+                    }
                     return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: message_text(&envelope.payload) };
                 }
                 tokio::select! {
@@ -1150,6 +1175,19 @@ mod tests {
                 .iter()
                 .any(|m| m.id == held),
             "but durable"
+        );
+        // A hand-over whose bookkeeping cannot be stored does not happen:
+        // the answer stays held, to go to the queue when the wait ends.
+        {
+            let mut state = lock(&daemon.state);
+            state.storage_error = Some("disk gone".to_owned());
+            assert!(!state.answer_handed_over("asker", &late_question, &held));
+            assert!(state.held_answers.contains_key(&held));
+            state.storage_error = None;
+        }
+        assert!(
+            !inbox(daemon.clone()).await.iter().any(|m| m.id == held),
+            "still held"
         );
         lock(&daemon.state).waiter_ended(&late_question);
         assert!(
