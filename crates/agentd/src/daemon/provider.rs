@@ -62,7 +62,7 @@ impl State {
                 if !issue.valid_for(&record) {
                     return Response::error(
                         ErrorCode::Invalid,
-                        "provider quota scope must match this agent's explicit membership and model",
+                        "provider quota scope must match this agent's explicit provider, membership and model",
                     );
                 }
                 if previous.is_some_and(|p| {
@@ -434,6 +434,56 @@ mod tests {
             ),
             Response::Ok
         ));
+    }
+
+    #[test]
+    fn shared_reports_without_a_known_provider_leave_queues_and_state_unchanged() {
+        let (_dir, daemon, mut origin, now) = fixture("custom-provider");
+        let mut state = lock(&daemon.state);
+        origin.spec.provider = None;
+        origin
+            .spec
+            .labels
+            .insert("provider-quota".into(), "account".into());
+        *state.registry.get_mut(&origin.id).unwrap() = origin.clone();
+        state.store.upsert_agent(&origin).unwrap();
+        let mut peer = origin.clone();
+        peer.id = AgentId::generate();
+        peer.spec.name = "peer".into();
+        state.registry.insert(peer.clone()).unwrap();
+        for sender in ["user", origin.id.as_str()] {
+            state.send(
+                sender.into(),
+                Destination::Agent(peer.id.clone()),
+                "chat".into(),
+                json!({"text": "retained input"}),
+                None,
+            );
+        }
+        let before = state.inboxes[&peer.id].clone();
+        let seq = state.next_seq;
+        let mut issue = ProviderIssue::local(Kind::Usage);
+        issue.quota_group = Some("account".into());
+        assert!(matches!(
+            block(&mut state, &origin, issue, now),
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert_eq!(state.next_seq, seq);
+        assert!(
+            state
+                .registry
+                .get(&origin.id)
+                .unwrap()
+                .provider_availability
+                .is_none()
+        );
+        assert!(
+            matches!(state.delivery_queue(peer.id.as_str()), Response::Messages { messages }
+            if messages == before.into_iter().collect::<Vec<_>>())
+        );
     }
 
     #[test]

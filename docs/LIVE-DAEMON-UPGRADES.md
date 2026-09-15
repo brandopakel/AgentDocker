@@ -18,8 +18,9 @@ PR #130 merged independent session owners as `b28d24c`. The reviewed source
 `5120f03` passed 911 Rust tests (six skipped), 70 Python checks and all five CI
 workflows after final source inspection. Each `agentd --session-owner` keeps
 its child/process group, terminal or pipes, logs, scrollback, exact exit status
-and release pin across coordinator failure. Daemon shutdown no longer destroys
-these independent owners. Successor attachment verifies owner and child birth,
+and release pin across coordinator crashes. Normal explicit daemon shutdown
+still stops managed sessions through `stop_all`; live replacement must preserve
+them through a separate transfer path. Successor attachment verifies owner and child birth,
 fences stale controllers and preserves live leases while contact is uncertain.
 
 Actual private trials covered batch/PTY continuity across a daemon crash,

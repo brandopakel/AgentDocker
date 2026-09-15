@@ -996,12 +996,22 @@ impl App {
             .iter()
             .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
         {
+            let (reason, control, label) =
+                if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                    (
+                        state.issue.as_ref().expect("blocked").kind.label(),
+                        "provider",
+                        "View limit",
+                    )
+                } else {
+                    ("message delivery needs review", "review", "Review")
+                };
             items.push((
                 dot(c.amber, 8.0, c),
-                format!("{}: message delivery needs review", agent.spec.name),
+                format!("{}: {reason}", agent.spec.name),
                 action(
-                    format!("needs-you-review-{}", agent.id),
-                    "Review",
+                    format!("needs-you-{control}-{}", agent.id),
+                    label,
                     Some(Message::OpenSession(agent.id.to_string())),
                     false,
                 ),

@@ -70,7 +70,9 @@ impl ProviderIssue {
                 })
         }
         self.quota_group.as_ref().is_none_or(|group| {
-            plain(group) && source.spec.labels.get("provider-quota") == Some(group)
+            plain(group)
+                && source.spec.labels.get("provider-quota") == Some(group)
+                && source.spec.provider.as_deref().is_some_and(plain)
         }) && self
             .model
             .as_ref()
@@ -80,7 +82,8 @@ impl ProviderIssue {
     pub fn affects(&self, source: &AgentRecord, target: &AgentRecord) -> bool {
         source.id == target.id
             || self.quota_group.as_ref().is_some_and(|group| {
-                source.spec.labels.get("provider-quota") == Some(group)
+                self.valid_for(source)
+                    && source.spec.labels.get("provider-quota") == Some(group)
                     && target.spec.labels.get("provider-quota") == Some(group)
                     && source.spec.provider == target.spec.provider
                     && self
@@ -182,5 +185,51 @@ mod tests {
         assert!(provider_block(&a, [&a]).is_some());
         a.provider_availability.as_mut().unwrap().issue = None;
         assert!(provider_block(&a, [&a]).is_none());
+    }
+
+    #[test]
+    fn shared_quotas_require_a_known_provider_even_for_stored_reports() {
+        let now = DateTime::from_timestamp(1000, 0).unwrap();
+        let mut source = AgentRecord::new(crate::AgentSpec::default(), false, now);
+        source
+            .spec
+            .labels
+            .insert("provider-quota".into(), "account".into());
+        let mut peer = source.clone();
+        peer.id = crate::AgentId::generate();
+        let mut issue = ProviderIssue::local(ProviderIssueKind::Usage);
+        issue.quota_group = Some("account".into());
+        for provider in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("provider\n"),
+            Some("\u{202e}provider"),
+        ] {
+            source.spec.provider = provider.map(String::from);
+            peer.spec.provider = source.spec.provider.clone();
+            assert!(!issue.valid_for(&source));
+            source.provider_availability = Some(ProviderAvailability {
+                process_started_at: now,
+                observed_at: now,
+                issue: Some(issue.clone()),
+                cleared_observation: None,
+            });
+            assert!(provider_block(&source, [&source, &peer]).is_some());
+            assert!(provider_block(&peer, [&source, &peer]).is_none());
+        }
+        source.spec.provider = Some("provider-a".into());
+        peer.spec.provider = Some("provider-b".into());
+        assert!(issue.valid_for(&source));
+        assert!(!issue.affects(&source, &peer));
+        peer.spec.provider = source.spec.provider.clone();
+        assert!(issue.affects(&source, &peer));
+        issue.quota_group = None;
+        source.spec.provider = None;
+        assert!(
+            issue.valid_for(&source),
+            "a local report needs no inferred provider"
+        );
+        assert!(!issue.affects(&source, &peer));
     }
 }

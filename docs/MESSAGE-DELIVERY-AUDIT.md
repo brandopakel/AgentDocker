@@ -208,11 +208,19 @@ The current implementation closes the common availability/queue model: schema18
 stores a generation-bound normalized interruption separately from readiness;
 heartbeats, receipt ACKs and expired reset times cannot lift it. Equal repeated
 limits do not create event/ping storms. Shared quotas require explicit non-secret
-membership and optional model scope; unrelated agents continue. Manual resume
+membership, an explicitly known matching provider and optional model scope;
+unknown provider values cannot establish a shared quota. Unrelated agents continue. Manual resume
 and supported success signals name the exact blocked observation. Failed storage
 preserves the block and queue. Record removal and identity repair cannot erase
 an unresolved block. The desktop shows the reason, queue count and a resume
 action, retains drafts, and suppresses Done for known blocked turns.
+The Needs you strip names the provider interruption and opens its recovery
+details; ordinary delivery review is reserved for uncertain transport receipts.
+
+The source-review follow-up passed 926 Rust tests (six skipped), 70 Python
+checks and the full lint/package/release gate. New regressions cover absent,
+blank and invalid provider identities, mismatched providers, previously stored
+reports and rejected reports leaving queues, events and state unchanged.
 
 | Adapter | Implemented detection and queue handling | Evidence and remaining boundary |
 | --- | --- | --- |
