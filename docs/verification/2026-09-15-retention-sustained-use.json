@@ -1,0 +1,193 @@
+{
+ "status": "passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the daemon itself 18 times with the oldest entry at most 179 s old at any sample, every eligible finished checkpoint pruned by id and every live one kept, database and memory bounded from the tenth minute on under a load that halves at half time; the original run at 7937741 is kept as historical scope; overnight, sleep/reboot and provider sessions remain uncovered",
+ "date": "2026-09-15",
+ "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+ "not_covered": [
+  "overnight and multi-hour duration, sleep/wake and reboot",
+  "provider (Codex/Claude) sessions: the agents are registered records driven by a Python client, not model runtimes",
+  "inbox and channel retention beyond the sent/acknowledged pairs in each cycle",
+  "the incomplete Iced capture and the historical socket timeout named in the sustained-use row"
+ ],
+ "pr": "claude/retention-sustained",
+ "runs": {
+  "original": {
+   "started_at": "2026-09-15T18:20:21Z",
+   "driver": "scripts/retention_sustained.py --seconds 1200 --retention 120s --agents 10",
+   "driver_sha256": "d8d8c656cd001eb739d3b243c4e291b4f60b1b8d544edeb5e3672e0f2f02d9ad",
+   "source": {
+    "format": 1,
+    "source_commit": "793774147a8625ae6ffdb6fa8f3ab8c6b719f421",
+    "source_tree": "07684a05208fd2e443cae2f33066d4e7aeaf87f3",
+    "source_input_sha256": "687fa5c9d084c7c35c34e7844416bc75450efd67b8b570c87416f5fef458c44b",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 18,
+    "installation_lock": 1,
+    "binary_directory": "/Users/brandopakel/AgentDocker/target/release",
+    "binary_sha256": {
+     "agentdocker": "59279f17c0660064f1fb55b8aa7b0e3e1d9d1f18a6f781c17792276ce366955d",
+     "agentd": "d999b34f666d959372cf970c0fd3d8092fb6d650e42aebf4a6f9dab4c3eb1d95",
+     "agentdocker-ui": "248ead323a7a2c98054b072accbd78b48004b81b3c9a9e53660d73a3e16f7708"
+    }
+   },
+   "method": "A private daemon (its own AGENTDOCKER_HOME, agentd.toml with [journal] retention = \"120s\") and a scratch checkout. Ten registered agents cycle claim (path lease with a note), release (with a summary, a journal entry each), send and ack between neighbours, a checkpoint every ten cycles and a journal read every 25 cycles from a cursor taken before the first prune. At half time five agents leave (their workers stop, then deregister). Every 60 seconds checkpoints older than 30 seconds are pruned. An event watcher counts journal_pruned (with reason) and checkpoints_pruned. Samples every ten seconds: daemon RSS, database bytes, journal rows, oldest retained entry, checkpoints, ping latency.",
+   "result": {
+    "passed": true,
+    "seconds": 1200,
+    "agents": 10,
+    "retention": "120s",
+    "cycles": 12672,
+    "scenarios": [
+     "retention pruned the journal 18 times by itself (11832 entries); the oldest retained entry is 121s old against a 120s window",
+     "a reader with a cursor from before the first prune read 500 pages in order; head_seq rose from 10 to 12622 and never fell",
+     "checkpoint pruning removed 420 checkpoints of the 5 finished agents and kept every one of the 5 live agents'",
+     "after retention took hold the database averaged 1.00x and the daemon's memory 0.98x of the middle third; journal rows 1549 -> 1084",
+     "vacuum reclaimed 3723264 bytes"
+    ],
+    "growth": {
+     "db_last_over_middle": 1.001,
+     "rss_last_over_middle": 0.977,
+     "journal_rows_middle": 1549,
+     "journal_rows_last": 1084
+    },
+    "vacuum": {
+     "before_bytes": 9928704,
+     "after_bytes": 6205440,
+     "db_bytes_before": 14629656
+    },
+    "pings_ms_max": 25.06,
+    "half_time_at": 600.5,
+    "daemon_log_warnings": {},
+    "samples": {
+     "count": 120,
+     "rss_kib": {
+      "first": 16720,
+      "last": 22192,
+      "maximum": 25520
+     },
+     "db_bytes": {
+      "first": 1376088,
+      "last": 14629656,
+      "maximum": 14629656
+     },
+     "journal_rows": {
+      "first": 10,
+      "last": 1260,
+      "maximum": 2456
+     },
+     "checkpoints": {
+      "first": 0,
+      "last": 840,
+      "maximum": 843
+     },
+     "ping_ms": {
+      "first": 3.06,
+      "last": 9.01,
+      "maximum": 25.06
+     },
+     "prunes_seen_last": 17
+    }
+   },
+   "assertions": [
+    "retention pruned by itself (journal_pruned with reason retention) and the oldest retained entry never exceeded the window by more than 75 seconds (the minute tick plus batching)",
+    "a reader holding a cursor from before the first prune read pages in order and its head sequence never fell",
+    "finished agents' checkpoints older than 30 seconds were pruned while every live agent's were kept",
+    "database bytes and daemon RSS in the last third of the run stayed under 1.5x and 1.3x of the middle third, once prunes had been seen",
+    "vacuum after the run reclaimed space and the daemon log carried no warnings or errors"
+   ],
+   "scope": "Historical, original driver at 7937741: it asserted that some finished checkpoint was pruned (not every eligible one by id), compared journal heads against a value shared across reader threads, checked the oldest retained entry only at the end, and ran the daemon from the checkout's target directory. Kept as recorded; the rerun below asserts what this record claims."
+  },
+  "rerun": {
+   "started_at": "2026-09-15T20:10:25.847965+00:00",
+   "driver": "scripts/retention_sustained.py --seconds 1200 --retention 120s --agents 10 (driver at 33f8117)",
+   "driver_sha256": "69e1ba1c198830a0b790264a636373b759cf75b11883589592db4ccd52b6e8d4",
+   "agentd_sha256": "124c772c9080c0d8b4fe50e233a155514a180a53a8bc0ec91aeeaceb573d03cf",
+   "source": {
+    "format": 1,
+    "source_commit": "33f81178b34484faa18107b0155e80ddd62c8013",
+    "source_tree": "1ccb2f8f6825dd5d1d8d42e3c5ee3f4997a0c7bf",
+    "source_input_sha256": "08a2390bd5500b26ef5e069659b7ae5d98d8774447bd7d39629365d6d80aaccd",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "state_schema": 18,
+    "installation_lock": 1,
+    "binary_directory": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/wt-retention/target/release",
+    "binary_sha256": {
+     "agentdocker": "052df18ce509e4d497d0f3d92a32f8a7f32f47c8aaf2ebc397464231094836e2",
+     "agentd": "124c772c9080c0d8b4fe50e233a155514a180a53a8bc0ec91aeeaceb573d03cf",
+     "agentdocker-ui": "bc3f828c3445c36c59ed4fa4f16e04a8d7cb68e9aa6cebbbd60b2faeac8dac28"
+    }
+   },
+   "result": {
+    "passed": true,
+    "seconds": 1200,
+    "agents": 10,
+    "retention": "120s",
+    "cycles": 12680,
+    "scenarios": [
+     "retention pruned the journal 18 times by itself (11842 entries); after the first prune no sample saw the oldest retained entry older than 179s, and it is 122s old at the end, against a 120s window",
+     "10 readers with a cursor from before the first prune read 500 pages in order; each reader's head_seq never fell, rising overall from 10 to 12619",
+     "checkpoint pruning removed every one of the 420 checkpoints of the 5 finished agents that were old enough at the last prune (420 announced, none of a live agent's) and kept all 845 of the 5 live agents'",
+     "after retention took hold the database averaged 1.01x and the daemon's memory 1.00x of the middle third (bounded under this trial's load, which halves at half time; not a constant-load proof); journal rows 1553 -> 1090",
+     "vacuum reclaimed 3751936 bytes"
+    ],
+    "growth": {
+     "db_last_over_middle": 1.008,
+     "rss_last_over_middle": 1.002,
+     "journal_rows_middle": 1553,
+     "journal_rows_last": 1090
+    },
+    "vacuum": {
+     "before_bytes": 9916416,
+     "after_bytes": 6164480,
+     "db_bytes_before": 14592648
+    },
+    "pings_ms_max": 64.54,
+    "oldest_age_max_secs": 179,
+    "half_time_at": 600.2,
+    "daemon_log_warnings": {},
+    "samples": {
+     "count": 120,
+     "rss_kib": {
+      "first": 17056,
+      "last": 23472,
+      "maximum": 25136
+     },
+     "db_bytes": {
+      "first": 1376088,
+      "last": 14592648,
+      "maximum": 14592648
+     },
+     "journal_rows": {
+      "first": 10,
+      "last": 1262,
+      "maximum": 2467
+     },
+     "checkpoints": {
+      "first": 0,
+      "last": 840,
+      "maximum": 840
+     },
+     "ping_ms": {
+      "first": 4.35,
+      "last": 3.69,
+      "maximum": 64.54
+     },
+     "prunes_seen_last": 17
+    }
+   },
+   "assertions": [
+    "retention pruned by itself (journal_pruned with reason retention); at every sample after the first prune, and at the end, the oldest retained entry was at most window + 75 s old (the minute tick plus batching)",
+    "each of the ten readers, holding a cursor from before the first prune, saw its own head sequence never fall and read pages in order past the cursor",
+    "every checkpoint of a finished agent that was older than 30 s at the last prune is absent by id, exactly those ids were announced as checkpoints_pruned, none of a live agent's was, and every live agent's checkpoints are all present",
+    "database bytes and daemon RSS in the last third of the samples after the first prune stayed under 1.5x and 1.3x of the middle third: bounded under this trial's load, which halves at half time, not a constant-load proof",
+    "the daemon ran from a private hashed copy (agentd_sha256) with the driver's hash recorded; vacuum after the run reclaimed space and the daemon log carried no warnings or errors"
+   ]
+  }
+ },
+ "method": "A private daemon (its own AGENTDOCKER_HOME, agentd.toml with [journal] retention = \"120s\") and a scratch checkout. Ten registered agents cycle claim (path lease with a note), release (with a summary, a journal entry each), send and ack between neighbours, a checkpoint every ten cycles and a journal read every 25 cycles from a cursor taken before the first prune. At half time five agents leave (their workers stop, then deregister). Every 60 seconds checkpoints older than 30 seconds are pruned. An event watcher counts journal_pruned (with reason) and checkpoints_pruned. Samples every ten seconds: daemon RSS, database bytes, journal rows, oldest retained entry, checkpoints, ping latency."
+}
