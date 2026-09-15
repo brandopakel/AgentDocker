@@ -11,7 +11,8 @@ pub mod event;
 pub mod identity;
 pub mod input;
 pub use input::{
-    AdapterContact, AdapterKind, InputDelivery, InputReceipt, InputReport, ReceivedInput,
+    AdapterContact, AdapterKind, InputDelivery, InputReadiness, InputReceipt, InputReport,
+    ReceivedInput,
 };
 pub mod journal;
 pub mod lease;

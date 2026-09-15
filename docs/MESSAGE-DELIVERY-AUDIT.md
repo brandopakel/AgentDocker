@@ -22,6 +22,77 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
+### September 14: current sessions and the native Codex queue
+
+The user's live-session report is reproduced: Codex `50fd100f…` and Claude
+`0042a5aa…` are external sessions with hook registration and no recorded input
+receiver. Claude confirmed in message `d73f261cd8d147ae` that its channel adapter
+is disabled and root's messages surfaced only after user input. Root replied
+through AgentDocker; the exchange during active tool turns is **not idle-wake
+acceptance**. The daemon upgrade preserved both process identities, but does not
+enable a provider input route by itself.
+
+The installed **Codex CLI 0.154.0** provides `codex queue --thread <id> --message
+<text>`. An isolated trial with the actual terminal and queue binaries, a private
+profile and a loopback Responses endpoint passed seven ordinary turns:
+
+- A separate queue command woke the same idle terminal in **7.88 seconds**,
+  without a prompt, keypress, hook or input RPC to that terminal.
+- A second idle delivery preserved an unsubmitted draft. The draft reached the
+  provider only after the test subsequently pressed Enter.
+- Two queued inputs remained ordered behind a held provider request, using the
+  same original conversation and terminal process.
+
+This is provider-binary behavior against a local response fixture, not a paid
+model trial or an implemented AgentDocker adapter. The first harness attempt
+miscounted Codex's automatic title request as a conversation turn; the corrected
+trial excludes title requests. The private driver and raw result are retained at
+`/private/tmp/agentdocker-native-codex-queue-trial-2026-09-15.py` and
+`/private/tmp/agentdocker-native-codex-queue-result2-2026-09-15/`.
+The pinned [queue command source](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/session_queue_commands.rs)
+uses experimental `thread/queue/add`; the
+[queue service](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/ext/queue/src/service.rs)
+watches external changes every ten seconds. No second instance resumed the live
+conversation, and no provider database was edited directly.
+
+A second trial repeated the seven turns and retrieved the exact persisted
+thread/turn/user-item receipt through `thread/items/list` from a separate
+observer. The observer's `thread/loaded/list` stayed empty before and after:
+receipt recovery did not resume or fork the live conversation. The private
+driver/result are `agentdocker-native-codex-queue-api-trial-2026-09-15.py` and
+`agentdocker-native-codex-queue-api-result-2026-09-15/` under `/private/tmp`.
+
+**Still required:** connect AgentDocker's durable peer/human queue to this
+external-session route; verify exact profile/thread/process binding; prevent
+simultaneous hook consumption; persist attempts and recover exact provider
+receipts without blind retries. Native enqueue success alone cannot mark a
+message received. Keep permission waits, provider limits, interruption, process
+exit, reconnect and draft preservation in the acceptance gate.
+
+| Connected mode | Idle delivery evidence |
+| --- | --- |
+| Current external Codex and Claude sessions, hooks only | No automatic wake; messages can wait for another user/tool event. |
+| Managed Codex input bridge | Existing opt-in adapter trials below; does not attach an existing terminal. |
+| Enabled Claude channel | Existing opt-in idle/busy/draft trials below; must be enabled for the actual session. |
+| Native Codex 0.154.0 queue | Provider route demonstrated above; AgentDocker integration remains open. |
+| Other providers, models and hosts | Require a supported input route and their own idle/busy/limit tests. Generic MCP or hook contact supplies no wake guarantee. |
+
+The CLI/MCP feedback correction labels successful sends as accepted by
+AgentDocker, with provider receipt and idle wake unconfirmed regardless of
+subscriber count. It does not invent a queued recipient for topics or empty
+broadcasts. Compact MCP
+agent records expose the same generation/freshness-based receiver evidence as
+the desktop, separately from provider availability. This closes misleading
+sender feedback, not the external-session input adapter requirement.
+
+Local validation for the feedback change passed 937 Rust tests (six skipped),
+70 Python checks, formatting, strict lint, packaging and the release build.
+The release MCP receipt smoke passed all four reconnect/acknowledgement
+scenarios with no surviving fixture processes. A send through the candidate
+MCP binary to the live Claude session returned routing acceptance with receipt
+and wake unconfirmed (`e1e6256b16cb48ed`); compact inspections reported both live
+sessions' input readiness as `unverified`. Final CI and source review remain.
+
 The [September 12 sender audit](verification/2026-09-12-cli-sender-identity.json)
 reproduces a separate routing problem: CLI sends and questions without an
 explicit sender could silently use the human record inside an agent's shell.

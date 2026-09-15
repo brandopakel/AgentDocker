@@ -5,6 +5,52 @@ use serde::{Deserialize, Serialize};
 
 use crate::MessageId;
 
+/// Evidence about a session's input receiver, not receipt of any particular
+/// message or proof that its provider is available. Provider limits are separate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputReadiness {
+    SessionEnded,
+    Unverified,
+    Paused,
+    Stale,
+    AwaitingFirstReceipt,
+    Verified,
+}
+
+impl InputReadiness {
+    pub fn for_agent(agent: &crate::AgentRecord, now: DateTime<Utc>) -> Self {
+        if !agent.status.is_live() {
+            return Self::SessionEnded;
+        }
+        let Some(delivery) = agent.input_delivery.as_ref() else {
+            return Self::Unverified;
+        };
+        if delivery.paused_for(agent.process_started_at) {
+            return Self::Paused;
+        }
+        if !delivery.current_for(agent.process_started_at, now) {
+            return Self::Stale;
+        }
+        if delivery.received_for(agent.process_started_at, now) {
+            Self::Verified
+        } else {
+            Self::AwaitingFirstReceipt
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SessionEnded => "Session ended",
+            Self::Unverified => "Idle delivery not verified",
+            Self::Paused => "Delivery paused",
+            Self::Stale => "No recent receiver signal",
+            Self::AwaitingFirstReceipt => "Receiver active, awaiting first receipt",
+            Self::Verified => "Delivery verified",
+        }
+    }
+}
+
 /// Contact with a particular adapter is separate from generic agent activity.
 /// These observations contain no provider configuration or message contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -117,6 +163,78 @@ impl InputDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receiver_evidence_is_independent_of_vendor_and_rechecked_after_restart_or_silence() {
+        let birth = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        for runtime in ["codex", "claude-code", "gemini-cli", "cursor", "custom"] {
+            let mut agent = crate::AgentRecord::new(
+                crate::AgentSpec {
+                    runtime: runtime.into(),
+                    ..Default::default()
+                },
+                false,
+                birth,
+            );
+            agent.status = crate::AgentStatus::Running;
+            agent.process_started_at = Some(birth);
+            for adapter in [AdapterKind::Mcp, AdapterKind::Hooks] {
+                agent.adapter_contacts.insert(
+                    adapter,
+                    AdapterContact {
+                        process_started_at: birth,
+                        observed_at: birth,
+                    },
+                );
+            }
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::Unverified
+            );
+            agent.input_delivery = Some(InputDelivery {
+                process_started_at: birth,
+                paused: false,
+                pause_reason: None,
+                reported_at: birth,
+                received: None,
+                received_at: None,
+            });
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::AwaitingFirstReceipt
+            );
+            let delivery = agent.input_delivery.as_mut().unwrap();
+            delivery.received = Some(ReceivedInput {
+                messages: vec!["previous-message".to_owned().into()],
+                receipt: InputReceipt::ClaudeChannel,
+            });
+            delivery.received_at = Some(birth);
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::Verified
+            );
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth + chrono::Duration::seconds(90)),
+                InputReadiness::Stale
+            );
+            agent.process_started_at = Some(birth + chrono::Duration::seconds(1));
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::Stale
+            );
+            agent.process_started_at = Some(birth);
+            agent.input_delivery.as_mut().unwrap().paused = true;
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::Paused
+            );
+            agent.status = crate::AgentStatus::Exited { code: Some(0) };
+            assert_eq!(
+                InputReadiness::for_agent(&agent, birth),
+                InputReadiness::SessionEnded
+            );
+        }
+    }
 
     #[test]
     fn contact_and_receiver_readiness_require_fresh_generation_bound_evidence() {

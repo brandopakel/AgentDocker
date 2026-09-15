@@ -1912,7 +1912,9 @@ async fn main() -> Result<()> {
                 subscribers,
             } = client.call(&request).await?
             {
-                println!("{message} ({subscribers} live subscriber(s))");
+                println!(
+                    "{message} (accepted by AgentDocker; {subscribers} live subscriber(s); provider receipt and idle wake unconfirmed)"
+                );
             }
         }
         Command::Me => {
