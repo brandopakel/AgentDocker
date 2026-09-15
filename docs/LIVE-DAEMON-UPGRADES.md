@@ -134,10 +134,11 @@ event continuity, not just a new socket or a readiness marker.
    stream. The desktop app's blocking client sends a request answered
    `transferring` again for as long as one call may take (10 s), so a
    handover never shows as a failed action; its event stream already
-   resumes by cursor. Still ahead: provider input polls and an attached
-   terminal's unsubmitted draft have not been trialled across a switch,
-   and a checked event stream's cursor replay across a switch is not yet
-   recorded.
+   resumes by cursor. A checked cursor taken from the first daemon of the
+   real chain test resumes on the third with the same log identity and
+   every sequence number since, both handovers among the replayed events.
+   Still ahead: provider input polls and an attached terminal's
+   unsubmitted draft have not been trialled across a switch.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
    schema compatibility permits it, and report the actual serving version.

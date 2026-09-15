@@ -346,6 +346,22 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     // Subscribed before the reload, proven by a marker event it has
     // printed: the offer is then the next thing it sees.
     followed.wait_for_marker(&socket, &work, "marker-1");
+    // A checked cursor taken from the first daemon: the log identity and
+    // sequence it names must still be the successors' after the switches,
+    // so a client that resumes from it replays every event since without
+    // a gap.
+    let cursor_before = {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        writeln!(stream, "{}", json!({"op":"resume_events", "after":null})).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let ready: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(ready["type"], "events_ready_at", "{ready}");
+        ready["cursor"].clone()
+    };
 
     let response = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(response["type"], "ok", "{response}");
@@ -428,6 +444,53 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
             text.contains(&format!("{name}-before")) && text.contains(&format!("{name}-after")),
             "{name} log incomplete: {text:?}"
         );
+    }
+
+    // Resumed from the first daemon's cursor on the third: the same log,
+    // every sequence number since in order, both handovers among them.
+    {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({"op":"resume_events", "after":cursor_before})
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let ready: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(ready["type"], "events_ready_at", "{ready}");
+        assert_eq!(
+            ready["cursor"], cursor_before,
+            "the cursor is the daemon's too"
+        );
+        let mut expected_seq = cursor_before["seq"].as_u64().unwrap() + 1;
+        let mut kinds = Vec::new();
+        loop {
+            line.clear();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "replay ended early"
+            );
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            match frame["type"].as_str().unwrap() {
+                "event_at" => {
+                    assert_eq!(frame["cursor"]["log"], cursor_before["log"], "{frame}");
+                    assert_eq!(frame["cursor"]["seq"], expected_seq, "contiguous: {frame}");
+                    expected_seq += 1;
+                    kinds.push(frame["event"]["kind"]["event"].as_str().unwrap().to_owned());
+                }
+                "events_caught_up" => break,
+                other => panic!("unexpected {other} in checked replay: {frame}"),
+            }
+        }
+        let count = |kind: &str| kinds.iter().filter(|k| k.as_str() == kind).count();
+        assert!(count("daemon_transfer_offered") >= 2, "{kinds:?}");
+        assert!(count("daemon_transfer_accepted") >= 2, "{kinds:?}");
     }
 
     // The third daemon is nobody's child here; stop it over the socket and
