@@ -43,7 +43,9 @@ The [Codex skill loader](https://learn.chatgpt.com/docs/build-skills),
 [Gemini skill loader](https://geminicli.com/docs/cli/skills/) support the common
 SKILL.md format. Actual Codex 0.154.0 profile discovery and Claude Code 2.1.273's SDK
 initialization found the installed skill in isolated profiles on September 15,
-without a model call. [Recorded setup and discovery evidence](verification/2026-09-07-claude-profile-setup.json) preserves source/binary provenance and limits. This proves discovery, not automatic activation for every
+without a model call. Combined `d7bd90c` passed 969 Rust tests, 70 Python checks,
+the release gate and an actual Codex TUI queue/answer trial.
+[Recorded setup and discovery evidence](verification/2026-09-07-claude-profile-setup.json) preserves source/binary provenance and limits. This proves discovery, not automatic activation for every
 prompt. Gemini's path follows its documentation and still needs an actual CLI
 trial here. Other tools can use the exported file through their own documented
 loader; desktop inventory alone does not imply skill support. Provider trust,

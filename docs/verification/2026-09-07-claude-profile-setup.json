@@ -204,7 +204,7 @@
     "Fixture directories were removed; private command outputs contain only the disposable profiles and remain outside the repository."
   ],
   "portable_coordination_skill_2026_09_15": {
-    "status": "Focused setup and actual provider skill discovery passed; full gate/review/integration pending.",
+    "status": "Combined full release gate, independent source review, actual setup/discovery and native-TUI queue acceptance passed; final CI and installation pending.",
     "source_commit": "8fd95af",
     "binary_provenance": {
       "source_commit": "8fd95af3426515b98335b1753ebe200e161265e9",
@@ -329,6 +329,185 @@
       "Gemini skill location is documented but no Gemini CLI is installed for this acceptance.",
       "No provider permission or hook trust is granted.",
       "This does not implement native input/wake or guarantee support in other desktop products."
-    ]
+    ],
+    "combined_release_d7bd90c": {
+      "manifest": {
+        "source_commit": "d7bd90cc3915ffecf5eb1f419f2ab83fd2c4d28e",
+        "source_tree": "190865ab73e8e44bb24764952e4fcb951f3edc84",
+        "binary_sha256": {
+          "agentdocker": "29754c9be64384bbbfe75a6593870dc62134e5f34d9c68cc3c43691088ef31ec",
+          "agentd": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9"
+        },
+        "build_note": "Clean combined source; full scripts/verify.sh check passed:969 Rust,6 skipped,70 Python,fmt,clippy,doctests,packaging,release build."
+      },
+      "standard_gate": {
+        "rust_passed": 969,
+        "rust_skipped": 6,
+        "python_passed": 70,
+        "fmt": "passed",
+        "clippy": "passed",
+        "doctests": "passed",
+        "packaging": "passed",
+        "release_build": "passed",
+        "log_sha256": "1e8b65c5e3b30c66766f21387f018dae724a87889302b016904dd786a165bfea"
+      },
+      "retained_ci_failure": {
+        "source": "406f598",
+        "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35024235593",
+        "failure": "MCP onboarding lost exact release/list_agents tool names and external-attribution explanation; restored in3422075 without weakening the existing test.",
+        "log_sha256": "2d948f93e83b69555edb185596a838e989c7e398c7c369a31d0b6f58f8afb5ed"
+      },
+      "installable_skill_sha256": "edb8b8ef46a468312aa24309f3fc67ba78b98dd7e880030db4cdd07deaa9c04c",
+      "actual_claude_setup": {
+        "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+        "source_commit": "d7bd90cc3915ffecf5eb1f419f2ab83fd2c4d28e",
+        "source_tree": "190865ab73e8e44bb24764952e4fcb951f3edc84",
+        "binary_sha256": "29754c9be64384bbbfe75a6593870dc62134e5f34d9c68cc3c43691088ef31ec",
+        "driver_sha256": "4d43d3b1e1539b1abfef2186ae4eb9e2bf1bc0c9066392e5a9b559dd479b6cf6",
+        "checks": [
+          "preview selects profile A for hooks and MCP",
+          "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+          "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+          "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+          "changed environment refuses undo before hooks or provider entry are changed",
+          "malformed provider state refuses apply before hook edits"
+        ],
+        "calls": [
+          {
+            "name": "preview-a",
+            "exit": 0,
+            "elapsed_seconds": 0.018719542014878243
+          },
+          {
+            "name": "apply-from-b",
+            "exit": 0,
+            "elapsed_seconds": 0.3179510409827344
+          },
+          {
+            "name": "health-a",
+            "exit": 0,
+            "elapsed_seconds": 0.005650290986523032
+          },
+          {
+            "name": "undo-from-b",
+            "exit": 0,
+            "elapsed_seconds": 0.17574912498821504
+          },
+          {
+            "name": "preview-changed-entry",
+            "exit": 0,
+            "elapsed_seconds": 0.013573375006671995
+          },
+          {
+            "name": "apply-changed-entry",
+            "exit": 0,
+            "elapsed_seconds": 0.17697779097943567
+          },
+          {
+            "name": "refuse-changed-entry",
+            "exit": 1,
+            "elapsed_seconds": 0.008654667006339878
+          },
+          {
+            "name": "undo-restored-entry",
+            "exit": 0,
+            "elapsed_seconds": 0.17994041700148955
+          },
+          {
+            "name": "preview-malformed-state",
+            "exit": 0,
+            "elapsed_seconds": 0.013848125003278255
+          },
+          {
+            "name": "refuse-malformed-state",
+            "exit": 1,
+            "elapsed_seconds": 0.008296582993352786
+          },
+          {
+            "name": "close-unused-plan",
+            "exit": 0,
+            "elapsed_seconds": 0.01628149999305606
+          }
+        ],
+        "result": "passed",
+        "provider_version": "2.1.273 (Claude Code)",
+        "elapsed_seconds": 0.9471878750191536,
+        "cleanup": {
+          "scratch_removed": true,
+          "user_configuration_hashes_unchanged": true,
+          "model_invoked": false
+        }
+      },
+      "discovery": [
+        {
+          "provider": "Codex0.154.0",
+          "route": "private CODEX_HOME app-server skills/list",
+          "result": "One enabled user-scope agentdocker skill at the selected profile",
+          "model_invoked": false,
+          "raw_sha256": "46d60bd13c40196ae0dd055525af7e268f4e8cdda44438a9215dda20c39a8a39"
+        },
+        {
+          "provider": "Claude Code2.1.273",
+          "route": "private CLAUDE_CONFIG_DIR SDK initialize",
+          "result": "One user-scope agentdocker command",
+          "model_invoked": false,
+          "raw_sha256": "929e518bea2aa8cf056cdfe07e533e8fcce8c3e09f90f5633796e95cf5473b07"
+        }
+      ],
+      "actual_native_codex": {
+        "started_at": "2026-09-15T21:45:32.441350+00:00",
+        "scenario": "posted-question",
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "055fd9333a8e84f530b460b8c8de96bb74025532a0442262b2783d10da30575f",
+        "source": {
+          "commit": "d7bd90cc3915ffecf5eb1f419f2ab83fd2c4d28e",
+          "dirty": false,
+          "rust_and_driver_sha256": "b6471bb23e0532b89520d9c0ddc8186bbde4a8271b288f95fc5226b354c08289"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "29754c9be64384bbbfe75a6593870dc62134e5f34d9c68cc3c43691088ef31ec",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 58964,
+        "thread": "01a0a708-48db-7a73-ba80-d34afd4dfa11",
+        "agent": "f5ec3f074cf14e0bb27cd12054b636cd",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.544015416991897,
+        "cross_process_receipt": {
+          "thread": "01a0a708-48db-7a73-ba80-d34afd4dfa11",
+          "turn": "01a0a708-6fe5-7df2-80dc-29beb7204112",
+          "item": "01a0a708-6fef-71e2-9343-eb603205b0f6"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "16a7d9bed7674d7a"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a708-48db-7a73-ba80-d34afd4dfa11",
+            "turn": "01a0a708-e522-7b51-97c7-02d4fc09318e",
+            "item": "01a0a708-e52e-75b3-8ede-5de2666c9dab"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "direct_answer_queued_once": true,
+        "question_connection_closed_before_answer": false,
+        "question_id": "23c2edef456949f1",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 8,
+        "agentdocker_integration": true,
+        "raw_result_sha256": "ba631007cbfa9b68ebfb49e1b4b7aaa35ed1cddc4fc5c33dfea18ff42694c954"
+      },
+      "limits": [
+        "No actual Gemini loader or implicit-model skill activation acceptance.",
+        "Native trial uses actual CodexTUI with a private loopback model fixture, not an account service.",
+        "No-prompt native startup/reopen and other provider adapters remain open.",
+        "Installation and final CI are separate gates."
+      ]
+    }
   }
 }
