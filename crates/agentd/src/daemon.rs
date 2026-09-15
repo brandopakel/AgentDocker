@@ -1443,6 +1443,8 @@ impl Daemon {
                     RestrictedEndpoint::On(socket) => Some(socket),
                     _ => None,
                 },
+                pid: Some(std::process::id()),
+                executable: std::env::current_exe().ok(),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {

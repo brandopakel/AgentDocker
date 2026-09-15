@@ -1152,10 +1152,11 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         }
         DesktopCommand::Status => {
             let homebrew = homebrew_owner(active.as_ref(), &homebrew_caskrooms());
+            let daemon = serving_daemon(None);
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew})
+                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew,"daemon":daemon})
                 )?
             );
             return Ok(());
@@ -1237,6 +1238,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         local_preview,
         expect_release,
         expect_current,
+        None,
     )?;
     if !preview {
         layout.register_launcher();
@@ -1255,6 +1257,7 @@ fn required_state_schema(active: Option<&Activation>, home: &Path) -> Result<u32
 /// the part of an install that does not care where the payload came from.
 /// Returns the report the command prints.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn perform(
     layout: &Layout,
     active: Option<Activation>,
@@ -1264,6 +1267,7 @@ fn perform(
     local_preview: bool,
     expect_release: Option<String>,
     expect_current: Option<String>,
+    socket: Option<PathBuf>,
 ) -> Result<serde_json::Value> {
     if let Some(expected) = expect_release {
         ensure!(
@@ -1285,10 +1289,10 @@ fn perform(
         "artifact uses an older state schema; binary replacement cannot roll back the database"
     );
     layout.preflight()?;
-    let report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
+    let mut report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
         "application":layout.application, "bin":layout.bin, "versions":layout.root.join("versions"),
         "preview":preview, "local_preview":local_preview,
-        "activation":"next app/CLI launch; an already-running daemon continues until explicitly restarted or reloaded"});
+        "activation":"next app/CLI launch; a running daemon is asked to reload to this release once it is activated"});
     if preview {
         return Ok(report);
     }
@@ -1329,7 +1333,112 @@ fn perform(
     {
         layout.activate(candidate, current.map(|active| active.current))?;
     }
+    // Activated: a daemon that is running was started from an earlier
+    // release and keeps serving it until it hands over. Ask it to, and say
+    // what serves either way; the answer is the daemon's, never assumed.
+    let daemon = daemon_after_activation(socket);
+    report["activation"] = json!(daemon["summary"]);
+    report["daemon"] = daemon;
     Ok(report)
+}
+
+/// What actually serves right now, from the daemon itself: its version,
+/// pid and executable, or `null` when no daemon answers. Nothing is
+/// started.
+fn serving_daemon(socket: Option<PathBuf>) -> serde_json::Value {
+    use agentdocker_core::{Request, Response};
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return serde_json::Value::Null;
+        };
+        runtime.block_on(async {
+            let client = crate::client::Client::new(socket).with_start_timeout(None);
+            match client.call(&Request::Ping).await {
+                Ok(Response::Pong {
+                    version,
+                    pid,
+                    executable,
+                    ..
+                }) => json!({"version": version, "pid": pid, "executable": executable}),
+                _ => serde_json::Value::Null,
+            }
+        })
+    })
+    .join()
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Ask a running daemon to reload to the release just activated, and
+/// report what serves afterwards. Nothing is started here: with no daemon
+/// answering, the next launch starts the installed release. A refusal is
+/// reported with the daemon's reason, since a daemon that keeps serving
+/// the previous release is the safe outcome, not a failure of the
+/// installation.
+fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
+    use agentdocker_core::{Request, Response};
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return json!({"answered": false, "summary": "next app/CLI launch; no daemon was asked"});
+        };
+        runtime.block_on(async {
+            let client = crate::client::Client::new(socket).with_start_timeout(None);
+            let serving = |response: Result<Response>| match response {
+                Ok(Response::Pong {
+                    version,
+                    pid,
+                    executable,
+                    ..
+                }) => Some(json!({"version": version, "pid": pid, "executable": executable})),
+                _ => None,
+            };
+            let Some(before) = serving(client.call(&Request::Ping).await) else {
+                return json!({
+                    "answered": false,
+                    "summary": "next app/CLI launch; no daemon answered, so none needed reloading",
+                });
+            };
+            match client.call_raw(&Request::Reload).await {
+                Ok(Response::Ok) => {
+                    let after = serving(client.call(&Request::Ping).await);
+                    let summary = match &after {
+                        Some(now) => format!(
+                            "reloaded: agentd {} serves from {} (pid {})",
+                            now["version"].as_str().unwrap_or("?"),
+                            now["executable"].as_str().unwrap_or("?"),
+                            now["pid"]
+                        ),
+                        None => "reloaded, but no daemon answered afterwards; check `agentdocker daemon status`".to_owned(),
+                    };
+                    json!({"answered": true, "reloaded": true, "before": before, "serving": after, "summary": summary})
+                }
+                Ok(Response::Error { code, message, .. }) => json!({
+                    "answered": true, "reloaded": false, "serving": before,
+                    "refusal": {"code": code, "message": message},
+                    "summary": format!(
+                        "not reloaded ({message}); agentd {} keeps serving from {} until `agentdocker daemon reload` succeeds or it is restarted",
+                        before["version"].as_str().unwrap_or("?"),
+                        before["executable"].as_str().unwrap_or("?")
+                    ),
+                }),
+                Ok(other) => json!({
+                    "answered": true, "reloaded": false, "serving": before,
+                    "summary": format!("reload answered {other:?}; check `agentdocker daemon status`"),
+                }),
+                Err(error) => json!({
+                    "answered": true, "reloaded": false, "serving": before,
+                    "summary": format!("reload could not be asked for ({error:#}); agentd {} keeps serving until it is restarted", before["version"].as_str().unwrap_or("?")),
+                }),
+            }
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| json!({"answered": false, "summary": "next app/CLI launch; the daemon could not be asked"}))
 }
 
 #[cfg(test)]

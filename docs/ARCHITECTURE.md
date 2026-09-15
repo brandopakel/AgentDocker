@@ -201,7 +201,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `grant_access {agent, container_root, ttl_secs?}` | `access {grant, token, socket, expires_at}` | host-only; TTL 1–86400 seconds, default 3600; CLI writes token privately and prints grant ID |
 | `revoke_access {grant}` | `ok` | host-only; deny new requests, preserve leases |
 | `authenticate {token}` | `ok` | restricted endpoint only; precedes one scoped request |
-| `ping` | `pong` | version, uptime, restricted endpoint while serving |
+| `ping` | `pong` | version, uptime, restricted endpoint while serving, and the serving process's pid and executable, which after a reload say which release actually serves |
 | `build_image {spec: {engine, connection?, context, recipe, timeout_secs?}}` | `image_build {build}` | host-only Docker/Podman build from captured inputs; timeout defaults to 600 seconds, valid range 1–3600; immutable image ID and atomic provenance/event |
 | `images` | `image_builds {builds}` | retained build evidence, including after restart |
 | `run {spec}` | `agent` | spawns `spec.command`; child gets `AGENTDOCKER_SOCKET`, `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME`; `spec.restart` starts it again after it exits (`no` by default, cleared by `stop`); `spec.restore` brings it back under the same id after a daemon restart; `spec.in_pane` starts it in a new `tmux` session and registers it instead, so tmux owns the process and there is no captured log — it requires `spec.workdir` (tmux needs a directory to start in) and tmux 3.2 or newer (`new-session -e`, which is how the agent is told its own id), and is refused with `run_container` |
