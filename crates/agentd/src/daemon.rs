@@ -4132,14 +4132,17 @@ impl State {
         if let Some(error) = self.storage_failure() {
             return Err(Box::new(error));
         }
-        // An answer held for a waiting ask is not in the queue for anyone.
+        // An answer held for a waiting ask is not in the queue for anyone,
+        // and neither is anything behind it: the queue is delivered in
+        // order, and an answer that comes back to it when the ask ends
+        // must not find later messages already delivered ahead of it.
         let messages: Vec<Envelope> = self
             .inboxes
             .get(id)
             .map(|queue| {
                 queue
                     .iter()
-                    .filter(|m| !self.held_answers.contains_key(&m.id))
+                    .take_while(|m| !self.held_answers.contains_key(&m.id))
                     .cloned()
                     .collect()
             })
