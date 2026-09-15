@@ -131,9 +131,12 @@ def trial(args):
             early = rpc(sock, {"op": "journal", "project": project, "limit": 1})
             assert early["type"] == "journal", early
             early_cursor = early.get("head_seq") or 0
-            heads = [early_cursor]
+            heads = [early_cursor]           # every head observed, for the report
             read_errors = []
+            # Every checkpoint saved: (agent id, key, checkpoint id, saved at).
+            checkpoints_saved = []
             checkpoint_keys = {a["id"]: [] for a in agents}
+            last_prune_at = [None]
             errors = []
             cycles = [0]
             lock = threading.Lock()
@@ -142,6 +145,7 @@ def trial(args):
 
             def worker(agent):
                 n = 0
+                last_head = early_cursor  # this reader's own sequence, compared before anyone else's
                 while not stop.is_set() and not leave[agent["id"]].is_set():
                     n += 1
                     try:
@@ -159,17 +163,22 @@ def trial(args):
                             key = f"cp-{n}"
                             saved = rpc(sock, {"op": "checkpoint", "agent": agent["id"], "key": key, "task": f"cycle {n}",
                                                "assumptions": [], "next_steps": [], "release_leases": False})
-                            assert saved["type"] != "error", saved
+                            assert saved["type"] == "checkpoint", saved
                             with lock:
                                 checkpoint_keys[agent["id"]].append(key)
+                                checkpoints_saved.append((agent["id"], key, saved["checkpoint"]["id"], time.monotonic()))
                         if n % 25 == 0:
                             page = rpc(sock, {"op": "journal", "project": project, "since_seq": early_cursor, "limit": 50})
                             assert page["type"] == "journal", page
                             seqs = [e["seq"] for e in page["entries"]]
+                            head = page.get("head_seq")
+                            # Monotonic per reader: this thread's request and comparison are sequential.
+                            if head is not None and head < last_head:
+                                with lock:
+                                    read_errors.append(f"{agent['spec']['name']}: head went backwards {last_head} -> {head}")
+                            last_head = head if head is not None else last_head
                             with lock:
-                                if page.get("head_seq") is not None and page["head_seq"] < heads[-1]:
-                                    read_errors.append(f"head went backwards {heads[-1]} -> {page['head_seq']}")
-                                heads.append(page.get("head_seq") or heads[-1])
+                                heads.append(last_head)
                                 if seqs != sorted(seqs) or (seqs and seqs[0] <= early_cursor):
                                     read_errors.append(f"read past cursor {early_cursor} out of order: {seqs[:5]}")
                         with lock:
@@ -215,6 +224,7 @@ def trial(args):
                 if now >= next_prune:
                     r = rpc(sock, {"op": "checkpoint_prune", "older_than_secs": 30})
                     assert r["type"] != "error", r
+                    last_prune_at[0] = time.monotonic()
                     next_prune = now + 60
                 if errors:
                     break
@@ -235,18 +245,41 @@ def trial(args):
             assert age <= retention_secs + 75, f"oldest journal entry is {age:.0f}s old against a {retention_secs}s window"
             result["scenarios"].append(f"retention pruned the journal {len(retention_prunes)} times by itself ({sum(p[2] for p in retention_prunes)} entries); the oldest retained entry is {age:.0f}s old against a {retention_secs}s window")
             assert not read_errors, read_errors[:3]
-            result["scenarios"].append(f"a reader with a cursor from before the first prune read {len(heads) - 1} pages in order; head_seq rose from {heads[0]} to {heads[-1]} and never fell")
+            result["scenarios"].append(f"{len(staying) + len(leaving)} readers with a cursor from before the first prune read {len(heads) - 1} pages in order; each reader's head_seq never fell, rising overall from {heads[0]} to {max(heads)}")
 
-            # Checkpoints: the finished agents' old ones went, the live ones stayed.
+            # Checkpoints: every checkpoint of a finished agent that was old
+            # enough at the last prune is gone, exactly those were announced
+            # as pruned, and every live agent's checkpoint is still there.
+            leaving_ids = {a["id"] for a in leaving}
+            staying_ids = {a["id"] for a in staying}
+            assert last_prune_at[0] is not None, "no prune ran"
+            eligible = {cid for (aid, _, cid, at) in checkpoints_saved if aid in leaving_ids and at <= last_prune_at[0] - 30}
+            live_ids = {cid for (aid, _, cid, _) in checkpoints_saved if aid in staying_ids}
+            pruned_ids = set(checkpoints_pruned)
+            assert eligible, "the finished agents saved no checkpoint old enough to prune"
+            missing = eligible - pruned_ids
+            assert not missing, f"{len(missing)} eligible finished checkpoints were never announced as pruned"
+            stray = pruned_ids & live_ids
+            assert not stray, f"{len(stray)} live agents' checkpoints were pruned"
+            unexpected = pruned_ids - {cid for (aid, _, cid, _) in checkpoints_saved if aid in leaving_ids}
+            assert not unexpected, f"{len(unexpected)} pruned checkpoints belong to nobody who finished"
+            for agent in leaving:
+                listed = rpc(sock, {"op": "checkpoints", "agent": agent["id"]})
+                assert listed["type"] == "checkpoints", listed
+                present = {c["id"] for c in listed["checkpoints"]}
+                assert not (present & eligible), f"{agent['spec']['name']} still lists {len(present & eligible)} checkpoints old enough to prune"
             for agent in staying:
                 listed = rpc(sock, {"op": "checkpoints", "agent": agent["id"]})
                 assert listed["type"] == "checkpoints", listed
-                assert len(listed["checkpoints"]) == len(checkpoint_keys[agent["id"]]), (agent["spec"]["name"], len(listed["checkpoints"]), len(checkpoint_keys[agent["id"]]))
-            gone = sum(len(checkpoint_keys[a["id"]]) for a in leaving)
-            assert gone == 0 or checkpoints_pruned, "finished agents' checkpoints were never pruned"
-            result["scenarios"].append(f"checkpoint pruning removed {len(checkpoints_pruned)} checkpoints of the {len(leaving)} finished agents and kept every one of the {len(staying)} live agents'")
+                present = {c["id"] for c in listed["checkpoints"]}
+                mine = {cid for (aid, _, cid, _) in checkpoints_saved if aid == agent["id"]}
+                assert present == mine, (agent["spec"]["name"], len(present), len(mine))
+            result["scenarios"].append(f"checkpoint pruning removed every one of the {len(eligible)} checkpoints of the {len(leaving)} finished agents that were old enough at the last prune ({len(pruned_ids)} announced, none of a live agent's) and kept all {len(live_ids)} of the {len(staying)} live agents'")
 
-            # Growth stops once retention holds: compare the last third with the middle third.
+            # Growth is bounded once retention holds: the last third of the
+            # samples after the first prune against the middle third. The
+            # workload halves at half time, so this bounds what was observed
+            # under this trial's load; it is not a constant-load proof.
             samples = [s for s in result["samples"] if s["prunes_seen"] > 0]
             assert len(samples) >= 6, "too few samples after retention took hold"
             third = len(samples) // 3
@@ -259,7 +292,7 @@ def trial(args):
                                 "journal_rows_middle": round(avg(middle, "journal_rows")), "journal_rows_last": round(avg(last, "journal_rows"))}
             assert db_growth < 1.5, f"database kept growing: {db_growth:.2f}x"
             assert rss_growth < 1.3, f"daemon memory kept growing: {rss_growth:.2f}x"
-            result["scenarios"].append(f"after retention took hold the database averaged {db_growth:.2f}x and the daemon's memory {rss_growth:.2f}x of the middle third; journal rows {result['growth']['journal_rows_middle']} -> {result['growth']['journal_rows_last']}")
+            result["scenarios"].append(f"after retention took hold the database averaged {db_growth:.2f}x and the daemon's memory {rss_growth:.2f}x of the middle third (bounded under this trial's load, which halves at half time; not a constant-load proof); journal rows {result['growth']['journal_rows_middle']} -> {result['growth']['journal_rows_last']}")
 
             before = db_bytes(home)
             vacuumed = rpc(sock, {"op": "vacuum", "force": True}, timeout=120)
