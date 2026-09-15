@@ -74,6 +74,14 @@ consumed by an old synchronous MCP tool was reconciled after daemon restart
 without an extra provider turn. Final review, CI and installation remain pending.
 These trials do not mean that the installed app or every provider can already wake.
 
+Long-busy trials 26/27 subsequently exposed a false idle pause: a readonly
+sidecar reconstructed a running direct user turn as interrupted. Source now
+removes that inferred deadline while the exact native entry remains queued;
+the new `long-busy` scenario holds a user turn for 65 seconds and checks retained
+human/peer order before consumption and receiver recovery. Validation of this
+correction is pending, and #148/#149 remain draft. Earlier short-busy passes
+do not close this failure.
+
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
 local gate, all final-head CI checks and independent Claude source review. Its
 branch was deleted. The remaining adapter work proceeds independently.

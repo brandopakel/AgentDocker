@@ -13,6 +13,8 @@ queue ownership, provider receipts and automatic receiver crash recovery.
 Extra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and
 fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
+The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
+peer input without a false idle pause, then requires ordered provider receipts.
 Private profiles/processes are retired; --output keeps private traces and a
 sanitized result.json suitable for review. This driver is explicit acceptance,
 not a hermetic unit test or evidence for other providers/versions/platforms.
@@ -59,6 +61,7 @@ parser.add_argument(
     "--scenario",
     choices=[
         "baseline",
+        "long-busy",
         "startup",
         "lifecycle",
         "question",
@@ -157,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
             if ask_question:
                 question_called = True
         if block.is_set() and (not auxiliary):
-            release.wait(35)
+            release.wait(120 if args.scenario == "long-busy" else 35)
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
         if limit_active and users and ("LIMIT_NONCE" in json.dumps(users[-1])):
             data = json.dumps(
@@ -688,6 +691,41 @@ try:
                 )
                 assert len(report["requests"]) == 5
                 report["lost_queue_reply_recovered_without_resubmission"] = True
+            elif args.scenario == "long-busy":
+                block.set()
+                release.clear()
+                os.write(master, b"BUSY_START_NONCE")
+                time.sleep(0.5)
+                os.write(master, b"\r")
+                wait(lambda: len(report["requests"]) == 5, 25)
+                began_busy = time.monotonic()
+                queued("PEER_BUSY_A")
+                queued("HUMAN_BUSY_B")
+                ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                report["long_busy_samples"] = []
+                for _ in range(13):
+                    time.sleep(5)
+                    assert len(report["requests"]) == 5, "input interrupted the busy user turn"
+                    state = rpc({"op": "inspect", "agent": aid})["agent"]["input_delivery"]
+                    attempt = json.loads(ledgerpath.read_text()).get("attempt")
+                    assert attempt and attempt.get("queued") and not attempt.get("receipt"), (
+                        "peer input must remain pending without a receipt"
+                    )
+                    assert state.get("paused") is False, state
+                    pending = rpc({"op": "peek_input", "agent": aid})["messages"]
+                    assert [message["id"] for message in pending] == [
+                        result["message_id"] for result in report["queue_results"][-2:]
+                    ], "both inputs must stay in daemon order until provider receipt"
+                    report["long_busy_samples"].append(
+                        {
+                            "at_seconds": time.monotonic() - began_busy,
+                            "paused": False,
+                            "native_queue_id_retained": True,
+                            "daemon_inputs_retained_in_order": len(pending),
+                            "provider_receipt_absent": True,
+                        }
+                    )
+                report["direct_user_busy_seconds"] = time.monotonic() - began_busy
             else:
                 block.set()
                 release.clear()
@@ -806,7 +844,7 @@ try:
             ledger = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())
             report["completed_receipts"] = len(ledger["completed"])
             assert len(ledger["completed"]) == (
-                4 if args.scenario == "recovery" else 6 if args.scenario == "startup" else 5
+                4 if args.scenario in ("recovery", "long-busy") else 6 if args.scenario == "startup" else 5
             ), len(ledger["completed"])
             assert [entry["message"] for entry in ledger["completed"]] == [
                 entry["message_id"] for entry in report["queue_results"]

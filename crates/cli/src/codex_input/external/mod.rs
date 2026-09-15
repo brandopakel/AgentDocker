@@ -217,7 +217,6 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
     };
     let origin = answers::origin(provider, human).await?;
     let mut unseen_since: Option<tokio::time::Instant> = None;
-    let mut queued_idle_since: Option<tokio::time::Instant> = None;
     let mut answer_wait: Option<tokio::time::Instant> = None;
     let mut last_refresh: Option<tokio::time::Instant> = None;
     loop {
@@ -227,7 +226,6 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
             if attempt.receipt.is_some() {
                 acknowledge(client, ledger).await?;
                 unseen_since = None;
-                queued_idle_since = None;
                 continue;
             }
             if let Some(receipt) = receipts::find(provider, &thread, &attempt).await? {
@@ -239,18 +237,13 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
                     ledger.queued(&id)?;
                 }
                 unseen_since = None;
-                if availability::busy(provider, &thread).await? {
-                    queued_idle_since = None;
-                } else {
-                    let since = queued_idle_since.get_or_insert_with(tokio::time::Instant::now);
-                    ensure!(
-                        since.elapsed() < Duration::from_secs(45),
-                        "the native queue has not woken this idle conversation; input is retained without resubmission"
-                    );
-                }
+                // A verified pending entry belongs to the original TUI's
+                // scheduler. This read-only sidecar cannot prove live idleness:
+                // Codex may reconstruct a still-running turn as "interrupted".
+                // Keep reconciling the same entry, without pausing, resubmitting
+                // or acknowledging it just because time has elapsed.
             } else {
                 healthy = false;
-                queued_idle_since = None;
                 let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
                 ensure!(
                     since.elapsed() < Duration::from_secs(30),
