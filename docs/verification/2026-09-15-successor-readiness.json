@@ -1,5 +1,5 @@
 {
-  "date": "2026-09-14",
+  "date": "2026-09-15",
   "status": "Passed at fb92879 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the container endpoint inherited; an older-schema candidate was refused before any offer, a dying candidate and a silent one were aborted with the same daemon still serving, its agent untouched and writes resumed, and no successor session left behind. This is boundary 4 of LIVE-DAEMON-UPGRADES.md; connected-client resumption, installation integration and the rest of the acceptance list remain, and the gate stays on.",
   "scope": "Successor readiness behind AGENTDOCKER_EXPERIMENTAL_RELOAD: candidate validation, coordinator offer, SCM_RIGHTS handover of the listening socket, daemon lock and container endpoint, readiness answer after owner reattachment, and abort on every failing outcome. Connected-client resumption and installation integration are not covered.",
   "build": {

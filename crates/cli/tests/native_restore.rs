@@ -308,15 +308,21 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         let socket = socket.clone();
         move || {
             let mut stream = UnixStream::connect(&socket).unwrap();
+            // The command says when it is running, so the reload below is
+            // issued while the validation is admitted, not before it.
             let request = json!({"op":"validate", "agent":validator_id,
-                "command":["sh","-c","sleep 2"], "timeout_secs":30});
+                "command":["sh","-c","touch validating; sleep 2"], "timeout_secs":30});
             writeln!(stream, "{request}").unwrap();
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
             serde_json::from_str::<Value>(&line).unwrap()
         }
     });
-    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !work.join("validating").exists() {
+        assert!(Instant::now() < deadline, "the validation never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let busy = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(busy["type"], "error", "{busy}");
     assert_eq!(busy["code"], "backpressure", "{busy}");
