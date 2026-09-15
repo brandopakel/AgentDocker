@@ -6,15 +6,16 @@ description: Coordinate coding work through AgentDocker when its tools are conne
 # AgentDocker coordination
 
 Use the identity supplied by AgentDocker's connected tools or verified provider
-session. List agents before choosing a recipient; do not register another copy
+session. Use `list_agents` before choosing a recipient; do not register another copy
 of an existing session or guess its identity from a display name.
 
 Before reading or searching shared files, record their paths with `observe_paths`.
 Before editing, `claim` the absolute file or directory (`path:/absolute/path`),
 then `check_stale` and reread any changed content. A conflicting lease means
-coordinate with its holder or work elsewhere. Release your leases with a short
+coordinate with its holder or work elsewhere. Use `release` with a short
 change summary when done. Use `commit` for attributed commits in your registered
-checkout, and `journal_note` for decisions that have no commit.
+checkout so the journal attributes the change to you rather than `external`;
+use `journal_note` for decisions that have no commit.
 
 Use `send_message` for coordination within the user's task, with `reply_to` when
 answering a message. Prefer a specific agent or task channel; `project` reaches
