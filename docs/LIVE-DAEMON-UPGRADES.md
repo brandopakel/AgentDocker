@@ -131,11 +131,13 @@ event continuity, not just a new socket or a readiness marker.
    arrives in the asker's inbox as for any `ask` that ended early. Covered
    by a fake-daemon test file (`crates/cli/tests/client_resume.rs`) and by
    the real chain test, which follows two handovers with a live `events`
-   stream. Still ahead: the desktop app's request worker shows
-   `transferring` rather than retrying (its event stream already resumes by
-   cursor), provider input polls and an attached terminal's unsubmitted
-   draft have not been trialled across a switch, and a checked event
-   stream's cursor replay across a switch is not yet recorded.
+   stream. The desktop app's blocking client sends a request answered
+   `transferring` again for as long as one call may take (10 s), so a
+   handover never shows as a failed action; its event stream already
+   resumes by cursor. Still ahead: provider input polls and an attached
+   terminal's unsubmitted draft have not been trialled across a switch,
+   and a checked event stream's cursor replay across a switch is not yet
+   recorded.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
    schema compatibility permits it, and report the actual serving version.
