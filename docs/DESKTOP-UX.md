@@ -77,7 +77,8 @@ Project tabs provide:
 
 ## Inbox and tools
 
-Sessions are shown by name. A name an adapter generated from a runtime and
+Sessions are shown by name. Default app launches and adapter-generated names
+carry the same generated-name marker. A name generated from a runtime and
 an identifier (the record says so, or it is exactly that adapter's form for the
 record's own pid or session) reads as the tool's label, Claude Code or Codex,
 numbered by first appearance when more than one session of that tool has been

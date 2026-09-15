@@ -1411,7 +1411,8 @@ impl App {
             .ok_or("The launch arguments have unbalanced quotes")?;
         let mut command = vec![cli.to_string_lossy().into_owned()];
         command.extend(args);
-        let name = if self.shell.launch_name.trim().is_empty() {
+        let generated_name = self.shell.launch_name.trim().is_empty();
+        let name = if generated_name {
             format!("{}-{}", runtime.name, Utc::now().timestamp())
         } else {
             self.shell.launch_name.trim().into()
@@ -1424,7 +1425,14 @@ impl App {
             command,
             workdir: Some(entry.project.root.clone()),
             env: BTreeMap::new(),
-            labels: BTreeMap::new(),
+            labels: if generated_name {
+                BTreeMap::from([(
+                    agentdocker_core::agent::NAME_LABEL.to_owned(),
+                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                )])
+            } else {
+                BTreeMap::new()
+            },
             isolate: false,
             tty: true,
             restore: false,
@@ -1887,6 +1895,37 @@ mod tests {
         );
         assert_eq!(app.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    #[test]
+    fn default_ui_launches_show_tool_names_while_chosen_names_stay_literal() {
+        let (mut app, _, _) = app();
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/fixture"))
+            .unwrap();
+        for runtime in ["codex", "claude-code"] {
+            app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+                name: runtime.into(),
+                vendor: "fixture".into(),
+                label: runtime_label(runtime),
+                cli: Some("/fixture/provider".into()),
+                version: None,
+                apps: vec![],
+                config_dir: None,
+                mcp: agentdocker_core::runtime::Wiring::Missing,
+                hooks: agentdocker_core::runtime::Wiring::Missing,
+                running: 0,
+            }];
+            app.shell.launch_runtime = Some(runtime.into());
+            app.shell.launch_name.clear();
+            let generated = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
+            assert_eq!(app.display_name(&generated), runtime_label(runtime));
+            app.shell.launch_name = "reviewer-cafe".into();
+            let chosen = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
+            assert_eq!(app.display_name(&chosen), "reviewer-cafe");
+            assert!(!chosen.name_is_generated());
+        }
     }
 
     #[test]
