@@ -23,6 +23,33 @@ Preview prints the new plan ID on stdout and its redacted description on stderr.
 
 Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair` ([IDENTITY-REPAIR.md](IDENTITY-REPAIR.md)). Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
+## Shared coordination skill
+
+Setup also installs the bundled [AgentDocker skill](../crates/cli/skills/agentdocker/SKILL.md)
+for Codex, Claude Code and Gemini CLI. MCP onboarding uses the same instruction
+source, with receipt guidance selected for the active delivery adapter. The
+skill includes CLI equivalents, so its workflow is independent of a model vendor.
+`agentdocker skill` prints the installable file without contacting the daemon.
+
+The destination is `skills/agentdocker/SKILL.md` beneath the selected Codex or
+Claude profile (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`, defaulting to `~/.codex` /
+`~/.claude`), or `~/.gemini` for Gemini CLI. Saved plans show the skill alongside
+MCP/hooks and support the same apply, recovery and undo. An unchanged generated
+copy can be upgraded using its complete-content SHA-256 stamp; a custom or edited
+copy is preserved and reported for comparison. Undo refuses later edits.
+
+The [Codex skill loader](https://learn.chatgpt.com/docs/build-skills),
+[Claude skill loader](https://code.claude.com/docs/en/skills) and
+[Gemini skill loader](https://geminicli.com/docs/cli/skills/) support the common
+SKILL.md format. Actual Codex 0.154.0 profile discovery and Claude Code's SDK
+initialization found the installed skill in isolated profiles on September 15,
+without a model call. This proves discovery, not automatic activation for every
+prompt. Gemini's path follows its documentation and still needs an actual CLI
+trial here. Other tools can use the exported file through their own documented
+loader; desktop inventory alone does not imply skill support. Provider trust,
+skill policy and tool permissions still apply. No AGENTS.md, CLAUDE.md or global
+approval settings are rewritten.
+
 ## Apply, recovery and undo
 
 Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.
