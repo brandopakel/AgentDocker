@@ -12,13 +12,18 @@ Asserts: retention pruned the journal by itself (journal_pruned with reason
 retention, on the event stream), the oldest retained entry is inside the
 window plus one tick, every journal read stayed monotonic in head_seq and in
 order past its cursor, finished agents' old checkpoints were pruned while
-live agents' were kept, and the database and the daemon's memory stopped
-growing once retention took hold. Writes result.json under --output.
+live agents' were kept, and the database and the daemon's memory stayed
+bounded once retention took hold (under this trial's load, which halves at
+half time). The daemon runs from a private hashed copy. Writes result.json
+under --output.
 """
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -62,15 +67,29 @@ def journal_rows(home):
     return count, oldest, checkpoints
 
 
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def trial(args):
     args.output.mkdir(parents=True, exist_ok=True)
     binary_dir = args.binary_dir.resolve(strict=True)
-    agentd = binary_dir / "agentd"
     result = {"passed": False, "seconds": args.seconds, "agents": args.agents, "retention": args.retention,
-              "build_info": json.loads(subprocess.check_output([str(agentd), "--build-info"], text=True)),
+              "driver_sha256": sha256(Path(__file__).resolve()),
               "scenarios": [], "samples": []}
     with tempfile.TemporaryDirectory(prefix="ad-retention-") as temporary:
         root = Path(temporary).resolve()
+        # The daemon under test is a private copy, hashed: a build in the
+        # checkout during the run cannot replace what is being measured.
+        agentd = root / "agentd"
+        shutil.copy2(binary_dir / "agentd", agentd)
+        result["agentd_sha256"] = sha256(agentd)
+        result["agentd_source"] = str(binary_dir / "agentd")
+        result["build_info"] = json.loads(subprocess.check_output([str(agentd), "--build-info"], text=True))
         home = root / "state"
         home.mkdir()
         (home / "agentd.toml").write_text(f'[journal]\nretention = "{args.retention}"\n')
@@ -202,7 +221,8 @@ def trial(args):
                     count, oldest, cps = journal_rows(home)
                     ping_at = time.monotonic()
                     rpc(sock, {"op": "ping"})
-                    result["samples"].append({"at": round(now - started, 1), "rss_kib": rss_kib(daemon.pid), "db_bytes": db_bytes(home),
+                    result["samples"].append({"at": round(now - started, 1), "sampled_at": datetime.now(timezone.utc).isoformat(),
+                                              "rss_kib": rss_kib(daemon.pid), "db_bytes": db_bytes(home),
                                               "journal_rows": count, "oldest_journal_at": oldest, "checkpoints": cps,
                                               "cycles": cycles[0], "ping_ms": round((time.monotonic() - ping_at) * 1000, 2),
                                               "prunes_seen": len(pruned)})
@@ -239,11 +259,19 @@ def trial(args):
             retention_prunes = [p for p in pruned if p[1] == "retention"]
             assert retention_prunes, f"retention never pruned; prunes seen: {pruned}"
             count, oldest, cps = journal_rows(home)
-            from datetime import datetime, timezone
             age = (datetime.now(timezone.utc) - datetime.fromisoformat(oldest.replace("Z", "+00:00"))).total_seconds() if oldest else 0
             retention_secs = parse_seconds(args.retention)
             assert age <= retention_secs + 75, f"oldest journal entry is {age:.0f}s old against a {retention_secs}s window"
-            result["scenarios"].append(f"retention pruned the journal {len(retention_prunes)} times by itself ({sum(p[2] for p in retention_prunes)} entries); the oldest retained entry is {age:.0f}s old against a {retention_secs}s window")
+            # And at every sample after the first prune, not only at the end.
+            worst = 0.0
+            for sample in result["samples"]:
+                if sample["prunes_seen"] and sample["oldest_journal_at"]:
+                    sampled = datetime.fromisoformat(sample["sampled_at"])
+                    oldest_at = datetime.fromisoformat(sample["oldest_journal_at"].replace("Z", "+00:00"))
+                    worst = max(worst, (sampled - oldest_at).total_seconds())
+            assert worst <= retention_secs + 75, f"a sample saw the oldest entry {worst:.0f}s old against a {retention_secs}s window"
+            result["oldest_age_max_secs"] = round(worst)
+            result["scenarios"].append(f"retention pruned the journal {len(retention_prunes)} times by itself ({sum(p[2] for p in retention_prunes)} entries); after the first prune no sample saw the oldest retained entry older than {worst:.0f}s, and it is {age:.0f}s old at the end, against a {retention_secs}s window")
             assert not read_errors, read_errors[:3]
             result["scenarios"].append(f"{len(staying) + len(leaving)} readers with a cursor from before the first prune read {len(heads) - 1} pages in order; each reader's head_seq never fell, rising overall from {heads[0]} to {max(heads)}")
 
