@@ -2412,7 +2412,7 @@ mod tests {
             json!({"hooks":{"PreToolUse":[{"matcher":"Edit", "hooks":[own, other.clone()]}]}});
         assert_eq!(
             merge_hooks(&mut settings, "agentdocker hook codex", "codex").unwrap(),
-            7
+            8
         );
         let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(entries[0]["matcher"], "Edit");

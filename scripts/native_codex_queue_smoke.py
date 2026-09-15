@@ -403,16 +403,32 @@ try:
                 return result
 
         wait(lambda: sock.exists())
+        mcp_cli = (
+            args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply", "migration") else cli
+        )
+        if args.scenario in ("startup", "lifecycle"):
+            mcp_wrapper = root / "agentdocker"
+            mcp_wrapper.write_text(
+                "#!"
+                + sys.executable
+                + "\nimport json,os,sys\n"
+                + "with open("
+                + repr(str(out / "mcp-startup.jsonl"))
+                + ",'a') as log:\n"
+                + " log.write(json.dumps({'pid':os.getpid(),'parent':os.getppid(),'cwd':os.getcwd(),"
+                + "'session':os.environ.get('CODEX_THREAD_ID'),'profile':os.environ.get('CODEX_HOME')})+'\\n')\n"
+                + "os.execv("
+                + repr(str(mcp_cli))
+                + ",["
+                + repr(str(mcp_cli))
+                + "]+sys.argv[1:])\n"
+            )
+            mcp_wrapper.chmod(0o700)
+            mcp_cli = mcp_wrapper
         with (profile / "config.toml").open("a") as configfile:
             configfile.write(
                 "\n[mcp_servers.agentdocker]\ncommand = "
-                + json.dumps(
-                    str(
-                        args.legacy_cli
-                        if args.scenario in ("legacy-question", "legacy-reply", "migration")
-                        else cli
-                    )
-                )
+                + json.dumps(str(mcp_cli))
                 + '\nargs = ["mcp", "--runtime", "codex"]\n[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = '
                 + json.dumps(str(adhome))
                 + "\nAGENTDOCKER_SOCKET = "
