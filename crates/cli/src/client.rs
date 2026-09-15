@@ -21,6 +21,18 @@ mod event_stream;
 /// fail open and must not stall the editor.
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long a request keeps retrying while the daemon answers
+/// `transferring`: it has offered coordination to a successor, nothing was
+/// applied, and the same socket answers again once the transfer settles.
+/// Longer than the successor's own readiness deadline, so a retry outlives
+/// the longest possible handover.
+const TRANSFER_WINDOW: Duration = Duration::from_secs(35);
+
+/// How long to look for a daemon on the same socket after a stream ended
+/// without the daemon saying so. A replaced daemon's successor is already
+/// serving; a stopped daemon takes its socket path with it.
+const RESUME_WINDOW: Duration = Duration::from_secs(3);
+
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -150,7 +162,36 @@ impl Client {
 
     /// Like [`Client::call`], but hands back [`Response::Error`] as a value
     /// so the caller can act on its code. Only transport failures are `Err`.
+    ///
+    /// `transferring` is retried here, unchanged, for [`TRANSFER_WINDOW`]:
+    /// the daemon has offered coordination to a successor and applied
+    /// nothing, and whichever daemon answers next on the same socket takes
+    /// the request as new. A caller only sees the code once the window is
+    /// spent.
     pub async fn call_raw(&self, request: &Request) -> Result<Response> {
+        let deadline = Instant::now() + TRANSFER_WINDOW;
+        let mut told = false;
+        loop {
+            let response = self.call_once(request).await?;
+            let transferring = matches!(
+                &response,
+                Response::Error {
+                    code: agentdocker_core::ErrorCode::Transferring,
+                    ..
+                }
+            );
+            if !transferring || Instant::now() >= deadline {
+                return Ok(response);
+            }
+            if !told {
+                eprintln!("agentdocker: the daemon is handing over to a successor; retrying");
+                told = true;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn call_once(&self, request: &Request) -> Result<Response> {
         let mut reader = self.connect(request).await?;
         let mut line = String::new();
         if reader.read_line(&mut line).await? == 0 {
@@ -161,6 +202,26 @@ impl Client {
             .into());
         }
         Ok(serde_json::from_str(&line)?)
+    }
+
+    /// After a stream ended without the daemon saying so: is a daemon
+    /// still answering on this socket? A replaced daemon's successor is,
+    /// at once; a stopped daemon is not, and nothing is started here.
+    pub async fn still_served(&self) -> bool {
+        let quiet = self.clone().with_start_timeout(None);
+        let deadline = Instant::now() + RESUME_WINDOW;
+        loop {
+            if matches!(
+                quiet.call_once(&Request::Ping).await,
+                Ok(Response::Pong { .. })
+            ) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 
     /// Send one request and feed every response to `on_response` until the
@@ -176,6 +237,31 @@ impl Client {
         .await
     }
 
+    /// Like [`Client::stream`], but a stream that ends without the daemon
+    /// saying so, and with a daemon still answering on the socket, is
+    /// subscribed again: that is a daemon replaced underneath a live
+    /// stream, not the end of what was being watched. `resumed` is told
+    /// each time, so the caller can say so; live messages between the two
+    /// subscriptions are not replayed, as the notice should say.
+    pub async fn stream_resuming(
+        &self,
+        request: &Request,
+        mut resumed: impl FnMut(),
+        mut on_response: impl FnMut(Response) -> Result<bool>,
+    ) -> Result<()> {
+        loop {
+            let ended = self
+                .stream_inner(request, async { Ok(()) }, |(), response| {
+                    on_response(response)
+                })
+                .await?;
+            if ended != Ended::Silently || !self.still_served().await {
+                return Ok(());
+            }
+            resumed();
+        }
+    }
+
     /// Like [`Client::stream`], but events wait for the daemon's subscription
     /// acknowledgement before polling `then`. Its snapshot can therefore be
     /// deduplicated against the live tail without a subscription race.
@@ -184,8 +270,19 @@ impl Client {
         &self,
         request: &Request,
         then: impl Future<Output = Result<T>>,
-        mut on_response: impl FnMut(&T, Response) -> Result<bool>,
+        on_response: impl FnMut(&T, Response) -> Result<bool>,
     ) -> Result<()> {
+        self.stream_inner(request, then, on_response)
+            .await
+            .map(|_| ())
+    }
+
+    async fn stream_inner<T>(
+        &self,
+        request: &Request,
+        then: impl Future<Output = Result<T>>,
+        mut on_response: impl FnMut(&T, Response) -> Result<bool>,
+    ) -> Result<Ended> {
         let subscription = match request {
             Request::Events { replay, .. } => Request::Events {
                 replay: *replay,
@@ -211,10 +308,10 @@ impl Client {
         loop {
             line.clear();
             if reader.read_line(&mut line).await? == 0 {
-                return Ok(());
+                return Ok(Ended::Silently);
             }
             match into_result(serde_json::from_str(&line)?)? {
-                Response::End => return Ok(()),
+                Response::End => return Ok(Ended::ByDaemon),
                 Response::Lagged { skipped } => {
                     if matches!(request, Request::Events { .. }) {
                         bail!(
@@ -228,12 +325,23 @@ impl Client {
                 }
                 response => {
                     if !on_response(&snapshot, response)? {
-                        return Ok(());
+                        return Ok(Ended::ByCaller);
                     }
                 }
             }
         }
     }
+}
+
+/// How a stream came to an end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// The daemon said `end`: what was watched is over.
+    ByDaemon,
+    /// The connection closed with nothing said: the daemon went away.
+    Silently,
+    /// The caller asked to stop.
+    ByCaller,
 }
 
 /// Retain startup ownership until the daemon accepts a connection. A failed or

@@ -328,6 +328,23 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     assert_eq!(busy["code"], "backpressure", "{busy}");
     assert_eq!(validating.join().unwrap()["type"], "validation");
 
+    // A live event stream opened on the first daemon follows the chain:
+    // each replacement ends its stream without a word, and it subscribes
+    // again on whichever daemon answers next.
+    let following = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
+        .args(["events"])
+        .env("AGENTDOCKER_HOME", &home)
+        .env("AGENTDOCKER_SOCKET", &socket)
+        .env("AGENTDOCKER_NO_AUTOSTART", "1")
+        .env_remove("AGENTDOCKER_TOKEN_FILE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Subscribed before the reload: the offer is the first thing it sees.
+    std::thread::sleep(Duration::from_millis(300));
+
     let response = rpc(&socket, json!({"op":"reload"})).unwrap();
     assert_eq!(response["type"], "ok", "{response}");
     // The predecessor leaves once the successor serves, without stopping
@@ -351,7 +368,9 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
     assert_eq!(later["type"], "agent", "{later}");
 
     // The successor holds what it was given and can hand it on in turn,
-    // this time through the CLI.
+    // this time through the CLI. The stream is given a moment to have
+    // joined the successor first, so it sees this handover as well.
+    std::thread::sleep(Duration::from_millis(500));
     let cli = Command::new(env!("CARGO_BIN_EXE_agentdocker"))
         .args(["daemon", "reload"])
         .env("AGENTDOCKER_HOME", &home)
@@ -418,6 +437,25 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         assert!(Instant::now() < deadline, "the successor did not stop");
         std::thread::sleep(Duration::from_millis(20));
     }
+    // With the last daemon gone, the stream ends for good. It saw both
+    // offers and said twice that it had moved on.
+    let followed = following.wait_with_output().unwrap();
+    assert!(
+        followed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&followed.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&followed.stdout);
+    let stderr = String::from_utf8_lossy(&followed.stderr);
+    assert_eq!(
+        stderr.matches("was replaced").count(),
+        2,
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.matches("transfer offered").count() >= 2,
+        "the stream saw each daemon's offer: {stdout}"
+    );
 }
 
 #[test]
