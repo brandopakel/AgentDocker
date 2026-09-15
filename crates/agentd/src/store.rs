@@ -1297,6 +1297,11 @@ impl Store {
             Err(err) if indexed => {
                 tracing::warn!(%err, "messages_fts query failed; search falls back to LIKE until restart");
                 self.messages_fts.set(false);
+                // Writes from here on skip the index, so the next start
+                // must rebuild it rather than trust what it holds.
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM meta WHERE key='messages_fts_complete'", []);
                 self.search_messages(
                     query,
                     conversations,
@@ -2384,6 +2389,164 @@ mod tests {
                 13
             );
         }
+    }
+
+    /// Once the index has failed, every later write skips it and the
+    /// completeness marker is gone, so a restart with the table still there
+    /// rebuilds it and finds what was archived meanwhile.
+    #[test]
+    fn a_failed_index_is_rebuilt_at_the_next_start() {
+        use agentdocker_core::Destination;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        if !store.fts {
+            return;
+        }
+        let said = |text: &str| {
+            Envelope::new(
+                "x",
+                Destination::Broadcast,
+                "chat",
+                serde_json::json!({ "text": text }),
+                None,
+                Utc::now(),
+            )
+        };
+        store
+            .publish_message(&said("first lantern"), &[], 1000, None, None, None, &[])
+            .unwrap();
+        // A query fails while the table is out of reach; it is back before
+        // the next start, so only what the failure itself recorded tells
+        // that start to rebuild.
+        store
+            .conn
+            .execute("ALTER TABLE messages_fts RENAME TO messages_fts_away", [])
+            .unwrap();
+        assert_eq!(
+            store
+                .search_messages("lantern", None, None, 50)
+                .unwrap()
+                .len(),
+            1,
+            "answered by LIKE when the query fails"
+        );
+        assert!(!store.messages_fts.get(), "the index is off for this run");
+        store
+            .conn
+            .execute("ALTER TABLE messages_fts_away RENAME TO messages_fts", [])
+            .unwrap();
+        let marker: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='messages_fts_complete'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(marker, None, "the failure clears the completeness marker");
+        store
+            .publish_message(&said("second lantern"), &[], 1000, None, None, None, &[])
+            .unwrap();
+        assert_eq!(
+            store
+                .search_messages("lantern", None, None, 50)
+                .unwrap()
+                .len(),
+            2,
+            "answered by LIKE while the index is off"
+        );
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert!(reopened.messages_fts.get(), "rebuilt at start");
+        let indexed: i64 = reopened
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'lantern'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            indexed, 2,
+            "the message archived while the index was off is in it"
+        );
+        assert_eq!(
+            reopened
+                .search_messages("lantern", None, None, 50)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    /// A thread pages by the last reply's seq without repeats or gaps, and
+    /// never brings in a reply from another conversation.
+    #[test]
+    fn a_thread_pages_by_seq_within_its_conversation() {
+        use agentdocker_core::Destination;
+        let conn = Connection::open_in_memory().unwrap();
+        let store = Store::init(conn).unwrap();
+        let root = Envelope::new(
+            "a",
+            Destination::Broadcast,
+            "chat",
+            serde_json::json!({ "text": "root" }),
+            None,
+            Utc::now(),
+        );
+        store
+            .publish_message(&root, &[], 1000, None, None, None, &[])
+            .unwrap();
+        let mut replies = Vec::new();
+        for n in 0..7 {
+            let reply = Envelope::new(
+                "b",
+                Destination::Broadcast,
+                "chat",
+                serde_json::json!({ "text": format!("reply {n}") }),
+                Some(root.id.clone()),
+                Utc::now(),
+            );
+            store
+                .publish_message(&reply, &[], 1000, None, None, None, &[])
+                .unwrap();
+            replies.push(reply.id.clone());
+        }
+        // A reply from another conversation naming the same root.
+        let elsewhere = Envelope::new(
+            "b",
+            Destination::Channel(agentdocker_core::ChannelId::from("room".to_owned())),
+            "chat",
+            serde_json::json!({ "text": "not this thread" }),
+            Some(root.id.clone()),
+            Utc::now(),
+        );
+        store
+            .publish_message(&elsewhere, &[], 1000, None, None, None, &[])
+            .unwrap();
+        let all = ConversationId::all();
+        let mut seen = Vec::new();
+        let mut after = None;
+        loop {
+            let page = store.thread_replies(&root.id, &all, after, 3).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert!(page.len() <= 3);
+            after = page.last().map(|m| m.seq);
+            seen.extend(page.into_iter().map(|m| m.envelope.id));
+        }
+        assert_eq!(
+            seen, replies,
+            "every reply once, in order, none from elsewhere"
+        );
+        assert_eq!(
+            store.archived(&root.id).unwrap().unwrap().replies,
+            7,
+            "the root counts only its own conversation's replies"
+        );
     }
 
     /// A database written before v19 has queued messages nobody recorded

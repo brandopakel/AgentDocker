@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod icons;
+mod messages;
 mod queue;
 mod sessions;
 mod shell;
@@ -786,12 +787,16 @@ impl App {
                     Ok(conversations) => {
                         self.conversations_supported = Some(true);
                         self.conversations = conversations;
-                        // Reading the open conversation as its history arrives
-                        // marks it read; a conversation that gained unread
-                        // words while open is fetched again.
-                        if let Some(open) = self.shell.conversation.clone()
+                        // A thread opened before the daemon answered (a
+                        // notification at launch) names its conversation now.
+                        if self.shell.inbox_open && self.shell.conversation.is_none() {
+                            self.adopt_inbox_thread();
+                        } else if let Some(open) = self.shell.conversation.clone()
                             && self.screen == Screen::Questions
                         {
+                            // Reading the open conversation as its history
+                            // arrives marks it read; a conversation that
+                            // gained unread words while open is fetched again.
                             self.send(Cmd::History(open));
                         }
                     }
@@ -1066,22 +1071,35 @@ impl App {
 
     /// The name a person reads for an agent. Adapters register sessions as
     /// `<runtime>-<pid or session id>`; the record says when its name was
-    /// generated like that, and then the runtime's label is shown instead.
-    /// Sessions of one tool in one project are told apart by their order of
-    /// first appearance, live or ended, so a number never changes when a
-    /// neighbour finishes. A name somebody chose is shown as chosen.
+    /// generated like that, and then the tool's label is shown instead,
+    /// with the branch it works on (*Claude Code · main*), because that is
+    /// what tells two sessions of one tool apart. Only when two live
+    /// sessions of one tool share a branch, or neither has one, does an
+    /// ordinal by first appearance follow (*Codex · main (2)*); an ended
+    /// session keeps no number, its branch is enough in the Earlier
+    /// group. A name somebody chose is shown as chosen.
     fn display_name(&self, agent: &AgentRecord) -> String {
         if !agent.name_is_generated() {
             return agent.spec.name.clone();
         }
-        let base = runtime_label(&agent.spec.runtime);
+        let tool = runtime_label(&agent.spec.runtime);
+        let branch = agent.vcs.as_ref().and_then(|v| v.branch.clone());
+        let base = match &branch {
+            Some(branch) => format!("{tool} · {branch}"),
+            None => tool,
+        };
+        if !agent.status.is_live() {
+            return base;
+        }
         let mut peers: Vec<&AgentRecord> = self
             .agents
             .iter()
             .filter(|a| {
                 a.name_is_generated()
+                    && a.status.is_live()
                     && a.spec.runtime == agent.spec.runtime
                     && a.project.as_ref().map(|p| p.id()) == agent.project.as_ref().map(|p| p.id())
+                    && a.vcs.as_ref().and_then(|v| v.branch.as_deref()) == branch.as_deref()
             })
             .collect();
         if peers.len() < 2 {
@@ -1089,7 +1107,7 @@ impl App {
         }
         peers.sort_by_key(|a| (a.created_at, a.id.to_string()));
         match peers.iter().position(|a| a.id == agent.id) {
-            Some(index) => format!("{base} {}", index + 1),
+            Some(index) => format!("{base} ({})", index + 1),
             None => base,
         }
     }
@@ -3510,32 +3528,46 @@ mod tests {
     }
 
     #[test]
-    fn numbers_come_from_first_appearance_and_survive_a_neighbour_ending() {
+    fn sessions_are_named_by_tool_and_branch_and_numbered_only_when_that_is_not_enough() {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let now = Utc::now();
+        let on = |branch: &str| {
+            Some(agentdocker_core::VcsState {
+                branch: Some(branch.into()),
+                head: None,
+                dirty: None,
+                updated_at: now,
+            })
+        };
         let mut first = record("codex-5124", "codex", Some(5124));
         first.created_at = now;
+        first.vcs = on("main");
         let mut second = record("codex-6250", "codex", Some(6250));
         second.id = agentdocker_core::AgentId::from("second-id");
         second.created_at = now + chrono::Duration::seconds(1);
+        second.vcs = on("feature/x");
         app.agents = vec![second.clone(), first.clone()];
-        assert_eq!(app.display_name(&first), "Codex 1");
-        assert_eq!(app.display_name(&second), "Codex 2");
-        // The first one ends: the second keeps its number, and a newcomer
-        // takes the next one rather than the vacated one.
+        // Different branches: the branch is the name, no number.
+        assert_eq!(app.display_name(&first), "Codex · main");
+        assert_eq!(app.display_name(&second), "Codex · feature/x");
+        // Two live sessions on one branch: numbered by first appearance.
+        second.vcs = on("main");
+        app.agents = vec![second.clone(), first.clone()];
+        assert_eq!(app.display_name(&first), "Codex · main (1)");
+        assert_eq!(app.display_name(&second), "Codex · main (2)");
+        // The first one ends: it drops its number, the second is alone
+        // among the live ones and drops its number too.
         first.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
-        let mut third = record("codex-7000", "codex", Some(7000));
-        third.id = agentdocker_core::AgentId::from("third-id");
-        third.created_at = now + chrono::Duration::seconds(2);
-        app.agents = vec![second.clone(), first.clone(), third.clone()];
-        assert_eq!(app.display_name(&first), "Codex 1");
-        assert_eq!(app.display_name(&second), "Codex 2");
-        assert_eq!(app.display_name(&third), "Codex 3");
-        // Alone, no number.
-        app.agents = vec![first.clone()];
-        assert_eq!(app.display_name(&first), "Codex");
+        app.agents = vec![second.clone(), first.clone()];
+        assert_eq!(app.display_name(&first), "Codex · main");
+        assert_eq!(app.display_name(&second), "Codex · main");
+        // No branch at all: the tool alone, numbered only in company.
+        let mut bare = record("codex-7000", "codex", Some(7000));
+        bare.id = agentdocker_core::AgentId::from("third-id");
+        app.agents = vec![bare.clone()];
+        assert_eq!(app.display_name(&bare), "Codex");
     }
 
     #[test]
@@ -3556,7 +3588,7 @@ mod tests {
         }))
         .unwrap();
         let line = app.journal_line(&entry);
-        assert!(line.contains("Codex 2"), "{line}");
+        assert!(line.contains("Codex (2)"), "{line}");
         assert!(!line.contains("codex-2"), "{line}");
         // A line whose author is not on record is left as it is.
         let unknown: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({

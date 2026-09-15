@@ -16,7 +16,7 @@ use iced::{
     widget::{Space, column, container, row, scrollable, text},
 };
 
-fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
+pub(super) fn heading<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
     text(value.into())
         .size(size)
         .font(weight(iced::font::Weight::Semibold))
@@ -26,14 +26,14 @@ fn title<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
         .size(size)
         .font(weight(iced::font::Weight::Semibold))
 }
-fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+pub(super) fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(13).color(c.muted)
 }
-fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+pub(super) fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(12).color(c.muted)
 }
 /// A section label: short, quiet, set in capitals.
-fn eyebrow<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
+pub(super) fn eyebrow<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into().to_uppercase())
         .size(11)
         .color(c.faint)
@@ -53,7 +53,10 @@ fn card<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, 
         .into()
 }
 /// A card that holds rows rather than prose: tighter padding.
-fn panel<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+pub(super) fn panel<'a>(
+    content: impl Into<Element<'a, Message>>,
+    c: Colors,
+) -> Element<'a, Message> {
     container(content)
         .padding(6)
         .width(Fill)
@@ -71,7 +74,7 @@ fn attention<'a>(
         .style(move |_| c.attention_style(tint))
         .into()
 }
-fn pill<'a>(
+pub(super) fn pill<'a>(
     label: impl Into<String>,
     background: iced::Color,
     ink: iced::Color,
@@ -86,7 +89,7 @@ fn pill<'a>(
     .style(move |_| c.pill(background, ink))
     .into()
 }
-fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
+pub(super) fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
     container(Space::new().width(size).height(size))
         .style(move |_| c.dot(fill))
         .into()
@@ -95,7 +98,7 @@ fn dot<'a>(fill: iced::Color, size: f32, c: Colors) -> Element<'a, Message> {
 /// the project's identity, so a repository keeps its colour across
 /// clones, machines and themes, and two projects side by side are told
 /// apart before their names are read.
-fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Element<'a, Message> {
+pub(super) fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Element<'a, Message> {
     let (tint, ink) = super::style::identity(seed, c.dark);
     let initial: String = name
         .chars()
@@ -200,7 +203,7 @@ fn pane_header<'a>(
     ]
     .into()
 }
-fn rule<'a>(c: Colors) -> Element<'a, Message> {
+pub(super) fn rule<'a>(c: Colors) -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
         .style(move |_| c.rule())
         .into()
@@ -231,7 +234,7 @@ fn remaining_fraction(
     (left as f64 / total as f64).clamp(0.0, 1.0) as f32
 }
 /// The first non-empty line of a text, cut to `limit` characters.
-fn first_line(text: &str, limit: usize) -> String {
+pub(super) fn first_line(text: &str, limit: usize) -> String {
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -246,7 +249,7 @@ fn first_line(text: &str, limit: usize) -> String {
 /// What a message says. Agents and the CLI send `{"text": ...}`, channel
 /// notices add a title and room around it; only a payload with no text at
 /// all is shown as its JSON.
-fn spoken_payload(payload: &serde_json::Value) -> String {
+pub(super) fn spoken_payload(payload: &serde_json::Value) -> String {
     payload
         .as_str()
         .or_else(|| payload["text"].as_str())
@@ -285,7 +288,7 @@ fn brand<'a>(c: Colors) -> Element<'a, Message> {
     .into()
 }
 /// Nothing here yet, said kindly, with the mark keeping it company.
-fn empty<'a>(
+pub(super) fn empty<'a>(
     title_text: &'a str,
     hint: &'a str,
     extra: Option<Element<'a, Message>>,
@@ -336,7 +339,7 @@ impl App {
     pub(super) fn all_projects(&self) -> bool {
         self.selected_root().is_none() && !self.shell.catalog.unassigned
     }
-    fn narrow(&self) -> bool {
+    pub(super) fn narrow(&self) -> bool {
         self.shell.width / self.scale_factor() < 900.0
     }
     fn in_project(&self) -> bool {
@@ -435,6 +438,7 @@ impl App {
                 })
         } else {
             match self.screen {
+                Screen::Questions if self.has_conversations() => "Messages",
                 Screen::Questions => "Inbox",
                 Screen::Runtimes => "Tools",
                 _ => "Settings",
@@ -465,6 +469,9 @@ impl App {
         } else if !in_project {
             header_left = header_left.push(note(
                 match self.screen {
+                    Screen::Questions if self.has_conversations() => {
+                        "Channels, direct messages and what your agents were told"
+                    }
                     Screen::Questions => "Questions and messages waiting for you",
                     Screen::Runtimes => "Connect and configure your agent tools",
                     _ => "Appearance, terminal, installation and diagnostics",
@@ -661,6 +668,7 @@ impl App {
         }
         let body = match self.screen {
             Screen::Agents => self.sessions(c),
+            Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
             Screen::Terminal => self.terminal_view(c),
@@ -2044,7 +2052,7 @@ impl App {
     }
 
     /// One question with its controls.
-    fn question_card(&self, question: &Question, c: Colors) -> Element<'_, Message> {
+    pub(super) fn question_card(&self, question: &Question, c: Colors) -> Element<'_, Message> {
         {
             let id = question.id.clone();
             let draft_id = id.clone();
