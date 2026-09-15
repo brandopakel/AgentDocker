@@ -32,10 +32,18 @@ fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
 pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     let (root, version, _) = managed(executable)?;
     let payload = root.join("current").join("payload");
-    let candidate = ["Contents/MacOS/agentd", "bin/agentd"]
-        .iter()
-        .map(|inside| payload.join(inside))
-        .find(|path| path.is_file())?;
+    // Where this platform's payload keeps its binaries: an application
+    // bundle on macOS, a plain tree elsewhere. Never the other one, even
+    // if a payload carries both.
+    let inside = if cfg!(target_os = "macos") {
+        "Contents/MacOS/agentd"
+    } else {
+        "bin/agentd"
+    };
+    let candidate = payload.join(inside);
+    if !candidate.is_file() {
+        return None;
+    }
     let resolved = std::fs::canonicalize(&candidate).ok()?;
     // Under the same versions directory, and not the release already
     // running: an activation is only a reload target when it is new.

@@ -116,6 +116,7 @@ jobs:
             artifacts/iced-workflows
             artifacts/daily-update-smoke
             artifacts/desktop-install-smoke
+            artifacts/desktop-reload-smoke
             artifacts/desktop-update-smoke
             artifacts/terminal-smoke
             artifacts/identity-smoke

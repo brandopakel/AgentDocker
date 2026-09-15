@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -116,6 +117,9 @@ def trial(args):
                                                      "command": ["sh", "-c", "while :; do sleep 1; done"]}})
             assert agent["type"] == "agent", agent
             keeper = agent["agent"]
+            # Whoever serves after each handoff, so cleanup can reach it
+            # even when the shutdown request itself fails.
+            serving_pid = daemon.pid
             try:
                 # Install the second generation: the daemon hands over to it.
                 second_id = cli("install", "--from", second, "--preview")["candidate"]["id"]
@@ -125,6 +129,7 @@ def trial(args):
                 assert serving_release(report["daemon"]) == second_id, report["daemon"]
                 assert report["daemon"]["before"]["pid"] == daemon.pid
                 assert report["daemon"]["serving"]["pid"] != daemon.pid
+                serving_pid = report["daemon"]["serving"]["pid"]
                 deadline = time.monotonic() + 10
                 while daemon.poll() is None:
                     assert time.monotonic() < deadline, "the first daemon did not leave"
@@ -143,6 +148,7 @@ def trial(args):
                 assert rollback["daemon"]["reloaded"] is True, rollback["daemon"]
                 assert serving_release(rollback["daemon"]) == first_id, rollback["daemon"]
                 assert rollback["daemon"]["before"]["pid"] == report["daemon"]["serving"]["pid"]
+                serving_pid = rollback["daemon"]["serving"]["pid"]
                 inspected = rpc(sock, {"op": "inspect", "agent": keeper["id"]})
                 assert inspected["agent"]["pid"] == keeper["pid"] and inspected["agent"]["status"]["state"] == "running", inspected
                 result["scenarios"].append("rolling back reloads the daemon to the previous release; its agent keeps its process")
@@ -163,6 +169,14 @@ def trial(args):
                 deadline = time.monotonic() + 10
                 while sock.exists() and time.monotonic() < deadline:
                     time.sleep(.05)
+                if sock.exists():
+                    # The serving successor did not stop on request: end its
+                    # own process group (each successor starts in one) so
+                    # nothing outlives this step.
+                    try:
+                        os.killpg(serving_pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
                 if daemon.poll() is None:
                     daemon.kill()
                 daemon.wait(timeout=10)

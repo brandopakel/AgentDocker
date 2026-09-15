@@ -1326,16 +1326,34 @@ fn perform(
         std::fs::rename(stage.path(), &version)?;
         std::fs::File::open(layout.root.join("versions"))?.sync_all()?;
     }
-    if current
+    let changed = current
         .as_ref()
-        .is_none_or(|active| active.current.id != candidate.id)
-    {
+        .is_none_or(|active| active.current.id != candidate.id);
+    if changed {
         layout.activate(candidate, current.map(|active| active.current))?;
     }
     // Activated: a daemon that is running was started from an earlier
     // release and keeps serving it until it hands over. Ask it to, and say
     // what serves either way; the answer is the daemon's, never assumed.
-    let daemon = daemon_after_activation(socket);
+    // An unchanged activation asks nothing: there is no other release to
+    // hand over to, and a reload would only replace the daemon with the
+    // same binary.
+    let daemon = if changed {
+        daemon_after_activation(socket)
+    } else {
+        let serving = serving_daemon(socket);
+        let summary = if serving.is_null() {
+            "unchanged: this release was already active and no daemon answered".to_owned()
+        } else {
+            format!(
+                "unchanged: this release was already active; agentd {} serves from {} (pid {})",
+                serving["version"].as_str().unwrap_or("?"),
+                serving["executable"].as_str().unwrap_or("?"),
+                serving["pid"]
+            )
+        };
+        json!({"answered": !serving.is_null(), "reloaded": false, "serving": serving, "summary": summary})
+    };
     report["activation"] = json!(daemon["summary"]);
     report["daemon"] = daemon;
     Ok(report)
