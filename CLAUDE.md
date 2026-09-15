@@ -30,6 +30,18 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 - Protocol changes: update `protocol.rs`, the table in `docs/ARCHITECTURE.md`, and the CLI in the same PR.
 - Errors returned to clients use `ErrorCode`; add a variant rather than overloading `Internal`.
 
+## Documentation contract
+
+The docs are the record of what the repository does and how far it is delivered. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
+
+- `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list, the phase rows).
+- `docs/REMAINING-WORK.md` for the disposition of an open item: what is now in source, what evidence exists, what is still open. Close a row only with evidence, and say what remains.
+- `docs/README.md` (the docs index): a new document is linked there, and the audit table's row for a document changes when that document's delivery state changes.
+- A verification record under `docs/verification/` for a trial on real binaries, with build provenance; then `python3 scripts/docs_check.py --write-index`, which regenerates the records section of `docs/README.md`.
+- `docs/GUIDE.md`, `docs/DESKTOP-UX.md` or the root `README.md` when a command, tool or screen changes for the person using it.
+
+`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, its verification records section must be current, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). That line is a statement to reviewers, not a way around the contract.
+
 ## Standard verification workflow
 
 Use `bash scripts/verify.sh check` before opening or updating a ready PR. The standard suite is nextest (zero retries, JUnit), separate doctests, formatting, strict Clippy, installer tests, packaging and release build. Use targeted tests while editing. Each worktree keeps its own Cargo target directory. Before direct Cargo commands, run `python3 scripts/build_storage.py`. Keep one local build campaign active and at most two debug caches; preserve reports and remove inactive generated caches before they accumulate. Never clean another session’s active build directory.
