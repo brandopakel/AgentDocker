@@ -68,3 +68,4 @@ its original source, date and outcome; a later merge does not rewrite it.
 | [2026-09-12-queue-read-reconnect.json](2026-09-12-queue-read-reconnect.json) | Bounded retry of retained Codex inbox reads with empty acknowledgements; uncertain writes retain existing pause behavior. |
 | [2026-09-12-thirty-minute-codex-queue.json](2026-09-12-thirty-minute-codex-queue.json) | passed |
 | [2026-09-12-ux-home.json](2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
+| [2026-09-15-native-codex-queue.json](2026-09-15-native-codex-queue.json) | Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance. |
