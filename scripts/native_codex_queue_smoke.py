@@ -442,6 +442,8 @@ try:
                     }
                 )
             )
+            with (profile / "config.toml").open("a") as configfile:
+                configfile.write("\n[features]\nhooks = true\n")
             provider_prefix += ["--dangerously-bypass-hook-trust"]
             report["fixture_hook_trust"] = (
                 "one-off vetted private SessionStart command; no saved user policy changed"
