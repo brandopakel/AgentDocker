@@ -422,6 +422,22 @@ try:
         if args.scenario == "startup":
             # The only hook in this private profile is this reviewed fixture
             # command. One-off trust does not change any user's saved policy.
+            hook_runner = root / "hook_capture.py"
+            hook_runner.write_text(
+                "import json,os,subprocess,sys\n"
+                "from pathlib import Path\n"
+                "raw=sys.stdin.read()\n"
+                + "Path("
+                + repr(str(out / "hook-input.json"))
+                + ").write_text(raw)\n"
+                + "p=subprocess.run("
+                + repr([str(cli), "--socket", str(sock), "hook", "codex"])
+                + ",input=raw,text=True,capture_output=True)\n"
+                + "Path("
+                + repr(str(out / "hook-stderr.log"))
+                + ").write_text(p.stderr)\n"
+                + "print(p.stdout,end='')\nsys.exit(p.returncode)\n"
+            )
             (profile / "hooks.json").write_text(
                 json.dumps(
                     {
@@ -431,9 +447,7 @@ try:
                                     "hooks": [
                                         {
                                             "type": "command",
-                                            "command": shlex.join(
-                                                [str(cli), "--socket", str(sock), "hook", "codex"]
-                                            ),
+                                            "command": shlex.join([sys.executable, str(hook_runner)]),
                                         }
                                     ]
                                 }
