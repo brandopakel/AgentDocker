@@ -4,6 +4,14 @@ cd "$(dirname "$0")/.."
 python3 scripts/build_storage.py
 case "${1:-check}" in
   check)
+    # The documentation is part of what is verified: the index is complete,
+    # links resolve, the verification index is current, and a code change
+    # against main came with a documentation change or a commit saying why.
+    if base="$(git merge-base HEAD origin/main 2>/dev/null)"; then
+      python3 scripts/docs_check.py --base "$base"
+    else
+      python3 scripts/docs_check.py
+    fi
     cargo fmt --all --check
     cargo clippy --locked --workspace --all-targets -- -D warnings
     cargo nextest run --locked --workspace --profile ci
