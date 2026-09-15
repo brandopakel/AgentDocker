@@ -496,7 +496,7 @@ mod tests {
             let client = Client::new(Some(binding.socket.clone())).with_start_timeout(None);
             assert_eq!(acknowledge(&client, &mut ledger).await.is_err(), lost_reply);
             assert!(
-                matches!(serving.await.unwrap(), Request::ProviderInbox {agent, acknowledge} if agent == "owner" && acknowledge == vec![answer.id.clone()])
+                matches!(serving.await.unwrap(), Request::ProviderInbox {agent, acknowledge, ..} if agent == "owner" && acknowledge == vec![answer.id.clone()])
             );
             assert_eq!(ledger.record().mcp_answers[0].acknowledged, !lost_reply);
             std::fs::remove_file(&binding.socket).unwrap();

@@ -85,6 +85,55 @@ pub enum EventKind {
         agent: AgentId,
         delivery: crate::InputDelivery,
     },
+    /// An external controller became the sole consumer of the agent's
+    /// queued input, or resumed a binding it held before.
+    InputBound {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        resumed: bool,
+    },
+    /// The binding ended; legacy readers may consume the queue again.
+    InputUnbound {
+        agent: AgentId,
+        reason: String,
+    },
+    /// The bound controller, or a process launched to replace it, is gone.
+    InputControllerEnded {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+    },
+    /// The daemon started the binding's launch descriptor; the process
+    /// binds itself with the controller's token.
+    InputControllerLaunched {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        attempt: u32,
+    },
+    /// A launch attempt failed before the process started.
+    InputControllerLaunchFailed {
+        agent: AgentId,
+        attempt: u32,
+        error: String,
+    },
+    /// The episode's launches are used up; the binding stands, dead,
+    /// until a controller binds by itself or somebody unbinds it.
+    InputRestartsExhausted {
+        agent: AgentId,
+        attempts: u32,
+    },
+    /// A person asked for the controller to be started again: the episode
+    /// starts over, the next launch is due at once.
+    InputRestartsReset {
+        agent: AgentId,
+    },
+    /// A provider session that came back as a new process was joined to
+    /// the record that holds its thread's queue and binding; the new
+    /// record's id is an alias of it from now on.
+    InputResumed {
+        agent: AgentId,
+        retired: AgentId,
+        provider: crate::ProviderGeneration,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,
