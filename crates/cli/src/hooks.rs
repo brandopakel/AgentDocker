@@ -11,6 +11,7 @@
 //! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit; deny the edit on conflict |
 //! | `PostToolUse`      | hand the model queued messages as context                              |
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
+//! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
 //! | `SessionEnd`       | release every lease and deregister                                     |
 //!
 //! The hook never breaks a session: if agentd is unreachable it prints a
@@ -102,6 +103,8 @@ pub enum Host {
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
+    #[serde(default)]
+    pub error: Option<String>,
     #[serde(default)]
     pub session_id: String,
     #[serde(default)]
@@ -255,11 +258,15 @@ impl<B: Backend> Backend for HookDelivery<'_, B> {
             }
             let response = self
                 .backend
-                .call(Request::Inbox {
+                .call(Request::DeliveryQueue {
                     agent: agent.clone(),
-                    drain: false,
                 })
                 .await?;
+            if matches!(response, Response::InputWaiting { .. }) {
+                return Ok(Response::Messages {
+                    messages: Vec::new(),
+                });
+            }
             if let Response::Messages { messages } = &response {
                 self.pending.borrow_mut().push(Request::AckInbox {
                     agent,
@@ -370,6 +377,21 @@ pub async fn claude_code<B: Backend>(
     opts: &ClaudeCodeArgs,
 ) -> Result<Option<Value>> {
     match input.hook_event_name.as_str() {
+        "StopFailure" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                crate::provider_status::report(
+                    backend,
+                    &me,
+                    agentdocker_core::ProviderReport::Blocked {
+                        issue: crate::provider_status::claude(input.error.as_deref()),
+                    },
+                )
+                .await?;
+            }
+            // A provider failure is neither a completed task nor an invitation
+            // to wake again. Keep the queue and normal lease expiry intact.
+            Ok(None)
+        }
         "SessionStart" => {
             let me = ensure_registered(backend, input).await?;
             let agents = all_agents(backend).await?;
@@ -499,6 +521,7 @@ pub async fn claude_code<B: Backend>(
             let Some(me) = session_agent(backend, input).await? else {
                 return Ok(None);
             };
+            crate::provider_status::recovered(backend, &me).await?;
             // What the model last said is what the release entry quotes.
             let summary = input
                 .transcript_path
@@ -1219,6 +1242,18 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .with_context(|| format!("`hooks.{event}` must be an array"))?;
+        if runtime == "claude-code" && *event == "StopFailure" {
+            for entry in entries.iter_mut() {
+                if let Some(hooks) = entry["hooks"].as_array_mut() {
+                    for hook in hooks.iter_mut().filter(|hook| managed(hook)) {
+                        if hook["async"] != true {
+                            hook["async"] = json!(true);
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
         if runtime == "codex" && *event == "Interrupt" {
             for entry in entries.iter_mut() {
                 if let Some(hooks) = entry["hooks"].as_array_mut() {
@@ -1284,6 +1319,9 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
         let mut entry = json!({
             "hooks": [{ "type": "command", "command": command, "timeout": timeout }]
         });
+        if runtime == "claude-code" && *event == "StopFailure" {
+            entry["hooks"][0]["async"] = json!(true);
+        }
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
         }
@@ -1389,6 +1427,34 @@ mod tests {
                 collapsed: 0,
                 other_branches: 0,
             },
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_failure_records_a_limit_without_releasing_leases_or_waking_claude() {
+        for (error, kind) in [
+            ("rate_limit", agentdocker_core::ProviderIssueKind::Rate),
+            ("future_error", agentdocker_core::ProviderIssueKind::Unknown),
+        ] {
+            let me = agent("claude-01234567", true);
+            let backend = Mock::with(vec![Response::Agent { agent: me.clone() }, Response::Ok]);
+            let mut event = input("StopFailure");
+            event.error = Some(error.into());
+            assert!(
+                claude_code(&backend, &event, &opts())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                backend.requests().len(),
+                2,
+                "failure must not read the queue, release leases, close questions or create completion summaries"
+            );
+            assert!(
+                matches!(&backend.requests()[1], Request::ReportProvider { agent, process_started_at, report: agentdocker_core::ProviderReport::Blocked { issue }, .. }
+                if agent == me.id.as_str() && Some(*process_started_at) == me.process_started_at && issue.kind == kind && issue.reset_at.is_none())
+            );
         }
     }
 
@@ -2235,7 +2301,7 @@ mod tests {
         let mention =
             json!({"hooks":[{"type":"command", "command":"echo 'agentdocker hook claude-code'"}]});
         let mut settings = json!({"hooks":{"Stop":[mention.clone()]}});
-        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 6);
+        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 7);
         assert_eq!(settings["hooks"]["Stop"][0], mention);
         let file = tmp.path().join(".claude/settings.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -2360,7 +2426,11 @@ mod tests {
         let added =
             merge_claude_code_hooks(&mut settings, "/usr/local/bin/agentdocker hook claude-code")
                 .unwrap();
-        assert_eq!(added, 6);
+        assert_eq!(added, 7);
+        assert_eq!(
+            settings["hooks"]["StopFailure"][0]["hooks"][0]["async"],
+            true
+        );
         assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
         let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
@@ -2409,12 +2479,9 @@ mod tests {
                     Request::Inspect { .. } => Ok(Response::Agent {
                         agent: self.agent.clone(),
                     }),
-                    Request::Inbox { drain, .. } => {
-                        assert!(!drain, "hooks must not destructively read inboxes");
-                        Ok(Response::Messages {
-                            messages: self.queued.borrow().clone(),
-                        })
-                    }
+                    Request::DeliveryQueue { .. } => Ok(Response::Messages {
+                        messages: self.queued.borrow().clone(),
+                    }),
                     Request::List { .. } => std::future::pending().await,
                     _ => panic!("unexpected request {request:?}"),
                 }

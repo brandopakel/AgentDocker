@@ -350,6 +350,14 @@ impl App {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
+        } else if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+            state
+                .issue
+                .as_ref()
+                .expect("blocked")
+                .kind
+                .label()
+                .to_owned()
         } else if self.delivery_paused(agent) {
             "delivery paused".to_owned()
         } else if agent.status.is_live() {
@@ -401,6 +409,9 @@ impl App {
         }
         if self.connected.is_err() {
             return "Readiness unavailable";
+        }
+        if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+            return state.issue.as_ref().expect("blocked").kind.label();
         }
         let Some(delivery) = agent.input_delivery.as_ref() else {
             return "Idle delivery not verified";
@@ -985,15 +996,22 @@ impl App {
             .iter()
             .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
         {
+            let (reason, control, label) =
+                if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                    (
+                        state.issue.as_ref().expect("blocked").kind.label(),
+                        "provider",
+                        "Details",
+                    )
+                } else {
+                    ("message delivery needs review", "review", "Review")
+                };
             items.push((
                 dot(c.amber, 8.0, c),
-                format!(
-                    "{}: message delivery needs review",
-                    self.display_name(agent)
-                ),
+                format!("{}: {reason}", self.display_name(agent)),
                 action(
-                    format!("needs-you-review-{}", agent.id),
-                    "Review",
+                    format!("needs-you-{control}-{}", agent.id),
+                    label,
                     Some(Message::OpenSession(agent.id.to_string())),
                     false,
                 ),
@@ -1378,6 +1396,27 @@ impl App {
             }
             if !status.is_empty() {
                 body = body.push(small(status.join(" · "), c));
+            }
+            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                let issue = state.issue.as_ref().expect("blocked");
+                if let Some(reset) = issue.reset_at {
+                    body = body.push(small(
+                        format!("Provider reset: {} UTC", reset.format("%b %d %H:%M")),
+                        c,
+                    ));
+                }
+                body = body.push(small(
+                    "Messages are kept. Resume after the provider is available.",
+                    c,
+                ));
+                body = body.push(action(
+                    "resume-provider",
+                    "Resume delivery",
+                    self.connected
+                        .is_ok()
+                        .then(|| Message::ResumeProvider(source.id.to_string(), state.observed_at)),
+                    false,
+                ));
             }
             if paused {
                 body = body.push(action(

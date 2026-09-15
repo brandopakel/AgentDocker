@@ -78,6 +78,13 @@ pub fn repair_pair<'a>(
         return Err("neither record identifies the provider session");
     }
     for record in [a, b] {
+        if record
+            .provider_availability
+            .as_ref()
+            .is_some_and(|p| p.issue.is_some())
+        {
+            return Err("resolve provider availability before reconciling these records");
+        }
         if !record
             .pid
             .is_some_and(|pid| pid > 0 && pid <= i32::MAX as u32)
@@ -167,6 +174,22 @@ mod tests {
                 .insert("session_id".into(), session.into());
         }
         record
+    }
+
+    #[test]
+    fn repair_cannot_erase_an_unresolved_provider_limit() {
+        let a = record("a", Some("session"));
+        let mut b = record("b", Some("session"));
+        b.provider_availability = Some(crate::ProviderAvailability {
+            process_started_at: b.process_started_at.unwrap(),
+            observed_at: b.created_at,
+            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
+            cleared_observation: None,
+        });
+        assert_eq!(
+            repair_pair([&a, &b], &a.id, &b.id),
+            Err("resolve provider availability before reconciling these records")
+        );
     }
 
     #[test]

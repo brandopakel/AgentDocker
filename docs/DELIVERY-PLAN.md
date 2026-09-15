@@ -12,6 +12,18 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ### Current integration and installation (audited September 14)
 
+Latest closeout: PRs #127, #128 and #130 are merged after final-source review
+and five successful CI workflows each. PR #130 closes independent process
+ownership and durable exit recovery, with 911 Rust tests, 70 Python checks and
+real owned-process restart/retirement/pressure trials at `5120f03`. Full reload
+fencing, successor readiness and transfer acceptance remain open. The installed
+app/CLI remain PR #127's reviewed `723e794`; active sessions still use the old
+schema15 daemon. PR #129's narrow Inbox/readable-name work and PR #131's provider
+availability/queue recovery are implemented and included in this combined
+closeout. Remaining review, installation and acceptance limits are recorded in
+[Remaining work](REMAINING-WORK.md); neither implementation waits for Claude.
+The following PR #119 details are historical checkpoints.
+
 PR #119 merged #115–#118 and Claude's messenger, minimal attention and
 Applications-folder work into `aaa1b61`. Final review and CI are complete.
 [Final acceptance and installation](https://github.com/brandopakel/AgentDocker/pull/119#issuecomment-5649912103)
@@ -128,9 +140,12 @@ distinct-source or hosted-update acceptance.
 
 The user reports that the connected Claude session reached its provider session
 limit while coordinating this work. Treat this as a required delivery/recovery
-case in step 4 and L09/L13, alongside idle wake. Implementation and acceptance
-remain open; a live provider process or connected transport does not establish
-that the model can accept or finish work.
+case in step 4 and L09/L13, alongside idle wake. The current change implements
+the shared schema18 availability model, adapter queue gates, explicit recovery,
+Claude/Codex structured signals and desktop status. Focused tests pass across
+all catalog runtimes plus custom integrations. Actual-provider recovery and
+remaining adapter acceptance are tracked below; a live process or connected
+transport does not establish that the model can accept or finish work.
 
 - Apply this contract to every supported provider, company, model and runtime,
   including OpenAI/Codex, Anthropic/Claude, Google/Gemini, integrations such as
@@ -316,7 +331,7 @@ integrations, GUI, full platform parity and live-upgrade work continue afterward
 | 3. Complete native install and onboarding | Verify app/archive packaging, final signatures, preview/apply/undo, connection diagnostics, stable provider paths, pinned installation/update/rollback, uninstall and retention. Exercise interrupted activation and schema compatibility with live sessions. | Local app/CLI installation and legacy hook/MCP compatibility passed at PR #119; UI is installed in /Applications. Update consumer, scheduler, preview/apply/undo and rollback exist. Per-session configuration/contact/receiver/receipt states and required-provider guidance are implemented; PR #125 passed 165 native steps and a 90-second actual Codex queue/idle-heartbeat trial. Final review and installed-candidate readiness acceptance remain pending. Signed hosted distribution and broader acceptance remain. |
 | 4. Verify real integrations and discovery | Run fresh Claude Code hooks and Codex MCP sessions on the integrated candidate; prove actual inbox consumption, observation/staleness, conflicts and journal continuity. Expand desktop identities, installation locations and accurate capability reporting. | Managed Codex and Claude channels have actual shared human/peer queue, idle/busy/question and bounded recovery evidence. Broader review/elicitation forms, installed-version trials and longer sessions remain. Production duplicate repair awaits a safe daemon stop. |
 | 5. Deliver platform parity | Finish native Windows host/IPC/process/terminal/service/path/installer adapters and runtime CI. Complete Linux desktop inventory/packages and target-distribution GUI/service tests. Repeat the same semantic tests on each OS. | Four Mac/Linux desktop CI targets and Windows core/host/named-pipe foundations pass on main. Target-distribution/service, second-Mac/physical-Intel and full native Windows daemon/GUI/ConPTY/service/installer acceptance remain. |
-| 6. Integrate sustained-use features | Review #45/#47/#50 restart/backoff/dependency/policy/retention/reload work, including the reproduced agent termination and log-loss defects. Preserve batch and PTY I/O, process ownership, logs, schema and socket compatibility through replacement. Validate the actual replacement binary and successor readiness before the old daemon exits. | Policy/quotas, restart/backoff/dependencies, bounded logs and output ownership are merged. Automatic journal/checkpoint maintenance remains unbuilt at this baseline. `daemon reload` still refuses: process/I/O ownership transfer and successor fencing/readiness remain unbuilt. |
+| 6. Integrate sustained-use features | Review #45/#47/#50 restart/backoff/dependency/policy/retention/reload work, including the reproduced agent termination and log-loss defects. Preserve batch and PTY I/O, process ownership, logs, schema and socket compatibility through replacement. Validate the actual replacement binary and successor readiness before the old daemon exits. | Policy/quotas, restart/backoff/dependencies, bounded logs and output ownership are merged. Automatic journal/checkpoint maintenance and independent session-owner processes are implemented and merged. `daemon reload` still refuses: coordinator fencing, successor readiness and transfer acceptance remain open. |
 | 7. Complete the extensive test program | Execute the testing-standard and local-trial crosswalk below, repair failures, retain original failure evidence, and rerun affected integrated scenarios. | Partial. Current T01–T12 and L01–L15 dispositions follow below. Short and hour-long trials exist; overnight, sleep/reboot, some failure diagnosis and independent-platform cases remain. |
 | 8. Install, trial elsewhere and release | After the preceding blockers pass, install the reviewed candidate on this Mac; then independent second-Mac and platform trials. Publish signed artifacts, checksums and accurate installation instructions for supported channels. | Local installation completed on this Mac. Running-daemon switch, independent machines, Developer ID/notarization, protected-tag publication and hosted update/cask acceptance remain. Public v0.1.0 is still the older release. |
 

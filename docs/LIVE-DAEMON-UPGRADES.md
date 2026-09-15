@@ -14,23 +14,29 @@ ownership and recovery requirements behind the open item in
 
 ## Current boundaries
 
-`supervisor.rs` owns each native child, terminal, stdout/stderr reader, log writer
-and scrollback. The output tasks are now retained through EOF and final flush
-before publishing exit, releasing protection or restarting. A regression on the
-previous implementation reported exit with only 1,969 of 4,096 stdout lines
-logged; the correction covers both pipe streams and terminal output. Sink/read
-failures emit a separate incomplete-output event and retain the actual child
-exit status. This closes the detached-output race within one owner, while
-cross-process ownership remains open. The [output-drain checkpoint](verification/2026-09-12-output-drain.json) passed 842 Rust tests, 65 Python checks and an actual immutable pipe/PTY exit-and-immediate-shutdown trial. Both streams retained all 4,096 lines in order once, with unchanged logs through shutdown and no remaining fixture processes. PR #111 passed final CI/source review and merged as `c47b2ce`. Eight additional actual CLI terminal scenarios also passed at the same immutable source, including natural exit while the keyboard remained open. Dropping an unreaped `OwnedChild` kills and reaps its group.
-`lib.rs` stops managed agents when serving ends. Passing the listening socket and
-PTY descriptor does not preserve the other owners or their buffered work.
+PR #130 merged independent session owners as `b28d24c`. The reviewed source
+`5120f03` passed 911 Rust tests (six skipped), 70 Python checks and all five CI
+workflows after final source inspection. Each `agentd --session-owner` keeps
+its child/process group, terminal or pipes, logs, scrollback, exact exit status
+and release pin across coordinator crashes. Normal explicit daemon shutdown
+still stops managed sessions through `stop_all`; live replacement must preserve
+them through a separate transfer path. Successor attachment verifies owner and child birth,
+fences stale controllers and preserves live leases while contact is uncertain.
 
-The existing `OwnedChild::disown` prevents its drop from killing the child, but
-does not make the successor its parent. PID monitoring cannot recover its exit
-status or replace parent reaping. Replacement must retain a supervising owner
-until each existing process exits, including descendant cleanup and exact exit
-reporting. The coordinator may retire while that owner finishes its sessions;
-the old installation must remain pinned while any such process still uses it.
+Actual private trials covered batch/PTY continuity across a daemon crash,
+a verified owner stopped for 12 seconds during successor startup, 80 controller
+replacements, installation-lock pinning and durable exit/report retirement.
+Disk cleanup completed 28 ms after owner retirement. An earlier test stopped
+its successor 13 ms after launch and asserted cleanup prematurely; the original
+failure is retained, followed by bounded completion at the same binary. The later distinct-source `880e111` → `5120f03` trial also passed: batch/PTY
+children survived a 12-second owner outage with unchanged identities/lease,
+40 FIFO messages, 100 ordered log lines per child and exact exit codes 7/3.
+All owners and fixture daemons exited. The full coordinated reload sequence
+below remains separate work.
+
+The earlier [output-drain checkpoint](verification/2026-09-12-output-drain.json)
+remains evidence for the predecessor implementation's pipe/PTY EOF and final
+flush behavior, not a current cross-process ownership gap.
 
 The Codex question-event worker now has bounded checked reconnect with
 [actual event-only cut evidence](verification/2026-09-12-provider-event-reconnect.json). Other daemon RPC failures still pause delivery and shut its provider
@@ -49,16 +55,16 @@ event continuity, not just a new socket or a readiness marker.
    its group, terminal, pipes, log and pending I/O. It must report exact exit
    status once and accept identity-bound stop/resize/input commands after the
    coordinator changes. A crash or failed handover must not disarm ownership.
-   *In source:* the session owner (`agentd --session-owner`, see
-   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); actual
-   distinct-binary acceptance of batch and PTY continuity through a daemon
-   restart is still to be recorded.
+   *Implemented and merged in PR #130:* the session owner (`agentd --session-owner`, see
+   [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence)); bounded actual
+   distinct-source batch/PTY continuity passed from `880e111` to `5120f03`,
+   including delayed owner contact, queue/lease retention and exact exits.
    Disk exit recovery now requires a durable record before acknowledgement,
    validates the responding agent/owner/child, and cleans the matching report
    under the stable owner lock after retirement. Regression cases cover both
    earlier storage failure and failure during the exit write, a different agent
-   answering on the socket, and a newer generation's report. Actual restart and
-   final integration checks remain required; this does not enable reload.
+   answering on the socket, and a newer generation's report. Actual same-binary restart and final integration checks passed at `5120f03`;
+   the distinct-source trial above also passed. This does not enable reload.
 3. **Coordinator fencing.** Quiesce mutations and background writers before
    releasing database authority. Exclude an unrelated autostart during transfer.
    Only one coordinator may write. New requests must either complete under a

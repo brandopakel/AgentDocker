@@ -376,31 +376,15 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 Five crates:
 
-- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). Coordination operations are pure and take `now`; legacy environment-default helpers in `core::paths` remain an architectural cleanup item.
+- `crates/core` — `agentdocker-core`: the data model, the wire protocol, and the pure coordination logic (`LeaseTable`, `Registry`, topic matching, the journal, handoff bundles, the runtime table). Coordination operations are pure and take `now`; host environment defaults live in `agentdocker_host::dirs`.
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
 - `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Inbox handles conversations, questions and drafts; Tools reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
 
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the design of the phases below; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the engineering design; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 
-## Roadmap
-
-The thesis: Docker's moat was a layered filesystem plus namespaces. AgentDocker's is the **working set** — the daemon observes what every agent read, holds, changed, and which branch it is on, and derives from that what no single agent can: grouping, staleness, attribution, deadlock, handoff. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#roadmap) has the engineering detail for every item.
-
-Audited September 14, 2026 against merged `aaa1b61` (PR #119). Phases 0–4 have
-their listed single-host implementations; **the roadmap is not complete**.
-Phase 5 still needs the engineering and acceptance below, Windows is partial,
-and federation is deferred. Implementation status does not certify a release.
-
-- **Phase 0 — local control plane** *(done)*: daemon, registry, `run`/`stop`/`logs`, direct/topic/broadcast messaging with inboxes, leases with TTL and hierarchy, event stream, CLI.
-- **Phase 1 — adapters & persistence** *(done)*: SQLite-backed state so agents, leases, inboxes, and event history survive daemon restarts; `agentdocker mcp`; `agentdocker hook` for Claude Code; `Agentfile.toml` with `up`/`down`; `claim --wait`.
-- **Phase 2 — native install & projects** *(done)*: a native per-user daemon with a launchd/systemd service and lazy start; agents grouped by the repository they work in (worktrees included); `project:` messaging; discovery and adoption of running agent processes; each agent's branch in `ps`.
-- **Phase 3 — the working set** *(done)*: read sets and the project watcher, so an agent is told when something it read has changed and by whom; the attribution ledger (`blame`); the per-project journal with cursors and digests.
-- **Phase 4 — layers, sandboxes & handoff** *(implemented)*: a worktree per agent (`run --isolate`), `overlap`, validated integration; handoff bundles with lease transfer and `export`/`import`; container sandboxes with scoped credentials, and Docker/Podman as optional engines.
-- **Phase 5 — the machine and the human** *(partly complete)*: implemented inventory and supported-tool setup, continuous discovery, Iced desktop, human questions, routed notifications, FIFO waiting/deadlock detection, observed activity, admission policy/quotas, restart policies and `depends_on`. PTY sessions, opt-in command relaunch, multiplexer adapters, validation-backed contests and compact MCP output are also implemented.
-- **Phase 5 delivery still open**: installed-candidate input-readiness acceptance; broader provider review/elicitation, limit recovery and interruption handling across all supported providers/models (including shared quotas and unknown signals); production duplicate repair; safe live daemon replacement; physical notification/accessibility/IME trials; overnight and independent-platform acceptance; signed published desktop releases and hosted updates. Tools separates saved setup, per-session adapter contact and current receiver/receipt evidence. The managed Codex bridge and Claude channels have bounded shared-queue/idle-wake evidence. Generic conversation restoration and seamless daemon upgrades remain unimplemented. Track these existing requirements in [Remaining work](docs/REMAINING-WORK.md), with test status in the [delivery crosswalk](docs/DELIVERY-PLAN.md#testing-standard-crosswalk).
-- **Phase 6 — Windows and federation** *(not complete)*: named-pipe and core/host foundations have native Windows CI; the full daemon, terminal, service, installer and GUI still need integration and acceptance. Authenticated peer daemons, global `host/agent` identity and cross-host coordination are deferred until the single-host product is dependable.
+Current implementation and unfinished engineering are tracked in [Remaining work](docs/REMAINING-WORK.md). Release and platform acceptance are recorded there separately from completed features.
 
 ## Development
 

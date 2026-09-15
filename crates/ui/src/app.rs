@@ -90,6 +90,7 @@ enum Cmd {
     Adopt(u32),
     AdoptAll,
     Stop(String),
+    ResumeProvider(String, chrono::DateTime<Utc>),
     Setup(Vec<String>),
     Desktop(Vec<String>),
     UpdateCheck,
@@ -478,7 +479,7 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
-                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
+                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) | Cmd::ResumeProvider(..) => {}
                 // Full queues may omit refreshes: events and periodic refresh
                 // request another snapshot. User actions get an explicit error.
                 _ => return,
@@ -825,6 +826,24 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            EventKind::ProviderAvailabilityReported {
+                agent,
+                availability,
+                ..
+            } => {
+                if let Some(record) = self.agents.iter_mut().find(|a| a.id == *agent) {
+                    record.provider_availability = Some(availability.clone());
+                }
+                let blocked: Vec<_> = self
+                    .agents
+                    .iter()
+                    .filter(|a| agentdocker_core::provider_block(a, &self.agents).is_some())
+                    .map(|a| a.id.to_string())
+                    .collect();
+                self.shell.unviewed_done.retain(|id| !blocked.contains(id));
+                self.send(Cmd::Agents);
+                self.send(Cmd::Activity);
+            }
             EventKind::InboxAcknowledged { .. } => self.send(Cmd::Activity),
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
@@ -870,6 +889,13 @@ impl App {
                 Some(Activity::Working { .. } | Activity::Blocked { .. })
             );
             if !was_busy || !matches!(now, Activity::Idle { .. } | Activity::Finished) {
+                continue;
+            }
+            if self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && self.delivery_paused(a))
+            {
                 continue;
             }
             let on_screen = self.screen == Screen::Agents
@@ -1495,6 +1521,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 "stopping {}",
                 agent.chars().take(12).collect::<String>()
             )))
+        }
+        Cmd::ResumeProvider(agent, blocked_at) => {
+            let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "Provider resumption refused: {response:?}"
+            );
+            Some(Msg::Status(
+                "Delivery resumed; previously received input will not be replayed".into(),
+            ))
         }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),

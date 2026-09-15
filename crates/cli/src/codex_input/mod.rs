@@ -88,6 +88,16 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     let agent = identity(&client, &agent_id, &cwd).await?;
     let result = run_owned(&client, args, home, socket, cwd, &agent).await;
     if let Err(cause) = &result {
+        if let Some(failure) = cause.downcast_ref::<crate::provider_status::Failure>() {
+            let _ = crate::provider_status::report(
+                &client,
+                &agent,
+                agentdocker_core::ProviderReport::Blocked {
+                    issue: failure.0.clone(),
+                },
+            )
+            .await;
+        }
         if let Err(error) = crate::input_status::report(
             &client,
             agent.id.as_str(),
@@ -151,6 +161,7 @@ async fn queue(
 ) -> Result<Vec<Envelope>> {
     match daemon_io::queue(client, &ledger.record().binding.agent, acknowledge).await? {
         Response::Messages { messages } => Ok(messages),
+        Response::InputWaiting { .. } => Ok(Vec::new()),
         _ => bail!(
             "daemon does not support the Codex input queue; update it before launching this mode"
         ),
@@ -367,20 +378,37 @@ async fn session(
                     Some("turn/completed") => {
                         let id = params["turn"]["id"].as_str().context("Codex completed turn has no ID")?;
                         ensure!(turn.as_deref() == Some(id), "Codex completed an unexpected turn");
+                        let status = params["turn"]["status"].as_str().context("Codex completed turn has no status")?;
+                        let completed_at = chrono::Utc::now();
+                        if status == "failed" {
+                            crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {
+                                issue: crate::provider_status::codex(&params["turn"]["error"]),
+                            }).await?;
+                        }
                         if ledger.record().attempt.as_ref().is_some_and(|a| a.receipt.is_none()) {
                             recovery::find_receipt(provider, ledger).await?;
                         }
                         acknowledge(client, ledger, agent).await?;
-                        let status = params["turn"]["status"].as_str().context("Codex completed turn has no status")?;
                         ensure!(recovery::terminal(status), "Codex completed notification is not terminal");
                         requests::turn_ended(client, ledger).await?;
                         mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
                         file_reviews = file_changes::Reviews::default();
+                        if status == "completed" {
+                            if let Response::Agent { agent: current } = call(client, Request::Inspect { agent: agent.id.to_string() }).await? {
+                                if current.provider_availability.as_ref().is_some_and(|s| s.observed_at <= completed_at) {
+                                    crate::provider_status::recovered(client, &current).await?;
+                                }
+                            }
+                        }
                         println!("\nCodex turn {status}.");
                         activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
                     }
-                    Some("error") => eprintln!("Codex reported an error; waiting for the turn outcome."),
+                    Some("error") if params["turnId"].as_str() == turn.as_deref() => {
+                        let issue = crate::provider_status::codex(&params["error"]);
+                        eprintln!("{}; queued delivery is waiting for recovery.", issue.kind.label());
+                        crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked { issue }).await?;
+                    }
                     _ => (),
                 }
             }
@@ -398,11 +426,34 @@ async fn session(
                 let messages = requests::poll(client, provider, ledger).await?;
                 if turn.is_none() && ledger.record().reviews.is_empty() {
                 if let Some(message) = messages.first() {
+                    if ledger.record().attempt.is_some() {
+                        if let Err(error) = recovery::recover(provider, client, ledger, agent).await {
+                            eprintln!("Retained input still needs inspection: {error:#}");
+                            crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {
+                                issue: agentdocker_core::ProviderIssue::local(agentdocker_core::ProviderIssueKind::Unknown),
+                            }).await?;
+                        }
+                        // Re-read the queue after receipt reconciliation; a
+                        // stale queue head may just have been acknowledged.
+                        continue;
+                    }
                     preflight(provider, &ledger.record().binding.cwd).await?;
                     let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
-                    let result = provider.request("turn/start", json!({"threadId":thread,
-                        "input":[{"type":"text","text":input,"text_elements":[]}]})).await?;
+                    let result = match provider.request("turn/start", json!({"threadId":thread,
+                        "input":[{"type":"text","text":input,"text_elements":[]}]})).await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            if let Some(failure) = error.downcast_ref::<crate::provider_status::Failure>() {
+                                crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {
+                                    issue: failure.0.clone(),
+                                }).await?;
+                                eprintln!("{}; input remains queued without a receipt. The provider session is retained.", failure.0.kind.label());
+                                continue;
+                            }
+                            return Err(error);
+                        }
+                    };
                     turn = Some(result["turn"]["id"].as_str().context("Codex accepted no identifiable turn")?.to_owned());
                 }
                 }
