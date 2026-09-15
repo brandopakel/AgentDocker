@@ -110,8 +110,9 @@ agent's delivery evidence, and starts the descriptor again with backoff (0, 2,
 4, 8, 16 seconds; five launches per episode, then `input_restarts_exhausted`;
 a controller that stayed bound for a minute starts the count over), while the
 provider process is still running. After the daemon gave up, `agentdocker
-provider retry <agent>` starts the episode over on the same binding, queue
-and provider; nothing in the inbox controls repairs a receiver. The started process binds itself with the
+provider retry <agent>` or the selected session's **Retry receiver** action in
+the desktop app starts the episode over on the same binding, queue and
+provider; nothing in the inbox controls repairs a receiver. The started process binds itself with the
 same token: the daemon restarts receivers, never provider sessions, and never
 rebinds or changes the provider generation on its own. The descriptor is kept
 on the agent record in the open, so the token belongs in a private file, not
