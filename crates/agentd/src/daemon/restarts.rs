@@ -201,10 +201,10 @@ impl Daemon {
                         Utc::now(),
                     );
                     event.seq = state.next_seq;
-                    let _ = state.persist("failed restart", |store| {
+                    let committed = state.persist("failed restart", |store| {
                         store.agent_transition(&failed, &event)
                     });
-                    if state.storage_error.is_some() {
+                    if committed != Persisted::Committed {
                         return;
                     }
                     *state
@@ -232,7 +232,20 @@ impl Daemon {
         }
         record.spec.restart = agentdocker_core::RestartPolicy::No;
         let record = record.clone();
-        let _ = state.persist("agent", |store| store.upsert_agent(&record));
+        let mut event = Event::new(
+            EventKind::AgentRestartCleared {
+                agent: record.id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        let committed = state.persist("restart policy", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if committed == Persisted::Committed {
+            state.next_seq += 1;
+            let _ = state.events.send(event);
+        }
     }
 }
 

@@ -377,10 +377,21 @@ impl Daemon {
         }
         record.spec.restore = false;
         let record = record.clone();
-        let _ = state.persist("agent", |store| store.upsert_agent(&record));
-        state.store_op("restore_point", |store| {
+        let mut event = Event::new(
+            EventKind::AgentRestoreCleared {
+                agent: record.id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        let committed = state.persist("restore intent", |store| {
+            store.agent_transition(&record, &event)?;
             store.delete_document("restore_point", id.as_str())
         });
+        if committed == Persisted::Committed {
+            state.next_seq += 1;
+            let _ = state.events.send(event);
+        }
     }
 
     async fn restore_one(self: &Arc<Self>, record: AgentRecord) -> anyhow::Result<()> {

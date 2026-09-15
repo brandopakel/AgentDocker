@@ -84,7 +84,8 @@ impl State {
         }
         let ids: Vec<AgentId> = members.iter().map(|m| m.id.clone()).collect();
         if let Some(id) = self.contested_channel(project) {
-            let Some(channel) = self.channels.get_mut(&id) else {
+            // Widen a copy; memory takes it only once the write has landed.
+            let Some(mut channel) = self.channels.get(&id).cloned() else {
                 return;
             };
             let widened = channel.add_path(path.to_path_buf());
@@ -99,10 +100,13 @@ impl State {
             if !widened && joined.is_empty() {
                 return;
             }
-            let channel = channel.clone();
-            let _ = self.persist("channel", |store| {
+            let committed = self.persist("channel", |store| {
                 store.put_document("channel", channel.id.as_str(), &channel)
             });
+            if committed != Persisted::Committed {
+                return;
+            }
+            self.channels.insert(id, channel.clone());
             for agent in joined {
                 self.emit(EventKind::ChannelJoined {
                     channel: channel.id.clone(),
@@ -150,10 +154,15 @@ impl State {
 
     /// Store, announce and journal a new channel.
     pub(super) fn install_channel(&mut self, channel: Channel, members: &[AgentRecord]) {
-        self.channels.insert(channel.id.clone(), channel.clone());
-        let _ = self.persist("channel", |store| {
+        // Written first, remembered second: a room the store did not keep
+        // is not open.
+        let committed = self.persist("channel", |store| {
             store.put_document("channel", channel.id.as_str(), &channel)
         });
+        if committed != Persisted::Committed {
+            return;
+        }
+        self.channels.insert(channel.id.clone(), channel.clone());
         self.emit(EventKind::ChannelOpened {
             channel: channel.id.clone(),
             project: channel.project.clone(),

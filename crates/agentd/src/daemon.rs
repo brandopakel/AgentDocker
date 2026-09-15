@@ -124,6 +124,17 @@ enum Persisted {
     Failed,
 }
 
+/// One admitted mutation in progress; dropping it, however the request
+/// ends, releases its place.
+struct InFlight(Arc<Daemon>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.in_flight = state.in_flight.saturating_sub(1);
+    }
+}
+
 /// A recovery write held back until this process is allowed to write.
 type DeferredWrite = Box<dyn FnOnce(&Store) -> anyhow::Result<()> + Send>;
 
@@ -282,6 +293,11 @@ struct State {
     /// offer waits for this to reach zero so its final write follows every
     /// side effect it might otherwise race.
     in_flight: usize,
+    /// The last write was skipped by the fence. Every existing "did it
+    /// land" check reads `storage_failure()`, so a skip is reported there
+    /// as `transferring` until a later write lands or the offer is
+    /// aborted; unlike a storage failure it is not latched for good.
+    skipped_write: bool,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
@@ -1132,6 +1148,7 @@ impl Daemon {
                 },
                 deferred_recovery: deferred,
                 in_flight: 0,
+                skipped_write: false,
                 registry,
                 leases,
                 inboxes,
@@ -1254,13 +1271,19 @@ impl Daemon {
         // an offer that finds the count at zero knows no admitted mutation
         // is still executing, so its final write follows every side effect.
         let admitted = mutates(&request);
-        if admitted {
+        let _in_flight = if admitted {
             let mut state = lock(&self.state);
             if let Some(refusal) = state.transferring() {
                 return refusal;
             }
             state.in_flight += 1;
-        }
+            // Released on every exit, including a future dropped because
+            // the client hung up mid-request; a leaked count would refuse
+            // offers for the rest of this daemon's life.
+            Some(InFlight(self.clone()))
+        } else {
+            None
+        };
         // Boxed: `handle_healthy` is one match over every request the
         // protocol has, so the future it returns is as large as the
         // biggest arm plus everything the match holds live across an
@@ -1269,11 +1292,7 @@ impl Daemon {
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
         let response = Box::pin(self.handle_healthy(request)).await;
-        let mut state = lock(&self.state);
-        if admitted {
-            state.in_flight -= 1;
-        }
-        state.storage_failure().unwrap_or(response)
+        lock(&self.state).storage_failure().unwrap_or(response)
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -3688,6 +3707,7 @@ impl State {
         }
         if self.fenced() {
             debug!(%what, "store operation skipped: coordination is being transferred");
+            self.skipped_write = true;
             return None;
         }
         let started = state_timing_start();
@@ -3827,6 +3847,7 @@ impl State {
         match settled {
             Ok(true) => {
                 self.coordination = Coordination::Serving;
+                self.skipped_write = false;
                 self.next_seq += 1;
                 let _ = self.events.send(event);
                 warn!(%transfer, reason, "coordination transfer aborted; writing resumed");
@@ -3851,12 +3872,18 @@ impl State {
     }
 
     fn storage_failure(&self) -> Option<Response> {
-        self.storage_error.as_ref().map(|error| {
-            Response::error(
+        if let Some(error) = &self.storage_error {
+            return Some(Response::error(
                 ErrorCode::StorageUnavailable,
                 format!("storage failed ({error}); coordination disabled until daemon restart"),
-            )
-        })
+            ));
+        }
+        if self.skipped_write {
+            // A fenced write did not land: whatever the caller was about to
+            // apply in memory must not be, and the client must retry later.
+            return self.transferring();
+        }
+        None
     }
 
     /// Write, and say what happened. Callers move memory and publish only
@@ -3872,8 +3899,10 @@ impl State {
         }
         if self.fenced() {
             // Not an error: the caller's request was refused before it got
-            // here, and a tick writer simply skips its turn. Nothing lands.
+            // here, and a tick writer simply skips its turn. Nothing lands,
+            // and `storage_failure()` says so until a write does.
             debug!(%what, "write skipped: coordination is being transferred");
+            self.skipped_write = true;
             return Persisted::Skipped;
         }
         if let Err(err) = write(&self.store) {
@@ -3881,6 +3910,7 @@ impl State {
             self.storage_error = Some(format!("{what}: {err}"));
             return Persisted::Failed;
         }
+        self.skipped_write = false;
         Persisted::Committed
     }
 
@@ -4079,10 +4109,10 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
-        let _ = self.persist("agent exit", |store| {
+        let committed = self.persist("agent exit", |store| {
             store.agent_exit(&record, &leases, &journal, &channels, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
             return self.registry.get(id).cloned();
         }
@@ -4133,10 +4163,10 @@ impl State {
             event.seq = self.next_seq;
             event
         });
-        let _ = self.persist("lease activity", |store| {
+        let committed = self.persist("lease activity", |store| {
             store.lease_activity(&record, lease, event.as_ref())
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             return false;
         }
         *self

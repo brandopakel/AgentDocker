@@ -329,6 +329,16 @@ pub enum EventKind {
         pid: Option<u32>,
         attempt: u32,
     },
+    /// An explicit stop cleared the agent's restart policy: it will not
+    /// come back on its own.
+    AgentRestartCleared {
+        agent: AgentId,
+    },
+    /// An explicit stop cleared the agent's restore intent: a daemon
+    /// restart will not bring it back.
+    AgentRestoreCleared {
+        agent: AgentId,
+    },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
     /// Durable restore intent and lease protection precede process launch.

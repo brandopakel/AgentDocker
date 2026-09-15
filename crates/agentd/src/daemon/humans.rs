@@ -164,10 +164,10 @@ impl State {
                 event
             })
             .collect();
-        let _ = self.persist("question expiration", |store| {
+        let committed = self.persist("question expiration", |store| {
             store.close_questions(&expired, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             return;
         }
         for question in expired {

@@ -997,6 +997,87 @@ mod fence_tests {
         let _ = lease;
     }
 
+    /// A mutation whose future is dropped mid-flight (the client hung up)
+    /// still releases its place, so a later offer is not refused for ever.
+    #[tokio::test]
+    async fn a_cancelled_mutation_releases_its_in_flight_place() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let a = register(&daemon, "waiter").await;
+        // Hold the resource so the second claim waits, then drop that
+        // waiting future as the server does on EOF.
+        assert!(matches!(
+            daemon.handle(claim(&a, "task:held")).await,
+            Response::Lease { .. }
+        ));
+        let b = register(&daemon, "other").await;
+        let waiting = daemon.handle(Request::Claim {
+            agent: b.to_string(),
+            resource: "task:held".into(),
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs: 60,
+            note: None,
+            wait_secs: 30,
+        });
+        let mut waiting = Box::pin(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut waiting)
+                .await
+                .is_err(),
+            "the claim is waiting"
+        );
+        assert_eq!(lock(&daemon.state).in_flight, 1);
+        drop(waiting);
+        assert_eq!(
+            lock(&daemon.state).in_flight,
+            0,
+            "the dropped request released its place"
+        );
+        daemon.offer_transfer(1).expect("nothing in flight");
+        assert!(daemon.abort_transfer("cleanup"));
+    }
+
+    /// A background write skipped by the fence is reported through the
+    /// same gate every handler already checks, and clears once a write
+    /// lands again.
+    #[tokio::test]
+    async fn a_skipped_write_shows_as_transferring_until_writes_resume() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let a = register(&daemon, "exiting").await;
+        daemon.offer_transfer(1).unwrap();
+        // A supervised exit reaching mark_exited while fenced: nothing
+        // lands and the record stays live in memory as on disk.
+        let before = lock(&daemon.state).registry.get(&a).unwrap().status.clone();
+        daemon.mark_exited(&a, AgentStatus::Exited { code: Some(0) });
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.registry.get(&a).unwrap().status,
+                before,
+                "memory unchanged"
+            );
+            assert!(matches!(
+                state.storage_failure(),
+                Some(Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                })
+            ));
+        }
+        assert!(daemon.abort_transfer("cleanup"));
+        assert!(
+            lock(&daemon.state).storage_failure().is_none(),
+            "cleared by the abort"
+        );
+        daemon.mark_exited(&a, AgentStatus::Exited { code: Some(0) });
+        assert_eq!(
+            lock(&daemon.state).registry.get(&a).unwrap().status,
+            AgentStatus::Exited { code: Some(0) }
+        );
+    }
+
     /// A store that has already failed has nothing trustworthy to hand
     /// over: the offer is refused with the storage error.
     #[tokio::test]
