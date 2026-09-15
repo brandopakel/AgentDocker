@@ -16,6 +16,9 @@
 //! conversation, so the paths accumulate on the same channel.
 
 use super::*;
+
+/// Paths named in one contested-channel notice.
+const LISTED_CONTESTED_PATHS: usize = 50;
 use agentdocker_core::channel::{Channel, ChannelId, ChannelSubject, Review, Verdict};
 
 /// Contested paths remembered per project, so a second checkout touching
@@ -110,13 +113,11 @@ impl State {
                 });
             }
             if widened {
-                self.tell_channel(
-                    &channel,
-                    format!(
-                        "{} is contested too; it is part of this channel now.",
-                        path.display()
-                    ),
-                );
+                // Told on the tick, with every other path that joined since.
+                self.pending_contested
+                    .entry(channel.id.clone())
+                    .or_default()
+                    .push(path.to_path_buf());
             }
             return;
         }
@@ -179,6 +180,39 @@ impl State {
                 }
                 self.append_journal(entry);
             }
+        }
+    }
+
+    /// One message per channel for the paths that widened it since the
+    /// last tick.
+    pub(super) fn flush_contested(&mut self) {
+        let pending = std::mem::take(&mut self.pending_contested);
+        for (id, mut paths) in pending {
+            let Some(channel) = self.channels.get(&id).filter(|c| c.is_open()).cloned() else {
+                continue;
+            };
+            paths.sort();
+            paths.dedup();
+            let count = paths.len();
+            let listed = paths
+                .iter()
+                .take(LISTED_CONTESTED_PATHS)
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let text = if count == 1 {
+                format!("{listed} is contested too; it is part of this channel now.")
+            } else {
+                format!(
+                    "{count} more paths are contested too and part of this channel now: {listed}{}.",
+                    if count > LISTED_CONTESTED_PATHS {
+                        format!(" (+{} more)", count - LISTED_CONTESTED_PATHS)
+                    } else {
+                        String::new()
+                    }
+                )
+            };
+            self.tell_channel(&channel, text);
         }
     }
 

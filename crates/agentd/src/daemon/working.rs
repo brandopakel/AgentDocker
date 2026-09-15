@@ -254,18 +254,93 @@ impl State {
             {
                 continue;
             }
-            let paths = vec![absolute.clone()];
+            // The live event says so at once; the inbox notice waits for
+            // the tick, so one switch of a branch is one message.
             self.emit(EventKind::AgentStale {
                 agent: agent.clone(),
-                paths: paths.clone(),
+                paths: vec![absolute.clone()],
             });
-            self.send("agentd".into(), Destination::Agent(agent.clone()), "stale".into(), json!({
-                "text": format!("{} changed after your observation. Check current content and reread before editing. Attribution is best-effort.", absolute.display()),
-                "paths": paths, "change": change,
-            }), None);
+            let pending = self.pending_stale.entry(agent).or_default();
+            if pending.len() < PENDING_STALE_PATHS || pending.contains_key(&absolute) {
+                pending.insert(absolute.clone(), change.clone());
+            }
         }
     }
+
+    /// One `stale` message per reader for everything that changed since the
+    /// last tick, unless the reader still has the last one queued: then
+    /// the paths wait, and the notice sent once that one is consumed names
+    /// them all. A message that cannot be queued (a full inbox, a storage
+    /// failure) is dropped with its paths; `check_stale` reads content and
+    /// hooks refuse a stale edit, whether or not a notice arrived.
+    pub(super) fn flush_notices(&mut self) {
+        self.stale_outstanding.retain(|agent, message| {
+            self.inboxes
+                .get(agent)
+                .is_some_and(|queue| queue.iter().any(|m| m.id == *message))
+        });
+        let ready: Vec<AgentId> = self
+            .pending_stale
+            .keys()
+            .filter(|agent| !self.stale_outstanding.contains_key(*agent))
+            .cloned()
+            .collect();
+        for agent in ready {
+            let Some(pending) = self.pending_stale.remove(&agent) else {
+                continue;
+            };
+            if self
+                .registry
+                .get(&agent)
+                .is_none_or(|r| !r.status.is_live())
+            {
+                continue;
+            }
+            let count = pending.len();
+            let paths: Vec<PathBuf> = pending.keys().take(LISTED_STALE_PATHS).cloned().collect();
+            let mut changes: Vec<&Change> = pending.values().collect();
+            changes.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.seq.cmp(&a.seq)));
+            changes.truncate(LISTED_STALE_CHANGES);
+            let listed = paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let text = if count == 1 {
+                format!(
+                    "{listed} changed after your observation. Check current content and reread before editing. Attribution is best-effort."
+                )
+            } else {
+                format!(
+                    "{count} paths changed after your observation: {listed}{}. Check current content and reread before editing. Attribution is best-effort.",
+                    if count > paths.len() {
+                        format!(" (+{} more)", count - paths.len())
+                    } else {
+                        String::new()
+                    }
+                )
+            };
+            let response = self.send(
+                "agentd".into(),
+                Destination::Agent(agent.clone()),
+                "stale".into(),
+                json!({ "text": text, "paths": paths, "count": count, "changes": changes }),
+                None,
+            );
+            if let Response::Sent { message, .. } = response {
+                self.stale_outstanding.insert(agent, message);
+            }
+        }
+        self.flush_contested();
+    }
 }
+
+/// Paths kept per reader between ticks; beyond this a reader that never
+/// drains its inbox is told the count and finds the rest by `check_stale`.
+const PENDING_STALE_PATHS: usize = 10_000;
+/// Paths named in one notice, and changes carried with it.
+const LISTED_STALE_PATHS: usize = 200;
+const LISTED_STALE_CHANGES: usize = 50;
 
 #[cfg(test)]
 mod tests {
@@ -399,6 +474,7 @@ mod warning_tests {
                 vec![],
             )
             .await;
+        daemon.flush_notices();
         let Response::Messages { messages } = daemon
             .handle(Request::Inbox {
                 agent: "reader".into(),
@@ -410,5 +486,126 @@ mod warning_tests {
         };
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].kind, "stale");
+    }
+
+    /// A branch switch is hundreds of changes in a moment. The reader gets
+    /// one notice naming the paths, and nothing more until it has consumed
+    /// that one; what changes in the meantime waits and is named by the
+    /// next notice, so an unread notice is superseded, never followed.
+    #[tokio::test]
+    async fn stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("checkout");
+        std::fs::create_dir(&root).unwrap();
+        for name in ["a", "b", "c", "d"] {
+            std::fs::write(root.join(name), "one").unwrap();
+        }
+        let root = project::canonical(&root);
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        let Response::Agent { agent: reader } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "reader".into(),
+                    workdir: Some(root.clone()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed");
+        };
+        let project = reader.project.unwrap().id();
+        let checkout = Checkout {
+            dir: root.clone(),
+            project,
+            worktree: None,
+        };
+        daemon.observe("reader", vec![".".into()]).await;
+        let change = |path: &str, kind| Observed {
+            checkout: checkout.clone(),
+            path: path.into(),
+            kind,
+        };
+        use agentdocker_core::ChangeKind::{Created, Modified, Removed};
+        // Created, removed and modified for one path within the switch, and
+        // two more paths: one notice.
+        daemon
+            .record_fs_changes(
+                vec![
+                    change("a", Created),
+                    change("a", Removed),
+                    change("a", Modified),
+                    change("b", Modified),
+                    change("c", Modified),
+                ],
+                vec![],
+            )
+            .await;
+        let inbox = |drain: bool| {
+            let daemon = daemon.clone();
+            async move {
+                match daemon
+                    .handle(Request::Inbox {
+                        agent: "reader".into(),
+                        drain,
+                    })
+                    .await
+                {
+                    Response::Messages { messages } => messages,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        assert!(inbox(false).await.is_empty(), "nothing before the tick");
+        daemon.flush_notices();
+        let first = inbox(false).await;
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].kind, "stale");
+        let canonical = |name: &str| agentdocker_host::project::canonical(&root.join(name));
+        assert_eq!(
+            first[0].payload["paths"],
+            json!([canonical("a"), canonical("b"), canonical("c")])
+        );
+        assert_eq!(first[0].payload["count"], json!(3));
+        assert_eq!(
+            first[0].payload["changes"].as_array().unwrap().len(),
+            3,
+            "the last change per path travels with the notice"
+        );
+        assert!(
+            first[0].payload["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("3 paths changed after your observation: ")
+        );
+        // Unread: a further change waits rather than queueing another.
+        daemon
+            .record_fs_changes(vec![change("d", Modified)], vec![])
+            .await;
+        daemon.flush_notices();
+        daemon.flush_notices();
+        assert_eq!(inbox(false).await.len(), 1, "still the one notice");
+        // Consumed: the next tick names what waited.
+        let drained = inbox(true).await;
+        assert_eq!(drained.len(), 1);
+        daemon.flush_notices();
+        let second = inbox(true).await;
+        assert_eq!(second.len(), 1, "{second:?}");
+        assert_eq!(second[0].payload["paths"], json!([canonical("d")]));
+        assert_eq!(
+            second[0].payload["text"],
+            json!(format!(
+                "{} changed after your observation. Check current content and reread before editing. Attribution is best-effort.",
+                canonical("d").display()
+            ))
+        );
+        daemon.flush_notices();
+        assert!(
+            inbox(false).await.is_empty(),
+            "nothing pending, nothing sent"
+        );
     }
 }
