@@ -87,8 +87,12 @@ impl State {
 
     /// A legacy reader was just offered these queued messages: remember
     /// the first time each was, so a controller that binds later knows
-    /// which ones may already have been injected. Bookkeeping, like
-    /// liveness: persisted without an event.
+    /// which ones may already have been injected. While a binding stands
+    /// the same offer makes those messages uncertain for the controller
+    /// at once: a non-draining read may be a person looking, or the
+    /// session's own MCP read putting the text in front of the model, and
+    /// the daemon cannot tell which. Bookkeeping, like liveness:
+    /// persisted without an event.
     pub(super) fn note_legacy_offers(
         &mut self,
         id: &AgentId,
@@ -110,6 +114,13 @@ impl State {
         for message in messages {
             if queued.contains(message) && !record.legacy_offers.contains_key(message) {
                 record.legacy_offers.insert(message.clone(), now);
+                changed = true;
+            }
+            if let Some(binding) = record.input_binding.as_mut()
+                && queued.contains(message)
+                && !binding.uncertain.contains(message)
+            {
+                binding.uncertain.push(message.clone());
                 changed = true;
             }
         }
@@ -607,6 +618,9 @@ mod tests {
                 "{answer:?}"
             );
         }
+        // A look without draining after the binding may be a person or
+        // the session's own MCP read, so what it showed becomes uncertain
+        // too: here the second message.
         assert!(matches!(
             daemon
                 .handle(Request::Inbox {
@@ -616,6 +630,17 @@ mod tests {
                 .await,
             Response::Messages { .. }
         ));
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .input_binding
+                .as_ref()
+                .unwrap()
+                .uncertain,
+            vec![first.clone(), second.clone()]
+        );
         // Reading as the provider without the token is refused; with it,
         // the whole queue comes with the uncertain one named.
         assert!(matches!(
@@ -663,15 +688,17 @@ mod tests {
             messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
             vec![first.clone(), second.clone()]
         );
-        assert_eq!(uncertain, vec![first.clone()]);
+        assert_eq!(uncertain, vec![first.clone(), second.clone()]);
 
-        // The hook finishing its in-flight delivery may still acknowledge
-        // the message it was offered, and only that one.
+        // A legacy reader finishing its in-flight delivery may still
+        // acknowledge what it was offered, and nothing else: a third
+        // message nobody legacy has seen is the controller's alone.
+        let third = send(&daemon, &sender, &receiver, "three").await;
         assert!(matches!(
             daemon
                 .handle(Request::AckInbox {
                     agent: receiver.id.to_string(),
-                    messages: vec![second.clone()],
+                    messages: vec![third.clone()],
                 })
                 .await,
             Response::InputOwned { .. }
@@ -685,11 +712,11 @@ mod tests {
                 .await,
             Response::Ok
         ));
-        // Nothing uncertain remains; the controller acknowledges the rest.
+        // The controller acknowledges the rest; nothing uncertain remains.
         let batch = daemon
             .handle(Request::ProviderInbox {
                 agent: receiver.id.to_string(),
-                acknowledge: vec![second.clone()],
+                acknowledge: vec![second.clone(), third.clone()],
                 token: Some(TOKEN.into()),
             })
             .await;
