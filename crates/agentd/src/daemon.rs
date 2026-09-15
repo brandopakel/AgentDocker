@@ -244,13 +244,14 @@ struct State {
     /// gets one message naming them, not one per change.
     pending_stale: HashMap<AgentId, BTreeMap<PathBuf, Change>>,
     /// The stale notice each reader was last sent, while it is still
-    /// queued: nothing more is sent until that one has been consumed, so
-    /// an unread notice is superseded in place by the next tick's rather
-    /// than followed by another.
+    /// queued: nothing more is sent until that one has been consumed
+    /// (acknowledged, so it left the queue); the paths that change in the
+    /// meantime wait and the next notice names them all.
     stale_outstanding: HashMap<AgentId, MessageId>,
     /// Paths that widened a contested channel since the last tick, told
-    /// to the channel as one message.
-    pending_contested: HashMap<ChannelId, Vec<PathBuf>>,
+    /// to the channel as one message: the distinct paths, bounded, and
+    /// how many widenings there were.
+    pending_contested: HashMap<ChannelId, (std::collections::BTreeSet<PathBuf>, usize)>,
     /// Readers' journal cursors, loaded from the store on first use and
     /// written through when they move.
     journal_cursors: HashMap<(String, ProjectId), u64>,

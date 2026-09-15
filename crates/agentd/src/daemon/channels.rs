@@ -17,8 +17,10 @@
 
 use super::*;
 
-/// Paths named in one contested-channel notice.
+/// Paths named in one contested-channel notice, and distinct paths kept
+/// for it between ticks; beyond the latter only the count grows.
 const LISTED_CONTESTED_PATHS: usize = 50;
+const PENDING_CONTESTED_PATHS: usize = 2_000;
 use agentdocker_core::channel::{Channel, ChannelId, ChannelSubject, Review, Verdict};
 
 /// Contested paths remembered per project, so a second checkout touching
@@ -114,10 +116,14 @@ impl State {
             }
             if widened {
                 // Told on the tick, with every other path that joined since.
-                self.pending_contested
+                let (paths, count) = self
+                    .pending_contested
                     .entry(channel.id.clone())
-                    .or_default()
-                    .push(path.to_path_buf());
+                    .or_default();
+                *count += 1;
+                if paths.len() < PENDING_CONTESTED_PATHS {
+                    paths.insert(path.to_path_buf());
+                }
             }
             return;
         }
@@ -187,13 +193,11 @@ impl State {
     /// last tick.
     pub(super) fn flush_contested(&mut self) {
         let pending = std::mem::take(&mut self.pending_contested);
-        for (id, mut paths) in pending {
+        for (id, (paths, count)) in pending {
             let Some(channel) = self.channels.get(&id).filter(|c| c.is_open()).cloned() else {
                 continue;
             };
-            paths.sort();
-            paths.dedup();
-            let count = paths.len();
+            let count = count.max(paths.len());
             let listed = paths
                 .iter()
                 .take(LISTED_CONTESTED_PATHS)

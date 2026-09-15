@@ -269,10 +269,13 @@ impl State {
 
     /// One `stale` message per reader for everything that changed since the
     /// last tick, unless the reader still has the last one queued: then
-    /// the paths wait, and the notice sent once that one is consumed names
-    /// them all. A message that cannot be queued (a full inbox, a storage
-    /// failure) is dropped with its paths; `check_stale` reads content and
-    /// hooks refuse a stale edit, whether or not a notice arrived.
+    /// the paths wait, and the notice sent once that one has been
+    /// acknowledged names them all (a queued envelope is never changed).
+    /// The notice is kept under [`NOTICE_BYTES`], naming fewer paths and
+    /// changes when they do not fit, down to the count alone. A message
+    /// that still cannot be queued (a full inbox, a storage failure) is
+    /// dropped with its paths; `check_stale` reads content and hooks
+    /// refuse a stale edit, whether or not a notice arrived.
     pub(super) fn flush_notices(&mut self) {
         self.stale_outstanding.retain(|agent, message| {
             self.inboxes
@@ -297,34 +300,51 @@ impl State {
                 continue;
             }
             let count = pending.len();
-            let paths: Vec<PathBuf> = pending.keys().take(LISTED_STALE_PATHS).cloned().collect();
             let mut changes: Vec<&Change> = pending.values().collect();
             changes.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.seq.cmp(&a.seq)));
-            changes.truncate(LISTED_STALE_CHANGES);
-            let listed = paths
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let text = if count == 1 {
-                format!(
-                    "{listed} changed after your observation. Check current content and reread before editing. Attribution is best-effort."
-                )
-            } else {
-                format!(
-                    "{count} paths changed after your observation: {listed}{}. Check current content and reread before editing. Attribution is best-effort.",
-                    if count > paths.len() {
-                        format!(" (+{} more)", count - paths.len())
-                    } else {
-                        String::new()
-                    }
-                )
+            let mut list_paths = LISTED_STALE_PATHS;
+            let mut list_changes = LISTED_STALE_CHANGES;
+            let payload = loop {
+                let paths: Vec<&PathBuf> = pending.keys().take(list_paths).collect();
+                let listed = paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let text = if count == 1 && !paths.is_empty() {
+                    format!(
+                        "{listed} changed after your observation. Check current content and reread before editing. Attribution is best-effort."
+                    )
+                } else if paths.is_empty() {
+                    format!(
+                        "{count} paths changed after your observation. Check current content and reread before editing (`stale` names them). Attribution is best-effort."
+                    )
+                } else {
+                    format!(
+                        "{count} paths changed after your observation: {listed}{}. Check current content and reread before editing. Attribution is best-effort.",
+                        if count > paths.len() {
+                            format!(" (+{} more)", count - paths.len())
+                        } else {
+                            String::new()
+                        }
+                    )
+                };
+                let payload = json!({
+                    "text": text, "paths": paths, "count": count,
+                    "changes": &changes[..list_changes.min(changes.len())],
+                });
+                let fits = serde_json::to_vec(&payload).is_ok_and(|b| b.len() <= NOTICE_BYTES);
+                if fits || (list_paths == 0 && list_changes == 0) {
+                    break payload;
+                }
+                list_changes /= 2;
+                list_paths /= 2;
             };
             let response = self.send(
                 "agentd".into(),
                 Destination::Agent(agent.clone()),
                 "stale".into(),
-                json!({ "text": text, "paths": paths, "count": count, "changes": changes }),
+                payload,
                 None,
             );
             if let Response::Sent { message, .. } = response {
@@ -338,9 +358,11 @@ impl State {
 /// Paths kept per reader between ticks; beyond this a reader that never
 /// drains its inbox is told the count and finds the rest by `check_stale`.
 const PENDING_STALE_PATHS: usize = 10_000;
-/// Paths named in one notice, and changes carried with it.
+/// Paths named in one notice, and changes carried with it, at most; a
+/// notice is kept under this many bytes by naming fewer.
 const LISTED_STALE_PATHS: usize = 200;
 const LISTED_STALE_CHANGES: usize = 50;
+const NOTICE_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -607,5 +629,29 @@ mod warning_tests {
             inbox(false).await.is_empty(),
             "nothing pending, nothing sent"
         );
+        // A change to very many paths with long names still fits one
+        // notice: fewer are named, the count stays exact.
+        // Names near the filesystem's limit, in nested directories.
+        let long: Vec<String> = (0..400)
+            .map(|n| format!("{0}/{0}/{0}-{n}", "d".repeat(200)))
+            .collect();
+        for name in &long {
+            std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+            std::fs::write(root.join(name), "one").unwrap();
+        }
+        daemon.observe("reader", vec![".".into()]).await;
+        daemon
+            .record_fs_changes(
+                long.iter().map(|name| change(name, Modified)).collect(),
+                vec![],
+            )
+            .await;
+        daemon.flush_notices();
+        let big = inbox(true).await;
+        assert_eq!(big.len(), 1, "{}", big.len());
+        assert_eq!(big[0].payload["count"], json!(400));
+        let named = big[0].payload["paths"].as_array().unwrap().len();
+        assert!(named > 0 && named < 200, "named {named}");
+        assert!(serde_json::to_vec(&big[0].payload).unwrap().len() <= NOTICE_BYTES);
     }
 }
