@@ -166,6 +166,7 @@ fails when it and the records disagree.
 | [2026-09-12-queue-read-reconnect.json](verification/2026-09-12-queue-read-reconnect.json) | Bounded retry of retained Codex inbox reads with empty acknowledgements; uncertain writes retain existing pause behavior. |
 | [2026-09-12-thirty-minute-codex-queue.json](verification/2026-09-12-thirty-minute-codex-queue.json) | passed |
 | [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
+| [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
 | [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance. |
 
 <!-- verification-index:end -->
