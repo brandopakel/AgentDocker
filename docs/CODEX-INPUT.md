@@ -56,8 +56,9 @@ ambiguous submissions. These bounded fixtures do not establish paid-account,
 long-duration or every-provider acceptance. Combined `7133023` passed the full
 962-Rust/70-Python gate and six release-binary trials: disconnected questions,
 generic legacy replies, canonical process resume, new MCP questions, rate limits
-and ambiguous-submission recovery. The schema-20 historical-answer migration
-requires fresh fixture validation. The later `2a7656c` source passed the full
+and ambiguous-submission recovery. The schema-20 historical-answer migration passed the release-binary fixture at
+`8831524`: the consumed synchronous answer was reconciled without another turn.
+The later `2a7656c` binary source passed the full
 964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
 see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
@@ -71,7 +72,7 @@ or disconnected ask uses ordinary input when the daemon confirms answer routing.
 Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
 those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
-open; historical schema-19 answer migration remains under acceptance.
+open; historical schema-19 answer migration passed its bounded fixture.
 An idle native queue entry without a provider receipt pauses after 45 seconds;
 active turns and permission waits retain their normal ordering.
 

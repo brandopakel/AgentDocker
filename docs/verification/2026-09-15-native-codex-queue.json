@@ -2,7 +2,7 @@
   "date_utc": "2026-09-15",
   "date_local": "2026-09-14",
   "timezone": "America/Los_Angeles",
-  "scope": "Native Codex queue integration and canonical resume with a prompt passed at recorded sources; actual lifecycle bootstrap verified after a first turn, zero-prompt startup/reopen remains an observed gap. Schema20 migration trial, final CI and installation pending.",
+  "scope": "Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. Trusted lifecycle bootstrap works after a first turn; zero-prompt startup/reopen remains an observed gap. Final CI and installation pending.",
   "provider_version": "codex-cli 0.154.0",
   "agentdocker_forwarding_implemented": true,
   "trials": [
@@ -1085,6 +1085,58 @@
       "raw_result_sha256": "a15c6fd76b45eff1998fc34a4cd1540b75bb4a1f288b807630defbccda25009c",
       "private_result": "/private/tmp/agentdocker-native-release14-recovery-2026-09-15/result.json",
       "result_sha256": "e8d94095aeb71b72429f0ef9f50494afedba21e68c5750bf190ac9144256bc3d"
+    },
+    {
+      "started_at": "2026-09-15T20:33:56.243754+00:00",
+      "scenario": "migration",
+      "result": "passed",
+      "driver_sha256": "a42165c72b91989a1111bb897224850d8acff4b4043a1e3a46198be0b2ab7fa6",
+      "source": {
+        "commit": "8831524d1679aec586c489634da00c6bcf28d29e",
+        "dirty": false,
+        "rust_and_driver_sha256": "af830a663d7ae3b5c0fed6ce7a6867a9cb2284af9f2d7f60a195afb81b1431b4"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "b2fde21870a2d8d0b52b7c3965952e4874d15bc5dc2e661bd969e7f86d4555b6",
+      "daemon_sha256": "93513ad91542ba56c8612a0e711ecebbef1ed3ae13c65d05b3280256d16eff58",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 95609,
+      "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+      "agent": "a106e9a7e67e4620a8f23ab3a8931b4a",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.679055749991676,
+      "cross_process_receipt": {
+        "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+        "turn": "01a0a6c6-e081-7f50-8ea1-2129240099fc",
+        "item": "01a0a6c6-e0a6-72f3-8d86-def625af5f37"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ed6715de1cba429a"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c6-b974-7bd1-8b63-f25cced29493",
+          "turn": "01a0a6c7-55e0-7f63-974c-28a615745a04",
+          "item": "01a0a6c7-561a-7ab2-acf0-235279b970e9"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "schema19_answer_migrated_before_receipt_reconciliation": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "076a123feeca43da",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "b8fa8b4f3422636ff647f5465bbf5bd4a9fa1b5e53ee7ceecf7cb8b08f3fb635",
+      "diagnosis": "Passed: schema19 queued synchronous answer migrated into uncertain offers, successor receiver reconciled the existing exact tool receipt, no extra provider turn. Private AgentDocker state fixture; no provider database edits.",
+      "private_result": "/private/tmp/agentdocker-native-migration21-2026-09-15/result.json",
+      "result_sha256": "29324c011203fdd0f88ba30d601125276ed3bff33319c1f7b1cb27d2fe590ee2",
+      "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
     }
   ],
   "combined_gate_8b2afe3": {
@@ -1287,6 +1339,51 @@
       "diagnosis": "Fixture failure: daemon restart reused a closed API observer log handle; corrected to a dedicated daemon log. Migration receipt behavior not established by this failed run.",
       "private_result": "/private/tmp/agentdocker-native-migration19-2026-09-15/result.json",
       "result_sha256": "b0ea3dd313fdd069bfc3250e23169f2d69bcd30a7b3f2bb0f0e4afe742c3af02"
+    },
+    {
+      "started_at": "2026-09-15T20:31:36.852108+00:00",
+      "scenario": "migration",
+      "result": "failed",
+      "driver_sha256": "f1ad543272c4a1d5822a4452e5bd1461d8b628efbb994452064b59d337873341",
+      "source": {
+        "commit": "65a87466a26ebbb0d2b6b7e45add190d3af37768",
+        "dirty": false,
+        "rust_and_driver_sha256": "ca71e88c081803b2c63482aa7646f9378bd13057c808eedbefe1f83158449276"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "b2fde21870a2d8d0b52b7c3965952e4874d15bc5dc2e661bd969e7f86d4555b6",
+      "daemon_sha256": "93513ad91542ba56c8612a0e711ecebbef1ed3ae13c65d05b3280256d16eff58",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 89636,
+      "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+      "agent": "c3ba250fc2af4c61ba58065a7fb76e00",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.371454917010851,
+      "cross_process_receipt": {
+        "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+        "turn": "01a0a6c4-c167-7aa1-ac23-a0c0ee4719e2",
+        "item": "01a0a6c4-c17b-7021-ade6-4c09f5835187"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "ce699758f59a44cf"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a6c4-9a5b-72b1-90a3-f325474d2472",
+          "turn": "01a0a6c5-36a7-7780-a5e1-65ce9921e687",
+          "item": "01a0a6c5-36c1-7fd1-84a2-de223a27d86e"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "ceca256dee862113a1a6b4501e2d5093efcd2d4ef58e5e0afd2f26b42a284451",
+      "diagnosis": "Schema20 migration markers passed; fixture failed attempting to resume the receiver already retired by graceful shutdown. Corrected to follow the supervised replacement.",
+      "private_result": "/private/tmp/agentdocker-native-migration20-2026-09-15/result.json",
+      "result_sha256": "3cd8ff0f217561f6df117025eb67b71664cf73564da4defa5419c49e8a712cca",
+      "binary_build_source": "2a7656c7fdecd27d7b57d5bb7b477f31dd7ecec6"
     }
   ],
   "combined_gate_2a7656c": {

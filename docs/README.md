@@ -167,6 +167,6 @@ fails when it and the records disagree.
 | [2026-09-12-thirty-minute-codex-queue.json](verification/2026-09-12-thirty-minute-codex-queue.json) | passed |
 | [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
 | [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
-| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Native Codex queue integration and canonical resume with a prompt passed at recorded sources; actual lifecycle bootstrap verified after a first turn, zero-prompt startup/reopen remains an observed gap. |
+| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. |
 
 <!-- verification-index:end -->

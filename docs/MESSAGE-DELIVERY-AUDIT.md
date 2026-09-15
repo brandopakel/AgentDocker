@@ -68,8 +68,10 @@ SessionStart before a first turn, including after reopening an existing thread
 without a prompt. The no-prompt lifecycle trial failed with its queue preserved.
 MCP starts eagerly but supplies no thread/profile identity in its environment.
 That exact-binding gap remains open; inferring it from a display name or PID
-would not be safe. The original diagnostic trials are retained. Schema-20
-migration fixture acceptance, review, final CI and installation remain pending.
+would not be safe. The original diagnostic trials are retained. The schema-20
+migration fixture at `8831524` passed on release binaries: an answer already
+consumed by an old synchronous MCP tool was reconciled after daemon restart
+without an extra provider turn. Final review, CI and installation remain pending.
 These trials do not mean that the installed app or every provider can already wake.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
