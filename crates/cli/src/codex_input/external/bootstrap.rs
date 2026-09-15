@@ -115,11 +115,16 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
         executable: procinfo::executable_path_of(pid)?.canonicalize()?,
     };
     let home = dirs::home();
+    let predecessor = if agent.input_binding.is_none() {
+        super::resume::predecessor(client, &binding).await?
+    } else {
+        None
+    };
     let directory = directory(&home, &binding.agent)?;
     let lock_path = directory.join("bootstrap.lock");
     dirs::private_file(&lock_path, true, false)?;
     let Some(_bootstrap) = lock::try_exclusive_existing(&lock_path)? else {
-        return Ok(true);
+        return Ok(agent.input_binding.is_some());
     };
     if let Some(bound) = &agent.input_binding {
         ensure!(
@@ -151,14 +156,22 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
                 "native controller marker belongs to another provider generation"
             );
             if procinfo::start_time(process.pid) == Some(process.started_at) {
-                return Ok(true);
+                // A starting helper has not proved queue capability or bound
+                // ownership. Let the daemon arbitrate a legacy read until it
+                // actually does; a mere process launch is not input readiness.
+                return Ok(false);
             }
         }
     }
     let log = dirs::private_file(&directory.join("controller.log"), true, false)?;
     // One bounded diagnostic stream per controller generation.
     log.set_len(0)?;
-    let descriptor = launch(&binding)?;
+    let mut descriptor = launch(&binding)?;
+    if let Some(predecessor) = predecessor {
+        descriptor
+            .args
+            .extend(["--predecessor".into(), predecessor]);
+    }
     let mut command = Command::new(&descriptor.executable);
     command
         .args(&descriptor.args)
@@ -193,7 +206,7 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
     file.write_all(&serde_json::to_vec(&(binding, process))?)?;
     file.as_file().sync_all()?;
     file.persist(&marker)?;
-    Ok(true)
+    Ok(false)
 }
 
 #[cfg(test)]

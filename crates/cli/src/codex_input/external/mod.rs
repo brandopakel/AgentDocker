@@ -4,6 +4,7 @@ mod availability;
 mod bootstrap;
 mod ledger;
 mod receipts;
+mod resume;
 pub use bootstrap::ensure_started;
 
 use super::{call, transport::Provider};
@@ -38,6 +39,9 @@ pub struct Args {
     pub cwd: PathBuf,
     #[arg(long)]
     pub program: PathBuf,
+    /// A verified prior binding to this persisted conversation.
+    #[arg(long)]
+    pub predecessor: Option<String>,
 }
 
 fn alive(binding: &Binding) -> bool {
@@ -102,7 +106,7 @@ async fn queue(
     client: &Client,
     ledger: &Ledger,
     acknowledge: Vec<agentdocker_core::MessageId>,
-) -> Result<(Vec<Envelope>, Vec<agentdocker_core::MessageId>)> {
+) -> Result<(Vec<Envelope>, Vec<agentdocker_core::MessageId>, bool)> {
     match call(
         client,
         Request::ProviderInbox {
@@ -117,8 +121,11 @@ async fn queue(
             agent,
             messages,
             uncertain,
-        } if agent.as_str() == ledger.record().binding.agent => Ok((messages, uncertain)),
-        Response::InputWaiting { .. } => Ok((Vec::new(), Vec::new())),
+            answers_routed,
+        } if agent.as_str() == ledger.record().binding.agent => {
+            Ok((messages, uncertain, answers_routed))
+        }
+        Response::InputWaiting { .. } => Ok((Vec::new(), Vec::new(), false)),
         _ => bail!("native input controller no longer owns this queue"),
     }
 }
@@ -183,6 +190,18 @@ async fn verify_provider(provider: &mut Provider, binding: &Binding) -> Result<(
     Ok(())
 }
 
+async fn preflight(binding: &Binding) -> Result<()> {
+    let mut provider = Provider::start_profile(
+        &binding.executable,
+        &[],
+        &binding.cwd,
+        Some(Path::new(&binding.provider.profile)),
+    )?;
+    let checked = verify_provider(&mut provider, binding).await;
+    let stopped = provider.shutdown().await;
+    checked.and(stopped)
+}
+
 async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) -> Result<()> {
     let thread = ledger.record().binding.provider.session.clone();
     let human = match call(client, Request::Me { workdir: None }).await? {
@@ -237,18 +256,15 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
-            let (messages, uncertain) = queue(client, ledger, Vec::new()).await?;
+            let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
             if let Some(envelope) = messages.first() {
-                ensure!(
-                    !uncertain.contains(&envelope.id),
-                    "a legacy reader already offered this message; reconcile that receipt before native delivery"
-                );
                 match answers::route(
                     provider,
                     &origin,
                     &thread,
                     envelope,
                     &ledger.record().binding.agent,
+                    answers_routed && !uncertain.contains(&envelope.id),
                 )
                 .await?
                 {
@@ -271,6 +287,10 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
                         answer_wait = None;
                     }
                 }
+                ensure!(
+                    !uncertain.contains(&envelope.id),
+                    "a legacy reader already offered this message; reconcile that receipt before native delivery"
+                );
                 let anchor = receipts::latest_item(provider, &thread).await?;
                 ledger.prepare(envelope, anchor)?;
                 let attempt = ledger.record().attempt.as_ref().expect("prepared input");
@@ -333,8 +353,26 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
             == binding.executable,
         "native queue executable differs from the live Codex process"
     );
+    identity(&client, &binding).await?;
+    if let Some(predecessor) = args.predecessor {
+        preflight(&binding).await?;
+        resume::handoff(&client, binding, &predecessor).await?;
+        // The accepted handoff registered the canonical launch descriptor.
+        // Let the daemon start it, rather than competing with its next tick
+        // for the retained ledger's lifetime lock.
+        return Ok(());
+    }
     let agent = identity(&client, &binding).await?;
-    let mut ledger = Ledger::open(&home, binding.clone())?;
+    let mut ledger = Ledger::open(&home, binding.clone(), agent.input_binding.as_ref())?;
+    // Prove the read-only native queue/history APIs before suppressing legacy
+    // delivery. A missing API on an unbound session leaves hooks working. An
+    // already bound session retains its queue and reports the incompatibility.
+    if let Err(error) = preflight(&binding).await {
+        if agent.input_binding.is_some() {
+            let _ = report(&client, &ledger, crate::input_status::paused(&error)).await;
+        }
+        return Err(error);
+    }
     let controller = ProcessIdentity {
         pid: std::process::id(),
         started_at: procinfo::start_time(std::process::id())
@@ -405,6 +443,9 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
                 .await;
             }
             eprintln!("Native Codex input paused: {error}");
+        }
+        if !alive(&binding) {
+            break;
         }
         // Retry read-only reconciliation after a transient disconnect, with
         // the same retained attempt and token. Never repeat queue/add.

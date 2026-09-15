@@ -46,12 +46,21 @@ submission without resubmission. The repeatable driver is
 `scripts/native_codex_queue_smoke.py`; its scenarios use actual Codex with an
 isolated daemon/profile and a loopback model fixture.
 
-Daemon-supervised receiver restart, release pins, bounded completed receipts and
-idle-queue timeout handling are integrated but still need final-source acceptance,
-CI and installation. The candidate deliberately holds CLI-posted/old disconnected
-question answers without a provable route and legacy-exposed messages without a
-receipt. Settled question-route provenance remains open. These implementation
-trials do not mean that the installed app or every provider can already wake.
+Combined release `8b2afe3` passed daemon-supervised receiver crash recovery,
+legacy MCP answers, rate-limit hold/resume and ambiguous-submission retention.
+Its full local gate passed 954 Rust tests (six skipped), 70 Python checks, lint,
+doctests, packaging and release build. The existing verification report records
+the exact source, binaries and original failures.
+
+An explicit same-thread TUI restart then exposed stranded input on the old agent
+record. The follow-up now resumes its canonical identity and retained queue,
+aliases the new registration, and preserves the receiver token, outstanding
+attempt and receipt history. The daemon also settles synchronous versus queued
+answers: tool-result offers stay uncertain until exact provider receipt proof;
+unoffered posted/disconnected answers use ordinary input. Later messages wait
+behind a held answer so cancellation cannot reorder the queue. Final combined
+restart/answer acceptance, review, CI and installation remain in progress.
+These trials do not mean that the installed app or every provider can already wake.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
 local gate, all final-head CI checks and independent Claude source review. Its

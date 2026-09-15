@@ -14,34 +14,54 @@ native queue API (tested with CLI 0.154.0). It is under integration and acceptan
 test and is **not yet the installed application's behavior**. An accepted hook
 configuration is needed to start a receiver for an existing terminal. Merely
 installing MCP or receiving a hook event does not prove idle wake.
+The receiver probes the read-only queue/history APIs before taking ownership.
+Hooks keep their normal delivery while that probe is pending or unsupported;
+only an accepted daemon binding suppresses their competing reads. An incompatible
+provider version on an existing binding keeps the queue and reports a pause.
 
 The private `AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the controller
 token before binding and the exact input before offering it. An enqueue reply is
 only an offer. The receiver records the matching provider thread/turn/user-item
 before acknowledging the original AgentDocker message. Restart recovers that
 receipt or the exact native queue entry; absence of either pauses delivery and
-never authorizes blind resubmission. Another provider generation cannot take the
-binding, and competing legacy consumers are fenced by the daemon. A registered
+never authorizes blind resubmission. Competing legacy consumers are fenced by
+the daemon. A registered
 launch descriptor lets the daemon restart an ended receiver with bounded backoff,
 without restarting the provider or waiting for a hook. It pins the receiver's
 installed release and contains paths and arguments, not authentication. Delivered
 message bodies are discarded from the private ledger; only 128 receipt records
 are retained. `inbox --peek` provides administrative inspection of a bound queue.
 
+When a person explicitly reopens the same Codex thread, the verified hook finds
+its prior binding. A detached helper waits for the old receiver to exit and asks
+the daemon to resume the exact thread/profile/checkout into its original agent
+record. The newly registered ID becomes an alias; queued input, token, receipts
+and provider limits remain on the original record. The daemon starts the updated
+receiver descriptor, whose locked ledger accepts the new process only after
+checking the daemon's matching generation and retained token. A live prior
+process, different conversation or missing ledger refuses the handoff.
+
 A real Codex terminal with a private profile and loopback Responses fixture has
 passed idle wake, draft preservation, mixed human/peer busy ordering, new
 asynchronous MCP questions, old synchronous MCP answers without duplicate input,
 a typed HTTP 429 hold with explicit resumption, lost queue replies and retained
 ambiguous submissions. These bounded fixtures do not establish paid-account,
-long-duration or every-provider acceptance. Final-source automatic recovery,
-CI and installation checks remain in progress; see the
+long-duration or every-provider acceptance. The combined `8b2afe3` release passed
+automatic receiver crash recovery, legacy MCP answers, rate-limit recovery and
+ambiguous-submission retention, plus the full 954-Rust/70-Python gate. Subsequent
+same-thread process resume and answer-routing changes need their own final gate,
+CI and installation checks; see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
 
-Question answers without a provable MCP route, and messages already exposed to
-a legacy reader, remain held for reconciliation. The candidate does not claim
-that a CLI-posted question or an old disconnected question has been reconciled.
+The daemon holds a synchronous question's answer until its route is settled.
+An answer handed to that tool stays queued as uncertain until the receiver finds
+its exact provider tool receipt. An unoffered answer from a CLI-posted question
+or disconnected ask uses ordinary input when the daemon confirms answer routing.
+Unknown historical offers still require reconciliation. The fixture includes
+`posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
+their final combined acceptance is in progress.
 An idle native queue entry without a provider receipt pauses after 45 seconds;
 active turns and permission waits retain their normal ordering.
 

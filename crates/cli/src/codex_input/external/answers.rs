@@ -105,8 +105,9 @@ pub(super) async fn route(
     thread: &str,
     envelope: &Envelope,
     agent: &str,
+    queue_route: bool,
 ) -> Result<Route> {
-    if envelope.kind != "answer" || envelope.from.as_str() != origin.human {
+    if queue_route || envelope.kind != "answer" || envelope.from.as_str() != origin.human {
         return Ok(Route::Input);
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {

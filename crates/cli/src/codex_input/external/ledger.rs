@@ -1,9 +1,10 @@
 //! Private, generation-bound write-ahead ledger for an external native queue.
 use super::super::ledger::Receipt;
-use agentdocker_core::{Envelope, ProviderGeneration};
-use agentdocker_host::{dirs, lock};
+use agentdocker_core::{Envelope, InputBinding, ProviderGeneration};
+use agentdocker_host::{dirs, lock, procinfo};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
     fs::File,
@@ -88,14 +89,14 @@ pub(super) fn input(envelope: &Envelope) -> Result<String> {
 }
 
 impl Ledger {
-    pub fn open(home: &Path, binding: Binding) -> Result<Self> {
+    pub fn open(home: &Path, binding: Binding, accepted: Option<&InputBinding>) -> Result<Self> {
         let directory = directory(home, &binding.agent)?;
         let lock_path = directory.join("owner.lock");
         dirs::private_file(&lock_path, true, false)?;
         let owner = lock::try_exclusive_existing(&lock_path)?
             .context("native queue controller already owns this agent")?;
         let path = directory.join("delivery.json");
-        let record = match dirs::read_private_file(&path) {
+        let mut record = match dirs::read_private_file(&path) {
             Ok(file) => {
                 let mut data = Vec::new();
                 file.take((MAX_STATE + 1) as u64).read_to_end(&mut data)?;
@@ -106,16 +107,51 @@ impl Ledger {
                 serde_json::from_slice::<Record>(&data)
                     .context("invalid retained native queue ledger")?
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Record {
-                version: 2,
-                binding: binding.clone(),
-                token: uuid::Uuid::new_v4().simple().to_string(),
-                attempt: None,
-                completed: VecDeque::new(),
-                failed_turn: None,
-            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                ensure!(
+                    accepted.is_none(),
+                    "bound native input ledger is missing; retained input needs reconciliation"
+                );
+                Record {
+                    version: 2,
+                    binding: binding.clone(),
+                    token: uuid::Uuid::new_v4().simple().to_string(),
+                    attempt: None,
+                    completed: VecDeque::new(),
+                    failed_turn: None,
+                }
+            }
             Err(e) => return Err(e.into()),
         };
+        record.validate(&record.binding)?;
+        if let Some(accepted) = accepted {
+            ensure!(
+                accepted.provider == binding.provider
+                    && accepted
+                        .accepts_digest(&format!("{:x}", Sha256::digest(record.token.as_bytes()))),
+                "daemon ownership does not match the retained native input ledger"
+            );
+        }
+        if record.binding != binding {
+            let old = &record.binding;
+            ensure!(
+                accepted.is_some()
+                    && old.agent == binding.agent
+                    && old.socket == binding.socket
+                    && old.cwd == binding.cwd
+                    && old.provider.session == binding.provider.session
+                    && old.provider.profile == binding.provider.profile
+                    && old.provider.process != binding.provider.process
+                    && procinfo::start_time(old.provider.process.pid)
+                        != Some(old.provider.process.started_at),
+                "native queue provider binding changed without an accepted conversation resume"
+            );
+            // ResumeInput keeps the canonical agent and token after checking
+            // both provider generations. With the lifetime lock held, carry
+            // every prepared input, receipt and failure latch into that exact
+            // accepted generation. Never reset delivery history on restart.
+            record.binding = binding.clone();
+        }
         record.validate(&binding)?;
         let mut ledger = Self {
             _owner: owner,
@@ -331,7 +367,7 @@ mod tests {
     #[test]
     fn completed_large_inputs_release_their_bodies_and_keep_bounded_receipts() {
         let home = tempfile::tempdir().unwrap();
-        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path()), None).unwrap();
         for index in 0..RETAINED + 1 {
             let envelope = Envelope::new(
                 "peer",
@@ -372,13 +408,13 @@ mod tests {
             None,
             chrono::Utc::now(),
         );
-        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
         let token = ledger.record().token.clone();
         ledger.prepare(&envelope, None).unwrap();
         assert!(ledger.acknowledge().is_err());
-        assert!(Ledger::open(home.path(), binding.clone()).is_err());
+        assert!(Ledger::open(home.path(), binding.clone(), None).is_err());
         drop(ledger);
-        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
         assert_eq!(ledger.record().token, token);
         assert!(ledger.prepare(&envelope, None).is_err());
         ledger.queued("queue-id").unwrap();
@@ -404,9 +440,110 @@ mod tests {
         drop(ledger);
         let mut other = binding.clone();
         other.provider.process.pid += 1;
-        assert!(Ledger::open(home.path(), other).is_err());
+        assert!(Ledger::open(home.path(), other, None).is_err());
         let path = home.path().join("codex-queue/agent/delivery.json");
         std::fs::write(path, "corrupted").unwrap();
-        assert!(Ledger::open(home.path(), binding).is_err());
+        assert!(Ledger::open(home.path(), binding, None).is_err());
+    }
+
+    #[test]
+    fn accepted_process_resume_preserves_prepared_input_receipts_token_and_failure() {
+        let home = tempfile::tempdir().unwrap();
+        let mut old = binding(home.path());
+        old.provider.process.pid = u32::MAX;
+        let mut ledger = Ledger::open(home.path(), old.clone(), None).unwrap();
+        let message = |text: &str| {
+            Envelope::new(
+                "peer",
+                Destination::parse("agent"),
+                "chat",
+                serde_json::json!({"text":text}),
+                None,
+                chrono::Utc::now(),
+            )
+        };
+        ledger.prepare(&message("completed"), None).unwrap();
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "turn".into(),
+                item: "item".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        let pending = message("prepared before process restart");
+        ledger.prepare(&pending, Some("item".into())).unwrap();
+        ledger.queued("native-queue-entry").unwrap();
+        ledger.failed_turn("failed-turn").unwrap();
+        let before = serde_json::to_value(ledger.record()).unwrap();
+        let mut new = old.clone();
+        new.provider.process.pid = std::process::id();
+        new.provider.process.started_at = procinfo::start_time(std::process::id()).unwrap();
+        new.executable = home.path().join("updated-codex");
+        let accepted = InputBinding {
+            provider: new.provider.clone(),
+            controller: old.provider.process.clone(),
+            controller_since: chrono::Utc::now(),
+            token_sha256: format!("{:x}", Sha256::digest(ledger.record().token.as_bytes())),
+            bound_at: chrono::Utc::now(),
+            controller_generations: 1,
+            uncertain: Vec::new(),
+            launch: None,
+            restart: Default::default(),
+        };
+        // A live owner is never displaced, even after daemon correlation.
+        assert!(Ledger::open(home.path(), new.clone(), Some(&accepted)).is_err());
+        drop(ledger);
+        let retained = std::fs::read(home.path().join("codex-queue/agent/delivery.json")).unwrap();
+        assert!(Ledger::open(home.path(), new.clone(), None).is_err());
+        let mut wrong = accepted.clone();
+        wrong.token_sha256 = "0".repeat(64);
+        assert!(Ledger::open(home.path(), new.clone(), Some(&wrong)).is_err());
+        let mut unrelated = new.clone();
+        unrelated.cwd = home.path().join("another-checkout");
+        assert!(Ledger::open(home.path(), unrelated, Some(&accepted)).is_err());
+        assert_eq!(
+            std::fs::read(home.path().join("codex-queue/agent/delivery.json")).unwrap(),
+            retained
+        );
+        let ledger = Ledger::open(home.path(), new.clone(), Some(&accepted)).unwrap();
+        let mut after = serde_json::to_value(ledger.record()).unwrap();
+        after["binding"] = before["binding"].clone();
+        assert_eq!(after, before);
+        assert_eq!(ledger.record().binding, new);
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), new, Some(&accepted)).unwrap();
+        assert!(ledger.prepare(&pending, None).is_err());
+        assert_eq!(
+            ledger.record().attempt.as_ref().unwrap().queued.as_deref(),
+            Some("native-queue-entry")
+        );
+    }
+
+    #[test]
+    fn bound_input_never_replaces_a_missing_ledger_or_a_live_generation() {
+        let home = tempfile::tempdir().unwrap();
+        let mut old = binding(home.path());
+        old.provider.process.pid = std::process::id();
+        old.provider.process.started_at = procinfo::start_time(std::process::id()).unwrap();
+        let ledger = Ledger::open(home.path(), old.clone(), None).unwrap();
+        let mut new = old.clone();
+        new.provider.process.pid = u32::MAX;
+        let accepted = InputBinding {
+            provider: new.provider.clone(),
+            controller: old.provider.process.clone(),
+            controller_since: chrono::Utc::now(),
+            token_sha256: format!("{:x}", Sha256::digest(ledger.record().token.as_bytes())),
+            bound_at: chrono::Utc::now(),
+            controller_generations: 1,
+            uncertain: Vec::new(),
+            launch: None,
+            restart: Default::default(),
+        };
+        drop(ledger);
+        assert!(Ledger::open(home.path(), new.clone(), Some(&accepted)).is_err());
+        std::fs::remove_file(home.path().join("codex-queue/agent/delivery.json")).unwrap();
+        assert!(Ledger::open(home.path(), new, Some(&accepted)).is_err());
+        assert!(!home.path().join("codex-queue/agent/delivery.json").exists());
     }
 }

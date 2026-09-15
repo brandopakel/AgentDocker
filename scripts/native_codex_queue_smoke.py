@@ -9,7 +9,8 @@ scenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive
 queue ownership, provider receipts and automatic receiver crash recovery.
 
 Extra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and
-fault injection into the isolated receiver ledger (never the provider database).
+fault injection into the isolated receiver ledger (never the provider database),
+and explicitly closing/reopening the same TUI conversation with queued input.
 Private profiles/processes are retired; --output keeps private traces and a
 sanitized result.json suitable for review. This driver is explicit acceptance,
 not a hermetic unit test or evidence for other providers/versions/platforms.
@@ -53,7 +54,16 @@ parser.add_argument(
 parser.add_argument("--output", type=Path, required=True, help="New private artifact directory")
 parser.add_argument(
     "--scenario",
-    choices=["baseline", "question", "legacy-question", "rate-limit", "recovery"],
+    choices=[
+        "baseline",
+        "question",
+        "legacy-question",
+        "posted-question",
+        "disconnected-question",
+        "rate-limit",
+        "recovery",
+        "resume",
+    ],
     default="baseline",
 )
 parser.add_argument(
@@ -363,7 +373,9 @@ try:
             AGENTDOCKER_NO_AUTOSTART="1",
         )
         log = (out / "agentdocker-daemon.log").open("w")
-        daemon_env = {key: value for key, value in env.items() if key not in ("CODEX_HOME", "AGENTDOCKER_FIXTURE_KEY")}
+        daemon_env = {
+            key: value for key, value in env.items() if key not in ("CODEX_HOME", "AGENTDOCKER_FIXTURE_KEY")
+        }
         daemon = subprocess.Popen(
             [str(cli.with_name("agentd"))],
             cwd=repo,
@@ -796,6 +808,79 @@ try:
                     else "legacy_mcp_answer_not_resubmitted"
                 ] = True
                 report["question_id"] = question["id"]
+            elif args.scenario in ("posted-question", "disconnected-question"):
+                question_text = "Which directly posted fixture color?"
+                if args.scenario == "posted-question":
+                    question_id = subprocess.check_output(
+                        [
+                            str(cli),
+                            "--socket",
+                            str(sock),
+                            "ask",
+                            "--from",
+                            aid,
+                            "--to",
+                            "user",
+                            "--no-wait",
+                            question_text,
+                        ],
+                        cwd=repo,
+                        env=env,
+                        text=True,
+                        timeout=10,
+                    ).strip()
+                else:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as asking:
+                        asking.settimeout(5)
+                        asking.connect(str(sock))
+                        asking.sendall(
+                            json.dumps(
+                                {
+                                    "op": "ask",
+                                    "from": aid,
+                                    "to": "user",
+                                    "question": question_text,
+                                    "timeout_secs": 300,
+                                }
+                            ).encode()
+                            + b"\n"
+                        )
+                        question_id = wait(
+                            lambda: next(
+                                (
+                                    q["id"]
+                                    for q in rpc({"op": "questions", "agent": "user"})["questions"]
+                                    if q["text"] == question_text
+                                ),
+                                None,
+                            ),
+                            10,
+                        )
+                    # The actual server observes EOF and drops the synchronous
+                    # ask; the still-open question's answer goes to the queue.
+                    time.sleep(1)
+                answered = rpc(
+                    {
+                        "op": "answer",
+                        "from": "user",
+                        "message": question_id,
+                        "text": "DIRECT_BLUE_ANSWER_NONCE",
+                    }
+                )
+                assert answered["type"] == "sent", answered
+                wait(lambda: len(report["requests"]) == 8, 25)
+                wait(lambda: b"FIXTURE_OK_8" in output)
+                newest = [i for i in report["requests"][-1]["body"]["input"] if i.get("role") == "user"][-1]
+                assert "DIRECT_BLUE_ANSWER_NONCE" in json.dumps(newest)
+                assert answered["message"] in json.dumps(newest)
+                wait(lambda: len(rpc({"op": "peek_input", "agent": aid})["messages"]) == 0, 15)
+                time.sleep(4)
+                assert len(report["requests"]) == 8
+                received = rpc({"op": "inspect", "agent": aid})["agent"]["input_delivery"]["received"]
+                assert received["messages"] == [answered["message"]]
+                report["direct_answer_queued_once"] = True
+                report["question_connection_closed_before_answer"] = args.scenario == "disconnected-question"
+                report["question_id"] = question_id
             elif args.scenario == "recovery":
                 rpc(
                     {
@@ -857,6 +942,91 @@ try:
                 assert len(report["requests"]) == 7
                 assert rpc({"op": "peek_input", "agent": aid})["messages"][0]["id"] == result["message"]
                 report["unconfirmed_attempt_paused_without_resubmission"] = True
+            elif args.scenario == "resume":
+                old_agent = aid
+                ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                old_provider = provider.pid
+                os.killpg(provider.pid, signal.SIGTERM)
+                provider.wait(timeout=5)
+                thread.join(timeout=2)
+                os.close(master)
+                master = None
+                result = rpc(
+                    {
+                        "op": "send",
+                        "from": peer,
+                        "to": old_agent,
+                        "kind": "chat",
+                        "payload": {"text": "DURING_TUI_RESTART"},
+                    }
+                )
+                assert result["type"] == "sent", result
+                report["during_restart_message"] = result["message"]
+                retained = json.loads(ledgerpath.read_text())
+                bootstrap_called = False
+                master, slave = pty.openpty()
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
+                provider = subprocess.Popen(
+                    [codex, "--no-alt-screen", "resume", tid, "RESUME_BOOTSTRAP_NONCE"],
+                    cwd=repo,
+                    env=env,
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    start_new_session=True,
+                )
+                os.close(slave)
+                thread = threading.Thread(target=reader, daemon=True)
+                thread.start()
+                registered = wait(
+                    lambda: next(
+                        (
+                            a
+                            for a in rpc({"op": "list", "all": True})["agents"]
+                            if a.get("pid") == provider.pid and a.get("input_binding")
+                        ),
+                        None,
+                    ),
+                    40,
+                )
+                report["resumed_agent"] = registered["id"]
+                report["resumed_thread"] = registered["spec"]["labels"]["session_id"]
+                report["same_logical_agent_after_resume"] = registered["id"] == old_agent
+                controller_pid = registered["input_binding"]["controller"]["pid"]
+                wait(lambda: len(rpc({"op": "peek_input", "agent": old_agent})["messages"]) == 0, 25)
+                report["old_queue_after_resume"] = [
+                    m["id"] for m in rpc({"op": "peek_input", "agent": old_agent})["messages"]
+                ]
+                assert report["resumed_thread"] == tid
+                assert provider.pid != old_provider
+                assert report["same_logical_agent_after_resume"], (
+                    "same persisted thread restarted as a new AgentDocker agent; its old queue is stranded"
+                )
+                final = wait(
+                    lambda: (
+                        v
+                        if (v := json.loads(ledgerpath.read_text()))["attempt"] is None
+                        and len(v["completed"]) == len(retained["completed"]) + 1
+                        else None
+                    ),
+                    10,
+                )
+                assert final["token"] == retained["token"]
+                assert final["completed"][:-1] == retained["completed"]
+                assert final["completed"][-1]["message"] == result["message"]
+                assert final["binding"]["provider"]["process"]["pid"] == provider.pid
+                assert final["binding"]["provider"]["session"] == tid
+                assert len(report["requests"]) == 9, len(report["requests"])
+                messages = [
+                    json.dumps(v)
+                    for request in report["requests"][7:]
+                    for v in request["body"].get("input", [])
+                    if v.get("role") == "user"
+                ]
+                assert any("DURING_TUI_RESTART" in v for v in messages)
+                report["restart_preserved_token_and_receipts"] = True
+                report["restart_delivered_retained_queue"] = True
+                report["same_live_tui_before_explicit_restart"] = True
             else:
                 queued("PEER_AFTER_RECEIVER_RESTART")
                 wait(lambda: len(report["requests"]) == 8, 25)
@@ -868,7 +1038,7 @@ try:
                 report["idle_wake_after_receiver_crash"] = True
             report.update(
                 result="passed",
-                same_live_tui=True,
+                same_live_tui=args.scenario != "resume",
                 draft_preserved=True,
                 busy_order_preserved=True,
                 model_requests=len(report["requests"]),
