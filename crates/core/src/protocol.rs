@@ -289,6 +289,13 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// A person's retry after the daemon gave up starting a bound
+    /// controller: the restart episode starts over on the same binding,
+    /// with the queue kept and the provider untouched. Refused while the
+    /// bound or a launched controller is running.
+    RetryController {
+        agent: String,
+    },
     /// Provider availability, separate from receiver readiness and receipts.
     ReportProvider {
         agent: String,

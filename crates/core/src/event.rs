@@ -121,6 +121,11 @@ pub enum EventKind {
         agent: AgentId,
         attempts: u32,
     },
+    /// A person asked for the controller to be started again: the episode
+    /// starts over, the next launch is due at once.
+    InputRestartsReset {
+        agent: AgentId,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,

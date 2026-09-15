@@ -825,7 +825,8 @@ impl App {
             EventKind::InputDeliveryReported { .. }
             | EventKind::InputControllerEnded { .. }
             | EventKind::InputControllerLaunched { .. }
-            | EventKind::InputRestartsExhausted { .. } => {
+            | EventKind::InputRestartsExhausted { .. }
+            | EventKind::InputRestartsReset { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }

@@ -209,6 +209,9 @@ pub fn event_line(event: &Event) -> String {
             "controller restarts exhausted {} after {attempts}",
             agent.short()
         ),
+        EventKind::InputRestartsReset { agent } => {
+            format!("controller restart requested {}", agent.short())
+        }
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

@@ -705,6 +705,52 @@ impl State {
         Response::Ok
     }
 
+    /// A person's retry: the restart episode starts over on the binding as
+    /// it is, so the next tick launches the descriptor again. Nothing else
+    /// moves: the queue stays, the provider generation stays, and a
+    /// controller that is running, bound or just launched, keeps its place.
+    pub(super) fn retry_controller(&mut self, reference: &str, now: DateTime<Utc>) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let record = self.registry.get(&id).expect("resolved agent");
+        let Some(binding) = &record.input_binding else {
+            return Response::error(ErrorCode::NotFound, "this agent's input is not bound");
+        };
+        if binding.launch.is_none() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "this binding has no launch descriptor; its controller is started by the runtime's own hook",
+            );
+        }
+        if is_running(&binding.controller) {
+            return Response::error(ErrorCode::Conflict, "the bound controller is running");
+        }
+        if binding.restart.launched.as_ref().is_some_and(is_running) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "a controller the daemon launched is starting",
+            );
+        }
+        let expected = binding.clone();
+        let applied = self.transition_binding(&id, &expected, now, |record| {
+            let binding = record.input_binding.as_mut().expect("checked");
+            binding.restart.attempts = 0;
+            binding.restart.exhausted = false;
+            binding.restart.launched = None;
+            binding.restart.launched_at = None;
+            binding.restart.ended_at = Some(now);
+            EventKind::InputRestartsReset { agent: id.clone() }
+        });
+        if applied {
+            Response::Ok
+        } else {
+            self.storage_failure()
+                .unwrap_or_else(|| Response::error(ErrorCode::Conflict, "the binding changed"))
+        }
+    }
+
     /// The bound controller's read: acknowledge what it has receipts for,
     /// then take the whole queue, with the messages a legacy reader had
     /// already been offered named so it reconciles them first.
@@ -1165,6 +1211,113 @@ mod tests {
             .unwrap();
         assert!(stored.input_binding.unwrap().uncertain.is_empty());
         assert!(stored.legacy_offers.is_empty());
+    }
+
+    /// After the daemon gave up, a person's retry starts the episode over
+    /// on the same binding; while a controller runs there is nothing to
+    /// retry.
+    #[tokio::test]
+    async fn a_person_can_retry_an_exhausted_controller_without_unbinding() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let controller = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let retry = || {
+            daemon.handle(Request::RetryController {
+                agent: receiver.id.to_string(),
+            })
+        };
+        assert!(matches!(
+            retry().await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        drop(controller);
+        daemon.tend_controllers();
+        // The daemon gave up.
+        {
+            let mut state = lock(&daemon.state);
+            let mut record = state.registry.get(&receiver.id).cloned().unwrap();
+            let binding = record.input_binding.as_mut().unwrap();
+            binding.restart.attempts = agentdocker_core::CONTROLLER_RESTARTS;
+            binding.restart.exhausted = true;
+            state.persist("test", |store| store.upsert_agent(&record));
+            *state.registry.get_mut(&receiver.id).unwrap() = record;
+        }
+        let seq = lock(&daemon.state).next_seq;
+        daemon.tend_controllers();
+        assert!(events_since(&daemon, seq).await.is_empty(), "given up");
+        assert!(matches!(retry().await, Response::Ok));
+        let binding = binding_of(&daemon, &receiver.id);
+        assert_eq!(binding.restart.attempts, 0);
+        assert!(!binding.restart.exhausted);
+        assert!(
+            binding.controller_generations == 1,
+            "the binding itself is untouched"
+        );
+        daemon.tend_controllers();
+        let events = events_since(&daemon, seq).await;
+        let launched = match &events[..] {
+            [
+                EventKind::InputRestartsReset { .. },
+                EventKind::InputControllerLaunched {
+                    controller,
+                    attempt: 1,
+                    ..
+                },
+            ] => controller.clone(),
+            other => panic!("{other:?}"),
+        };
+        // Starting: nothing to retry either.
+        assert!(matches!(
+            retry().await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        signal(&launched, Signal::SIGKILL);
+        // An unmanaged binding has nothing the daemon could start.
+        let plain = provider(&daemon, "plain", "sess-2").await;
+        let other = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: plain.id.to_string(),
+                    provider: generation(&plain, "sess-2"),
+                    controller: other.identity(),
+                    token: OTHER_TOKEN.into(),
+                    launch: None,
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        drop(other);
+        assert!(matches!(
+            daemon
+                .handle(Request::RetryController {
+                    agent: plain.id.to_string(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
     }
 
     /// The restart record is on the agent record: a daemon opened again

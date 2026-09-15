@@ -1316,6 +1316,9 @@ impl Daemon {
                 token,
                 force,
             } => lock(&self.state).unbind_input(&agent, token.as_deref(), force, Utc::now()),
+            Request::RetryController { agent } => {
+                lock(&self.state).retry_controller(&agent, Utc::now())
+            }
             Request::DeliveryQueue { agent } => {
                 let mut state = lock(&self.state);
                 match state.input_consumer(&agent, false) {
