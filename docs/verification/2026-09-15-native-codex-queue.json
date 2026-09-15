@@ -347,10 +347,10 @@
     }
   ],
   "integration_limits": [
-    "These trials used intermediate native receiver binaries, before final daemon-supervised restart integration; their binary and driver hashes identify the tested scope.",
+    "Earlier preliminary trials preceded daemon-supervised restart; supervised_native_trials records later combined source/binaries separately.",
     "The Responses model is a loopback fixture; this does not validate paid provider availability, real account resets, other versions or other providers.",
     "The real hook is invoked from a provider tool; provider hook configuration and trust UX still require installed-session acceptance.",
-    "CLI-posted and old disconnected human-question routes, legacy exposed inputs, sustained workloads and actual installation remain open."
+    "CLI-posted answers and explicit same-thread TUI resume passed at 33cbccd. Disconnected-ask and generic send-reply fixes still need combined acceptance. Unknown legacy offers, renamed/overridden historical MCP bindings, sustained workloads and actual installation remain open."
   ],
   "supervised_native_trials": [
     {
@@ -632,6 +632,154 @@
       "failure": "See the private result and terminal capture; raw exception text may include local state.",
       "raw_result_sha256": "4882cffb124bd0866310b15493a7c77d00e616e46a9124148874fdd897bce6ac",
       "failure_analysis": "Same canonical agent and queued delivery/ledger preservation assertions passed; final transcript check incorrectly read request.input instead of request.body.input. Corrected in later driver; this trial remains failed."
+    },
+    {
+      "started_at": "2026-09-15T19:47:22.664011+00:00",
+      "scenario": "resume",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 64235,
+      "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+      "agent": "d32774a0ef2d4c0999df23ec33f98c56",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.099419584003044,
+      "cross_process_receipt": {
+        "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+        "turn": "01a0a69c-4255-7543-8734-73938723b941",
+        "item": "01a0a69c-4262-7a91-bbb3-095673118866"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "a0d24509cf2b405e"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+          "turn": "01a0a69c-b795-7320-90c4-63fdbd2e0403",
+          "item": "01a0a69c-b7a5-7873-9c21-32faffd060ec"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "during_restart_message": "ac02f0aa26514ce4",
+      "resumed_agent": "d32774a0ef2d4c0999df23ec33f98c56",
+      "resumed_thread": "01a0a69c-1b48-7510-9aa3-8fc1e89730bc",
+      "same_logical_agent_after_resume": true,
+      "old_queue_after_resume": [],
+      "restart_preserved_token_and_receipts": true,
+      "restart_delivered_retained_queue": true,
+      "same_live_tui_before_explicit_restart": true,
+      "same_live_tui": false,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "94311dc925a6b3cfe84a42cdc6e1acf22494c92d3f06ad3657d7d2880fd30680"
+    },
+    {
+      "started_at": "2026-09-15T19:48:23.324373+00:00",
+      "scenario": "posted-question",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 66851,
+      "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+      "agent": "104694b162c44ad98b7a168b7716f54a",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.629777291993378,
+      "cross_process_receipt": {
+        "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+        "turn": "01a0a69d-2d1f-75c2-8ec9-e9abc9ccd72c",
+        "item": "01a0a69d-2d2d-77e3-8704-eca1a296faa1"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "4273ae0e600740c2"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69d-0613-7991-b095-f6cd6473d4d9",
+          "turn": "01a0a69d-a25c-7363-9d9e-f4190db2c216",
+          "item": "01a0a69d-a26c-7ef2-a863-08b9dfdf392e"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "direct_answer_queued_once": true,
+      "question_connection_closed_before_answer": false,
+      "question_id": "121ba99c2a81491c",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "034c49af85a3cb4fd148febc88437a35f7dcb50e55cdb5a06c23c120628005e7"
+    },
+    {
+      "started_at": "2026-09-15T19:49:20.370601+00:00",
+      "scenario": "legacy-question",
+      "result": "passed",
+      "driver_sha256": "3ef7a32b7c286a57e648ee9b957e92fc751cf4d25910921c08ee724a851b3838",
+      "source": {
+        "commit": "33cbccd66089d1466a63882b4de87ec514803336",
+        "dirty": false,
+        "rust_and_driver_sha256": "6f460a44bb4e8ec1ee979cfe8e16d425ea01b1673b4b6c6ce9f6d37dff57a8cb"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bb97c59adbd14e10b1d544b571824b75a89f5bc4081159bbabbbbbb99b479696",
+      "daemon_sha256": "e90e2da4839a59d6df5a1327f20c906591813d542b49a1e586fa94cab5185be7",
+      "legacy_cli_sha256": "9fbebfb99b9b94802fae665679023f2798139479392050ecba94367eceb042c7",
+      "pid": 69220,
+      "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+      "agent": "fa519b06218c4c638a8c272288148049",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.643387374992017,
+      "cross_process_receipt": {
+        "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+        "turn": "01a0a69e-0bfd-7bf0-aacd-47ea0a37077b",
+        "item": "01a0a69e-0c11-7d42-97dd-b3aeaeb0eecf"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "f71a11767d9945f7"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a69d-e4f0-7c23-b74a-1fe345cf1c88",
+          "turn": "01a0a69e-813c-73e0-8efc-807cea826a12",
+          "item": "01a0a69e-814d-7a33-ae4f-fc7e252174d9"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "question_id": "4d39e3d766f74beb",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "e095c6eb5442c03a8f86ce31f14a5149ca2b1c90fb229ef540c1429dac33b5e1"
     }
   ],
   "combined_gate_8b2afe3": {

@@ -58,6 +58,7 @@ parser.add_argument(
         "baseline",
         "question",
         "legacy-question",
+        "legacy-reply",
         "posted-question",
         "disconnected-question",
         "rate-limit",
@@ -72,8 +73,8 @@ parser.add_argument(
     help="Older MCP CLI for the synchronous question migration trial",
 )
 args = parser.parse_args()
-if args.scenario == "legacy-question" and (not args.legacy_cli):
-    parser.error("legacy-question requires --legacy-cli")
+if args.scenario in ("legacy-question", "legacy-reply") and (not args.legacy_cli):
+    parser.error("legacy-question and legacy-reply require --legacy-cli")
 if os.name != "posix":
     parser.error("This PTY acceptance driver requires a Unix host")
 cli = args.cli.resolve(strict=True)
@@ -253,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
         if (
-            args.scenario in ("question", "legacy-question")
+            args.scenario in ("question", "legacy-question", "legacy-reply")
             and users
             and ("ASK_QUESTION_NONCE" in json.dumps(users[-1]))
             and (not question_called)
@@ -399,7 +400,9 @@ try:
         with (profile / "config.toml").open("a") as configfile:
             configfile.write(
                 "\n[mcp_servers.agentdocker]\ncommand = "
-                + json.dumps(str(args.legacy_cli if args.scenario == "legacy-question" else cli))
+                + json.dumps(
+                    str(args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply") else cli)
+                )
                 + '\nargs = ["mcp", "--runtime", "codex"]\n[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = '
                 + json.dumps(str(adhome))
                 + "\nAGENTDOCKER_SOCKET = "
@@ -760,7 +763,7 @@ try:
                 assert "AFTER_PROVIDER_RESET" in json.dumps(newest)
                 report["rate_limit_holds_queue"] = True
                 report["explicit_resume_without_replay"] = True
-            elif args.scenario in ("question", "legacy-question"):
+            elif args.scenario in ("question", "legacy-question", "legacy-reply"):
                 queued("ASK_QUESTION_NONCE")
                 question = wait(
                     lambda: next(
@@ -775,14 +778,27 @@ try:
                 )
                 if args.scenario == "question":
                     wait(lambda: len(report["requests"]) == 9, 20)
-                answered = rpc(
-                    {
-                        "op": "answer",
-                        "from": "user",
-                        "message": question["id"],
-                        "text": "BLUE_ANSWER_NONCE",
-                    }
-                )
+                if args.scenario == "legacy-reply":
+                    answered = rpc(
+                        {
+                            "op": "send",
+                            "from": "user",
+                            "to": aid,
+                            "kind": "chat",
+                            "payload": {"text": "BLUE_ANSWER_NONCE"},
+                            "reply_to": question["id"],
+                        }
+                    )
+                else:
+                    answered = rpc(
+                        {
+                            "op": "answer",
+                            "from": "user",
+                            "message": question["id"],
+                            "text": "BLUE_ANSWER_NONCE",
+                        }
+                    )
+                assert answered["type"] == "sent", answered
                 expected = 10 if args.scenario == "question" else 9
                 wait(lambda: len(report["requests"]) == expected, 60)
                 wait(lambda: ("FIXTURE_OK_" + str(expected)).encode() in output)

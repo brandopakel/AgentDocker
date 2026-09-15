@@ -1174,7 +1174,10 @@ mod tests {
             .find(|m| m.id == reply)
             .cloned()
             .expect("the reply stays queued as an offer");
-        assert_eq!(stored.kind, "answer", "normalised where the question closed");
+        assert_eq!(
+            stored.kind, "answer",
+            "normalised where the question closed"
+        );
         assert_eq!(
             routes(&daemon).last(),
             Some(&(font.id.clone(), reply.clone(), AnswerRoute::ToolResult))
