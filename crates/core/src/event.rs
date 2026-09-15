@@ -434,6 +434,25 @@ pub enum EventKind {
         removed: usize,
         reason: String,
     },
+    /// A session owner that outlived the previous daemon is supervised
+    /// again by this one, with its child untouched.
+    AgentOwnerReattached {
+        agent: AgentId,
+        owner_pid: u32,
+    },
+    /// Keystrokes an attached client sent were refused by the agent's
+    /// session owner because its terminal queue was full; nothing was
+    /// typed and nothing is replayed.
+    AgentInputDropped {
+        agent: AgentId,
+        reason: String,
+    },
+    /// A managed agent's session owner could not be found after a daemon
+    /// restart and left no exit report; the agent is recorded as failed.
+    AgentOwnerLost {
+        agent: AgentId,
+        reason: String,
+    },
     /// Checkpoints (and the handoff bundles carrying them) older than a
     /// requested age were deleted; only finished sessions' are eligible.
     CheckpointsPruned {

@@ -68,6 +68,19 @@ fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     if fits_socket(&home.join(CONTAINER_SOCKET)) && fits_socket(&home.join(HOST_SOCKET)) {
         return home.to_path_buf();
     }
+    short_socket_dir_in(home, runtime)
+}
+
+/// The short private directory a home's sockets fall back to, whether or
+/// not the home itself would have fitted: for socket names longer than the
+/// daemon's own, such as per-agent session sockets.
+#[cfg(unix)]
+pub fn short_socket_dir(home: &Path) -> PathBuf {
+    short_socket_dir_in(home, &runtime_dir())
+}
+
+#[cfg(unix)]
+fn short_socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     let hash = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
         home.as_os_str().as_encoded_bytes(),
@@ -80,6 +93,12 @@ fn socket_dir_in(home: &Path, runtime: &Path) -> PathBuf {
         return candidate;
     }
     Path::new("/tmp").join(name)
+}
+
+/// Windows has no socket-name limit to fall back from.
+#[cfg(windows)]
+pub fn short_socket_dir(home: &Path) -> PathBuf {
+    home.to_path_buf()
 }
 
 /// Workspace state needs more socket room than the public endpoints (including

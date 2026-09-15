@@ -139,6 +139,9 @@ pub struct Daemon {
     /// pending scan without holding any lock across async work.
     scanning: std::sync::atomic::AtomicBool,
     scan_finished: Notify,
+    /// How session owners are run: as processes of the daemon binary, or
+    /// in-process where no daemon binary is on hand (tests).
+    owner_mode: supervisor::OwnerMode,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -511,6 +514,14 @@ impl Daemon {
     }
     pub fn mark_exited(&self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
         lock(&self.state).mark_exited(id, status)
+    }
+
+    /// Record an exit and say whether the store kept it. A store that was
+    /// already unavailable, or fails on this write, still retires the
+    /// supervision in memory but answers false, so the caller keeps whatever
+    /// external evidence of the exit it holds.
+    pub fn mark_exited_durably(&self, id: &AgentId, status: AgentStatus) -> bool {
+        lock(&self.state).mark_exited_durably(id, status)
     }
     /// Report a duplicate record left over from before one process was
     /// one agent. Report, not repair.
@@ -1025,6 +1036,7 @@ impl Daemon {
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            owner_mode: supervisor::OwnerMode::detect(),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -1549,6 +1561,7 @@ impl Daemon {
                         running.pid = Some(pid);
                         running.process_started_at = process_started_at;
                         running.process_group = Some(pid);
+                        running.owner = Some(spawned.owner.clone());
                         running.status = AgentStatus::Running;
                         running.started_at = Some(now);
                         running.last_seen = now;
@@ -2455,6 +2468,10 @@ impl Daemon {
     /// The terminal of a managed agent, when it was given one.
     pub fn session(&self, agent: &AgentId) -> Option<supervisor::Session> {
         lock(&self.sessions).get(agent).cloned()
+    }
+
+    pub fn owner_mode(&self) -> supervisor::OwnerMode {
+        self.owner_mode.clone()
     }
 
     /// The agent is gone; so is its terminal.
@@ -3654,6 +3671,14 @@ impl State {
             },
             Err(response) => *response,
         }
+    }
+
+    fn mark_exited_durably(&mut self, id: &AgentId, status: AgentStatus) -> bool {
+        let was_available = self.storage_error.is_none();
+        let recorded = self.mark_exited(id, status);
+        was_available
+            && self.storage_error.is_none()
+            && recorded.is_some_and(|record| !record.status.is_live())
     }
 
     pub fn mark_exited(&mut self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {

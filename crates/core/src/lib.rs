@@ -61,6 +61,7 @@ pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
 
 pub mod recovery;
+pub mod session;
 pub use recovery::{Checkpoint, Recovery, Validation};
 
 pub mod handoff;

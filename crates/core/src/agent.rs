@@ -336,6 +336,10 @@ pub struct AgentRecord {
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
+    /// The session owner holding this managed agent's child, when one
+    /// does; absent for adopted, registered and older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<crate::session::SessionOwner>,
     /// The project derived from `spec.workdir` when the agent was created;
     /// `None` when there was no working directory to derive it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -371,6 +375,7 @@ impl AgentRecord {
             process_group: None,
             managed,
             container: None,
+            owner: None,
             project: None,
             vcs: None,
             created_at: now,

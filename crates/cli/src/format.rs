@@ -573,6 +573,15 @@ pub fn event_line(event: &Event) -> String {
             "journal pruned   {} below #{before_seq}: {removed} entries ({reason})",
             project.short()
         ),
+        EventKind::AgentOwnerReattached { agent, owner_pid } => {
+            format!("owner reattached {} (owner pid {owner_pid})", agent.short())
+        }
+        EventKind::AgentInputDropped { agent, reason } => {
+            format!("input dropped    {} {reason}", agent.short())
+        }
+        EventKind::AgentOwnerLost { agent, reason } => {
+            format!("owner lost       {} {reason}", agent.short())
+        }
         EventKind::CheckpointsPruned { checkpoints } => {
             format!("checkpoints pruned {}", checkpoints.len())
         }

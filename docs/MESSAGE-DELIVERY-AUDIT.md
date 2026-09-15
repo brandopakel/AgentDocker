@@ -158,6 +158,13 @@ requirements; this report alone does not establish the precise provider limit
 type, reset time or an adapter signal. The current activity reports expose
 working/idle observations and cannot represent that failure explicitly.
 
+This requirement covers all supported providers and models, including
+OpenAI/Codex, Anthropic/Claude, Google/Gemini, providers behind multi-provider
+tools, and custom/local runtimes. Record runtime and actual model/provider
+separately when known. Do not infer universal limit detection from runtime
+discovery or from Claude's hook signal. Provider availability must remain
+separate from transport/input readiness, so an idle heartbeat cannot clear it.
+
 Follow the [delivery contract](DELIVERY-PLAN.md#provider-session-limits-and-interrupted-work-september-14).
 Retain raw provider evidence privately and record sanitized outcomes for:
 
@@ -169,10 +176,15 @@ Retain raw provider evidence privately and record sanitized outcomes for:
 | Continued submissions and queue pressure | Retain already accepted work, apply existing bounded backpressure to new submissions and give senders a concise waiting reason. Bound retry/ping/notification frequency. |
 | Recovery and restart | Re-establish provider availability and session identity, reconcile durable receipts, then continue queued work once. Test daemon restart, same-session reconnect and explicit replacement without merging distinct sessions. |
 | Missing or changing limit metadata | Use unknown availability when no supported signal exists. Do not invent a reset time, infer successful recovery from elapsed time, or confuse usage limits with context exhaustion, authentication or transport errors. |
+| Provider, model and quota scope | Cover applicable session, daily/weekly usage, request/token rate, credit/billing, concurrency and context limits. A limit confined to one model/session must not pause unrelated agents. Confirmed account/organization/deployment limits require coordinated bounded retries across affected agents; unknown scope stays unknown. |
+| Different adapter capabilities | Run the shared queue/recovery cases for each supported adapter and the provider/model combinations it exposes. Record exact versions, supported evidence and gaps for structured errors, hooks, MCP-only and generic/local integrations. Unsupported detection must produce honest unknown status, never assumed availability or completion. |
+| Provider/model change or fallback | Do not switch provider, account or model automatically to bypass a limit. An explicitly requested change must preserve pending work and reconcile receipts and session identity before delivery. |
 
 Controlled fixtures must exercise every boundary, including repeated limit
-responses and unavailable recovery. An actual Claude/Codex provider trial must
-record its version, observed limit signal and recovery outcome separately; do
+responses and unavailable recovery. Record per-adapter/provider coverage in this
+existing audit; one provider's passing tests do not complete the others. An
+actual provider trial must record its runtime/model version when available,
+observed limit signal and recovery outcome separately; do
 not spend quota solely to provoke a limit. Limited agents retain their files and
 normal lease semantics. A peer that has not replied has not accepted a new task
 or approved takeover of its unfinished work.
