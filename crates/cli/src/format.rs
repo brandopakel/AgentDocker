@@ -614,6 +614,13 @@ pub fn event_line(event: &Event) -> String {
             "transfer offered {} to pid {successor_pid}",
             &transfer[..12.min(transfer.len())]
         ),
+        EventKind::DaemonTransferReaddressed {
+            transfer,
+            successor_pid,
+        } => format!(
+            "transfer {} now addressed to pid {successor_pid}",
+            &transfer[..12.min(transfer.len())]
+        ),
         EventKind::DaemonTransferAccepted { transfer } => {
             format!("transfer accepted {}", &transfer[..12.min(transfer.len())])
         }

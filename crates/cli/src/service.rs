@@ -567,6 +567,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                 .call(&Request::Reload)
                 .await
                 .context("reload failed")?;
+            println!("reloaded: a new agentd is serving; agents kept running");
         }
         DaemonCommand::Status => {
             let definition = if macos {

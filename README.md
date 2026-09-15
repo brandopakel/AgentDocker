@@ -149,7 +149,9 @@ agentdocker run --name keeper --restore -- claude
 # purpose clears the policy, so it stays stopped.
 agentdocker run --name indexer --restart on-failure:3 -- ./index.sh
 agentdocker top      # the fleet, live: who is working, blocked, waiting
-agentdocker daemon reload   # currently unavailable; leaves the daemon and agents running
+agentdocker daemon reload   # hands over to a new agentd without stopping agents;
+                            # gated behind AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the
+                            # daemon until its acceptance is recorded, refused otherwise
 
 # And set the rules. `~/.agentdocker/policy.toml` is yours; a project's
 # `.agentdocker/policy.toml` may narrow it and never widen it.
