@@ -751,13 +751,16 @@ impl State {
         // a repeat, and there is no record left to resume from.
         let retired = AgentId::from(reference);
         if let Some(canonical) = self.registry.aliases().get(&retired).cloned() {
+            let same_predecessor = self.resolve(predecessor).is_ok_and(|id| id == canonical);
             let binding = self
                 .registry
                 .get(&canonical)
                 .and_then(|r| r.input_binding.clone());
             return match binding {
                 Some(binding)
-                    if binding.provider == provider && binding.launch.as_ref() == Some(&launch) =>
+                    if same_predecessor
+                        && binding.provider == provider
+                        && binding.launch.as_ref() == Some(&launch) =>
                 {
                     Response::InputResumed {
                         agent: canonical,
@@ -767,7 +770,7 @@ impl State {
                 }
                 _ => Response::error(
                     ErrorCode::Conflict,
-                    "this id was already resumed into another record with a different generation or descriptor",
+                    "this id was already resumed into another record with a different predecessor, generation or descriptor",
                 ),
             };
         }
@@ -815,13 +818,14 @@ impl State {
             return Response::error(ErrorCode::Invalid, "the predecessor has no input binding");
         };
         if prior.id == caller.id
+            || prior.spec.runtime != caller.spec.runtime
             || binding.provider.session != provider.session
             || binding.provider.profile != provider.profile
             || prior.spec.workdir.as_deref().map(project::canonical) != Some(workdir)
         {
             return Response::error(
                 ErrorCode::Invalid,
-                "the predecessor must be another record bound to the same thread, profile and checkout",
+                "the predecessor must be another record of the same runtime bound to the same thread, profile and checkout",
             );
         }
         if let Some(other) = self.registry.all().find(|r| {
@@ -1681,6 +1685,20 @@ mod tests {
                         args: vec!["-c".into(), "true".into()],
                         ..descriptor(&dir)
                     },
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeInput {
+                    agent: fresh.id.to_string(),
+                    predecessor: sender.id.to_string(),
+                    provider: generation(profile.clone()),
+                    launch: descriptor(&dir),
                 })
                 .await,
             Response::Error {
