@@ -81,7 +81,9 @@ pub fn candidate() -> std::io::Result<(PathBuf, &'static str)> {
     if let Some(path) = std::env::var_os(CANDIDATE) {
         return Ok((PathBuf::from(path), "named by the environment"));
     }
-    let own = std::env::current_exe()?;
+    // Resolved, not as invoked: a daemon started through the launcher link
+    // must still know which release directory it runs from.
+    let own = agentdocker_host::procinfo::executable_path()?;
     match agentdocker_host::installation::activated_daemon(&own) {
         Some(activated) => Ok((activated, "the release the installation activated")),
         None => Ok((own, "this daemon's own executable")),

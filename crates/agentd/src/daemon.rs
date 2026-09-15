@@ -1444,7 +1444,7 @@ impl Daemon {
                     _ => None,
                 },
                 pid: Some(std::process::id()),
-                executable: std::env::current_exe().ok(),
+                executable: agentdocker_host::procinfo::executable_path().ok(),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {
