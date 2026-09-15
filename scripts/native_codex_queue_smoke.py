@@ -60,6 +60,7 @@ parser.add_argument(
     choices=[
         "baseline",
         "startup",
+        "lifecycle",
         "question",
         "legacy-question",
         "legacy-reply",
@@ -116,7 +117,7 @@ def source_manifest():
 
 
 report["source"] = source_manifest()
-bootstrap_called = args.scenario == "startup"
+bootstrap_called = args.scenario in ("startup", "lifecycle")
 question_called = False
 limit_active = args.scenario == "rate-limit"
 block = threading.Event()
@@ -419,7 +420,7 @@ try:
                 + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
             )
         provider_prefix = [codex, "--no-alt-screen"]
-        if args.scenario == "startup":
+        if args.scenario in ("startup", "lifecycle"):
             # The only hook in this private profile is this reviewed fixture
             # command. One-off trust does not change any user's saved policy.
             hook_runner = root / "hook_capture.py"
@@ -1092,7 +1093,7 @@ try:
                 assert len(report["requests"]) == 7
                 assert rpc({"op": "peek_input", "agent": aid})["messages"][0]["id"] == result["message"]
                 report["unconfirmed_attempt_paused_without_resubmission"] = True
-            elif args.scenario in ("resume", "startup"):
+            elif args.scenario in ("resume", "startup", "lifecycle"):
                 old_agent = aid
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 old_provider = provider.pid
@@ -1113,13 +1114,13 @@ try:
                 assert result["type"] == "sent", result
                 report["during_restart_message"] = result["message"]
                 retained = json.loads(ledgerpath.read_text())
-                bootstrap_called = args.scenario == "startup"
+                bootstrap_called = args.scenario in ("startup", "lifecycle")
                 master, slave = pty.openpty()
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
                 provider = subprocess.Popen(
                     provider_prefix
                     + ["resume", tid]
-                    + ([] if args.scenario == "startup" else ["RESUME_BOOTSTRAP_NONCE"]),
+                    + ([] if args.scenario in ("startup", "lifecycle") else ["RESUME_BOOTSTRAP_NONCE"]),
                     cwd=repo,
                     env=env,
                     stdin=slave,
@@ -1168,10 +1169,10 @@ try:
                 assert final["completed"][-1]["message"] == result["message"]
                 assert final["binding"]["provider"]["process"]["pid"] == provider.pid
                 assert final["binding"]["provider"]["session"] == tid
-                assert len(report["requests"]) == (8 if args.scenario == "startup" else 9), len(
-                    report["requests"]
+                assert len(report["requests"]) == (8 if args.scenario in ("startup", "lifecycle") else 9), (
+                    len(report["requests"])
                 )
-                report["reopen_without_prompt"] = args.scenario == "startup"
+                report["reopen_without_prompt"] = args.scenario in ("startup", "lifecycle")
                 messages = [
                     json.dumps(v)
                     for request in report["requests"][7:]
@@ -1193,7 +1194,7 @@ try:
                 report["idle_wake_after_receiver_crash"] = True
             report.update(
                 result="passed",
-                same_live_tui=args.scenario not in ("resume", "startup"),
+                same_live_tui=args.scenario not in ("resume", "startup", "lifecycle"),
                 draft_preserved=True,
                 busy_order_preserved=True,
                 model_requests=len(report["requests"]),
