@@ -89,8 +89,9 @@ whichever hook or explicit read takes the queue delivers. An **input binding**
 (`bind_input`, see the [protocol table](ARCHITECTURE.md#protocol)) gives such a
 session one: an external controller process, bound to the exact provider
 generation (the registered pid and birth, the registered `session_id`, an
-absolute profile path) and authenticated by a token the controller made and
-keeps. While the binding stands, every legacy read, draining or not, is answered
+absolute profile path) and identified by a token the controller made and
+keeps (a coordination identifier between processes of one OS user, not a
+security boundary). While the binding stands, every legacy read, draining or not, is answered
 `input_owned` instead of messages (a person or the app looks with
 `peek_input`, which records nothing), the controller's `provider_inbox` reads
 (with the token) take the queue as `input_batch`, and its `report_input` is

@@ -381,7 +381,7 @@ impl State {
     /// Queued messages left the queue: nothing about them is uncertain or
     /// offered any more.
     pub(super) fn forget_delivered(&mut self, id: &AgentId, messages: &[MessageId]) {
-        let Some(record) = self.registry.get_mut(id) else {
+        let Some(mut record) = self.registry.get(id).cloned() else {
             return;
         };
         let mut changed = false;
@@ -393,9 +393,14 @@ impl State {
                 changed |= binding.uncertain.len() != before;
             }
         }
-        if changed {
-            let record = record.clone();
-            self.persist("input bookkeeping", |store| store.upsert_agent(&record));
+        if !changed {
+            return;
+        }
+        // Stored first, then in memory, so the two never disagree about
+        // what is still uncertain.
+        self.persist("input bookkeeping", |store| store.upsert_agent(&record));
+        if self.storage_error.is_none() {
+            *self.registry.get_mut(id).expect("resolved agent") = record;
         }
     }
 
@@ -1110,6 +1115,56 @@ mod tests {
         }
         assert!(!is_running(&second));
         assert!(lock(&daemon.state).controller_pins.is_empty());
+    }
+
+    /// Bookkeeping that cannot be stored leaves memory as it was, so the
+    /// store and the daemon never disagree about what is still uncertain
+    /// or offered.
+    #[tokio::test]
+    async fn bookkeeping_that_cannot_be_stored_leaves_memory_as_it_was() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let sender = peer(&daemon, "sender").await;
+        let first = send(&daemon, &sender, &receiver, "one").await;
+        assert!(matches!(
+            daemon
+                .handle(Request::DeliveryQueue {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+        assert!(matches!(
+            daemon.handle(bind(&receiver, "sess-1", me(), TOKEN)).await,
+            Response::InputBound { binding, .. } if binding.uncertain == vec![first.clone()]
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            state.storage_error = Some("disk gone".to_owned());
+            state.forget_delivered(&receiver.id, std::slice::from_ref(&first));
+            let record = state.registry.get(&receiver.id).unwrap();
+            assert_eq!(
+                record.input_binding.as_ref().unwrap().uncertain,
+                vec![first.clone()],
+                "memory did not move ahead of a store that took nothing"
+            );
+            assert!(record.legacy_offers.contains_key(&first));
+            state.storage_error = None;
+            state.forget_delivered(&receiver.id, std::slice::from_ref(&first));
+            let record = state.registry.get(&receiver.id).unwrap();
+            assert!(record.input_binding.as_ref().unwrap().uncertain.is_empty());
+            assert!(record.legacy_offers.is_empty());
+        }
+        let stored = lock(&daemon.state)
+            .store
+            .load_agents()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == receiver.id)
+            .unwrap();
+        assert!(stored.input_binding.unwrap().uncertain.is_empty());
+        assert!(stored.legacy_offers.is_empty());
     }
 
     /// The restart record is on the agent record: a daemon opened again
