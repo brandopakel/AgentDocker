@@ -2,7 +2,7 @@
 
 Audited September 14, 2026 against merged `aaa1b61` (PR #119). This is the current
 backlog for the requirements already in the project documents. The
-[documentation index](README.md) records coverage of all 37 Markdown files;
+[documentation index](README.md) records coverage of all 38 Markdown files;
 the [delivery crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk) records
 which test categories are complete or partial. Dated audits and
 [verification reports](verification/) retain the implementation history,

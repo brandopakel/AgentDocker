@@ -202,5 +202,133 @@
     "The packaged binaries are pinned to manifest.source_commit c5b76fa71a5ecbb353e94c17bd9ed212f1286907; a65d956 is a later driver/publication head and requires its own CI.",
     "Concurrent independent provider writes still lack compare-and-swap semantics.",
     "Fixture directories were removed; private command outputs contain only the disposable profiles and remain outside the repository."
-  ]
+  ],
+  "portable_coordination_skill_2026_09_15": {
+    "status": "Focused setup and actual provider skill discovery passed; full gate/review/integration pending.",
+    "source_commit": "8fd95af",
+    "binary_provenance": {
+      "source_commit": "8fd95af3426515b98335b1753ebe200e161265e9",
+      "source_tree": "d5549e98e22a364523cfaf72af02c322957a5b38",
+      "binary_sha256": {
+        "agentdocker": "288f2cabaa3b69a37c17e38aaaebd0409b7860af17245602bb58fe700341cf50",
+        "agentd": "6a6fee6a5b2fa5fa2b5e14d1befd354f84cc4af84ddc5bc4790f50ccd5df04da"
+      },
+      "build_note": "Debug binaries built during focused nextest at dirty3c8c2e1. Rust/Cargo/bundled skill inputs match the subsequent8fd95af commit; documentation added after compilation. No release-package claim."
+    },
+    "focused_tests": {
+      "passed": 31,
+      "log_sha256": "c5b062269a727857bd634f9f331abe9e43ba27792a52daf8d444ae988c0700cb",
+      "scope": "Preview/apply/undo, profile selection, generated upgrade, custom/edited preservation, managed delivery guidance."
+    },
+    "skill_validator": "passed",
+    "installable_skill_sha256": "2854737f9970ce3be9b2cf5653d9cf319e4f1ed7e285df0976929508d32d820f",
+    "actual_claude_setup": {
+      "scope": "Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+      "source_commit": "8fd95af3426515b98335b1753ebe200e161265e9",
+      "source_tree": "d5549e98e22a364523cfaf72af02c322957a5b38",
+      "binary_sha256": "288f2cabaa3b69a37c17e38aaaebd0409b7860af17245602bb58fe700341cf50",
+      "driver_sha256": "4d43d3b1e1539b1abfef2186ae4eb9e2bf1bc0c9066392e5a9b559dd479b6cf6",
+      "checks": [
+        "preview selects profile A for hooks and MCP",
+        "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+        "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+        "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+        "changed environment refuses undo before hooks or provider entry are changed",
+        "malformed provider state refuses apply before hook edits"
+      ],
+      "calls": [
+        {
+          "name": "preview-a",
+          "exit": 0,
+          "elapsed_seconds": 0.5749710420204792
+        },
+        {
+          "name": "apply-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.19203762500546873
+        },
+        {
+          "name": "health-a",
+          "exit": 0,
+          "elapsed_seconds": 0.007990708982106298
+        },
+        {
+          "name": "undo-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.16639254198526032
+        },
+        {
+          "name": "preview-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.014862125011859462
+        },
+        {
+          "name": "apply-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.16290945798391476
+        },
+        {
+          "name": "refuse-changed-entry",
+          "exit": 1,
+          "elapsed_seconds": 0.009389541985001415
+        },
+        {
+          "name": "undo-restored-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.16755445799208246
+        },
+        {
+          "name": "preview-malformed-state",
+          "exit": 0,
+          "elapsed_seconds": 0.014596834022086114
+        },
+        {
+          "name": "refuse-malformed-state",
+          "exit": 1,
+          "elapsed_seconds": 0.009024749975651503
+        },
+        {
+          "name": "close-unused-plan",
+          "exit": 0,
+          "elapsed_seconds": 0.017915000003995374
+        }
+      ],
+      "result": "passed",
+      "provider_version": "2.1.273 (Claude Code)",
+      "elapsed_seconds": 1.3527119169884827,
+      "cleanup": {
+        "scratch_removed": true,
+        "user_configuration_hashes_unchanged": true,
+        "model_invoked": false
+      }
+    },
+    "actual_claude_setup_result_sha256": "f17fbda70049783ebc1e97da28b882786ff9361457110788622f3178486cb153",
+    "discovery": [
+      {
+        "provider": "Codex",
+        "version": "0.154.0",
+        "route": "private CODEX_HOME; app-server skills/list",
+        "result": "Exactly one enabled user-scope agentdocker skill, matching selected profile.",
+        "model_invoked": false,
+        "driver_sha256": "b1f45660d77253783e1271b6c4dfbbd235702c11d00d0fabc0d9b9e1145b2d75",
+        "raw_result_sha256": "44c7edaef40f406131935124c19fa08d7c09b821749f98c0997fe3e7594ff6c0"
+      },
+      {
+        "provider": "Claude Code",
+        "version": "2.1.273",
+        "route": "private CLAUDE_CONFIG_DIR; SDK initialize control request",
+        "result": "Exactly one agentdocker command discovered from user-scope skill.",
+        "model_invoked": false,
+        "driver_sha256": "cacb4d6857614936c6c57e8ebe50617598768d11fe32292d17ec6f56571620be",
+        "raw_result_sha256": "d99af8454fe87717c8d69557c782074bd0a4356aa465513abdc7dd747fdef687"
+      }
+    ],
+    "limits": [
+      "No production provider settings were changed by these trials.",
+      "Discovery does not prove implicit model activation on every prompt.",
+      "Gemini skill location is documented but no Gemini CLI is installed for this acceptance.",
+      "No provider permission or hook trust is granted.",
+      "This does not implement native input/wake or guarantee support in other desktop products."
+    ]
+  }
 }

@@ -108,7 +108,7 @@ fails when it and the records disagree.
 
 | Record | Says |
 | --- | --- |
-| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | recorded undated; 34195804495 |
+| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | portable_coordination_skill_2026_09_15: Focused setup and actual provider skill discovery passed; full gate/review/integration pending. |
 | [2026-09-07-desktop-maintenance.json](verification/2026-09-07-desktop-maintenance.json) | owned native desktop fixtures; private paths and captures excluded |
 | [2026-09-07-identity-lifecycle.json](verification/2026-09-07-identity-lifecycle.json) | Packaged adapter lifecycle with a synthetic host; separate from actual model-provider trials |
 | [2026-09-07-integration-benchmark-failure.json](verification/2026-09-07-integration-benchmark-failure.json) | Original failed integrated benchmark; not a completed performance acceptance campaign |
