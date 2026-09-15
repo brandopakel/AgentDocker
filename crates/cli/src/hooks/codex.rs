@@ -231,7 +231,15 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     let delivery = tokio::time::timeout_at(deadline, async {
         let agent = report(client, &input, pid, started_at, observed_at).await?;
         match agent {
-            Some(agent) => prepare(client, &input, agent.id.to_string()).await,
+            Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
+            {
+                Ok(true) => Ok(Delivery::empty()),
+                Ok(false) => prepare(client, &input, agent.id.to_string()).await,
+                Err(error) => {
+                    eprintln!("Native Codex input could not start: {error}");
+                    prepare(client, &input, agent.id.to_string()).await
+                }
+            },
             None => Ok(Delivery::empty()),
         }
     })
@@ -276,7 +284,7 @@ async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Resul
         .await?
     {
         Response::Messages { messages } => messages,
-        Response::InputWaiting { .. } => return Ok(Delivery::empty()),
+        Response::InputWaiting { .. } | Response::InputOwned { .. } => return Ok(Delivery::empty()),
         Response::Error { message, .. } => bail!("inbox read refused: {message}"),
         _ => bail!("unexpected inbox response"),
     };

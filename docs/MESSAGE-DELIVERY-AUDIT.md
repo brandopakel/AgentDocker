@@ -22,6 +22,41 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
+### September 15: AgentDocker native queue implementation
+
+The native Codex receiver is implemented on `codex/native-external-queue`, using
+Claude's provider-neutral schema-19 input binding from PR #142. The existing
+Codex hook verifies the provider process and thread and starts a detached
+receiver. It uses `thread/queue/add` and read-only queue/history APIs, with no
+`thread/resume`, second conversation, terminal keystrokes or profile rewrite.
+A durable token, one outstanding attempt and exact provider receipts protect
+binding, restart and queue acknowledgement. The daemon fences legacy consumers;
+messages exposed before binding remain uncertain until reconciled.
+
+Bounded real-TUI/local-Responses trials passed idle wake (about seven seconds),
+an unsubmitted draft, busy peer/human ordering and controller restart without
+replay. Automatic startup through the verified hook path also passed. The first
+integration harness incorrectly expected six queue receipts for five submitted
+messages; the corrected count passed. Bootstrap testing first used a restricted
+shell that cannot inspect ancestors, then found and fixed a real missing-human
+identity on a fresh daemon. Further trials passed asynchronous MCP answers, old
+synchronous MCP answers without an extra user turn, HTTP 429 queue holds and
+explicit resumption, recovery of a lost enqueue reply, and a retained ambiguous
+submission without resubmission. The repeatable driver is
+`scripts/native_codex_queue_smoke.py`; its scenarios use actual Codex with an
+isolated daemon/profile and a loopback model fixture.
+
+Daemon-supervised receiver restart, release pins, bounded completed receipts and
+idle-queue timeout handling are integrated but still need final-source acceptance,
+CI and installation. The candidate deliberately holds CLI-posted/old disconnected
+question answers without a provable route and legacy-exposed messages without a
+receipt. Settled question-route provenance remains open. These implementation
+trials do not mean that the installed app or every provider can already wake.
+
+PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
+local gate, all final-head CI checks and independent Claude source review. Its
+branch was deleted. The remaining adapter work proceeds independently.
+
 ### September 14 PDT / September 15 UTC: current sessions and the native Codex queue
 
 The [retained verification report](verification/2026-09-15-native-codex-queue.json)
@@ -66,10 +101,10 @@ receipt recovery did not resume or fork the live conversation. The private
 driver/result are `agentdocker-native-codex-queue-api-trial-2026-09-15.py` and
 `agentdocker-native-codex-queue-api-result-2026-09-15/` under `/private/tmp`.
 
-**Still required:** connect AgentDocker's durable peer/human queue to this
-external-session route; verify exact profile/thread/process binding; prevent
-simultaneous hook consumption; persist attempts and recover exact provider
-receipts without blind retries. Native enqueue success alone cannot mark a
+**At this earlier capability checkpoint:** AgentDocker integration was still
+required. The September 15 implementation above now supplies the native queue
+receiver, exact binding, exclusive consumption and durable receipt recovery;
+final acceptance and installation remain open. Native enqueue success alone cannot mark a
 message received. Keep permission waits, provider limits, interruption, process
 exit, reconnect and draft preservation in the acceptance gate.
 
@@ -78,7 +113,7 @@ exit, reconnect and draft preservation in the acceptance gate.
 | Current external Codex and Claude sessions, hooks only | No automatic wake; messages can wait for another user/tool event. |
 | Managed Codex input bridge | Existing opt-in adapter trials below; does not attach an existing terminal. |
 | Enabled Claude channel | Existing opt-in idle/busy/draft trials below; must be enabled for the actual session. |
-| Native Codex 0.154.0 queue | Provider route demonstrated above; AgentDocker integration remains open. |
+| Native Codex 0.154.0 queue | AgentDocker receiver implemented and bounded TUI integration passed; final acceptance and installation remain open. |
 | Other providers, models and hosts | Require a supported input route and their own idle/busy/limit tests. Generic MCP or hook contact supplies no wake guarantee. |
 
 The CLI/MCP feedback correction labels successful sends as accepted by
@@ -95,7 +130,7 @@ The release MCP receipt smoke passed all four reconnect/acknowledgement
 scenarios with no surviving fixture processes. A send through the candidate
 MCP binary to the live Claude session returned routing acceptance with receipt
 and wake unconfirmed (`e1e6256b16cb48ed`); compact inspections reported both live
-sessions' input readiness as `unverified`. Final CI and source review remain.
+sessions' input readiness as `unverified`. PR #135's final CI/source review subsequently passed and it is merged.
 
 The [September 12 sender audit](verification/2026-09-12-cli-sender-identity.json)
 reproduces a separate routing problem: CLI sends and questions without an

@@ -21,6 +21,15 @@ use chrono::{DateTime, Utc};
 /// macOS `current_exe` can return the original symlink spelling. Resolving that
 /// spelling after activation could select another release, so ask the kernel.
 pub fn executable_path() -> std::io::Result<PathBuf> {
+    executable_path_of(std::process::id())
+}
+
+/// Kernel executable identity of another live process. Combine with its birth
+/// time before and after lookup to reject PID reuse.
+pub fn executable_path_of(pid: u32) -> std::io::Result<PathBuf> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(std::io::Error::other("invalid process ID"));
+    }
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CStr;
@@ -31,11 +40,7 @@ pub fn executable_path() -> std::io::Result<PathBuf> {
         // SAFETY: getpid takes no arguments; proc_pidpath receives the writable
         // buffer and its exact capacity, and cannot write past it.
         let written = unsafe {
-            libc::proc_pidpath(
-                libc::getpid(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-            )
+            libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32)
         };
         if written <= 0 {
             return Err(std::io::Error::last_os_error());
@@ -50,8 +55,20 @@ pub fn executable_path() -> std::io::Result<PathBuf> {
         }
         Ok(path)
     }
-    #[cfg(not(target_os = "macos"))]
-    std::env::current_exe()
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        if pid == std::process::id() {
+            std::env::current_exe()
+        } else {
+            Err(std::io::Error::other(
+                "external executable lookup is unsupported on this platform",
+            ))
+        }
+    }
 }
 
 /// When the process with this pid started, if the platform can tell us.

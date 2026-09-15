@@ -2,9 +2,9 @@
   "date_utc": "2026-09-15",
   "date_local": "2026-09-14",
   "timezone": "America/Los_Angeles",
-  "scope": "Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance.",
+  "scope": "Native Codex queue capability and preliminary AgentDocker integration trials; final combined receiver-supervision acceptance and installation pending.",
   "provider_version": "codex-cli 0.154.0",
-  "agentdocker_forwarding_implemented": false,
+  "agentdocker_forwarding_implemented": true,
   "trials": [
     {
       "result": "failed",
@@ -93,5 +93,263 @@
     },
     "remaining_owned_processes": 0,
     "duration_seconds": 0.6701691669877619
-  }
+  },
+  "installed": false,
+  "preliminary_integration_trials": [
+    {
+      "trial": "bootstrap-result1",
+      "result": "failed",
+      "driver_sha256": "a6daeafd384d11d7aae42d38fbafa4fcae94b02469c017e368583ea860bc7c9d",
+      "raw_result_sha256": "2039c1a3b2bdb4d5b1cbb7fc6182ec2684b810a180cfa1bef6c23eba336cd90f",
+      "provider_version": "codex-cli 0.154.0",
+      "failure_explanation": "The initial restricted tool sandbox could not inspect process ancestry; the fixture now grants its private bootstrap tool local process access."
+    },
+    {
+      "trial": "bootstrap-result2",
+      "result": "failed",
+      "driver_sha256": "80b93bfcc6742fe2d32907230a90725d2f21c0b3f1ceb42f15f3cdf789f9b989",
+      "raw_result_sha256": "9de04a24b63adb34a2f34083beb761675f42f8882a172c4b907189b3795d62f8",
+      "provider_version": "codex-cli 0.154.0",
+      "automatic_hook_bootstrap": true,
+      "failure_explanation": "A fresh AgentDocker daemon had no human record. The receiver now resolves/creates it through Me."
+    },
+    {
+      "trial": "bootstrap-result3",
+      "result": "passed",
+      "driver_sha256": "9cea33fe89ce074ccfa67ded4700c7f674fa0d58a98c1bad5871de483dd423f8",
+      "raw_result_sha256": "f570da936975e09fc186afdd0b3c5569222777803575918d3fbbc25d01767ea0",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 6.962047084001824,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a646-67b7-7a13-bf7d-20a341cb7d20",
+        "turn": "01a0a646-8ec6-7fb2-aea8-29f2beb606e1",
+        "item": "01a0a646-8edf-7191-b74a-30fc483e45b4"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "model_requests": 7
+    },
+    {
+      "trial": "integration-result1",
+      "result": "failed",
+      "driver_sha256": "1a5563f7f9c187d52861b77b2cd84ff8a845637d184050984e64c59affab6205",
+      "raw_result_sha256": "5676ae79c923f57baafe108193a6b502f56723e1fe8cc0c59aa06b3a0b87a905",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 5.902877542015631,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a63f-7551-7992-ac85-5f2e47390923",
+        "turn": "01a0a63f-9c5f-7441-9e46-a2aea5cfd6dd",
+        "item": "01a0a63f-9c7d-7c93-801f-bdded304b466"
+      },
+      "completed_receipts": 5,
+      "failure_explanation": "The driver expected six completed queue receipts for five submitted messages; corrected count passed."
+    },
+    {
+      "trial": "integration-result2",
+      "result": "passed",
+      "driver_sha256": "2922cdb7b3f5dbf0581f0ecc78db18395d464967b78d1ddb83a148aba2b53164",
+      "raw_result_sha256": "c9470ab293db1cba27af76ced6b51ff92426e07bde5af16b59c8cea18cb20b58",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 7.576860332977958,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a640-f498-7662-a0cd-838e1aeacec1",
+        "turn": "01a0a641-1ba6-7820-8f4e-7bb0afe162e2",
+        "item": "01a0a641-1bc7-7f61-831d-ede4f661a620"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "model_requests": 7
+    },
+    {
+      "trial": "legacy-question-result1",
+      "result": "failed",
+      "driver_sha256": "c61d4c2ee6c8fdaee3144d63d0e060d4dfeb6472776ae8e369c8a1b42736b06a",
+      "raw_result_sha256": "ebadb380f6c91eaeb6683221cc4dcfe984fd6e4acf9d8504fa6979d7b6bde5bd",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.251604708988452,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a655-ea3d-7953-a2c0-3ce375a5a3d7",
+        "turn": "01a0a656-1149-79a2-a116-3fbaa503a6de",
+        "item": "01a0a656-115f-70a3-a917-9f7574f3d227"
+      },
+      "completed_receipts": 4,
+      "failure_explanation": "The daemon acknowledgement becomes visible before the receiver ledger fsync. The driver now waits for both receipt boundaries."
+    },
+    {
+      "trial": "legacy-question-result2",
+      "result": "passed",
+      "driver_sha256": "b6c2722b20142a5034126409691ca5aa81586814310cc186b310e92d78474351",
+      "raw_result_sha256": "c7821ae8d84bf7acd6b7bd2cb2d6545c82d18995a1c2d66eada0017a0fe29da9",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.677151875017444,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a657-6547-70a3-b93d-7aed9c952e48",
+        "turn": "01a0a657-8c54-7d63-99d0-4ac112eedd01",
+        "item": "01a0a657-8c6e-78a3-8e68-d6f63332db70"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "legacy_mcp_answer_not_resubmitted": true,
+      "model_requests": 9
+    },
+    {
+      "trial": "limit-result1",
+      "result": "failed",
+      "driver_sha256": "418caa71f966ed054e1ed67e1b30349de1819c2e4a2f97467cc76418a9840065",
+      "raw_result_sha256": "20373e4c3119b792e64c3f1546c229e268a8960daef787ecb1ddab7d5199b751",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.66199495800538,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64e-a436-7b63-8337-cc5ad002c7c4",
+        "turn": "01a0a64e-cb44-7f80-9433-5060c6e92bf5",
+        "item": "01a0a64e-cb59-7aa2-82bf-5d56d9027453"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "failure_explanation": "An administrative legacy Inbox read correctly made the queued follow-up uncertain. The driver now uses explicit PeekInput."
+    },
+    {
+      "trial": "limit-result2",
+      "result": "passed",
+      "driver_sha256": "c2ec6029076b7c93d661e5f6d3bee9de925814f8f199083c1087f880a3438d71",
+      "raw_result_sha256": "aa48e85190b58b13e13ffe5d7824ce7925ff8ab8001cb903d27ae18bf19bed2a",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "96be2ec23d7f95f312357d7eec2bbd91a4af82eadcf091d0473cacef501326b2",
+      "daemon_sha256": "beea733e54c3667bc324bc42153d2645a424f67674702cbd0b21b4781f33dda2",
+      "idle_wake_seconds": 7.239244458003668,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a654-088c-7bc0-8bcd-d0f820f11fd4",
+        "turn": "01a0a654-2f99-7cd0-b4c6-753a9323b03b",
+        "item": "01a0a654-2fa4-7a51-9305-7ad65af1a237"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "rate_limit_holds_queue": true,
+      "explicit_resume_without_replay": true,
+      "model_requests": 9
+    },
+    {
+      "trial": "question-result1",
+      "result": "failed",
+      "driver_sha256": "8692be8a7e6afe91df1e23b63a8ed765c977f0c29d26a38805be7203afffa8c0",
+      "raw_result_sha256": "e48cb16b3e1e267f7f75828eef13edd6eaa2c2ff79de39084bcf083423241472",
+      "provider_version": "codex-cli 0.154.0",
+      "idle_wake_seconds": 6.933032167027704,
+      "automatic_hook_bootstrap": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a648-e1ad-7cf2-a5d9-84f73a1afe16",
+        "turn": "01a0a649-08ba-7c60-aaa4-ab4ad1a77352",
+        "item": "01a0a649-08cb-79e1-b0b2-a253ec2ccbc4"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "failure_explanation": "The fixture emitted an obsolete flattened MCP tool name; the installed provider requires namespace plus tool name."
+    },
+    {
+      "trial": "question-result2",
+      "result": "failed",
+      "driver_sha256": "7210fa9c0f492e9dcc68aa63ec306b45fbd4a5f084ff51e6e1a078de470e26b6",
+      "raw_result_sha256": "1b25ff2f02772224d03b6f9957939767e34746d8a436e4943386a4f60c007186",
+      "provider_version": "codex-cli 0.154.0",
+      "failure_explanation": "The harness used a CLI build-info flag that does not exist; provenance capture was corrected."
+    },
+    {
+      "trial": "question-result3",
+      "result": "passed",
+      "driver_sha256": "514a6232cf604e4b987febe16254d420feb9a5709bed997484d3137cdae62151",
+      "raw_result_sha256": "c7c8694846013ba0ca3b390f960740bd4e6d7d46063c0d472bc74994cef04b8f",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.641975165985059,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64b-0530-7b63-9408-5bd836107238",
+        "turn": "01a0a64b-2c3a-7460-9c7b-60d2a8c0948c",
+        "item": "01a0a64b-2c45-7551-8ca5-c07d412ac542"
+      },
+      "completed_receipts": 5,
+      "receiver_restart_no_replay": true,
+      "async_question_answer_once": true,
+      "model_requests": 10
+    },
+    {
+      "trial": "recovery-result1",
+      "result": "failed",
+      "driver_sha256": "1b17aef7ab9b5426d82e0dc41f7e00572e3a404906f4c467636500fed4dc19ce",
+      "raw_result_sha256": "0a7843e4db8b92f19c62b3b83283e7deb78c30f6242e92263fa3d84187fffbb1",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.661587832990335,
+      "automatic_hook_bootstrap": true,
+      "failure_explanation": "Writing a complete line and Enter in one PTY write triggered paste handling; separate typing and Enter corrected the fixture."
+    },
+    {
+      "trial": "recovery-result2",
+      "result": "passed",
+      "driver_sha256": "44d1d505cf7b3552095947e44869c5e1ced249507af1bfc7fd4b0d94c3ec5b3f",
+      "raw_result_sha256": "058722b2c0d0cd392f623cdef17f1dfa8aa72840194ad3fbc9955721d878d095",
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "bf947eb395ac8fec0836f0bb0b2f822aa678c9e613fa9ac34a1fba4defbdb864",
+      "daemon_sha256": "b7a39d9b9e3b6783320c9601d29c814d10c370c66f4ebf9d0e88fc874a5d22d6",
+      "idle_wake_seconds": 7.667767458013259,
+      "automatic_hook_bootstrap": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "no_conversation_resume": true,
+      "cross_process_receipt": {
+        "thread": "01a0a64f-f7eb-7082-a369-aec510f97062",
+        "turn": "01a0a650-1ef8-7de0-9669-68bd2bf0f19c",
+        "item": "01a0a650-1f09-77d0-b3d9-93651576a501"
+      },
+      "completed_receipts": 4,
+      "receiver_restart_no_replay": true,
+      "lost_queue_reply_recovered_without_resubmission": true,
+      "unconfirmed_attempt_paused_without_resubmission": true,
+      "model_requests": 7
+    }
+  ],
+  "integration_limits": [
+    "These trials used intermediate native receiver binaries, before final daemon-supervised restart integration; their binary and driver hashes identify the tested scope.",
+    "The Responses model is a loopback fixture; this does not validate paid provider availability, real account resets, other versions or other providers.",
+    "The real hook is invoked from a provider tool; provider hook configuration and trust UX still require installed-session acceptance.",
+    "CLI-posted and old disconnected human-question routes, legacy exposed inputs, sustained workloads and actual installation remain open."
+  ]
 }

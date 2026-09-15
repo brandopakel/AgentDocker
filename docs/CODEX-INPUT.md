@@ -1,4 +1,51 @@
-# Managed Codex input (experimental)
+# Codex input delivery (experimental)
+
+## Existing Codex terminals: native queue candidate (September 15)
+
+The current implementation connects an existing Codex CLI conversation to
+AgentDocker's ordinary human/peer queue. A verified Codex hook starts one detached
+receiver automatically. It binds the provider PID and birth, thread, profile,
+checkout and daemon endpoint; it neither types into the terminal nor starts or
+resumes a conversation. Codex's native `thread/queue/add` route schedules the next
+ordinary input and preserves the terminal's unfinished draft and permission UI.
+
+This candidate requires the schema-19 controller binding and Codex's experimental
+native queue API (tested with CLI 0.154.0). It is under integration and acceptance
+test and is **not yet the installed application's behavior**. An accepted hook
+configuration is needed to start a receiver for an existing terminal. Merely
+installing MCP or receiving a hook event does not prove idle wake.
+
+The private `AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the controller
+token before binding and the exact input before offering it. An enqueue reply is
+only an offer. The receiver records the matching provider thread/turn/user-item
+before acknowledging the original AgentDocker message. Restart recovers that
+receipt or the exact native queue entry; absence of either pauses delivery and
+never authorizes blind resubmission. Another provider generation cannot take the
+binding, and competing legacy consumers are fenced by the daemon. A registered
+launch descriptor lets the daemon restart an ended receiver with bounded backoff,
+without restarting the provider or waiting for a hook. It pins the receiver's
+installed release and contains paths and arguments, not authentication. Delivered
+message bodies are discarded from the private ledger; only 128 receipt records
+are retained. `inbox --peek` provides administrative inspection of a bound queue.
+
+A real Codex terminal with a private profile and loopback Responses fixture has
+passed idle wake, draft preservation, mixed human/peer busy ordering, new
+asynchronous MCP questions, old synchronous MCP answers without duplicate input,
+a typed HTTP 429 hold with explicit resumption, lost queue replies and retained
+ambiguous submissions. These bounded fixtures do not establish paid-account,
+long-duration or every-provider acceptance. Final-source automatic recovery,
+CI and installation checks remain in progress; see the
+[delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
+`python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
+and scenario choices. Each run saves a sanitized result beside private traces.
+
+Question answers without a provable MCP route, and messages already exposed to
+a legacy reader, remain held for reconciliation. The candidate does not claim
+that a CLI-posted question or an old disconnected question has been reconciled.
+An idle native queue entry without a provider receipt pauses after 45 seconds;
+active turns and permission waits retain their normal ordering.
+
+## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,
 choose Codex and tick **Receive messages while idle (experimental)**, or run:
@@ -93,8 +140,8 @@ request. Private delivery-record version 8 retains that exact negative response;
 older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
 Network-only requests without a command/directory and `writeStdin` approvals
-still require their own review surface. Final validation and integration of this
-command-context correction are pending.
+still require their own review surface. The command-context correction merged
+in PR #127; those broader review forms remain separate open requirements.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
