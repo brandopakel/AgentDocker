@@ -961,7 +961,13 @@ try:
                             ]
                             == "20"
                         )
-                    os.killpg(controller_pid, signal.SIGCONT)
+                    # Graceful daemon shutdown may retire its supervised
+                    # receiver. The successor restarts that saved descriptor;
+                    # a still-live receiver only needs its fixture pause lifted.
+                    try:
+                        os.killpg(controller_pid, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
                     report["schema19_answer_migrated_before_receipt_reconciliation"] = True
                 wait(
                     lambda: len(rpc({"op": "peek_input", "agent": aid})["messages"]) == 0,
