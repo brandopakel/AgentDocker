@@ -260,6 +260,24 @@ pub enum Request {
         observed_at: chrono::DateTime<chrono::Utc>,
         report: crate::InputReport,
     },
+    /// Provider availability, separate from receiver readiness and receipts.
+    ReportProvider {
+        agent: String,
+        process_started_at: chrono::DateTime<chrono::Utc>,
+        observed_at: chrono::DateTime<chrono::Utc>,
+        report: crate::ProviderReport,
+    },
+    /// Explicit user resumption after checking the provider. A stale action
+    /// cannot clear a newer block, and consumed work is never replayed.
+    ResumeProvider {
+        agent: String,
+        blocked_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// Read the delivery queue only while provider availability permits it.
+    /// Administrative Inbox reads remain available while delivery is blocked.
+    DeliveryQueue {
+        agent: String,
+    },
     /// Ledger entries for a project: newest `limit`, oldest first.
     Changes {
         /// A project id (any unique prefix), or an absolute path inside it.
@@ -301,6 +319,7 @@ pub enum Request {
         topics: Vec<String>,
     },
     /// Unacknowledged messages, including those offered to live subscribers.
+    /// A blocked destructive read returns Conflict and retains every message.
     Inbox {
         agent: String,
         #[serde(default)]
@@ -316,6 +335,8 @@ pub enum Request {
     /// The sole input controller of a managed Codex session acknowledges exact
     /// provider receipts, then reads the same durable queue used by human/peer
     /// Send. Legacy inbox consumers are refused for sessions using this mode.
+    /// A provider block returns an empty Messages offer without draining the
+    /// queue, preserving the reply contract of older owned controllers.
     ProviderInbox {
         agent: String,
         #[serde(default)]
@@ -856,6 +877,12 @@ pub enum Response {
     },
     Messages {
         messages: Vec<Envelope>,
+    },
+    InputWaiting {
+        agent: AgentId,
+        blocked_by: AgentId,
+        availability: crate::ProviderAvailability,
+        queued: usize,
     },
     /// The reply to an `ask`: what was said, and who said it.
     Answer {

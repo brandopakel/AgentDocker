@@ -21,6 +21,10 @@ pub mod paths;
 pub mod permissions;
 pub mod project;
 pub mod protocol;
+pub mod provider;
+pub use provider::{
+    ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
+};
 pub mod registry;
 
 pub use agent::{

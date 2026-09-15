@@ -19,6 +19,7 @@ pub const CLAUDE_CODE_HOOKS: &[(&str, Option<&str>)] = &[
     ("PreToolUse", Some(CLAUDE_CODE_EDIT_MATCHER)),
     ("PostToolUse", None),
     ("Stop", None),
+    ("StopFailure", None),
     ("SessionEnd", None),
 ];
 

@@ -37,6 +37,9 @@ pub(super) struct State {
     pub message_detail: Option<MessageId>,
     /// The conversation open in Inbox: one agent, or every agent at once.
     pub inbox_thread: Option<String>,
+    /// In a narrow window Inbox shows either the list or one conversation;
+    /// this is which. Wide windows show both and ignore it.
+    pub inbox_open: bool,
     pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
@@ -175,6 +178,7 @@ pub enum Message {
     More,
     SessionDetails,
     ReviewDelivery,
+    ResumeProvider(String, chrono::DateTime<Utc>),
     ComposeSession,
     SessionDraft(String, String),
     SendSession(String),
@@ -183,6 +187,8 @@ pub enum Message {
     QuestionDetails(MessageId),
     /// Open one agent's conversation in Inbox, or all of them.
     SelectThread(Option<String>),
+    /// Back from a conversation to the list, in a narrow window.
+    InboxList,
     /// Send the agent's draft to everyone in its project as well.
     SendProject(String),
     OtherTools,
@@ -269,6 +275,7 @@ impl App {
                 .map(|q| (q.id.clone(), self.canonical_agent(&q.from).to_owned()));
             if let Some((_, agent)) = &next {
                 self.shell.inbox_thread = Some(agent.clone());
+                self.shell.inbox_open = true;
             }
             next.map(|(id, _)| id)
         } else {
@@ -312,6 +319,7 @@ impl App {
             Message::Draft(..)
                 | Message::SessionDraft(..)
                 | Message::SelectThread(_)
+                | Message::InboxList
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
                 | Message::SelectSession(_)
@@ -334,6 +342,7 @@ impl App {
             &message,
             Message::Navigate(_)
                 | Message::SelectThread(_)
+                | Message::InboxList
                 | Message::SelectProject(_)
                 | Message::Unassigned
                 | Message::AllProjects
@@ -458,6 +467,7 @@ impl App {
                     .find(|q| q.id == id && !q.expired(Utc::now()))
                 {
                     self.shell.inbox_thread = Some(self.canonical_agent(&question.from).to_owned());
+                    self.shell.inbox_open = true;
                     self.shell.message_detail = Some(id.clone());
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
@@ -587,6 +597,11 @@ impl App {
                 self.confirm_stop = None;
             }
             Message::More => self.shell.more = !self.shell.more,
+            Message::ResumeProvider(agent, blocked_at) => {
+                if self.connected.is_ok() {
+                    self.send(Cmd::ResumeProvider(agent, blocked_at));
+                }
+            }
             Message::ReviewDelivery => {
                 if self.connected.is_ok()
                     && let Some(id) = self.shell.selected.clone()
@@ -608,6 +623,11 @@ impl App {
             Message::SessionDetails => self.shell.session_details = !self.shell.session_details,
             Message::SelectThread(agent) => {
                 self.shell.inbox_thread = agent;
+                self.shell.inbox_open = true;
+                self.shell.message_detail = None;
+            }
+            Message::InboxList => {
+                self.shell.inbox_open = false;
                 self.shell.message_detail = None;
             }
             Message::SendProject(id) => {
@@ -1342,6 +1362,9 @@ impl App {
             Screen::Channels
         } else {
             self.shell.inbox_thread = self.shell.selected.clone();
+            // Opened, not merely selected: in the narrow layout the list
+            // would otherwise hide the conversation the notification names.
+            self.shell.inbox_open = true;
             Screen::Questions
         };
         if let Some(channel) = channel {
@@ -1396,7 +1419,8 @@ impl App {
             .ok_or("The launch arguments have unbalanced quotes")?;
         let mut command = vec![cli.to_string_lossy().into_owned()];
         command.extend(args);
-        let name = if self.shell.launch_name.trim().is_empty() {
+        let generated_name = self.shell.launch_name.trim().is_empty();
+        let name = if generated_name {
             format!("{}-{}", runtime.name, Utc::now().timestamp())
         } else {
             self.shell.launch_name.trim().into()
@@ -1409,7 +1433,14 @@ impl App {
             command,
             workdir: Some(entry.project.root.clone()),
             env: BTreeMap::new(),
-            labels: BTreeMap::new(),
+            labels: if generated_name {
+                BTreeMap::from([(
+                    agentdocker_core::agent::NAME_LABEL.to_owned(),
+                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                )])
+            } else {
+                BTreeMap::new()
+            },
             isolate: false,
             tty: true,
             restore: false,
@@ -1752,6 +1783,55 @@ mod tests {
         assert_eq!(app.answers[&second], "Newer draft");
     }
 
+    #[test]
+    fn returning_to_conversations_cancels_an_answer_reveal_before_or_after_its_response() {
+        for response_before_back in [false, true] {
+            let (mut app, commands, messages) = app();
+            app.screen = Screen::Questions;
+            app.connected = Ok(());
+            app.shell.inbox_open = true;
+            app.shell.inbox_thread = Some("first-asker".into());
+            let first = MessageId::from("first".to_owned());
+            let second = MessageId::from("second".to_owned());
+            let question = Question {
+                presentation: None,
+                id: first.clone(),
+                from: "first-asker".into(),
+                to: agentdocker_core::Destination::Agent("user".into()),
+                text: "Continue?".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            };
+            app.questions = vec![
+                question.clone(),
+                Question {
+                    id: second.clone(),
+                    from: "next-asker".into(),
+                    ..question
+                },
+            ];
+            app.answers.insert(first.clone(), "Yes".into());
+            app.answers.insert(second.clone(), "Keep this draft".into());
+            let _ = app.update(Message::Answer(first.clone()));
+            assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+                [Cmd::Answer(id, _)] if id == &first));
+            if response_before_back {
+                messages.send(Msg::Answered(first.clone(), Ok(()))).unwrap();
+                app.drain();
+            }
+            let _ = app.update(Message::InboxList);
+            if !response_before_back {
+                messages.send(Msg::Answered(first, Ok(()))).unwrap();
+            }
+            let _ = app.update(Message::Tick);
+            assert!(!app.shell.inbox_open, "a late answer must not undo Back");
+            assert_eq!(app.shell.inbox_thread.as_deref(), Some("first-asker"));
+            assert!(app.shell.pending_answer_reveal.is_none());
+            assert!(!app.shell.reveal_next_question);
+            assert_eq!(app.answers[&second], "Keep this draft");
+        }
+    }
+
     fn notification_app() -> (
         App,
         CommandReceiver,
@@ -1875,6 +1955,37 @@ mod tests {
     }
 
     #[test]
+    fn default_ui_launches_show_tool_names_while_chosen_names_stay_literal() {
+        let (mut app, _, _) = app();
+        app.shell
+            .catalog
+            .pin(ProjectRef::directory("/fixture"))
+            .unwrap();
+        for runtime in ["codex", "claude-code"] {
+            app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+                name: runtime.into(),
+                vendor: "fixture".into(),
+                label: runtime_label(runtime),
+                cli: Some("/fixture/provider".into()),
+                version: None,
+                apps: vec![],
+                config_dir: None,
+                mcp: agentdocker_core::runtime::Wiring::Missing,
+                hooks: agentdocker_core::runtime::Wiring::Missing,
+                running: 0,
+            }];
+            app.shell.launch_runtime = Some(runtime.into());
+            app.shell.launch_name.clear();
+            let generated = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
+            assert_eq!(app.display_name(&generated), runtime_label(runtime));
+            app.shell.launch_name = "reviewer-cafe".into();
+            let chosen = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
+            assert_eq!(app.display_name(&chosen), "reviewer-cafe");
+            assert!(!chosen.name_is_generated());
+        }
+    }
+
+    #[test]
     fn input_opt_in_selects_the_provider_adapter_and_needs_the_sibling_cli() {
         use agentdocker_core::AgentSpec;
         let (mut app, _, _) = app();
@@ -1971,6 +2082,10 @@ mod tests {
         assert_eq!(app.screen, Screen::Questions);
         assert_eq!(app.shell.message_detail, Some(id.clone()));
         assert_eq!(app.shell.inbox_thread.as_deref(), Some("asker"));
+        assert!(
+            app.shell.inbox_open,
+            "a notification opens the conversation, narrow or wide"
+        );
         assert!(app.shell.pending_answer_reveal.is_none());
         assert!(!app.shell.reveal_next_question);
         assert_eq!(app.answers[&id], "target draft");

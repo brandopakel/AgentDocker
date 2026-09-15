@@ -86,6 +86,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     let mut unavailable = false;
     let mut last_ready = tokio::time::Instant::now();
     let mut readiness_unavailable = false;
+    let mut provider_blocked = None;
     loop {
         tokio::select! {
             incoming = read_frame(&mut input, &mut frame) => {
@@ -140,11 +141,21 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 if let Some(response) = response { write(&mut output, &response).await?; }
             }
             _ = tick.tick(), if initialized => {
-                let reply = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::Inbox {
-                    agent: server.identity.id.clone(), drain: false,
+                let reply = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::DeliveryQueue {
+                    agent: server.identity.id.clone(),
                 })).await;
                 let messages = match reply {
-                    Ok(Ok(Response::Messages { messages })) => { unavailable = false; messages },
+                    Ok(Ok(Response::Messages { messages })) => { unavailable = false; provider_blocked = None; messages },
+                    Ok(Ok(Response::InputWaiting { availability, .. })) => {
+                        if provider_blocked.as_ref() != Some(&availability) {
+                            eprintln!("agentdocker channel: {}; messages remain queued", availability.issue.as_ref()
+                                .map_or("provider unavailable", |issue| issue.kind.label()));
+                            provider_blocked = Some(availability);
+                        }
+                        // Keep the offered ID: recovery must not replay input
+                        // that may already have reached the provider.
+                        continue;
+                    }
                     _ => {
                         if !unavailable {
                             eprintln!("agentdocker channel: inbox unavailable; no delivery is confirmed and accepted messages remain queued");
@@ -291,6 +302,9 @@ mod tests {
     impl Backend for Queue {
         async fn call(&self, request: Request) -> Result<Response> {
             match request {
+                Request::DeliveryQueue { .. } => Ok(Response::Messages {
+                    messages: self.0.borrow().clone(),
+                }),
                 Request::Inbox { drain, .. } => {
                     assert!(!drain, "channel offers must never consume the inbox");
                     Ok(Response::Messages {
@@ -346,6 +360,115 @@ mod tests {
             .unwrap()
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_limits_stop_pings_but_allow_receipts_and_resume_fifo() {
+        use std::cell::Cell;
+        struct Limited {
+            queue: Queue,
+            blocked: Cell<bool>,
+            availability: agentdocker_core::ProviderAvailability,
+        }
+        impl Backend for Limited {
+            async fn call(&self, request: Request) -> Result<Response> {
+                if self.blocked.get() && matches!(request, Request::DeliveryQueue { .. }) {
+                    return Ok(Response::InputWaiting {
+                        agent: "receiver".into(),
+                        blocked_by: "receiver".into(),
+                        availability: self.availability.clone(),
+                        queued: self.queue.0.borrow().len(),
+                    });
+                }
+                self.queue.call(request).await
+            }
+        }
+        let old = server();
+        let now = chrono::Utc::now();
+        let mut server = McpServer::new(
+            Limited {
+                queue: old.backend,
+                blocked: Cell::new(true),
+                availability: agentdocker_core::ProviderAvailability {
+                    process_started_at: now,
+                    observed_at: now,
+                    issue: Some(agentdocker_core::ProviderIssue::local(
+                        agentdocker_core::ProviderIssueKind::Usage,
+                    )),
+                    cleared_observation: None,
+                },
+            },
+            old.identity,
+        );
+        server.claude_channel = true;
+        let ids: Vec<_> = server
+            .backend
+            .queue
+            .0
+            .borrow()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        let (transport, client) = tokio::io::duplex(8192);
+        let (input, output) = tokio::io::split(transport);
+        let trial = async {
+            let (reader, mut writer) = tokio::io::split(client);
+            let mut reader = BufReader::new(reader);
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            )
+            .await
+            .unwrap();
+            let mut frame = Vec::new();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(server.backend.queue.0.borrow().len(), 2);
+            server.backend.blocked.set(false);
+            assert_eq!(
+                receive(&mut reader).await["params"]["meta"]["message_id"],
+                ids[0].as_str()
+            );
+            server.backend.blocked.set(true);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+                "params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(receive(&mut reader).await["id"], 7);
+            assert_eq!(server.backend.queue.0.borrow().len(), 1);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err()
+            );
+            server.backend.blocked.set(false);
+            assert_eq!(
+                receive(&mut reader).await["params"]["meta"]["message_id"],
+                ids[1].as_str()
+            );
+            // A second limit/recovery must not duplicate an outstanding offer.
+            server.backend.blocked.set(true);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            server.backend.blocked.set(false);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err()
+            );
+            writer.shutdown().await.unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            trial
+        );
+        result.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

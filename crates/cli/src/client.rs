@@ -373,7 +373,22 @@ pub trait Backend {
 
 impl Backend for Client {
     async fn call(&self, request: Request) -> Result<Response> {
-        self.call_raw(&request).await
+        let response = self.call_raw(&request).await?;
+        // An app update may leave a pre-schema18 daemon serving active agents.
+        // Preserve its existing read-only queue path only for explicit protocol
+        // non-support. Availability/storage/identity errors must never bypass a gate.
+        if let Request::DeliveryQueue { agent } = request
+            && matches!(&response, Response::Error { code: agentdocker_core::ErrorCode::Invalid, message, .. }
+                if message.starts_with("malformed request: unknown variant `delivery_queue`"))
+        {
+            return self
+                .call_raw(&Request::Inbox {
+                    agent,
+                    drain: false,
+                })
+                .await;
+        }
+        Ok(response)
     }
 }
 
@@ -448,6 +463,66 @@ mod stream_tests {
         atomic::{AtomicBool, Ordering},
     };
     use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn old_daemon_queue_reads_fall_back_only_for_explicit_protocol_non_support() {
+        for (message, fallback) in [
+            (
+                "malformed request: unknown variant `delivery_queue`, expected `inbox`",
+                true,
+            ),
+            ("provider availability unavailable", false),
+            ("provider report is stale", false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let socket = tmp.path().join("sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let client = Client::new(Some(socket)).with_start_timeout(None);
+            let peer = async {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = tokio::io::BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                assert!(matches!(
+                    serde_json::from_str::<Request>(&line).unwrap(),
+                    Request::DeliveryQueue { .. }
+                ));
+                let error = Response::error(agentdocker_core::ErrorCode::Invalid, message);
+                reader
+                    .get_mut()
+                    .write_all(format!("{}\n", serde_json::to_string(&error).unwrap()).as_bytes())
+                    .await
+                    .unwrap();
+                if fallback {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = tokio::io::BufReader::new(stream);
+                    line.clear();
+                    reader.read_line(&mut line).await.unwrap();
+                    assert!(
+                        matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::Inbox { agent, drain: false } if agent == "retained")
+                    );
+                    reader
+                        .get_mut()
+                        .write_all(b"{\"type\":\"messages\",\"messages\":[]}\n")
+                        .await
+                        .unwrap();
+                }
+            };
+            let (response, ()) = tokio::join!(
+                Backend::call(
+                    &client,
+                    Request::DeliveryQueue {
+                        agent: "retained".into()
+                    }
+                ),
+                peer
+            );
+            assert_eq!(
+                matches!(response.unwrap(), Response::Messages { .. }),
+                fallback
+            );
+        }
+    }
 
     #[tokio::test]
     async fn snapshot_waits_for_subscription_acknowledgement() {

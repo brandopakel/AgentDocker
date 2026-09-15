@@ -267,6 +267,82 @@ def smoke(binary_dir, output):
                     stop(daemon)
                     raise
             checks.extend(["rendered_actions", "answer_and_draft_navigation", "native_vt_rendering", "terminal_attach_detach", "channels", "setup_review_apply_undo", "launch_and_confirmed_stop", "focused_control_reveal", "compact_zoom", "current_history_separation", "project_attention", "compact_session_navigation"])
+            def narrow_inbox():
+                nonlocal window
+                # Narrow Inbox: below the two-column breakpoint the window shows the
+                # conversation list or one conversation, never both. Choosing one,
+                # the back control, a native notification route, a draft kept across
+                # switching and resizing, and wide-to-narrow-and-back are exercised
+                # against the rendered controls; the route is forwarded to the
+                # running window mid-scenario exactly as a click on a notification
+                # would forward it.
+                narrow = rpc(endpoint, {"op": "run", "spec": {"name": "narrow-fixture", "runtime": "fixture",
+                              "command": ["/bin/sleep", "150"], "workdir": str(project), "restore": False}})["agent"]
+                routed = rpc(endpoint, {"op": "send", "from": narrow["id"], "to": human["id"],
+                                        "kind": "chat", "payload": {"text": "NARROW ROUTE TARGET"}})["message"]
+                route = {"home": str(state), "socket": str(endpoint),
+                         "target": {"message": routed, "agent": narrow["id"], "project": room["project"], "channel": None}}
+                narrow_steps = [step("resize", width=720, height=540), step("click", id="inbox"),
+                                step("wait_control", id=f"thread-{agent['id']}", present=True),
+                                step("wait_control", id="thread-back", present=False), step("capture", name="narrow-inbox-list"),
+                                step("click", id=f"thread-{agent['id']}"), step("wait_control", id="thread-back", present=True),
+                                step("wait_control", id=f"thread-{agent['id']}", present=False),
+                                step("wait_control", id=f"reply-{agent['id']}", present=True), step("capture", name="narrow-inbox-thread"),
+                                step("fill", id=f"reply-{agent['id']}", text="Keep this narrow draft"),
+                                step("click", id="thread-back"), step("wait_control", id="thread-back", present=False),
+                                step("wait_control", id=f"thread-{agent['id']}", present=True),
+                                step("click", id=f"thread-{narrow['id']}"), step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                                step("wait_control", id=f"reply-{agent['id']}", present=False),
+                                step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
+                                step("wait_text", text="Keep this narrow draft"),
+                                step("resize", width=1180, height=760), step("wait_control", id="thread-back", present=False),
+                                step("wait_control", id=f"thread-{agent['id']}", present=True),
+                                step("wait_control", id=f"reply-{agent['id']}", present=True), step("wait_text", text="Keep this narrow draft"),
+                                step("capture", name="wide-inbox-both-columns"),
+                                step("resize", width=720, height=540), step("wait_control", id="thread-back", present=True),
+                                step("wait_text", text="Keep this narrow draft"), step("click", id="thread-back"),
+                                step("wait_control", id="thread-back", present=False), step("click", id="projects")]
+                narrow_gate = len(narrow_steps)
+                narrow_steps += [step("wait_control", id=f"reply-{narrow['id']}", present=True), step("wait_control", id="thread-back", present=True),
+                                 step("wait_control", id=f"thread-{agent['id']}", present=False), step("wait_text", text="NARROW ROUTE TARGET"),
+                                 step("capture", name="narrow-notification-route"),
+                                 step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
+                                 step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept")]
+                def forward_route(name, gate):
+                    def progressed():
+                        if window is not None and window.poll() is not None:
+                            raise RuntimeError("narrow window exited before the notification route")
+                        try:
+                            return json.loads((output / name / "progress.json").read_text())["completed"] >= gate
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            return False
+                    until(progressed, timeout=120)
+                    primary = window.pid
+                    result = subprocess.run([str(binary_dir / "agentdocker-ui"), "--open-notification", json.dumps(route)],
+                                            cwd=project, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=8)
+                    assert result.returncode == 0, result.stderr
+                    assert window.poll() is None and window.pid == primary, "narrow window was replaced by the route"
+                def launch_routed(name, scenario, gate):
+                    nonlocal window
+                    script = root / f"{name}.json"
+                    script.write_text(json.dumps(scenario))
+                    capture = output / name
+                    with (output / f"{name}.log").open("w") as log:
+                        window = subprocess.Popen([str(binary_dir / "agentdocker-ui"), "--smoke-test", str(capture),
+                                                   "--smoke-scenario", str(script), "--smoke-deadline", "150"],
+                                                  cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            forwarded = pool.submit(forward_route, name, gate)
+                            observation = wait_window(daemon, window, capture, timeout=180)
+                            forwarded.result(timeout=5)
+                    result = json.loads((capture / "result.json").read_text())
+                    assert result["scenario_steps_completed"] == len(scenario), result
+                    return observation
+                report["narrow_inbox_window"] = launch_routed("narrow-inbox", narrow_steps, narrow_gate)
+                checks.append("narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize")
+                rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
+                until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
+
             catalog = json.loads((state / "workspace.json").read_text())
             assert catalog["selected"] == str(pinned), catalog
             entries = [entry for entry in catalog["projects"] if entry["project"]["root"] == str(pinned)]
@@ -309,7 +385,29 @@ def smoke(binary_dir, output):
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
             report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
             checks.append("rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause")
+            input_report({"state": "ready"})
+            rpc(endpoint, {"op": "report_provider", "agent": receiver["id"],
+                           "process_started_at": receiver["process_started_at"], "observed_at": now(),
+                           "report": {"state": "blocked", "issue": {"kind": "usage"}}})
+            retained = rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
+            assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["type"] == "input_waiting"
+            report["provider_limit_window"] = launch("provider-limit", [
+                step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("wait_text", text="readiness-fixture: Usage limit"),
+                step("wait_control", id=f"needs-you-review-{receiver['id']}", present=False),
+                step("click", id=f"needs-you-provider-{receiver['id']}"),
+                step("wait_control", id="review-delivery", present=False),
+                step("wait_text", text="Usage limit"),
+                step("click", id="session-message"), step("fill", id="session-message-text", text="Keep this draft during recovery"),
+                step("capture", name="provider-limit"), step("click", id="resume-provider"),
+                step("wait_control", id="resume-provider", present=False),
+                step("wait_text", text="Keep this draft during recovery"), step("capture", name="provider-resumed")])
+            recovered = rpc(endpoint, {"op": "inspect", "agent": receiver["id"]})["agent"]
+            assert recovered["provider_availability"]["issue"] is None
+            assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["messages"] == retained
+            checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
+            narrow_inbox()
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"
         finally:

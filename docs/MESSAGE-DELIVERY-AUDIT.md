@@ -153,10 +153,10 @@ round trips are supporting evidence, not completion of this requirement.
 ## Provider-limit and session-exhaustion acceptance (September 14)
 
 The connected Claude session hit a provider session limit during the user's live
-coordination trial. Detection, clear unavailable status and recovery are open
-requirements; this report alone does not establish the precise provider limit
-type, reset time or an adapter signal. The current activity reports expose
-working/idle observations and cannot represent that failure explicitly.
+coordination trial. The current change implements provider availability as a
+separate durable state, with queue gating and explicit recovery. The user's
+report alone does not establish the precise limit type, reset time or adapter
+signal, and the existing limited session has not been restarted or drained.
 
 This requirement covers all supported providers and models, including
 OpenAI/Codex, Anthropic/Claude, Google/Gemini, providers behind multi-provider
@@ -201,6 +201,92 @@ retained. This used an isolated configuration and local server, no real quota,
 and left no owned processes. It establishes the signal, not AgentDocker's
 availability or recovery implementation, or recovery of the user's limited
 session. See the provider's [StopFailure contract](https://code.claude.com/docs/en/hooks#stopfailure).
+
+### Implemented contract and adapter coverage
+
+The current implementation closes the common availability/queue model: schema18
+stores a generation-bound normalized interruption separately from readiness;
+heartbeats, receipt ACKs and expired reset times cannot lift it. Equal repeated
+limits do not create event/ping storms. Shared quotas require explicit non-secret
+membership, an explicitly known matching provider and optional model scope;
+unknown provider values cannot establish a shared quota. Unrelated agents continue. Manual resume
+and supported success signals name the exact blocked observation. Failed storage
+preserves the block and queue. Record removal and identity repair cannot erase
+an unresolved block. The desktop shows the reason, queue count and a resume
+action, retains drafts, and suppresses Done for known blocked turns.
+Legacy destructive Inbox reads return Conflict while blocked; owned Codex
+polls keep their existing Messages response with an empty offer, retaining the
+queue and allowing proven acknowledgements. Only DeliveryQueue opts into the
+new InputWaiting response. A successful Claude Stop releases leases before
+attempting exact-observation recovery; refused recovery keeps the newer block
+and does not trigger a wake. Failed lease release does not clear availability.
+The Needs you strip names the provider interruption and opens its recovery
+details; ordinary delivery review is reserved for uncertain transport receipts.
+
+The source-review follow-up passed 926 Rust tests (six skipped), 70 Python
+checks and the full lint/package/release gate. New regressions cover absent,
+blank and invalid provider identities, mismatched providers, previously stored
+reports and rejected reports leaving queues, events and state unchanged.
+
+| Adapter | Implemented detection and queue handling | Evidence and remaining boundary |
+| --- | --- | --- |
+| Claude Code | Async `StopFailure` normalizes typed rate/billing/authentication/transport codes; other codes remain unknown. Failure does not release leases, drain input or block Stop to force a new turn. Successful Stop or explicit resume can clear the exact known block. Channel offers stop during a block; actual receipt ACKs remain possible. | Actual installed 2.1.270 produced the loopback 429 signal above. Hook and channel regressions cover queue retention, no offers over repeated polling, exact receipts while blocked and FIFO recovery. Automatic detection requires the newly installed hook to be loaded. Actual 2.1.270 through the final hook/daemon retained two inputs after a loopback 429, without a receipt or wake output; the user account reset/recovery remains untested. |
+| Managed Codex | Structured app-server `CodexErrorInfo` handles usage/rate/budget/context/authentication/transport and HTTP status classes. Failed `turn/start` retains the owned provider and uncertain attempt. Queue remains blocked until explicit recovery and receipt reconciliation. | Classifier and queue-contract tests pass; schema derived from installed Codex 0.154. Unknown/unreceipted attempts remain blocked rather than replayed. Actual Codex 0.154.0 through the final bridge paused on loopback 429, retained two later inputs without retrying, then completed them after explicit resume in the same process/conversation; all three input receipts stayed ordered. |
+| Codex hooks | Lifecycle input reads the same gated queue; a blocked read yields no context or acknowledgement. | No automatic typed limit signal is claimed from lifecycle hooks alone. Use an authoritative explicit report or the managed bridge. |
+| MCP-only and custom/local | `report_provider_status` binds the reporting process generation; `read_inbox`/`wait_for_messages` use the gated queue. Administrative inspection and proven ACKs remain available. | Contract tested for all 14 catalog runtimes plus a custom runtime, across nine interruption classes. Generic MCP is not automatic detection of every provider's private limit semantics; version-specific integrations must supply a supported signal. |
+
+The standard gate passed 924 Rust tests (six skipped), 70 Python checks,
+strict lint, doctests, package checks and release builds. The original failures
+are retained: an omitted schema17 migration case, legacy protocol/test expectations
+and a lint correction were fixed before this passing gate. Cross-runtime
+state tests exercise 135 runtime/interruption combinations, mixed human/peer
+FIFO queues, repeated limits, past resets, stale or wrong-generation recovery,
+restart persistence and failed-store recovery. These fixtures establish the
+shared contract, not real quota exhaustion at every provider/company/model.
+An actual Codex 0.154.0 mid-tool interruption trial also passed at `66c4247`:
+the loopback provider returned HTTP 429 while an owned command was still running.
+The command completed exactly once, two later human/peer inputs stayed queued,
+and explicit recovery completed those inputs in the same process/conversation
+with three ordered input receipts and no replay. All owned processes retired.
+This closes the bounded mid-tool case; it does not establish every provider's
+tool cancellation or account-reset behavior. Existing uncertain input, question
+expiry and permission checks continue to apply.
+
+The combined `ec45cea` source passed 931 Rust tests (six skipped), 70 Python
+checks and 225 native workflow steps, plus the full lint/package/release gate.
+Actual isolated Claude error delivery, Codex mid-tool recovery and the 135-case
+daemon matrix were rerun against its frozen binaries. Two further Codex 0.154.0
+acceptance cases passed:
+
+- While a command question was pending, an explicit availability report held
+  its denial and two later human/peer inputs. Resume delivered the exact denial;
+  the denied command never ran. Deny cancelled that turn, and the next input
+  received the loopback 429. A second recovery preserved four ordered input
+  receipts and one exact question/answer receipt; the answer did not become
+  a new input turn. Earlier fixture assertions used the wrong response type
+  and assumed Deny continued the first turn; both diagnosed failures are retained.
+- Replacing the blocked owned controller produced a new PID/birth while keeping
+  the same agent and durable Codex conversation. The limit and two pending inputs
+  survived replacement. Explicit recovery completed those inputs once with three
+  ordered receipts. This covers supported restoration under the same identity;
+  it does not establish transfer to an unrelated new agent record.
+
+All owned trial processes retired. Actual account resets, broader provider
+versions and adapter-specific detection, unrelated replacement identities and
+sustained actual-provider acceptance remain open. Complete source and deployment
+evidence is attached to [PR #132](https://github.com/brandopakel/AgentDocker/pull/132).
+
+Final-source acceptance at `64f8e58` is recorded on [PR #131](https://github.com/brandopakel/AgentDocker/pull/131#issuecomment-5672982318):
+924 Rust tests, 70 Python checks and 181 native workflow steps passed. Real
+Claude and Codex executables used private loopback error/recovery servers and
+synthetic credentials, without paid model calls. The real-daemon matrix passed
+135 cases, two restarts and 2,080 accepted messages; all 1,000 accepted inputs at
+capacity survived backpressure and restart. 8,255 local RPCs measured p50/p95/p99
+0.039/0.129/0.228 ms. Native resume preserved the unsent draft, prior receipt and
+exact queue. All fixtures exited and binaries remained unchanged. This closes
+the bounded adapter integration and queue-pressure/restart cases; it does not
+establish every provider's detection, actual account reset, or sustained-use
+acceptance. Original failed gates and private reports remain retained.
 
 ## Initial source audit
 

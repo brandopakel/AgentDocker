@@ -90,6 +90,7 @@ enum Cmd {
     Adopt(u32),
     AdoptAll,
     Stop(String),
+    ResumeProvider(String, chrono::DateTime<Utc>),
     Setup(Vec<String>),
     Desktop(Vec<String>),
     UpdateCheck,
@@ -478,7 +479,7 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
-                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) => {}
+                Cmd::Adopt(_) | Cmd::AdoptAll | Cmd::Stop(_) | Cmd::ResumeProvider(..) => {}
                 // Full queues may omit refreshes: events and periodic refresh
                 // request another snapshot. User actions get an explicit error.
                 _ => return,
@@ -825,6 +826,24 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            EventKind::ProviderAvailabilityReported {
+                agent,
+                availability,
+                ..
+            } => {
+                if let Some(record) = self.agents.iter_mut().find(|a| a.id == *agent) {
+                    record.provider_availability = Some(availability.clone());
+                }
+                let blocked: Vec<_> = self
+                    .agents
+                    .iter()
+                    .filter(|a| agentdocker_core::provider_block(a, &self.agents).is_some())
+                    .map(|a| a.id.to_string())
+                    .collect();
+                self.shell.unviewed_done.retain(|id| !blocked.contains(id));
+                self.send(Cmd::Agents);
+                self.send(Cmd::Activity);
+            }
             EventKind::InboxAcknowledged { .. } => self.send(Cmd::Activity),
             EventKind::AgentActivityReported { .. } => {
                 self.send(Cmd::Agents);
@@ -872,6 +891,13 @@ impl App {
             if !was_busy || !matches!(now, Activity::Idle { .. } | Activity::Finished) {
                 continue;
             }
+            if self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && self.delivery_paused(a))
+            {
+                continue;
+            }
             let on_screen = self.screen == Screen::Agents
                 && !self.shell.unfocused
                 && self.agents.iter().any(|a| {
@@ -901,8 +927,59 @@ impl App {
         self.agents
             .iter()
             .find(|a| a.id.as_str() == id)
-            .map(|a| a.spec.name.clone())
-            .unwrap_or_else(|| id.chars().take(12).collect())
+            .map(|a| self.display_name(a))
+            // Not knowing the record does not prove the session ended.
+            .unwrap_or_else(|| "an unknown session".to_owned())
+    }
+
+    /// The name a person reads for an agent. Adapters register sessions as
+    /// `<runtime>-<pid or session id>`; the record says when its name was
+    /// generated like that, and then the runtime's label is shown instead.
+    /// Sessions of one tool in one project are told apart by their order of
+    /// first appearance, live or ended, so a number never changes when a
+    /// neighbour finishes. A name somebody chose is shown as chosen.
+    fn display_name(&self, agent: &AgentRecord) -> String {
+        if !agent.name_is_generated() {
+            return agent.spec.name.clone();
+        }
+        let base = runtime_label(&agent.spec.runtime);
+        let mut peers: Vec<&AgentRecord> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.name_is_generated()
+                    && a.spec.runtime == agent.spec.runtime
+                    && a.project.as_ref().map(|p| p.id()) == agent.project.as_ref().map(|p| p.id())
+            })
+            .collect();
+        if peers.len() < 2 {
+            return base;
+        }
+        peers.sort_by_key(|a| (a.created_at, a.id.to_string()));
+        match peers.iter().position(|a| a.id == agent.id) {
+            Some(index) => format!("{base} {}", index + 1),
+            None => base,
+        }
+    }
+
+    /// Journal lines name agents as they registered; show them as people
+    /// read them. The author is found by id, never by name: two records can
+    /// share a name and only one of them wrote the line.
+    fn journal_line(&self, entry: &agentdocker_core::JournalEntry) -> String {
+        let line = entry.line();
+        let Some(id) = entry.agent.as_ref() else {
+            return line;
+        };
+        let id = self.canonical_agent(id.as_str());
+        let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
+            return line;
+        };
+        let shown = self.display_name(agent);
+        if shown == entry.agent_name {
+            line
+        } else {
+            line.replacen(&entry.agent_name, &shown, 1)
+        }
     }
 
     // ----- screens -------------------------------------------------------
@@ -1445,6 +1522,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 agent.chars().take(12).collect::<String>()
             )))
         }
+        Cmd::ResumeProvider(agent, blocked_at) => {
+            let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
+            anyhow::ensure!(
+                matches!(response, Response::Ok),
+                "Provider resumption refused: {response:?}"
+            );
+            Some(Msg::Status(
+                "Delivery resumed; previously received input will not be replayed".into(),
+            ))
+        }
         Cmd::Launch(spec) => match client.call(&Request::Run { spec: *spec })? {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
@@ -1668,6 +1755,14 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
             std::thread::sleep(Duration::from_secs(2));
         }
     });
+}
+
+/// The label a tool is shown under, or its runtime id when the catalog
+/// does not know it.
+pub(crate) fn runtime_label(runtime: &str) -> String {
+    agentdocker_core::runtime::spec(runtime)
+        .map(|spec| spec.label.to_owned())
+        .unwrap_or_else(|| runtime.to_owned())
 }
 
 #[cfg(test)]
@@ -3105,5 +3200,117 @@ mod tests {
         messages.send(report(&[(&worker, working)])).unwrap();
         app.drain();
         assert!(app.shell.unviewed_done.is_empty());
+    }
+
+    fn record(name: &str, runtime: &str, pid: Option<u32>) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: name.into(),
+                runtime: runtime.into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        record.pid = pid;
+        record.status = agentdocker_core::AgentStatus::Running;
+        record
+    }
+
+    #[test]
+    fn a_name_is_generated_by_provenance_not_by_its_shape() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        // Labelled by its adapter: generated, whatever it looks like.
+        let mut labelled = record("anything", "codex", None);
+        labelled.spec.labels.insert(
+            agentdocker_core::agent::NAME_LABEL.into(),
+            agentdocker_core::agent::GENERATED_NAME.into(),
+        );
+        // An older record: only the exact adapter form from its own pid.
+        let by_pid = record("codex-51242", "codex", Some(51242));
+        let mut by_session = record("claude-218845eb", "claude-code", None);
+        by_session.spec.labels.insert(
+            "session_id".into(),
+            "218845eb-ba1e-4457-bb5a-e1829f5652dd".into(),
+        );
+        // Chosen names that merely look like identifiers stay as chosen.
+        let chosen_hex = record("codex-cafe", "codex", Some(51242));
+        let chosen_pid_elsewhere = record("codex-51242", "codex", Some(999));
+        let chosen = record("reviewer", "codex", Some(1));
+        app.agents = vec![
+            labelled.clone(),
+            by_pid.clone(),
+            by_session.clone(),
+            chosen_hex.clone(),
+            chosen_pid_elsewhere.clone(),
+            chosen.clone(),
+        ];
+        assert!(app.display_name(&labelled).starts_with("Codex"));
+        assert!(app.display_name(&by_pid).starts_with("Codex"));
+        assert_eq!(app.display_name(&by_session), "Claude Code");
+        assert_eq!(app.display_name(&chosen_hex), "codex-cafe");
+        assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-51242");
+        assert_eq!(app.display_name(&chosen), "reviewer");
+    }
+
+    #[test]
+    fn numbers_come_from_first_appearance_and_survive_a_neighbour_ending() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let now = Utc::now();
+        let mut first = record("codex-5124", "codex", Some(5124));
+        first.created_at = now;
+        let mut second = record("codex-6250", "codex", Some(6250));
+        second.id = agentdocker_core::AgentId::from("second-id");
+        second.created_at = now + chrono::Duration::seconds(1);
+        app.agents = vec![second.clone(), first.clone()];
+        assert_eq!(app.display_name(&first), "Codex 1");
+        assert_eq!(app.display_name(&second), "Codex 2");
+        // The first one ends: the second keeps its number, and a newcomer
+        // takes the next one rather than the vacated one.
+        first.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let mut third = record("codex-7000", "codex", Some(7000));
+        third.id = agentdocker_core::AgentId::from("third-id");
+        third.created_at = now + chrono::Duration::seconds(2);
+        app.agents = vec![second.clone(), first.clone(), third.clone()];
+        assert_eq!(app.display_name(&first), "Codex 1");
+        assert_eq!(app.display_name(&second), "Codex 2");
+        assert_eq!(app.display_name(&third), "Codex 3");
+        // Alone, no number.
+        app.agents = vec![first.clone()];
+        assert_eq!(app.display_name(&first), "Codex");
+    }
+
+    #[test]
+    fn journal_lines_are_attributed_by_agent_id_not_by_name() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let now = Utc::now();
+        let mut older = record("codex-1", "codex", Some(1));
+        older.created_at = now;
+        let mut newer = record("codex-2", "codex", Some(2));
+        newer.id = agentdocker_core::AgentId::from("newer-id");
+        newer.created_at = now + chrono::Duration::seconds(1);
+        app.agents = vec![older.clone(), newer.clone()];
+        let entry: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({
+            "project": "p", "seq": 7, "at": now, "agent": newer.id.as_str(), "agent_name": "codex-2",
+            "kind": "note", "summary": "done", "summary_source": "explicit"
+        }))
+        .unwrap();
+        let line = app.journal_line(&entry);
+        assert!(line.contains("Codex 2"), "{line}");
+        assert!(!line.contains("codex-2"), "{line}");
+        // A line whose author is not on record is left as it is.
+        let unknown: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({
+            "project": "p", "seq": 8, "at": now, "agent": "nobody", "agent_name": "codex-2",
+            "kind": "note", "summary": "done", "summary_source": "explicit"
+        }))
+        .unwrap();
+        assert!(app.journal_line(&unknown).contains("codex-2"));
+        assert_eq!(app.name_of("nobody"), "an unknown session");
     }
 }

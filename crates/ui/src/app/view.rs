@@ -350,6 +350,14 @@ impl App {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
+        } else if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+            state
+                .issue
+                .as_ref()
+                .expect("blocked")
+                .kind
+                .label()
+                .to_owned()
         } else if self.delivery_paused(agent) {
             "delivery paused".to_owned()
         } else if agent.status.is_live() {
@@ -401,6 +409,9 @@ impl App {
         }
         if self.connected.is_err() {
             return "Readiness unavailable";
+        }
+        if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+            return state.issue.as_ref().expect("blocked").kind.label();
         }
         let Some(delivery) = agent.input_delivery.as_ref() else {
             return "Idle delivery not verified";
@@ -985,12 +996,22 @@ impl App {
             .iter()
             .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
         {
+            let (reason, control, label) =
+                if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                    (
+                        state.issue.as_ref().expect("blocked").kind.label(),
+                        "provider",
+                        "Details",
+                    )
+                } else {
+                    ("message delivery needs review", "review", "Review")
+                };
             items.push((
                 dot(c.amber, 8.0, c),
-                format!("{}: message delivery needs review", agent.spec.name),
+                format!("{}: {reason}", self.display_name(agent)),
                 action(
-                    format!("needs-you-review-{}", agent.id),
-                    "Review",
+                    format!("needs-you-{control}-{}", agent.id),
+                    label,
                     Some(Message::OpenSession(agent.id.to_string())),
                     false,
                 ),
@@ -1208,9 +1229,10 @@ impl App {
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let spoken = format!("{}\n{} · {}", agent.spec.name, agent.spec.runtime, meta);
+            let name = self.display_name(agent);
+            let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
             let mut lines = column![
-                text(agent.spec.name.clone())
+                text(name.clone())
                     .size(14)
                     .font(weight(iced::font::Weight::Medium)),
                 small(meta, c)
@@ -1334,7 +1356,7 @@ impl App {
             row![
                 dot(self.activity_color(agent, c), 10.0, c),
                 column![
-                    heading(agent.spec.name.clone(), 18),
+                    heading(self.display_name(agent), 18),
                     note(
                         format!("{} · {}", agent.spec.runtime, self.activity_label(agent)),
                         c
@@ -1374,6 +1396,27 @@ impl App {
             }
             if !status.is_empty() {
                 body = body.push(small(status.join(" · "), c));
+            }
+            if let Some((source, state)) = agentdocker_core::provider_block(agent, &self.agents) {
+                let issue = state.issue.as_ref().expect("blocked");
+                if let Some(reset) = issue.reset_at {
+                    body = body.push(small(
+                        format!("Provider reset: {} UTC", reset.format("%b %d %H:%M")),
+                        c,
+                    ));
+                }
+                body = body.push(small(
+                    "Messages are kept. Resume after the provider is available.",
+                    c,
+                ));
+                body = body.push(action(
+                    "resume-provider",
+                    "Resume delivery",
+                    self.connected
+                        .is_ok()
+                        .then(|| Message::ResumeProvider(source.id.to_string(), state.observed_at)),
+                    false,
+                ));
             }
             if paused {
                 body = body.push(action(
@@ -1890,7 +1933,23 @@ impl App {
         }
 
         if self.narrow() {
-            column![panel(list, c), convo].spacing(14).into()
+            // One column: the list, or the conversation with a way back.
+            // Choosing a conversation must show it, not append it below a
+            // list the reader then has to scroll past.
+            if self.shell.inbox_open {
+                let back = custom(
+                    "thread-back",
+                    "Conversations",
+                    row![text("‹ Conversations").size(14)],
+                    Some(Message::InboxList),
+                    false,
+                    Kind::Quiet,
+                    [8, 10],
+                );
+                column![back, convo].spacing(14).into()
+            } else {
+                column![panel(list, c)].spacing(14).into()
+            }
         } else {
             row![
                 container(panel(list, c)).width(300),
@@ -2520,8 +2579,8 @@ impl App {
                             dot(if index == 0 { c.accent } else { c.faint }, 7.0, c)
                         ],
                         column![
-                            text(entry.line()).size(14),
-                            small(format!("{} · #{}", ago(Utc::now(), entry.at), entry.seq), c)
+                            text(self.journal_line(entry)).size(14),
+                            small(ago(Utc::now(), entry.at), c)
                         ]
                         .spacing(3)
                         .width(Fill)
@@ -2895,7 +2954,7 @@ impl App {
                     };
                     facts = facts
                         .push(rule(c))
-                        .push(heading(agent.spec.name.clone(), 14))
+                        .push(heading(self.display_name(agent), 14))
                         .push(small(self.input_readiness(agent), c))
                         .push(small(
                             format!(

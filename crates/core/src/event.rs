@@ -85,6 +85,11 @@ pub enum EventKind {
         agent: AgentId,
         delivery: crate::InputDelivery,
     },
+    ProviderAvailabilityReported {
+        agent: AgentId,
+        availability: crate::ProviderAvailability,
+        user_resumed: bool,
+    },
     ContainerUpdated {
         agent: AgentId,
     },

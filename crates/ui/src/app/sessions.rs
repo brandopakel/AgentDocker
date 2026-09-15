@@ -26,10 +26,11 @@ impl App {
     }
 
     pub(super) fn delivery_paused(&self, agent: &AgentRecord) -> bool {
-        agent
-            .input_delivery
-            .as_ref()
-            .is_some_and(|d| d.paused_for(agent.process_started_at))
+        agentdocker_core::provider_block(agent, &self.agents).is_some()
+            || agent
+                .input_delivery
+                .as_ref()
+                .is_some_and(|d| d.paused_for(agent.process_started_at))
     }
 
     fn needs_attention(&self, agent: &AgentRecord) -> bool {
@@ -122,6 +123,52 @@ mod tests {
         );
         record.status = AgentStatus::Running;
         record
+    }
+
+    #[test]
+    fn provider_limits_override_ready_receivers_and_keep_attention_after_exit() {
+        use agentdocker_core::{ProviderAvailability, ProviderIssue, ProviderIssueKind};
+        let mut app = app();
+        let mut limited = record("limited");
+        let now = Utc::now();
+        limited.process_started_at = Some(now);
+        limited.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: false,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        limited.provider_availability = Some(ProviderAvailability {
+            process_started_at: now,
+            observed_at: now,
+            issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
+            cleared_observation: None,
+        });
+        app.agents.push(limited.clone());
+        app.shell.unfocused = true;
+        app.activity
+            .insert(limited.id.to_string(), Activity::Working { since: now });
+        app.note_completions(&BTreeMap::from([(
+            limited.id.to_string(),
+            Activity::Idle { since: now },
+        )]));
+        assert!(
+            !app.shell.unviewed_done.contains(limited.id.as_str()),
+            "a failed or limited turn is not Done"
+        );
+        assert!(
+            app.delivery_paused(&limited),
+            "a ready receiver cannot erase a provider limit"
+        );
+        app.agents[0].status = AgentStatus::Exited { code: Some(1) };
+        app.agents[0].process_started_at = Some(now + chrono::Duration::seconds(2));
+        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, limited.id);
+        assert!(
+            !app.needs_input(limited.id.as_str()),
+            "availability is not a question or an approval"
+        );
     }
 
     #[test]

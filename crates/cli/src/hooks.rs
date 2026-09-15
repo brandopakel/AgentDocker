@@ -11,6 +11,7 @@
 //! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit; deny the edit on conflict |
 //! | `PostToolUse`      | hand the model queued messages as context                              |
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
+//! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
 //! | `SessionEnd`       | release every lease and deregister                                     |
 //!
 //! The hook never breaks a session: if agentd is unreachable it prints a
@@ -102,6 +103,8 @@ pub enum Host {
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
+    #[serde(default)]
+    pub error: Option<String>,
     #[serde(default)]
     pub session_id: String,
     #[serde(default)]
@@ -255,11 +258,15 @@ impl<B: Backend> Backend for HookDelivery<'_, B> {
             }
             let response = self
                 .backend
-                .call(Request::Inbox {
+                .call(Request::DeliveryQueue {
                     agent: agent.clone(),
-                    drain: false,
                 })
                 .await?;
+            if matches!(response, Response::InputWaiting { .. }) {
+                return Ok(Response::Messages {
+                    messages: Vec::new(),
+                });
+            }
             if let Response::Messages { messages } = &response {
                 self.pending.borrow_mut().push(Request::AckInbox {
                     agent,
@@ -370,6 +377,21 @@ pub async fn claude_code<B: Backend>(
     opts: &ClaudeCodeArgs,
 ) -> Result<Option<Value>> {
     match input.hook_event_name.as_str() {
+        "StopFailure" => {
+            if let Some(me) = session_agent(backend, input).await? {
+                crate::provider_status::report(
+                    backend,
+                    &me,
+                    agentdocker_core::ProviderReport::Blocked {
+                        issue: crate::provider_status::claude(input.error.as_deref()),
+                    },
+                )
+                .await?;
+            }
+            // A provider failure is neither a completed task nor an invitation
+            // to wake again. Keep the queue and normal lease expiry intact.
+            Ok(None)
+        }
         "SessionStart" => {
             let me = ensure_registered(backend, input).await?;
             let agents = all_agents(backend).await?;
@@ -506,6 +528,13 @@ pub async fn claude_code<B: Backend>(
                 .and_then(transcript_tail)
                 .and_then(|tail| transcript_summary(&tail));
             release_all(backend, &me, summary).await?;
+            // A newer limit may supersede this snapshot while Stop is running.
+            // Keep that block, but do not let a rejected recovery retain leases
+            // or produce another wake attempt.
+            if let Err(error) = crate::provider_status::recovered(backend, &me).await {
+                eprintln!("agentdocker hook: provider recovery not recorded: {error:#}");
+                return Ok(None);
+            }
             if opts.no_wake || input.stop_hook_active {
                 return Ok(None);
             }
@@ -775,6 +804,10 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
     let mut labels = std::collections::BTreeMap::from([
         ("via".to_owned(), "hook".to_owned()),
         ("session_id".to_owned(), input.session_id.clone()),
+        (
+            agentdocker_core::agent::NAME_LABEL.to_owned(),
+            agentdocker_core::agent::GENERATED_NAME.to_owned(),
+        ),
     ]);
     if let Some(source) = &input.source {
         labels.insert("source".to_owned(), source.clone());
@@ -892,13 +925,17 @@ async fn release_all<B: Backend>(
     } else {
         SummarySource::Explicit
     };
-    backend
+    let response = backend
         .call(Request::ReleaseAll {
             agent: me.id.to_string(),
             summary,
             summary_source,
         })
         .await?;
+    anyhow::ensure!(
+        matches!(response, Response::Leases { .. }),
+        "lease release refused: {response:?}"
+    );
     Ok(())
 }
 
@@ -1215,6 +1252,18 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .with_context(|| format!("`hooks.{event}` must be an array"))?;
+        if runtime == "claude-code" && *event == "StopFailure" {
+            for entry in entries.iter_mut() {
+                if let Some(hooks) = entry["hooks"].as_array_mut() {
+                    for hook in hooks.iter_mut().filter(|hook| managed(hook)) {
+                        if hook["async"] != true {
+                            hook["async"] = json!(true);
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
         if runtime == "codex" && *event == "Interrupt" {
             for entry in entries.iter_mut() {
                 if let Some(hooks) = entry["hooks"].as_array_mut() {
@@ -1280,6 +1329,9 @@ pub(super) fn merge_hooks(settings: &mut Value, command: &str, runtime: &str) ->
         let mut entry = json!({
             "hooks": [{ "type": "command", "command": command, "timeout": timeout }]
         });
+        if runtime == "claude-code" && *event == "StopFailure" {
+            entry["hooks"][0]["async"] = json!(true);
+        }
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
         }
@@ -1386,6 +1438,101 @@ mod tests {
                 other_branches: 0,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn provider_failure_records_a_limit_without_releasing_leases_or_waking_claude() {
+        for (error, kind) in [
+            ("rate_limit", agentdocker_core::ProviderIssueKind::Rate),
+            ("future_error", agentdocker_core::ProviderIssueKind::Unknown),
+        ] {
+            let me = agent("claude-01234567", true);
+            let backend = Mock::with(vec![Response::Agent { agent: me.clone() }, Response::Ok]);
+            let mut event = input("StopFailure");
+            event.error = Some(error.into());
+            assert!(
+                claude_code(&backend, &event, &opts())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                backend.requests().len(),
+                if host_pid().is_some() { 2 } else { 1 },
+                "failure must not read the queue, release leases, close questions or create completion summaries"
+            );
+            if host_pid().is_some() {
+                assert!(
+                    matches!(&backend.requests()[1], Request::ReportProvider { agent, process_started_at, report: agentdocker_core::ProviderReport::Blocked { issue }, .. }
+                if agent == me.id.as_str() && Some(*process_started_at) == me.process_started_at && issue.kind == kind && issue.reset_at.is_none())
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_stop_recovery_releases_leases_but_does_not_wake_or_clear_newer_limits() {
+        if host_pid().is_none() {
+            return; // This environment cannot establish the lifecycle identity.
+        }
+        let mut me = agent("claude-01234567", true);
+        let blocked_at = Utc::now();
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
+            process_started_at: me.process_started_at.unwrap(),
+            observed_at: blocked_at,
+            issue: Some(agentdocker_core::ProviderIssue::local(
+                agentdocker_core::ProviderIssueKind::Usage,
+            )),
+            cleared_observation: None,
+        });
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::Leases { leases: vec![] },
+            Response::error(ErrorCode::Conflict, "a newer provider limit is active"),
+        ]);
+        assert!(
+            claude_code(&backend, &input("Stop"), &opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let requests = backend.requests();
+        assert_eq!(
+            requests.len(),
+            3,
+            "failed recovery must not read or wake the queue"
+        );
+        assert!(matches!(requests[1], Request::ReleaseAll { .. }));
+        assert!(matches!(&requests[2], Request::ReportProvider {
+            report: agentdocker_core::ProviderReport::Recovered { blocked_at: observed }, ..
+        } if *observed == blocked_at));
+    }
+
+    #[tokio::test]
+    async fn failed_stop_lease_release_does_not_report_recovery() {
+        if host_pid().is_none() {
+            return;
+        }
+        let mut me = agent("claude-01234567", true);
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
+            process_started_at: me.process_started_at.unwrap(),
+            observed_at: Utc::now(),
+            issue: Some(agentdocker_core::ProviderIssue::local(
+                agentdocker_core::ProviderIssueKind::Usage,
+            )),
+            cleared_observation: None,
+        });
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::error(ErrorCode::Internal, "release transaction failed"),
+        ]);
+        assert!(
+            claude_code(&backend, &input("Stop"), &opts())
+                .await
+                .is_err()
+        );
+        assert_eq!(backend.requests().len(), 2);
+        assert!(matches!(backend.requests()[1], Request::ReleaseAll { .. }));
     }
 
     #[tokio::test]
@@ -2231,7 +2378,7 @@ mod tests {
         let mention =
             json!({"hooks":[{"type":"command", "command":"echo 'agentdocker hook claude-code'"}]});
         let mut settings = json!({"hooks":{"Stop":[mention.clone()]}});
-        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 6);
+        assert_eq!(merge_claude_code_hooks(&mut settings, &command).unwrap(), 7);
         assert_eq!(settings["hooks"]["Stop"][0], mention);
         let file = tmp.path().join(".claude/settings.json");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -2356,7 +2503,11 @@ mod tests {
         let added =
             merge_claude_code_hooks(&mut settings, "/usr/local/bin/agentdocker hook claude-code")
                 .unwrap();
-        assert_eq!(added, 6);
+        assert_eq!(added, 7);
+        assert_eq!(
+            settings["hooks"]["StopFailure"][0]["hooks"][0]["async"],
+            true
+        );
         assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
         let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
@@ -2405,12 +2556,9 @@ mod tests {
                     Request::Inspect { .. } => Ok(Response::Agent {
                         agent: self.agent.clone(),
                     }),
-                    Request::Inbox { drain, .. } => {
-                        assert!(!drain, "hooks must not destructively read inboxes");
-                        Ok(Response::Messages {
-                            messages: self.queued.borrow().clone(),
-                        })
-                    }
+                    Request::DeliveryQueue { .. } => Ok(Response::Messages {
+                        messages: self.queued.borrow().clone(),
+                    }),
                     Request::List { .. } => std::future::pending().await,
                     _ => panic!("unexpected request {request:?}"),
                 }

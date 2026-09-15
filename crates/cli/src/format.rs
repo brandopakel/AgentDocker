@@ -172,6 +172,18 @@ pub fn event_line(event: &Event) -> String {
                 if delivery.paused { "paused" } else { "updated" }
             )
         }
+        EventKind::ProviderAvailabilityReported {
+            agent,
+            availability,
+            ..
+        } => format!(
+            "provider availability   {} {}",
+            agent.short(),
+            availability
+                .issue
+                .as_ref()
+                .map_or("delivery resumed", |issue| issue.kind.label())
+        ),
         EventKind::ContestOpened {
             contest,
             task,
