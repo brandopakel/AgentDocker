@@ -178,6 +178,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             ticker.tick().await;
             daemon.reconcile_containers();
             daemon.expire_leases();
+            daemon.flush_notices();
             daemon.check_liveness();
             // A `stat` per policy file, so editing one takes effect
             // within a second without a restart or a signal.
