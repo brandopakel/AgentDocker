@@ -106,6 +106,22 @@ that approach is not a validated fix. No installed files or settings changed.
 
 The September 15 repair replaces the neutral wrapper with an intact payload copy and keeps ownership outside its signature. All three entry points redirect to the selected immutable release, retaining hook/MCP and GUI roles. Private linked-executable alternatives failed strict verification and were rejected. The full gate at clean `cf64ca3` passed 979 Rust tests (seven skipped) and 71 Python checks. Private installation passed 13 scenarios; an actual separately built pre-capability `b605f8e` → `cf64ca3` → `b605f8e` upgrade/rollback passed 12 scenarios with strict signature verification, hook/MCP compatibility, selected-release execution and live-daemon retention. Routing through the copied launcher passed 24 existing-window and two cold-start steps, preserving drafts and targets with no surviving fixture processes. The first older-release trial failed an alias-path assertion in the harness; its corrected rerun and the original failure are retained in the [launcher evidence](verification/2026-09-12-launcher-hook-repair.json). PR #153 is merged. The verified `cf64ca3` package, with production inputs identical to merged `4074275`, is now installed at `/Applications/AgentDocker.app`; strict signature verification and legacy CLI paths pass, the new app is open, and all four external provider identities survived the backed-up coordinator switch. These checks do not establish native posting authorization or physical Notification Center clicks.
 
+The installed intact app still refused two valid native posts, including after
+Launch Services activated its existing window: `Notifications are not allowed
+for this application (1)`. Strict signature verification passed. An initial
+malformed-destination probe was rejected before native posting and is retained
+separately. These results are in the existing launcher evidence; no notification
+settings or provider state changed.
+
+The authorization follow-up moves the one-time permission request from app
+construction to the first focused-window event. `agentdocker-ui
+--notification-status`, run from the app bundle, reads its bundle identity and
+macOS authorization/alert/sound/Notification Center settings without prompting or
+posting. It uses Apple's [notification settings query](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/getnotificationsettings(completionhandler:)).
+This provides evidence to distinguish a denied setting from an unsupported
+notification client. The timing change remains under acceptance and is not an
+established explanation for the refusal.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version

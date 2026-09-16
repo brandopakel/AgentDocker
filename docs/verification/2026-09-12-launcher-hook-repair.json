@@ -421,6 +421,41 @@
           "private_path": "/private/tmp/agentdocker-current-build-gate1.log",
           "sha256": "1097bbb8d9d39b8fa69ab58c24e15155a4ad28c40f1b02e5dfda2f7b3ea228c4"
         }
+      },
+      "native_posting_followup": {
+        "result": "refused",
+        "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+        "strict_signature_verification": "passed",
+        "existing_gui_open": true,
+        "also_refused_after_launch_services_activation": true,
+        "trials": [
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15d.json",
+            "sha256": "7252f7c936f971cff2f5109ab786004320efde9a4d78db14735eac22b6bed901",
+            "exit_code": 2,
+            "stderr": "invalid notification\n",
+            "classification": "malformed destination refused before native posting"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15e.json",
+            "sha256": "a78974f0c393b1e8148ef1c90528e3b55991f8a9ffa920b6ebf175badd80c884",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15f.json",
+            "sha256": "27df92796a2d2d27aa1c19a9b2b90ba444b0ea13ce0e3b9e0b5137be31b29052",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          }
+        ],
+        "limits": [
+          "Refusal persists after launcher repair; signing integrity alone did not resolve native posting.",
+          "No physical notification click was possible in these trials; notification settings were not changed.",
+          "The first malformed-destination probe is retained and is not counted as a native posting trial."
+        ]
       }
     }
   }
