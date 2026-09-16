@@ -395,7 +395,33 @@
       "limits": [
         "Coordinator stop/start with external providers preserved; not an in-place daemon reload trial.",
         "Physical Notification Center clicks and native posting authorization remain open."
-      ]
+      ],
+      "documentation_followup_validation": {
+        "result": "passed",
+        "production_source_commit": "4074275a4e9cd58ad052f78390be4254e30e79cd",
+        "documentation_branch": "codex/current-build",
+        "command": "bash scripts/verify.sh check",
+        "rust_passed": 979,
+        "rust_skipped": 7,
+        "python_passed": 71,
+        "docs": {
+          "markdown_files": 38,
+          "verification_records": 64
+        },
+        "also_passed": [
+          "format",
+          "strict_clippy",
+          "doctests",
+          "package",
+          "release_build",
+          "git_diff_check"
+        ],
+        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main4074275. This is not another physical notification or provider acceptance trial.",
+        "log": {
+          "private_path": "/private/tmp/agentdocker-current-build-gate1.log",
+          "sha256": "1097bbb8d9d39b8fa69ab58c24e15155a4ad28c40f1b02e5dfda2f7b3ea228c4"
+        }
+      }
     }
   }
 }

@@ -27,7 +27,7 @@ provider records retained their IDs, PIDs and process birth times; the existing
 Claude/Codex connection exchanged messages after the switch. An old-client
 autostart race initially relaunched the previous daemon, then an explicit
 quit/stop/start selected the current binary; that failure still needs the live
-upgrade contract. PRs #142/#147 are merged. PR #148's native Codex queue and PR #149's portable coordination skill are now merged after final review and CI. Installed-session acceptance remains open. The initial long-busy trial falsely paused a direct user turn; corrected `5aeb651` passed the full 967-Rust/70-Python gate and an actual 65-second regression plus rate-limit recovery. Corrected recovery34 at `bc0ea04` passed under real daemon supervision; failed trials remain recorded. PR #151's managed-network review is also merged after the final 61-focused/974-Rust/70-Python gate and CI; actual managed-network approval remains unverified.
+upgrade contract. PRs #142/#147 are merged. PR #148's native Codex queue and PR #149's portable coordination skill are now merged after final review and CI. The installed existing-session wake/receipt trial now passes; fresh startup/reopen and broader acceptance remain open. The initial long-busy trial falsely paused a direct user turn; corrected `5aeb651` passed the full 967-Rust/70-Python gate and an actual 65-second regression plus rate-limit recovery. Corrected recovery34 at `bc0ea04` passed under real daemon supervision; failed trials remain recorded. PR #151's managed-network review is also merged after the final 61-focused/974-Rust/70-Python gate and CI; actual managed-network approval remains unverified.
 Thirty queued human/peer inputs passed exact FIFO
 receipts in its local fixture, with about five minutes to consume the burst;
 no-prompt startup/resume and burst latency remain acceptance gaps.
@@ -138,7 +138,7 @@ replacement acceptance.
 | --- | --- |
 | Apple signing/notarization | Supply a Developer ID Application identity and private notary profile; run signing, notarization, stapling and Gatekeeper checks on the final app/DMG before publication. Packaging automation exists; ad-hoc signing only verifies a local preview. The read-only September 15 identity check again found zero valid signing identities. |
 | Human accessibility/IME trials | Run the input trials above and record findings on the actual candidate. Automated control/accessibility checks do not replace them. |
-| Switch the running daemon after sessions finish | App/CLI activation can preserve current sessions; restart the old daemon explicitly only when its work can safely end. Verify the successor source/schema and retained state. The old daemon lacks live transfer, so an app update does not complete this step. |
+| Completed on this Mac: launcher and coordinator switch | Verified `cf64ca3` (schema20) is running after a backed-up coordinator stop/start. All four external provider identities, PIDs and birth times were preserved; strict launcher signature checks and legacy hook paths pass. This closes the old-launcher switch, not the experimental live-transfer or future-upgrade acceptance above. |
 | Independent release acceptance | Run second-Mac, Intel and target-Linux trials and sustained actual-provider sessions against the final candidate. |
 
 See [desktop distribution](DESKTOP-DISTRIBUTION.md) for signing and private
