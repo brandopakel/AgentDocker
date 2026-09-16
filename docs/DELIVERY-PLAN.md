@@ -109,8 +109,8 @@ are draft; merge and installation wait for a corrected live-activity decision
 and actual long-busy, idle-wake and recovery acceptance. Earlier short-busy
 passes do not close this failure. Live diagnostic trial 27 traced it to the
 sidecar reporting an active turn as interrupted; source removes that inferred
-idle deadline. Corrected `5aeb651` passed the full967-Rust/70-Python gate and
-actual65-second direct-user busy, idle/draft/FIFO and rate-limit acceptance.
+idle deadline. Corrected `5aeb651` passed the full 967-Rust/70-Python gate and
+actual 65-second direct-user busy, idle/draft/FIFO and rate-limit acceptance.
 Corrected recovery34 at `bc0ea04` passed real-supervisor recovery after separate
 harness cleanup/race failures were retained and fixed. Final review/CI and
 installation remain. The existing
