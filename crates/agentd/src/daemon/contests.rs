@@ -20,7 +20,7 @@ use agentdocker_core::recovery::Validation;
 
 impl State {
     fn contest(&mut self, id: &ContestId) -> Option<Contest> {
-        self.store_op("contest", |store| store.document("contest", id.as_str()))
+        self.store_read("contest", |store| store.document("contest", id.as_str()))
             .flatten()
     }
 
@@ -202,7 +202,7 @@ impl Daemon {
             return Response::error(ErrorCode::NotFound, format!("no contest {id}"));
         };
         let evidence: Option<Validation> = state
-            .store_op("validation", |store| {
+            .store_read("validation", |store| {
                 store.document("validation", validation)
             })
             .flatten();

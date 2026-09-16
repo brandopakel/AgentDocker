@@ -1204,7 +1204,9 @@ fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-pub fn run(args: DesktopArgs) -> Result<()> {
+/// `socket` is the top-level `--socket`, when given: the daemon a status
+/// asks and an activation reloads is the one selected, not the default.
+pub fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
     let prefix = args
         .prefix
         .or_else(std::env::home_dir)
@@ -1229,7 +1231,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         }
         DesktopCommand::Status => {
             let homebrew = homebrew_owner(active.as_ref(), &homebrew_caskrooms());
-            let daemon = serving_daemon(None);
+            let daemon = serving_daemon(socket);
             println!(
                 "{}",
                 serde_json::to_string_pretty(
@@ -1315,7 +1317,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         local_preview,
         expect_release,
         expect_current,
-        None,
+        socket,
     )?;
     if !preview {
         layout.register_launcher();

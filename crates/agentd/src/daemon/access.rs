@@ -44,7 +44,7 @@ impl State {
     }
 
     fn read_access(&mut self, id: &str) -> Result<Option<Grant>, Box<Response>> {
-        self.store_op("access read", |store| store.document("access", id))
+        self.store_read("access read", |store| store.document("access", id))
             .ok_or_else(|| {
                 Box::new(
                     self.write_failure()

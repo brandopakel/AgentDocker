@@ -222,16 +222,21 @@ impl Daemon {
     /// An agent stopped on purpose stays stopped. Clearing the policy on
     /// the record says so where a reader will find it, rather than in a
     /// flag only the daemon can see.
-    pub(super) fn clear_restart(self: &Arc<Self>, id: &AgentId) {
+    /// Whether the policy is cleared (already, or by a committed write):
+    /// a stop must not go on when the policy that would start the agent
+    /// again is still in force on disk.
+    pub(super) fn clear_restart(self: &Arc<Self>, id: &AgentId) -> bool {
         let mut state = lock(&self.state);
-        let Some(record) = state.registry.get_mut(id) else {
-            return;
+        let Some(record) = state.registry.get(id) else {
+            return true;
         };
         if record.spec.restart.is_no() {
-            return;
+            return true;
         }
+        // Disk first, memory on commit: a write that did not land leaves
+        // the policy as it was, in both places.
+        let mut record = record.clone();
         record.spec.restart = agentdocker_core::RestartPolicy::No;
-        let record = record.clone();
         let mut event = Event::new(
             EventKind::AgentRestartCleared {
                 agent: record.id.clone(),
@@ -243,8 +248,14 @@ impl Daemon {
             store.agent_transition(&record, &event)
         });
         if committed == Persisted::Committed {
+            if let Some(stored) = state.registry.get_mut(id) {
+                stored.spec.restart = agentdocker_core::RestartPolicy::No;
+            }
             state.next_seq += 1;
             let _ = state.events.send(event);
+            true
+        } else {
+            false
         }
     }
 }

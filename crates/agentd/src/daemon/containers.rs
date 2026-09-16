@@ -277,7 +277,14 @@ impl Daemon {
         // agent stopped on purpose is neither brought back by the next
         // start nor restarted by its own policy.
         self.clear_restore(&id);
-        self.clear_restart(&id);
+        if !self.clear_restart(&id) {
+            // The policy that would start it again is still in force on
+            // disk: stopping now would be undone by the next daemon.
+            return Response::error(
+                ErrorCode::StorageUnavailable,
+                "the restart policy could not be cleared; the agent was not stopped",
+            );
+        }
         if self.container_record(&id).is_none() {
             return self.stop(reference, force);
         }

@@ -622,7 +622,15 @@ impl Daemon {
                         Ok(())
                     }) == Persisted::Failed
                     {
-                        return Err("deferred recovery write failed; storage disabled".into());
+                        // Authority is already ours and the predecessor
+                        // will leave on our word: a refusal now would leave
+                        // nobody serving. This daemon serves with storage
+                        // disabled, as any storage failure leaves it, and
+                        // the next open derives the same recovery again.
+                        error!(
+                            "deferred recovery write failed after acceptance; serving with storage disabled"
+                        );
+                        break;
                     }
                     state.next_seq += used;
                 }

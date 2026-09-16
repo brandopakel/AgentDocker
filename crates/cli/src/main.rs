@@ -1649,7 +1649,7 @@ async fn main() -> Result<()> {
                 .spawn()
                 .with_context(|| format!("cannot start {}", app.display()))?;
         }
-        Command::Desktop(args) => desktop::run(args)?,
+        Command::Desktop(args) => desktop::run(args, socket)?,
         Command::Setup {
             runtimes,
             dry_run,
@@ -2072,7 +2072,7 @@ async fn main() -> Result<()> {
                     &request,
                     || {
                         eprintln!(
-                            "agentdocker: the daemon was replaced; watching again (anything queued meanwhile is in the inbox)"
+                            "agentdocker: the daemon was replaced; watching again (the live stream may have a gap; messages addressed to an agent stay in its inbox)"
                         );
                     },
                     |response| {

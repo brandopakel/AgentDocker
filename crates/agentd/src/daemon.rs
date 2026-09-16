@@ -772,15 +772,25 @@ impl Daemon {
             {
                 if group_alive {
                     if candidate.status != AgentStatus::Stopping {
-                        let agent = state
-                            .registry
-                            .set_status(&candidate.id, AgentStatus::Stopping, Utc::now())
-                            .unwrap();
-                        let _ = state.persist("agent", |store| store.upsert_agent(&agent));
-                        state.emit(EventKind::AgentStopping {
-                            agent: candidate.id,
-                            force: false,
-                        });
+                        // Disk first, memory on commit: a fenced or failed
+                        // write leaves the record live, so the next look
+                        // (this daemon's after an abort, or the successor's)
+                        // finds it again.
+                        let mut agent = candidate.clone();
+                        agent.status = AgentStatus::Stopping;
+                        if state.persist("agent", |store| store.upsert_agent(&agent))
+                            == Persisted::Committed
+                        {
+                            state.registry.set_status(
+                                &candidate.id,
+                                AgentStatus::Stopping,
+                                Utc::now(),
+                            );
+                            state.emit(EventKind::AgentStopping {
+                                agent: candidate.id,
+                                force: false,
+                            });
+                        }
                     }
                 } else {
                     state.mark_exited(&candidate.id, AgentStatus::Exited { code: None });
@@ -3392,7 +3402,7 @@ impl Daemon {
         let Some(cutoff) = window.and_then(|window| Utc::now().checked_sub_signed(window)) else {
             return;
         };
-        let projects = match state.store_op("journal", |store| store.journal_projects()) {
+        let projects = match state.store_read("journal", |store| store.journal_projects()) {
             Some(projects) => projects,
             None => return,
         };
@@ -3735,7 +3745,7 @@ impl Daemon {
                 let (message, held_by) = match result {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
-                            .store_op("lease ledger boundary", |store| store.change_watermark());
+                            .store_read("lease ledger boundary", |store| store.change_watermark());
                         if lease.resource.kind() == "quota" {
                             lease.amount = amount.unwrap_or(1);
                         }
@@ -3932,6 +3942,8 @@ impl Daemon {
 
 impl State {
     /// Execute a store operation as part of the current ordered transition.
+    /// A store write, answered `None` while fenced (and noted as skipped)
+    /// or once storage has failed; callers leave memory as it was then.
     fn store_op<T>(
         &mut self,
         what: &str,
@@ -3943,6 +3955,19 @@ impl State {
         if self.fenced() {
             debug!(%what, "store operation skipped: coordination is being transferred");
             self.skipped_write = true;
+            return None;
+        }
+        self.store_read(what, op)
+    }
+
+    /// A store read: served through a fence, since a transfer stops
+    /// writes and nothing else, and refused only once storage has failed.
+    fn store_read<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Option<T> {
+        if self.storage_error.is_some() {
             return None;
         }
         let started = state_timing_start();
@@ -4242,12 +4267,22 @@ impl State {
         }) {
             return;
         }
-        let Some((record, changed)) = self.registry.set_vcs(id, vcs.clone()) else {
+        // Disk first, memory on commit: a write skipped by a fence or
+        // failed leaves the old checkout in memory, so the change is
+        // noticed again rather than lost.
+        let Some(current) = self.registry.get(id).cloned() else {
             return;
         };
-        if changed {
-            info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
-            let _ = self.persist("agent", |store| store.upsert_agent(&record));
+        let changed = !current.vcs.as_ref().is_some_and(|old| old.same_as(&vcs));
+        if !changed {
+            let _ = self.registry.set_vcs(id, vcs);
+            return;
+        }
+        let mut record = current;
+        record.vcs = Some(vcs.clone());
+        info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
+        if self.persist("agent", |store| store.upsert_agent(&record)) == Persisted::Committed {
+            let _ = self.registry.set_vcs(id, vcs.clone());
             self.emit(EventKind::AgentVcsChanged {
                 agent: id.clone(),
                 vcs,
@@ -4859,7 +4894,7 @@ impl State {
                 after: lease.change_seq.is_none().then_some(lease.acquired_at),
                 before_seq: None,
             };
-            let Some(changes) = self.store_op("journal", |store| store.changes(&query)) else {
+            let Some(changes) = self.store_read("journal", |store| store.changes(&query)) else {
                 continue;
             };
             for change in changes
@@ -4947,7 +4982,7 @@ impl State {
             return seq;
         }
         let stored = self
-            .store_op("journal", |store| store.max_journal_seq(project))
+            .store_read("journal", |store| store.max_journal_seq(project))
             .unwrap_or(0);
         self.journal_seq.insert(project.clone(), stored + 2);
         stored + 1
@@ -5144,7 +5179,7 @@ impl State {
 
     /// Serve a query, from the ring when it can be.
     fn journal_query(&mut self, query: JournalQuery) -> Response {
-        let Some(head_seq) = self.store_op("journal head", |store| {
+        let Some(head_seq) = self.store_read("journal head", |store| {
             store.max_journal_seq(&query.project)
         }) else {
             return Response::error(
@@ -5180,7 +5215,7 @@ impl State {
                 };
             }
         }
-        match self.store_op("journal", |store| store.journal(&query)) {
+        match self.store_read("journal", |store| store.journal(&query)) {
             Some(entries) => Response::Journal {
                 project: query.project,
                 entries,
@@ -5219,7 +5254,7 @@ impl State {
             } else {
                 let mut query = JournalQuery::new(project.clone(), DIGEST_SCAN);
                 query.since_seq = Some(cursor);
-                self.store_op("journal", |store| store.journal(&query))
+                self.store_read("journal", |store| store.journal(&query))
                     .unwrap_or_default()
             }
         };
@@ -5247,7 +5282,7 @@ impl State {
             return Some(*seq);
         }
         let found = self
-            .store_op("journal", |store| store.journal_cursor(key, project))
+            .store_read("journal", |store| store.journal_cursor(key, project))
             .flatten();
         if let Some(seq) = found {
             self.journal_cursors.insert(cache_key, seq);
@@ -5288,7 +5323,7 @@ impl State {
     fn ring(&mut self, project: &ProjectId) -> &mut JournalRing {
         if !self.journal_rings.contains_key(project) {
             let newest = self
-                .store_op("journal", |store| {
+                .store_read("journal", |store| {
                     store.journal(&JournalQuery::new(project.clone(), JOURNAL_RING))
                 })
                 .unwrap_or_default();

@@ -308,6 +308,10 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         let socket = socket.clone();
         move || {
             let mut stream = UnixStream::connect(&socket).unwrap();
+            // A validation that never answers fails the test, not hangs it.
+            stream
+                .set_read_timeout(Some(Duration::from_secs(60)))
+                .unwrap();
             // The command says when it is running, so the reload below is
             // issued while the validation is admitted, not before it.
             let request = json!({"op":"validate", "agent":validator_id,

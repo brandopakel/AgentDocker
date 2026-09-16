@@ -233,7 +233,7 @@ impl Daemon {
         );
         if expected.spec.restore {
             let point: Option<RestorePoint> = state
-                .store_op("restore protection", |store| {
+                .store_read("restore protection", |store| {
                     store.document("restore_point", expected.id.as_str())
                 })
                 .ok_or_else(|| storage_error(&state))?;
@@ -519,7 +519,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         storage_ready(&state)?;
         let point: Option<RestorePoint> = state
-            .store_op("restore_point", |store| {
+            .store_read("restore_point", |store| {
                 store.document("restore_point", previous.id.as_str())
             })
             .ok_or_else(|| storage_error(&state))?;
@@ -591,7 +591,7 @@ impl Daemon {
             };
             lease.change_seq = Some(
                 state
-                    .store_op("lease ledger boundary", |store| store.change_watermark())
+                    .store_read("lease ledger boundary", |store| store.change_watermark())
                     .ok_or_else(|| storage_error(&state))?,
             );
             planned.restore(lease.clone());
@@ -641,7 +641,7 @@ impl Daemon {
         let reads: Vec<ReadMark> = {
             let mut state = lock(&self.state);
             state
-                .store_op("restore reads", |store| {
+                .store_read("restore reads", |store| {
                     store.document("reads", record.id.as_str())
                 })
                 .ok_or_else(|| storage_error(&state))?
@@ -657,7 +657,7 @@ impl Daemon {
 
         let mut state = lock(&self.state);
         let checkpoint = state
-            .store_op("restore checkpoint", |store| {
+            .store_read("restore checkpoint", |store| {
                 store.documents::<Checkpoint>("checkpoint", Some(&record.id))
             })
             .ok_or_else(|| storage_error(&state))?

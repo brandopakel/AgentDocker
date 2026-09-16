@@ -39,9 +39,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a request keeps being sent again while the daemon answers
 /// `transferring`: it has offered coordination to a successor and applied
 /// nothing, and the same socket answers again once the transfer settles.
-/// As long as one call may take, so a handover costs the window one
-/// request's patience, not a visible failure.
-const TRANSFER_WINDOW: Duration = CALL_TIMEOUT;
+/// Longer than a successor may take to say it serves (the daemon waits
+/// 30 s for that), as the CLI's window is, so a slow handover costs the
+/// window patience, not a visible failure.
+const TRANSFER_WINDOW: Duration = Duration::from_secs(35);
 /// The window has two threads that reconnect on their own schedules; one
 /// daemon start attempt per this long is enough for both.
 const START_COOLDOWN: Duration = Duration::from_secs(15);

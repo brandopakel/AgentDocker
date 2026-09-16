@@ -120,21 +120,22 @@ def trial(args):
         daemon = subprocess.Popen([str(agentd), "--home", str(home), "--socket", str(sock)],
                                   env={**env, "AGENTDOCKER_EXPERIMENTAL_RELOAD": "1", "RUST_LOG": "info"},
                                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-        deadline = time.monotonic() + 15
-        while True:
-            try:
-                assert rpc(sock, {"op": "ping"})["type"] == "pong"
-                break
-            except (OSError, AssertionError):
-                assert daemon.poll() is None and time.monotonic() < deadline, "daemon did not start"
-                time.sleep(.05)
-        # The trial's own processes, ended in `finally` whatever happens
-        # above, and counted: a survivor fails the trial rather than the
-        # trial passing over it.
+        # From here everything the trial starts is ended in `finally`,
+        # whatever happens, and counted: a survivor fails the trial rather
+        # than the trial passing over it. The readiness wait is inside too,
+        # so a daemon that never answers is still shut down.
         provider_process = None
         controller_process = None
         observed_launched = set()
         try:
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    assert rpc(sock, {"op": "ping"})["type"] == "pong"
+                    break
+                except (OSError, AssertionError):
+                    assert daemon.poll() is None and time.monotonic() < deadline, "daemon did not start"
+                    time.sleep(.05)
             def run(name, script, tty=False):
                 r = rpc(sock, {"op": "run", "spec": {"name": name, "workdir": str(work), "tty": tty,
                                                      "command": ["sh", "-c", script]}})
