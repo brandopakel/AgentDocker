@@ -112,6 +112,10 @@ def trial(args):
                 assert files(launcher) == files(copied), "visible bundle differs from signed payload"
                 subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launcher)],
                                check=True, capture_output=True, timeout=30)
+            for name in ["agentd", "agentdocker-ui"]:
+                output = subprocess.run([str(launcher / BIN / name), "--version"], env=environment,
+                                        capture_output=True, text=True, timeout=5)
+                assert output.returncode == 0 and name in output.stdout, output.stderr
             entry = str(launcher / BIN / "agentdocker")
             # Exercise the exact old integration paths on the host filesystem.
             for runtime in ["claude-code", "codex"]:
