@@ -39,7 +39,9 @@ their parent folder under it, on one line. A folder discovered because an
 agent ran there leaves the list by itself once it no longer exists, and a
 folder under the per-user temporary directory (where test fixtures come and
 go) is never listed by discovery, only by a pin; a pinned folder stays
-either way. Sessions whose project is unknown appear under
+either way. Shared scratch roots such as `/tmp` and `/var/tmp` remain
+discoverable, including when Linux reports one as its default temporary
+directory. Sessions whose project is unknown appear under
 **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's

@@ -242,10 +242,19 @@ impl Catalog {
 /// pinned by hand, never because an agent happened to run in it. `/tmp`
 /// is not that: people put checkouts there on purpose.
 pub fn is_temporary(root: &Path) -> bool {
-    let temp = std::env::temp_dir();
-    let private = Path::new("/private").join(temp.strip_prefix("/").unwrap_or(&temp));
-    root.starts_with(&temp)
-        || root.starts_with(&private)
+    is_temporary_under(root, &std::env::temp_dir())
+}
+
+fn is_temporary_under(root: &Path, temp: &Path) -> bool {
+    // Linux's default temp_dir is a shared scratch directory, not a
+    // per-user fixture root. Never hide every checkout there (or below a
+    // filesystem root accidentally selected as TMPDIR).
+    let shared = temp.parent().is_none()
+        || ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"]
+            .iter()
+            .any(|path| temp == Path::new(path));
+    let private = Path::new("/private").join(temp.strip_prefix("/").unwrap_or(temp));
+    (!shared && (root.starts_with(temp) || root.starts_with(&private)))
         || root.starts_with("/private/var/folders")
         || root.starts_with("/var/folders")
 }
@@ -280,6 +289,41 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn temporary_discovery_filter_keeps_shared_scratch_checkouts() {
+        for temp in ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/"] {
+            assert!(
+                !is_temporary_under(&Path::new(temp).join("checkout"), Path::new(temp)),
+                "{temp}"
+            );
+        }
+        assert!(!is_temporary_under(
+            Path::new("/private/tmp/checkout"),
+            Path::new("/tmp")
+        ));
+        for root in [
+            "/var/folders/ab/user/T/fixture",
+            "/private/var/folders/ab/user/T/fixture",
+        ] {
+            assert!(is_temporary_under(
+                Path::new(root),
+                Path::new("/var/folders/ab/user/T")
+            ));
+        }
+        assert!(is_temporary_under(
+            Path::new("/run/user/1000/tmp/fixture"),
+            Path::new("/run/user/1000/tmp")
+        ));
+        assert!(!is_temporary_under(
+            Path::new("/run/user/1000/tmp-checkout"),
+            Path::new("/run/user/1000/tmp")
+        ));
+        assert!(!is_temporary_under(
+            Path::new("/home/person/project"),
+            Path::new("/run/user/1000/tmp")
+        ));
+    }
 
     /// A discovered folder that no longer exists leaves the list; a pinned
     /// one stays, unavailable, and the selection moves off a vanished one.
