@@ -55,6 +55,93 @@ impl Counters {
     }
 }
 
+/// Durable cumulative state belongs to a runtime/session, not its current
+/// agent display name or log path. Keep it even after aggregate retention.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Baseline {
+    pub at: DateTime<Utc>,
+    pub counters: Counters,
+    pub epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gap {
+    /// None means the earlier history is unknown, not that it began now.
+    pub since: Option<DateTime<Utc>>,
+    pub until: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Observation {
+    Replay,
+    Advance {
+        baseline: Baseline,
+        contribution: Option<Counters>,
+        gap: Option<Gap>,
+    },
+}
+
+/// Propose the state and contribution together. The caller deduplicates source
+/// identities and commits this result atomically with its file cursor. An
+/// out-of-order or conflicting timestamp needs explicit source reconciliation;
+/// it cannot silently replace the current baseline or subtract usage.
+pub fn observe_cumulative(
+    previous: Option<&Baseline>,
+    at: DateTime<Utc>,
+    counters: Counters,
+    proves_zero_baseline: bool,
+) -> Result<Observation, &'static str> {
+    let mut baseline = Baseline {
+        at,
+        counters,
+        epoch: 0,
+    };
+    let (contribution, gap) = if let Some(previous) = previous {
+        if at < previous.at {
+            return Err("cumulative snapshot precedes its durable baseline");
+        }
+        if at == previous.at {
+            return if baseline.counters == previous.counters {
+                Ok(Observation::Replay)
+            } else {
+                Err("cumulative snapshots disagree at the same timestamp")
+            };
+        }
+        baseline.epoch = previous.epoch;
+        match baseline.counters.delta(&previous.counters) {
+            Some(delta) => (Some(delta), None),
+            None => {
+                baseline.epoch = baseline
+                    .epoch
+                    .checked_add(1)
+                    .ok_or("counter epoch overflows")?;
+                (
+                    None,
+                    Some(Gap {
+                        since: Some(previous.at),
+                        until: at,
+                    }),
+                )
+            }
+        }
+    } else if proves_zero_baseline {
+        (Some(baseline.counters.clone()), None)
+    } else {
+        (
+            None,
+            Some(Gap {
+                since: None,
+                until: at,
+            }),
+        )
+    };
+    Ok(Observation::Advance {
+        baseline,
+        contribution,
+        gap,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Total {
     sum: u64,
@@ -262,6 +349,90 @@ mod tests {
             ..new
         };
         assert!(reset.delta(&old).is_none());
+    }
+
+    #[test]
+    fn cumulative_restart_reset_and_replay_keep_unknown_history_explicit() {
+        let start = at("2026-09-16T12:00:00Z");
+        let counters = |input| Counters {
+            input_tokens: Some(input),
+            ..Counters::default()
+        };
+        let Observation::Advance {
+            baseline,
+            contribution,
+            gap,
+        } = observe_cumulative(None, start, counters(100), false).unwrap()
+        else {
+            panic!("first snapshot")
+        };
+        assert_eq!(contribution, None);
+        assert_eq!(
+            gap,
+            Some(Gap {
+                since: None,
+                until: start
+            })
+        );
+        let saved = serde_json::to_string(&baseline).unwrap();
+        let resumed: Baseline = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            observe_cumulative(Some(&resumed), start, counters(100), true).unwrap(),
+            Observation::Replay
+        );
+        assert!(observe_cumulative(Some(&resumed), start, counters(101), false).is_err());
+        assert!(
+            observe_cumulative(
+                Some(&resumed),
+                start - Duration::seconds(1),
+                counters(99),
+                false
+            )
+            .is_err()
+        );
+        let reset_at = start + Duration::hours(1);
+        let Observation::Advance {
+            baseline: reset,
+            contribution,
+            gap,
+        } = observe_cumulative(Some(&resumed), reset_at, counters(2), false).unwrap()
+        else {
+            panic!("reset")
+        };
+        assert_eq!(reset.epoch, 1);
+        assert_eq!(contribution, None);
+        assert_eq!(
+            gap,
+            Some(Gap {
+                since: Some(start),
+                until: reset_at
+            })
+        );
+        let Observation::Advance {
+            baseline: next,
+            contribution,
+            gap,
+        } = observe_cumulative(
+            Some(&reset),
+            reset_at + Duration::minutes(1),
+            counters(7),
+            false,
+        )
+        .unwrap()
+        else {
+            panic!("next")
+        };
+        assert_eq!(next.epoch, 1);
+        assert_eq!(contribution, Some(counters(5)));
+        assert_eq!(gap, None);
+        let Observation::Advance {
+            contribution, gap, ..
+        } = observe_cumulative(None, start, counters(100), true).unwrap()
+        else {
+            panic!("proved start")
+        };
+        assert_eq!(contribution, Some(counters(100)));
+        assert_eq!(gap, None);
     }
 
     #[test]
