@@ -436,6 +436,31 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let c = Colors::new(self.shell.catalog.dark);
+        let narrow = self.narrow();
+        // Wide, the rail and the page are two panes with a divider the
+        // person drags (the width is kept, in pixels, with the workspace
+        // preferences); narrow, the rail is a fixed strip.
+        let workspace: Element<'_, Message> = if narrow {
+            row![self.sidebar(c), self.page(c)].height(Fill).into()
+        } else {
+            iced::widget::pane_grid(&self.panes.shell, |_, slot, _| {
+                iced::widget::pane_grid::Content::new(match slot {
+                    super::panes::Slot::Rail => self.sidebar(c),
+                    _ => self.page(c),
+                })
+            })
+            .on_resize(8, |event| {
+                Message::PaneResized(super::panes::Grid::Shell, event)
+            })
+            .style(move |_| split_style(c))
+            .height(Fill)
+            .into()
+        };
+        column![workspace, self.footer(c)].into()
+    }
+
+    /// The page beside the rail: the header, the tabs and the screen.
+    fn page(&self, c: Colors) -> Element<'_, Message> {
         let in_project = self.in_project();
         let narrow = self.narrow();
         let title_text = if in_project {
@@ -695,8 +720,7 @@ impl App {
             Screen::Desktop => self.installation_view(c),
         };
         content = content.push(body);
-        let workspace = row![
-            self.sidebar(c),
+        row![
             container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
             container(
                 scrollable(content)
@@ -709,8 +733,8 @@ impl App {
             .width(Fill)
             .style(move |_| c.surface(c.ground, false))
         ]
-        .height(Fill);
-        column![workspace, self.footer(c)].into()
+        .height(Fill)
+        .into()
     }
 
     /// One quiet line across the bottom: the daemon connection and the
@@ -984,7 +1008,13 @@ impl App {
             .push(Space::new().height(4));
         container(nav.height(Fill))
             .padding([22, 12])
-            .width(if self.narrow() { 204 } else { 236 })
+            // Wide, the rail is a pane whose divider the person drags;
+            // narrow, it keeps a fixed width beside the workspace.
+            .width(if self.narrow() {
+                iced::Length::Fixed(204.0)
+            } else {
+                Fill
+            })
             .height(Fill)
             .style(move |_| c.surface(c.sidebar, false))
             .into()
@@ -3826,6 +3856,26 @@ fn shorten_home(path: &std::path::Path) -> String {
             Err(_) => shown,
         },
         _ => shown,
+    }
+}
+
+/// How a divider between panes looks: nothing until pointed at, then a
+/// hairline in the accent, and the accent while it is being dragged.
+pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
+    use iced::widget::pane_grid::{Highlight, Line, Style};
+    Style {
+        hovered_region: Highlight {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border::default(),
+        },
+        picked_split: Line {
+            color: c.accent,
+            width: 2.0,
+        },
+        hovered_split: Line {
+            color: c.accent,
+            width: 2.0,
+        },
     }
 }
 

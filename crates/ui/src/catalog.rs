@@ -36,6 +36,8 @@ pub struct Catalog {
     pub unassigned: bool,
     pub appearance: Option<crate::theme::Settings>,
     pub updates: crate::desktop::UpdateSchedule,
+    /// The column widths the person dragged the window's dividers to.
+    pub panes: crate::app::panes::Widths,
 }
 
 impl Catalog {
