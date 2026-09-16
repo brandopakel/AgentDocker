@@ -1062,14 +1062,12 @@ impl App {
         }
         let key = self.shell.conversation.clone().unwrap_or_default();
         let can_send = self.conversation_can_send(&key);
-        let placeholder = if !can_send
-            && agentdocker_core::ConversationId::from(key.as_str())
-                .dm_parties()
-                .is_some()
-        {
+        let placeholder = if can_send {
+            "Reply in thread"
+        } else if self.conversation_destination(&key).is_some() {
             "This session has ended"
         } else {
-            "Reply in thread"
+            "This conversation is read-only"
         };
         column![
             header,
