@@ -382,6 +382,14 @@ negative response are refused before question publication; policy amendments are
 selected. This does not change stored presentation meaning or the schema.
 The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
 when only cancellation is offered, the complete question text explains it.
+Command-approval callbacks with `networkApprovalContext` reuse `choices` with
+the exact host and protocol and Allow/Deny for the pending managed-network
+request. The prompt discloses provider grouping of pending connections to the
+same destination, preserves any supplied command/directory/access context, and
+never invents absent metadata or chooses session/policy grants. Network context
+selects this route even when command metadata is present. Private ledger version 9 records the distinct
+network review kind; versions through 8 cannot supply it. Command records cannot carry choice presentations, and optional network command/directory metadata cannot inject display controls into the review. This adds no daemon
+request, event or presentation variant; existing question/receipt ordering applies.
 
 ## Process supervision
 
@@ -614,7 +622,7 @@ binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
 an installed user service protects retained binaries and blocks uninstall.
-These are local host operations, not daemon protocol mutations. They preserve
+The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. Package metadata records `launcher_redirect: 1`. Selecting an older payload retains a compatible launcher copy and protects its backing release from cleanup; a fresh legacy-only install is refused before activation. The visible copy may therefore have newer metadata than the selected release after rollback; installation status reports the selected version. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
 [desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and limitations.
 

@@ -191,26 +191,55 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
         result["scenarios"].append("unbinding releases the pin, and the next prune removes the release")
         result["pin_trial"] = {"first": first_id, "second": second_id, "third": third_id, "serving_pid": serving_pid}
     finally:
-        try:
-            rpc(sock, {"op": "shutdown"})
-        except OSError:
-            pass
-        deadline = time.monotonic() + 10
-        while sock.exists() and time.monotonic() < deadline:
-            time.sleep(.05)
-        if sock.exists():
+        # Every step runs whatever the one before it did; a failure or a
+        # survivor is recorded and fails the trial.
+        cleanup_errors = []
+
+        def attempt(name, action):
             try:
-                os.killpg(serving_pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+                action()
+            except Exception as error:  # noqa: BLE001 - recorded, never swallowed
+                cleanup_errors.append(f"{name}: {error!r}")
+
+        def shutdown():
+            try:
+                rpc(sock, {"op": "shutdown"})
+            except OSError:
                 pass
-        if daemon.poll() is None:
-            daemon.kill()
-        daemon.wait(timeout=10)
-        daemon_log.close()
-        for process in (provider_process, controller_process):
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
+            deadline = time.monotonic() + 10
+            while sock.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            if sock.exists():
+                try:
+                    os.killpg(serving_pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+        def end_daemon():
+            if daemon.poll() is None:
+                daemon.kill()
+            daemon.wait(timeout=10)
+
+        attempt("shutdown", shutdown)
+        attempt("daemon", end_daemon)
+        attempt("log", daemon_log.close)
+        survivors = []
+        for name, process in (("provider", provider_process), ("controller", controller_process)):
+            def end_child(process=process, name=name):
+                if process.poll() is None:
+                    process.kill()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        survivors.append(f"{name} {process.pid}")
+            attempt(name, end_child)
+        try:
+            os.kill(serving_pid, 0)
+            survivors.append(f"daemon {serving_pid}")
+        except (ProcessLookupError, PermissionError):
+            pass
+        result["pin_cleanup"] = {"errors": cleanup_errors, "survivors": survivors}
+        assert not cleanup_errors and not survivors, result["pin_cleanup"]
 
 
 def trial(args):

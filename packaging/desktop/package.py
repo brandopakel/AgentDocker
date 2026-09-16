@@ -59,6 +59,9 @@ def validate_inputs(args):
         pin = manifest.get("installation_lock", 0)
         if type(pin) is not int or pin not in (0, 1):
             raise ValueError("invalid desktop lifetime pin contract")
+        redirect = manifest.get("launcher_redirect", 0)
+        if type(redirect) is not int or redirect not in (0, 1):
+            raise ValueError("invalid desktop launcher redirect contract")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")
         expected_target = args.target
@@ -79,6 +82,8 @@ def validate_inputs(args):
         raise ValueError("universal binaries have different state schemas")
     if len({m.get("installation_lock", 0) for m in manifests}) != 1:
         raise ValueError("universal binaries have different lifetime pin contracts")
+    if len({m.get("launcher_redirect", 0) for m in manifests}) != 1:
+        raise ValueError("universal binaries have different launcher redirect contracts")
     return manifests[0]
 
 
@@ -238,6 +243,7 @@ def package(args):
         info = metadata(args)
         info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty", "state_schema"]})
         info["installation_lock"] = provenance.get("installation_lock", 0)
+        info["launcher_redirect"] = provenance.get("launcher_redirect", 0)
         build = macos if "apple-darwin" in args.target else linux
         app, archive, binaries = build(args, stage, info)
         info["size"] = measure_sizes(app, [p for p in stage.iterdir() if p.suffix in {".zip", ".gz", ".dmg"}], 2 if args.second_binary_dir else 1)

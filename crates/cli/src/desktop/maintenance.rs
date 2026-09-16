@@ -136,6 +136,7 @@ fn plan(
         ))
     });
     let mut extra = 0;
+    let launcher = layout.copied_launcher_version()?;
     for entry in directories {
         let path = entry.path();
         let id = entry.file_name().to_string_lossy().into_owned();
@@ -144,6 +145,8 @@ fn plan(
             .is_some_and(|a| a.current.id == id || a.previous.as_ref().is_some_and(|p| p.id == id));
         let reason = if protected {
             Some("active or rollback version")
+        } else if launcher.as_deref() == Some(&id) {
+            Some("visible application supplies the managed launcher")
         } else if service_installed {
             Some("installed user service may reference retained binaries")
         } else if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -298,7 +301,9 @@ mod tests {
         std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
         std::fs::write(
             metadata,
-            json!({"format":1,"product":"agentdocker","installation_lock":pin}).to_string(),
+            json!({"format":1,"product":"agentdocker","installation_lock":pin,
+                "launcher_redirect": release.launcher_redirect})
+            .to_string(),
         )
         .unwrap();
         let old = payload.parent().unwrap().to_owned();
@@ -363,6 +368,35 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pruning_protects_a_compatible_launcher_after_successive_legacy_activations() {
+        let (_temp, layout) = fixture();
+        let modern = retained(&layout, "modern", 1);
+        let mut first = retained(&layout, "older one", 1);
+        let mut second = retained(&layout, "older two", 1);
+        first.launcher_redirect = 0;
+        second.launcher_redirect = 0;
+        layout.activate(modern.clone(), None).unwrap();
+        layout
+            .activate(first.clone(), Some(modern.clone()))
+            .unwrap();
+        layout.activate(second, Some(first)).unwrap();
+        let (review, _) = plan(&layout, Some(0), false, false).unwrap();
+        assert!(review.remove.is_empty());
+        assert!(review.retained.iter().any(|entry| entry.path
+            == layout.root.join("versions").join(&modern.id)
+            && entry.reason == "visible application supplies the managed launcher"));
+        let (removal, _) = plan(&layout, None, true, false).unwrap();
+        apply(&layout, &removal).unwrap();
+        let (review, _) = plan(&layout, Some(0), false, false).unwrap();
+        assert!(
+            review
+                .remove
+                .contains(&layout.root.join("versions").join(modern.id))
+        );
     }
 
     #[test]

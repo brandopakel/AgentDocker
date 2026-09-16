@@ -257,6 +257,25 @@
           "sha256": "8b9ccd59e234a648aea6829720583cc3b31ce90f7eb4d48b267084d14263d4de"
         }
       }
+    },
+    "cleanup_rerun": {
+      "note": "Rerun after the trial's cleanup was made step-independent with survivor accounting; same source, same outcome.",
+      "pin_cleanup": {
+        "errors": [],
+        "survivors": []
+      },
+      "releases": {
+        "first": "f015d3da215eb1c3d4a68c92e86c10adea5d0cd9e7e1f5bc6eb97d44e3a6acd0",
+        "second": "326ad48a6db03ae1ec3b0b23e1761bb07e8b903dc8b842a188b4de803d663fba",
+        "third": "76d6226f5dfc47f545c58aaa5bf96f64a555f56a75624c1ed55fc3ab9118b21e",
+        "serving_pid": 60999
+      },
+      "artifacts": {
+        "result": {
+          "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial4/result.json",
+          "sha256": "cf72fc03cd1c3334aef1ab74dc0ea39ea450f18666d942a2314a95df3576c408"
+        }
+      }
     }
   }
 }
