@@ -788,6 +788,16 @@
       "active-turn provider input/steering parity with direct human input",
       "controller offers, receipts and prior retained input",
       "idle and busy pause acceptance with drafts preserved"
-    ]
+    ],
+    "resume_investigation": {
+      "observed_at": "2026-09-16T17:23:00Z",
+      "result": "active_input_parity_remains_open",
+      "eventual_delivery": "The original broadcast arrived through the native receiver after the direct pause, following older peer and stale notices. No message was manually acknowledged or removed for the investigation.",
+      "provider_version": "Codex 0.154.0",
+      "provider_source": "Pinned QueuedItemService::start and dispatch_if_idle call start_turn_if_idle; queue entries do not steer an active turn.",
+      "agentdocker_source": "crates/cli/src/codex_input/external/mod.rs service retains one outstanding attempt until its exact provider receipt; it submits with thread/queue/add, not turn/steer.",
+      "live_control_endpoint": "The existing Codex TUI has no shared app-server control socket. codex app-server daemon version could not connect to that socket; no provider restart was attempted.",
+      "scope": "Source inspection identifies a scheduling limitation. It does not complete the per-recipient timing/fan-out trace or establish a safe steering route into the existing TUI."
+    }
   }
 }

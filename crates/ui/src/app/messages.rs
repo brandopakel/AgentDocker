@@ -696,7 +696,6 @@ impl App {
             .into()
     }
 
-    /// The composer under a conversation or a thread: the draft, its
     /// Resolve only the person's direct recipient, never a broadcast or a
     /// read-only conversation between two agents.
     fn direct_input_recipient(&self, conversation: &str) -> Option<&AgentRecord> {
@@ -716,6 +715,7 @@ impl App {
             .find(|agent| agent.id.as_str() == recipient)
     }
 
+    /// The composer under a conversation or a thread: the draft, its
     /// receipt or error, and Send. Enter sends.
     /// The composer of a conversation, or of a thread in it when `root` is
     /// given: each keeps its own draft, and only the thread's sets `reply_to`.

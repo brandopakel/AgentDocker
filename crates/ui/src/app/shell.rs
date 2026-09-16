@@ -2419,11 +2419,13 @@ mod tests {
     fn connection_guidance_preserves_conversation_and_thread_drafts() {
         let (mut app, _commands, _) = app();
         let conversation = "dm:user:worker";
+        let root = MessageId::from("root".to_owned());
+        let thread_key = super::draft_key(conversation, Some(&root));
         app.shell.conversation = Some(conversation.into());
-        app.shell.thread = Some("root".to_owned().into());
+        app.shell.thread = Some(root);
         for (key, text) in [
             (conversation, "Conversation draft"),
-            ("thread:root", "Thread draft"),
+            (thread_key.as_str(), "Thread draft"),
         ] {
             app.shell.conversation_drafts.insert(
                 key.into(),
@@ -2443,7 +2445,7 @@ mod tests {
             "Conversation draft"
         );
         assert_eq!(
-            app.shell.conversation_drafts["thread:root"].text,
+            app.shell.conversation_drafts[&thread_key].text,
             "Thread draft"
         );
         assert!(!app.shell.launching);

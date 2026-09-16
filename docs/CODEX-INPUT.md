@@ -120,7 +120,8 @@ agentdocker run --runtime codex --codex-input --tty -- codex
 This starts an owned Codex app-server conversation under the native supervisor.
 It needs a matching schema-16 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
-TUI. The option is off by default and applies only to the new session. Codex's
+TUI. The desktop defaults the option on for a new Codex session; it applies only
+to that launch. The CLI requires the explicit `--codex-input` flag. Codex's
 app-server interface remains experimental.
 
 Send through the selected session's message composer, `send_message`, or the

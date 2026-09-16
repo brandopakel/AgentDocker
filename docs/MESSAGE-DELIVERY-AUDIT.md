@@ -31,9 +31,16 @@ until the user repeated the request directly. At 08:04 UTC the Codex record had 
 fresh receiver heartbeat, but its last recorded receipt was for a different
 message at 05:49 UTC. That heartbeat does not establish receipt of this broadcast.
 
-This is distinct from Claude's missing channel connection. Determine whether
-fan-out, retained earlier input, provider offer handling or the active-turn
-scheduling boundary caused the delay; the cause is not yet established. Require
+The original broadcast eventually arrived through the native receiver after
+the direct pause, behind earlier peer and stale notices. September 16 source
+inspection found a scheduling mismatch: the pinned Codex 0.154.0 queue service
+dispatches only while idle, and AgentDocker's external receiver keeps one
+outstanding offer until its exact receipt. It does not steer the active turn.
+The running TUI has no shared app-server control socket; starting an independent
+sidecar does not give it ownership of that TUI's active turn. This identifies an
+input-route limitation, not a completed per-recipient broadcast latency trace.
+
+This is distinct from Claude's missing channel connection. Require
 CLI human input to use the same priority and active-turn input procedure as typing
 into the provider, with equivalent peer routing but unchanged peer trust. Test a
 broadcast pause with idle and busy recipients, exact IDs and per-recipient
