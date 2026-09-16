@@ -880,7 +880,7 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage}` | 5 |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | 5 |
 
 **Token usage by agent, model and provider** (requested September 15;
 proposal, not implemented). The initial adapters will read local Codex rollouts
@@ -947,8 +947,12 @@ are unknown, never zero. The design:
 - **Reading it.** `usage` groups by agent (the default), model, provider, project
   or hour. The proposed CLI is `agentdocker usage [--project <id>]
   [--agent <id>] [--since <RFC3339|duration>] [--until <RFC3339>]
-  [--by agent|model|provider|project|hour]`. Omitted `since` means 24 hours before
-  the query's captured UTC `as_of`; omitted `until` means `as_of`. Reversed or
+  [--by agent|model|provider|project|hour]`. A duration is a positive decimal
+  integer followed by one lowercase unit (`s`, `m`, `h`, `d`), such as `24h`;
+  fractions, signs, whitespace, compound units, zero and overflow are rejected.
+  Resolve it backward from the query's captured UTC `as_of`, before validating
+  or rounding the bounds. Omitted `since` means 24 hours before `as_of`;
+  omitted `until` means `as_of`. Reversed or
   empty requested ranges and a `since` later than `as_of` are rejected before
   rounding. Future `until` is clamped to `as_of`. Since only hourly aggregates
   are retained, `since` rounds down and `until` rounds up to UTC hours; aligned
@@ -981,6 +985,16 @@ are unknown, never zero. The design:
   some do, and unknown when none do. An empty query returns `rows: []`, not a
   fabricated zero row. Complete counter coverage does not override top-level
   source gaps, retention truncation or the current hour's partial duration.
+  The separate top-level `overhead` object uses the same project/agent filters
+  and effective time range, independently of `by`: `injected_bytes` (u64 or null,
+  UTF-8 bytes recorded as emitted by AgentDocker), `known_events` (u64),
+  `coverage` (`complete`, `partial`, `unknown` for instrumentation of the selected
+  scope), and `estimated_tokens` (null when unestimated; otherwise
+  `{value: u64, algorithm: string, version: string, parameters: object}`).
+  Null bytes mean unavailable instrumentation, not zero. Each estimate identifies
+  its conversion method and parameters; it does not measure billed tokens or
+  prove the provider consumed emitted bytes. The Usage screen labels these as
+  separate emitted-byte counts and estimated tokens, never a provider-row sum.
 - **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
   from provider-reported usage, with any token conversion labelled as an
   estimate. These estimates are neither additional provider tokens nor a precise
