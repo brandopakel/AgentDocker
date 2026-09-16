@@ -233,6 +233,28 @@
         "https://github.com/openai/codex/blob/main/codex-rs/core/src/config/mod.rs",
         "https://learn.chatgpt.com/docs/app-server#command-execution-approvals"
       ]
+    },
+    "final_review_followup": {
+      "source_commit": "b605f8e8bfd6bd92d5a88ae41e0bb038ded95d0f",
+      "changes": [
+        "Reject control and bidi characters in optional command/cwd before publishing a network review.",
+        "Reject restored command kinds carrying choices, retaining support for legacy command records without presentations."
+      ],
+      "focused_tests": 61,
+      "rust_tests": 974,
+      "rust_skipped": 6,
+      "python_checks": 70,
+      "standard_gate": {
+        "passed": true,
+        "fmt": true,
+        "clippy": true,
+        "doctests": true,
+        "cargo_package": true,
+        "release_build": true,
+        "private_log": "/private/tmp/agentdocker-network-review-gate2.log",
+        "log_sha256": "9b15a613917b19879f03663ac1d32af48248a081fad3505aceff68d59feef0cf"
+      },
+      "limitation": "Actual managed-network approval acceptance remains open; no callback reached the earlier isolated provider fixture."
     }
   }
 }
