@@ -683,10 +683,10 @@ impl State {
         let committed = self.persist("input binding", |store| {
             store.agent_transition(&record, &event)
         });
-        if committed != Persisted::Committed
-            && let Some(error) = self.write_failure()
-        {
-            return error;
+        if committed != Persisted::Committed {
+            return self
+                .write_failure()
+                .expect("refused input binding write has a reason");
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
         self.next_seq += 1;
@@ -755,10 +755,10 @@ impl State {
         let committed = self.persist("input unbinding", |store| {
             store.agent_transition(&record, &event)
         });
-        if committed != Persisted::Committed
-            && let Some(error) = self.write_failure()
-        {
-            return error;
+        if committed != Persisted::Committed {
+            return self
+                .write_failure()
+                .expect("refused input unbinding write has a reason");
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
         self.controller_pins.remove(&id);
@@ -1024,14 +1024,14 @@ impl State {
         let committed = self.persist("input resume", |store| {
             store.resume_input(&canonical, &alias, &event)
         });
-        if committed != Persisted::Committed
-            && let Some(error) = self.write_failure()
-        {
+        if committed != Persisted::Committed {
             self.controller_pins.remove(&prior.id);
             if let Some(pin) = previous_pin {
                 self.controller_pins.insert(prior.id.clone(), pin);
             }
-            return error;
+            return self
+                .write_failure()
+                .expect("refused input resume write has a reason");
         }
         if let Err(error) = self.registry.retire_into(&caller.id, &prior.id) {
             // Checked above; the store has the alias, memory must follow.

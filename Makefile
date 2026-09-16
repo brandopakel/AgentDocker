@@ -3,8 +3,9 @@
 # `make install` is the one most people want: build the release binaries,
 # package the native app for this machine, and install it for this user so
 # the next launch of AgentDocker (Dock, Spotlight, `agentdocker`, `agentd`)
-# runs what you just built. Nothing here stops a running daemon or its
-# agents; see `make restart-daemon` for that explicit step.
+# runs what you just built. Installation asks the daemon to reload; the
+# experimental gate permits replacement while preserving agents. Otherwise
+# the daemon keeps serving; `make restart-daemon` is the explicit fallback.
 #
 # Every target is a thin wrapper over the scripts the release pipeline uses,
 # so a local install is the same payload shape as a published one.

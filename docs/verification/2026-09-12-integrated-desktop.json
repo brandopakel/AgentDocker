@@ -456,7 +456,7 @@
           "version": "0.1.0"
         }
       },
-      "prefix": "/Users/brandopakel"
+      "prefix": "<user-home>"
     },
     "binary_sha256": {
       "agentdocker": "d9fca8cdd87538b810509a9213780d5de87758d39d179dac656bf8595471b395",
@@ -679,5 +679,6 @@
       "risk": "Low; no blocking issues. Earlier-doc location note declined with current source proving Earlier exists in both views.",
       "remote_branch_deleted": true
     }
-  }
+  },
+  "path_redaction": "Published account-home paths use <user-home>; recorded source and binary hashes are unchanged. Raw local records remain private."
 }

@@ -12,7 +12,7 @@
     "version": "0.1.0",
     "state_schema": 18,
     "installation_lock": 1,
-    "binary_directory": "/Users/brandopakel/AgentDocker/target/release",
+    "binary_directory": "<user-home>/AgentDocker/target/release",
     "binary_sha256": {
       "agentdocker": "4c599ef7744b1a9649225ab18f0ab5a43611cfa47578a4f4f26fee3893055080",
       "agentd": "eb1f4607e6e9055f47b3d778ee163b5df8a0f74024777361ce043c640b5da85e",
@@ -122,5 +122,6 @@
       "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 4
     }
   },
-  "daemon_log_note": "Every warning recorded is a fenced skip on an exit that landed during an offer: the predecessor keeps the owner's exit report rather than record it, the successor recovers it while still fenced and records it after acceptance; every launched agent reached a durable end, which the trial asserts. The longer reloads are `daemon reload` waiting through backpressure while launches or stops admitted before the offer finished."
+  "daemon_log_note": "Every warning recorded is a fenced skip on an exit that landed during an offer: the predecessor keeps the owner's exit report rather than record it, the successor recovers it while still fenced and records it after acceptance; every launched agent reached a durable end, which the trial asserts. The longer reloads are `daemon reload` waiting through backpressure while launches or stops admitted before the offer finished.",
+  "path_redaction": "Published account-home paths use <user-home>; recorded source and binary hashes are unchanged. Raw local records remain private."
 }

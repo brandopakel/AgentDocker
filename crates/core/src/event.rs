@@ -294,7 +294,9 @@ pub enum EventKind {
     HumanLocationChanged {
         agent: AgentId,
         workdir: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<ProjectRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         vcs: Option<VcsState>,
     },
     AgentStarted {
@@ -665,5 +667,18 @@ mod tests {
             assert_eq!(back, kind, "{text}");
             assert_ne!(back, EventKind::Unknown, "{text}");
         }
+    }
+
+    #[test]
+    fn human_location_optional_fields_accept_legacy_null_and_omission() {
+        let omitted = serde_json::json!({
+            "event": "human_location_changed", "agent": "human", "workdir": "/project"
+        });
+        let mut legacy = omitted.clone();
+        legacy["project"] = serde_json::Value::Null;
+        legacy["vcs"] = serde_json::Value::Null;
+        let kind: EventKind = serde_json::from_value(omitted.clone()).unwrap();
+        assert_eq!(serde_json::from_value::<EventKind>(legacy).unwrap(), kind);
+        assert_eq!(serde_json::to_value(kind).unwrap(), omitted);
     }
 }

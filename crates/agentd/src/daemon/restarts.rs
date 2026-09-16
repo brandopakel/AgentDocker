@@ -74,6 +74,7 @@ impl Daemon {
         let id = id.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            let mut refusal_delay = std::time::Duration::from_millis(250);
             loop {
                 {
                     let Some(daemon) = daemon.upgrade() else {
@@ -95,7 +96,8 @@ impl Daemon {
                 }
                 // A transfer refusal applies nothing. Keep the pending job
                 // for an aborted handover without keeping the daemon alive.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(refusal_delay).await;
+                refusal_delay = (refusal_delay * 2).min(std::time::Duration::from_secs(5));
             }
         });
     }

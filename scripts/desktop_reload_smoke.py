@@ -250,7 +250,6 @@ def trial(args):
         prefix = root / "user"
         source = payload(args.source)
         controller = source / BIN / "agentdocker"
-        second = second_generation(source, root, 2)
         home = root / "state"
         sock = root / "daemon.sock"
         environment = {**os.environ, "AGENTDOCKER_HOME": str(home), "AGENTDOCKER_SOCKET": str(sock),
@@ -276,6 +275,8 @@ def trial(args):
             (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result, indent=2))
             return
+
+        second = second_generation(source, root, 2)
 
         def serving_release(report_daemon):
             executable = Path(report_daemon["serving"]["executable"])

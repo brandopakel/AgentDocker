@@ -1530,14 +1530,30 @@ fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
                         before["executable"].as_str().unwrap_or("?")
                     ),
                 }),
-                Ok(other) => json!({
-                    "answered": true, "reloaded": false, "serving": before,
-                    "summary": format!("reload answered {other:?}; check `agentdocker daemon status`"),
-                }),
-                Err(error) => json!({
-                    "answered": true, "reloaded": false, "serving": before,
-                    "summary": format!("reload could not be asked for ({error:#}); agentd {} keeps serving until it is restarted", before["version"].as_str().unwrap_or("?")),
-                }),
+                outcome => {
+                    // A lost or unexpected reply does not prove refusal. The
+                    // successor may already serve; never replay Reload or
+                    // report the predecessor as though it were still observed.
+                    let reason = match outcome {
+                        Ok(other) => format!("reload answered {other:?}"),
+                        Err(error) => format!("reload reply could not be confirmed ({error:#})"),
+                    };
+                    let after = serving(client.call(&Request::Ping).await);
+                    let observed = match &after {
+                        Some(now) => format!(
+                            "agentd {} is now observed at {} (pid {})",
+                            now["version"].as_str().unwrap_or("?"),
+                            now["executable"].as_str().unwrap_or("?"),
+                            now["pid"]
+                        ),
+                        None => "the serving daemon is unknown".to_owned(),
+                    };
+                    json!({
+                        "answered": true, "reloaded": serde_json::Value::Null,
+                        "before": before, "serving": after,
+                        "summary": format!("{reason}; {observed}; check `agentdocker daemon status`"),
+                    })
+                }
             }
         })
     })
@@ -1548,6 +1564,64 @@ fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_rechecks_serving_daemon_after_a_lost_reload_reply_without_replay() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::time::{Duration, Instant};
+
+        for observed_pid in [Some(202), Some(101), None] {
+            let tmp = tempfile::tempdir().unwrap();
+            let socket = tmp.path().join("reload.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                for (operation, pid) in [
+                    ("ping", Some(101)),
+                    ("reload", None),
+                    ("ping", observed_pid),
+                ] {
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "missing {operation} request");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("accept: {error}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(request["op"], operation, "Reload must never be replayed");
+                    if let Some(pid) = pid {
+                        let response = json!({
+                            "type": "pong", "version": "fixture", "uptime_secs": 1,
+                            "pid": pid, "executable": format!("/release-{pid}/agentd")
+                        });
+                        writeln!(stream, "{response}").unwrap();
+                    }
+                    // Reload is read, then the connection closes without a
+                    // reply; the last Ping may likewise have no answer.
+                }
+            });
+            let report = daemon_after_activation(Some(socket));
+            server.join().unwrap();
+            assert_eq!(report["before"]["pid"], 101);
+            assert!(report["reloaded"].is_null(), "{report}");
+            match observed_pid {
+                Some(pid) => assert_eq!(report["serving"]["pid"], pid),
+                None => assert!(report["serving"].is_null(), "{report}"),
+            }
+        }
+    }
 
     pub(super) fn release(layout: &Layout, marker: &str) -> Release {
         let id = format!("{:x}", Sha256::digest(marker.as_bytes()));

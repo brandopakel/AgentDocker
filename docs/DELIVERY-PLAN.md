@@ -35,11 +35,13 @@ original queue row. This closes one installed existing-session wake/receipt
 trial; zero-prompt startup/reopen and broader provider acceptance remain.
 Claude subsequently installed `72b1eb4` (schema21); read-only verification
 confirms that release's daemon and GUI are running with a valid intact bundle.
-The Codex provider and receiver PIDs are retained. PR #152 final review/integration
-remains pending; this observation does not certify its activation procedure.
+The Codex provider and receiver PIDs are retained. PR #152 subsequently merged
+as `ece76fd` on September 16 after final review and CI; this read-only observation
+does not certify its activation procedure.
 See [the observed checkpoint](verification/2026-09-12-integrated-desktop.json).
 Use `agentdocker desktop status` and `agentdocker daemon status` for actual
-versions. Installing an app does not replace the active daemon.
+versions. Ordinary gate-off installation leaves the active daemon serving.
+The experimental reload gate permits a handover to the activated release.
 
 ### Historical integration and installation checkpoints
 

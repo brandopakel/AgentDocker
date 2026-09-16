@@ -84,8 +84,11 @@ checksums, signature and Gatekeeper unless `--local-preview`), must be the very
 release the feed described (version, source, state schema, target), and must be
 newer than what is installed; `--apply` pins the reviewed release and current
 IDs exactly as the desktop screen's Apply does. The report includes how many
-agents the running daemon says are live, so the person can choose when to
-restart it; the command never restarts anything. The desktop screen offers
+agents the running daemon says are live. Activation asks it to reload; the
+experimental gate permits handover, while a refusal leaves it serving. A lost
+or unexpected reply triggers a fresh status probe without replaying Reload:
+`reloaded: null` means unknown, `before` retains the prior observation, and
+`serving` contains the new observation or `null` when none answers. The desktop screen offers
 **Check for updates** and **Download and preview** on Settings → Installation,
 and the footer says when a newer version is known. A preview feed or a
 `file://` feed is accepted only with `--local-preview`; `AGENTDOCKER_UPDATE_FEED`
