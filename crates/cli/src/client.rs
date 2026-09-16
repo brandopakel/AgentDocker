@@ -305,10 +305,16 @@ impl Client {
                     on_response(response)
                 })
                 .await?;
-            if ended != Ended::Silently || !self.still_served().await {
+            if ended != Ended::Silently {
                 return Ok(());
             }
-            retries.wait(progressed).await?;
+            let retry = retries.wait(progressed).await;
+            // The daemon can shut down during backoff. Probe afterwards so
+            // that a normal stop is not mistaken for a failed reconnection.
+            if !self.still_served().await {
+                return Ok(());
+            }
+            retry?;
             resumed();
             current = &again;
         }

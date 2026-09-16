@@ -147,7 +147,10 @@ PR #155 final-head review follow-up (September 16) now rolls back an agent
 whose first write fails or is fenced, cleans an isolated pane worktree after
 successful pane retirement, reports failed aborts without implying writes resumed,
 and bounds repeated empty stream/attachment reconnects with backoff. Transfer IDs
-use Unicode-safe formatting. New regression and full/native gates are pending;
+use Unicode-safe formatting. The first follow-up gate passed 1,060 Rust tests but failed the real reload
+stream test: shutdown during reconnect backoff became a connection error. Source
+now probes after the backoff; the corrected gate and native acceptance remain
+pending;
 the earlier source-specific reload trials remain historical evidence.
 
 | Priority | Work remaining | Completion condition and evidence |
