@@ -141,7 +141,10 @@ def trial(args):
                     assert any(tool["name"] == "send_message" for tool in response["result"]["tools"])
                     executable = subprocess.run(["/bin/ps", "-ww", "-p", str(process.pid), "-o", "comm="],
                                                 capture_output=True, text=True, check=True, timeout=5)
-                    assert Path(executable.stdout.strip()) == retained / BIN / "agentdocker", executable.stdout
+                    # ps can report the invoked alias for the historical
+                    # symlink launcher. A copied launcher remains a distinct
+                    # real path, so it still must exec the selected release.
+                    assert Path(executable.stdout.strip()).resolve() == retained / BIN / "agentdocker", executable.stdout
                     process.stdin.close()
                     assert process.wait(timeout=5) == 0
                 finally:
