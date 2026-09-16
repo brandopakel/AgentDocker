@@ -11,7 +11,12 @@ ordinary input and preserves the terminal's unfinished draft and permission UI.
 
 This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
 native queue API (tested with CLI 0.154.0). It is under integration and acceptance
-test and is **not yet the installed application's behavior**. An accepted hook
+test. The verified `cf64ca3` package is now installed with a schema-20 daemon;
+the existing Codex session auto-started its receiver and offered a queued peer
+message. That message automatically started the next ordinary turn without
+another human prompt, with its exact provider receipt and queue acknowledgement.
+This is one installed existing-session acceptance, recorded in the
+[native queue evidence](verification/2026-09-15-native-codex-queue.json). An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup now
 includes `SessionStart`, which verifies identity and starts the receiver without
 asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
@@ -91,12 +96,12 @@ accepted. The driver now marks every exception failed and rechecks child exit
 after a process-group signal error. A deliberate late cleanup exception then
 correctly failed with exit 1. The next recovery repeat exposed the fixture
 competing with automatic receiver restart; fault injection now takes the
-receiver lock and leaves replacement solely to the daemon. PRs #148/#149 stay
-draft while the final evidence/review is collected. Corrected recovery34 at
+receiver lock and leaves replacement solely to the daemon. PRs #148/#149 are
+merged after final evidence, review and CI. Corrected recovery34 at
 `bc0ea04` passed both lost-enqueue-reply reconciliation to the original native
 queue ID and uncertain-input retention without resubmission, using the real
 daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
-final CI/review and installed-session verification still gate delivery. Trial 25 was a
+installed-session verification still gates delivery. Trial 25 was a
 separate fixture input failure; trial 26 is the application defect. Both are
 retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
 Use the existing driver's `--scenario long-busy` to hold a direct user turn for

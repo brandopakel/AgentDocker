@@ -20,7 +20,9 @@ Then quit AgentDocker and open it again. The Dock, Spotlight, the `agentdocker`
 and `agentd` commands in `~/.local/bin`, and the MCP entry your agent tools use
 all follow one managed pointer, so they switch together.
 The real launcher bundle retains `Contents/MacOS/agentdocker`, `agentd` and
-`agentdocker-ui` links for older integrations. Its launch executable is
+`agentdocker-ui` executables for older integrations. The installer copies the
+signed payload intact; each entry point redirects to the active immutable release
+using installation metadata outside the app bundle. Its launch executable is
 `agentdocker-ui`: an executable named only `AgentDocker` would collide with the
 CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
 

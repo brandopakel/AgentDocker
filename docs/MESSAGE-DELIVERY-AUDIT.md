@@ -24,7 +24,7 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ### September 15: AgentDocker native queue implementation
 
-The native Codex receiver is implemented on `codex/native-external-queue`, using
+The native Codex receiver is merged in PR #148, using
 Claude's provider-neutral input binding from PR #142 and schema-20 answer routing from PR #147. The existing
 Codex hook verifies the provider process and thread and starts a detached
 receiver. It uses `thread/queue/add` and read-only queue/history APIs, with no
@@ -71,8 +71,8 @@ That exact-binding gap remains open; inferring it from a display name or PID
 would not be safe. The original diagnostic trials are retained. The schema-20
 migration fixture at `8831524` passed on release binaries: an answer already
 consumed by an old synchronous MCP tool was reconciled after daemon restart
-without an extra provider turn. Final review, CI and installation remain pending.
-These trials do not mean that the installed app or every provider can already wake.
+without an extra provider turn. Those bounded fixtures do not establish delivery
+for every provider; the installed existing-session acceptance is recorded below.
 
 Long-busy trials 26/27 subsequently exposed a false idle pause: a readonly
 sidecar reconstructed a running direct user turn as interrupted. Source now
@@ -86,7 +86,17 @@ failed cleanup despite an incorrect raw pass label; that failure is retained and
 corrected recovery34 at `bc0ea04` passed its repeat under daemon supervision,
 reconciling the original native queue entry and retaining unconfirmed input
 without replay. The injected late-error trial also returned failure as required.
-Final review/CI and installed acceptance remain.
+PRs #148/#149 are merged after final review and CI. The verified `cf64ca3`
+package (same production inputs as merged `4074275`) is now installed. Its
+receiver automatically bound this existing Codex 0.154.0 session. A real Claude
+peer message waited during a busy turn, then started the next ordinary Codex
+turn without another human prompt. The receiver recorded the exact provider
+thread/turn/item receipt and acknowledged the original queue row. Two old
+legacy offers were explicitly read and reconciled before this new-message
+trial; the native-owned message was not manually read through legacy tools or
+acknowledged. The [existing native record](verification/2026-09-15-native-codex-queue.json)
+contains the receipt and source. Zero-prompt startup/reopen, sustained use and
+broader provider acceptance remain.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
 local gate, all final-head CI checks and independent Claude source review. Its
