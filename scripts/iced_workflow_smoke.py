@@ -56,7 +56,7 @@ def finish_smoke(window, daemon, endpoint, report, output, started, primary_erro
             raise RuntimeError(detail)
         try:
             print(detail, file=sys.stderr)
-        except OSError:
+        except Exception:
             # A broken diagnostic stream must not replace the workflow error.
             pass
 

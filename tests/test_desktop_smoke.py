@@ -62,6 +62,22 @@ class TransportFailureEvidence(unittest.TestCase):
 
 
 class WorkflowFailureEvidence(unittest.TestCase):
+    def test_a_closed_or_unencodable_diagnostic_stream_keeps_the_original_exception(self):
+        for error in (ValueError("closed stream"), UnicodeEncodeError("ascii", "\u2603", 0, 1, "not representable")):
+            with self.subTest(error=type(error).__name__):
+                primary = RuntimeError("original workflow refusal")
+                stream = Mock()
+                stream.write.side_effect = error
+                report = {"result": "failed", "error": str(primary)}
+                with tempfile.TemporaryDirectory() as directory, patch.object(WORKFLOW, "stop", side_effect=OSError("stop failed")), patch.object(sys, "stderr", stream):
+                    with self.assertRaises(RuntimeError) as caught:
+                        try:
+                            raise primary
+                        finally:
+                            WORKFLOW.finish_smoke(Mock(), None, "socket", report, Path(directory), time.monotonic(), sys.exc_info()[1])
+                self.assertIs(caught.exception, primary)
+                self.assertTrue(stream.write.called)
+
     def test_secondary_cleanup_and_report_failures_keep_the_original_exception(self):
         primary = RuntimeError("original workflow refusal")
         window, daemon = Mock(), Mock()
