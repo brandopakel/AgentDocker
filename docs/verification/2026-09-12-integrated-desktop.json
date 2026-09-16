@@ -361,6 +361,30 @@
     "remaining": [
       "Rerun native acceptance with diagnostic capture on supported CI platforms.",
       "Diagnose any reproduced transport refusal; the original failure remains unresolved without its discarded observation."
-    ]
+    ],
+    "review_followup_validation": {
+      "source_commit": "e1aea96756440f132c31de86125832c6e0e680d2",
+      "result": "passed",
+      "standard_gate": {
+        "command": "bash scripts/verify.sh check",
+        "exit_code": 0,
+        "rust_passed": 974,
+        "rust_skipped": 6,
+        "python_passed": 75,
+        "log": "/private/tmp/agentdocker-transport-diagnostics-gate2.log",
+        "sha256": "e5147fdd2103977d831b24bb7e39c1910d51aaaf5e3375ad19fd32d760f9e1f8"
+      },
+      "focused": {
+        "tests": 6,
+        "log": "/private/tmp/agentdocker-transport-diagnostics-focused3.log",
+        "sha256": "3185f75999cb670c845e8fc281176d047a71cd4a874004cea473a85a8aefdaf7"
+      },
+      "source_sha256": {
+        "scripts/desktop_smoke.py": "8aec5d6aedc06c23f9010324a646d6b9f2cdad8e2ea8dfb8292bd564452f01cc",
+        "scripts/iced_workflow_smoke.py": "3d657e0cde3d7dba599f7205b0c683ff2c237841b7a037ca07fe1f0f817eb7ff",
+        "tests/test_desktop_smoke.py": "066a6937d2e0d32763cba4d73eb5b04c5b7b6f0445d1296baa582b1786c9ca9f"
+      },
+      "limits": "This validates diagnostics and finalization failure handling, not the original Linux ARM refusal cause."
+    }
   }
 }
