@@ -343,6 +343,8 @@ pub struct App {
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
     queued_inputs: BTreeMap<String, usize>,
+    /// Per agent, the queued inputs no current receipt covers.
+    awaiting_receipt: BTreeMap<String, usize>,
     session_log: Option<(String, Result<String, String>)>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
@@ -449,6 +451,7 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
+            awaiting_receipt: BTreeMap::new(),
             session_log: None,
         }
     }
@@ -508,6 +511,7 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
+            awaiting_receipt: BTreeMap::new(),
             session_log: None,
             dismissing: std::collections::BTreeSet::new(),
         }
@@ -679,6 +683,12 @@ impl App {
                     self.queued_inputs = activity
                         .iter()
                         .filter_map(|a| a.queued_inputs.map(|count| (a.agent.to_string(), count)))
+                        .collect();
+                    self.awaiting_receipt = activity
+                        .iter()
+                        .filter_map(|a| {
+                            a.awaiting_receipt.map(|count| (a.agent.to_string(), count))
+                        })
                         .collect();
                     let fresh: BTreeMap<String, Activity> = activity
                         .into_iter()
@@ -3144,6 +3154,7 @@ mod tests {
                 project: None,
                 activity: Activity::Finished,
                 queued_inputs: Some(2),
+                awaiting_receipt: None,
             }]))
             .unwrap();
         messages
@@ -3181,6 +3192,7 @@ mod tests {
                 project: None,
                 activity: Activity::Unknown,
                 queued_inputs: None,
+                awaiting_receipt: None,
             }]))
             .unwrap();
         app.drain();
@@ -3559,6 +3571,7 @@ mod tests {
                         project: agent.project.as_ref().map(|p| p.id()),
                         activity: activity.clone(),
                         queued_inputs: Some(0),
+                        awaiting_receipt: None,
                     })
                     .collect(),
             )

@@ -303,6 +303,10 @@ pub struct AgentActivity {
     /// Durable queue size. None when talking to a daemon predating this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_inputs: Option<usize>,
+    /// Of those, the ones no receipt from the current process covers: an
+    /// earlier receipt says nothing about them. None on older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_receipt: Option<usize>,
 }
 
 #[cfg(test)]

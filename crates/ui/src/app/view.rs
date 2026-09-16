@@ -417,15 +417,15 @@ impl App {
             return state.issue.as_ref().expect("blocked").kind.label();
         }
         let readiness = agentdocker_core::InputReadiness::for_agent(agent, Utc::now());
-        // A current receiver with words still queued is waiting on the
-        // provider to take them; an earlier receipt does not make the
-        // pending one delivered. Limits, pauses and silence come first.
+        // A current receiver with words queued that no receipt covers is
+        // waiting on the provider to take them; an earlier receipt does not
+        // make them delivered. Limits, pauses and silence come first.
         if matches!(
             readiness,
             agentdocker_core::InputReadiness::Verified
                 | agentdocker_core::InputReadiness::AwaitingFirstReceipt
         ) && self
-            .queued_inputs
+            .awaiting_receipt
             .get(agent.id.as_str())
             .is_some_and(|count| *count > 0)
         {
@@ -3707,9 +3707,11 @@ mod tests {
             app.input_readiness(&agent),
             "Receiver active, awaiting first receipt"
         );
-        // Words queued behind a current receiver are waiting on the provider,
-        // and an earlier receipt does not make them delivered.
+        // Words queued behind a current receiver that no receipt covers are
+        // waiting on the provider; an earlier receipt does not make them
+        // delivered, and a receipt for them does, acknowledged or not.
         app.queued_inputs.insert(agent.id.to_string(), 2);
+        app.awaiting_receipt.insert(agent.id.to_string(), 2);
         assert_eq!(
             app.input_readiness(&agent),
             "Queued · awaiting provider receipt"
@@ -3719,15 +3721,17 @@ mod tests {
             receipt: agentdocker_core::InputReceipt::ClaudeChannel,
         });
         agent.input_delivery.as_mut().unwrap().received_at = Some(now);
+        app.awaiting_receipt.insert(agent.id.to_string(), 1);
         assert_eq!(
             app.input_readiness(&agent),
             "Queued · awaiting provider receipt"
         );
-        app.queued_inputs.insert(agent.id.to_string(), 0);
+        app.awaiting_receipt.insert(agent.id.to_string(), 0);
         assert_eq!(app.input_readiness(&agent), "Delivery verified");
         agent.input_delivery.as_mut().unwrap().received = None;
         agent.input_delivery.as_mut().unwrap().received_at = None;
         app.queued_inputs.remove(agent.id.as_str());
+        app.awaiting_receipt.remove(agent.id.as_str());
         agent.process_started_at = Some(now);
         app.agents[0] = agent.clone();
         assert!(

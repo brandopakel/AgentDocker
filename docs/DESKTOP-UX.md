@@ -148,8 +148,9 @@ each live session's contact and delivery evidence, plus **Review setup**,
 **Check connections** and **Setup history**; **Other supported tools** expands
 the inventory. Delivery distinguishes an active receiver awaiting its first
 receipt, verified delivery, paused delivery and stale evidence; with words
-still queued behind a current receiver it reads **Queued · awaiting provider
-receipt**, since an earlier receipt says nothing about the pending ones. The session
+queued behind a current receiver that no receipt names it reads **Queued ·
+awaiting provider receipt**, since an earlier receipt says nothing about them
+(a receipted message still in the queue counts as delivered). The session
 inspector shows the same readiness alongside the queue and latest receipt.
 Applying a plan says **Setup saved**, with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.
