@@ -2450,7 +2450,7 @@ mod tests {
             );
         }
         let _ = app.update(Message::OpenConnection("claude-code".into()));
-        assert!(matches!(commands.try_recv(), Ok(Cmd::Runtimes)));
+        assert!(matches!(commands.try_iter().next(), Some(Cmd::Runtimes)));
         assert_eq!(app.screen, Screen::Runtimes);
         assert_eq!(app.shell.connection_details.as_deref(), Some("claude-code"));
         assert_eq!(app.shell.conversation.as_deref(), Some(conversation));
