@@ -28,8 +28,11 @@ impl App {
     }
 
     /// Unread across the conversations that are the person's to answer:
-    /// rooms, broadcasts and their own direct messages. What two agents say
-    /// to each other and what AgentDocker told them is read here, not owed.
+    /// channels, broadcasts and their own direct messages. What two agents
+    /// say to each other, what AgentDocker told them, and the collision
+    /// rooms it opens between two checkouts (the person is not admitted to
+    /// those; their rows are the daemon's own contested-path notices) are
+    /// read here, not owed.
     pub(super) fn unread_total(&self) -> u64 {
         self.conversations
             .iter()
@@ -41,7 +44,7 @@ impl App {
     pub(super) fn counts_for_person(&self, summary: &ConversationSummary) -> bool {
         match summary.kind {
             ConversationKind::Dm => self.counterpart(summary).is_some(),
-            ConversationKind::Notices => false,
+            ConversationKind::Notices | ConversationKind::Collision => false,
             _ => true,
         }
     }
@@ -1058,6 +1061,67 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{MESSAGE_CAPACITY, queue, tests::record};
+    use std::sync::mpsc::sync_channel;
+
+    /// The badge counts what the person owes: a channel, a broadcast and
+    /// their own direct messages. A collision room's contested-path notices,
+    /// a pair of agents' words and the daemon's notices to an agent are
+    /// read without being owed.
+    #[test]
+    fn the_badge_counts_only_what_the_person_owes() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut agent = record("codex-1", "codex", Some(1));
+        agent.id = AgentId::from("agent-a");
+        let mut other = record("codex-2", "codex", Some(2));
+        other.id = AgentId::from("agent-b");
+        app.agents = vec![human, agent, other];
+        let summary = |conversation: &str, kind: &str, unread: u64| -> ConversationSummary {
+            serde_json::from_value(serde_json::json!({
+                "conversation": conversation, "kind": kind, "title": "",
+                "members": [], "unread": unread,
+            }))
+            .unwrap()
+        };
+        app.conversations = vec![
+            summary("everyone:project", "everyone", 3),
+            summary("all", "all", 1),
+            summary("channel:named", "channel", 11),
+            summary("channel:contested", "collision", 218),
+            summary(
+                agentdocker_core::ConversationId::dm("human-id", "agent-a").as_str(),
+                "dm",
+                2,
+            ),
+            summary(
+                agentdocker_core::ConversationId::dm("agent-a", "agent-b").as_str(),
+                "dm",
+                58,
+            ),
+            summary("notices:agent-a", "notices", 18),
+        ];
+        assert_eq!(app.unread_total(), 3 + 1 + 11 + 2);
+        let owed: Vec<&str> = app
+            .conversations
+            .iter()
+            .filter(|c| app.counts_for_person(c))
+            .map(|c| c.conversation.as_str())
+            .collect();
+        assert_eq!(
+            owed,
+            [
+                "everyone:project",
+                "all",
+                "channel:named",
+                "dm:agent-a:human-id"
+            ],
+            "collision rooms, peers and notices are read, not owed"
+        );
+    }
 
     #[test]
     fn fallback_room_names_keep_unicode_boundaries() {

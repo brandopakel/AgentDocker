@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 mod icons;
 mod messages;
 pub(crate) mod panes;
-mod queue;
+pub(crate) mod queue;
 mod sessions;
 mod shell;
 pub(crate) mod style;
@@ -48,7 +48,7 @@ const HISTORY_CONVERSATIONS: usize = 32;
 /// The most replies one thread is read to, the archive's own cap.
 const THREAD_CAP: usize = 5_000;
 const CONSOLE_BYTES: usize = 256 * 1024;
-const MESSAGE_CAPACITY: usize = 64;
+pub(crate) const MESSAGE_CAPACITY: usize = 64;
 const SENT_CHANNEL_LIMIT: usize = 128;
 const SENT_CHANNEL_BYTES: usize = 256 * 1024;
 const CONSOLE_HISTORY_COMMANDS: usize = 100;
@@ -2261,7 +2261,7 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -3725,7 +3725,7 @@ mod tests {
         assert!(app.shell.unviewed_done.is_empty());
     }
 
-    fn record(name: &str, runtime: &str, pid: Option<u32>) -> AgentRecord {
+    pub(crate) fn record(name: &str, runtime: &str, pid: Option<u32>) -> AgentRecord {
         let mut record = AgentRecord::new(
             agentdocker_core::AgentSpec {
                 name: name.into(),

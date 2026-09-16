@@ -120,9 +120,11 @@ had with each other behind **Between agents** (read as `Codex ↔ Claude
 Code`), and **AgentDocker → agent** notices per agent; a search box filters by
 name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
 one line each for the name and the latest line. Unread counts and the rail
-badge cover what is yours to answer: rooms, broadcasts and your own direct
-messages, never what two agents said to each other or what AgentDocker told
-them; **Mark all read** beside the count reads all of it at once. The
+badge cover what is yours to answer: channels, broadcasts and your own direct
+messages, never what two agents said to each other, what AgentDocker told
+them, or a collision room (AgentDocker opens those between two checkouts
+and fills them with its own contested-path notices; you are not a member);
+**Mark all read** beside the count reads all of it at once. The
 sidebar, the conversation and the thread are columns with a divider between
 each that drags, like the rail's beside the workspace: a name the sidebar
 clips gets its room by dragging, and the widths are kept in pixels and
