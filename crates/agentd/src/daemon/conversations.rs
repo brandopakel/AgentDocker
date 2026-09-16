@@ -163,20 +163,26 @@ impl Daemon {
             Err(_) => None,
         };
         let cutoff = window.and_then(|window| Utc::now().checked_sub_signed(window));
-        let mut state = lock(&self.state);
-        let removed = state.store_op("messages", |store| {
-            store.prune_messages(cutoff, CONVERSATION_CAP, RETENTION_BATCH)
-        });
-        if let Some(removed) = removed
-            && removed > 0
-        {
-            info!(removed, "pruned the message archive");
-            state.emit(EventKind::MessagesPruned { removed });
-        }
+        lock(&self.state).prune_message_archive(cutoff, CONVERSATION_CAP, RETENTION_BATCH);
     }
 }
 
 impl State {
+    /// Commit archive retention and its event before publishing the transition.
+    fn prune_message_archive(&mut self, cutoff: Option<DateTime<Utc>>, cap: usize, batch: usize) {
+        let seq = self.next_seq;
+        let event = self.store_op("messages", |store| {
+            store.prune_messages_with_event(cutoff, cap, batch, seq, Utc::now())
+        });
+        if let Some(Some(event)) = event {
+            if let EventKind::MessagesPruned { removed } = &event.kind {
+                info!(removed, "pruned the message archive");
+            }
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+    }
+
     /// Every conversation of a project that a reader could be shown: the
     /// project's broadcast, its open channels, the reader's direct
     /// conversations with its live agents, and anything in the archive.
@@ -567,11 +573,11 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("read cursor", |store| {
+        if self.persist("read cursor", |store| {
             store.mark_read(&cursor, &acknowledged, &event)
-        });
-        if let Some(error) = self.storage_failure() {
-            return error;
+        }) != Persisted::Committed
+        {
+            return self.write_failure().expect("refused read cursor write");
         }
         if !acknowledged.is_empty()
             && let Some(queue) = self.inboxes.get_mut(reader)
@@ -669,6 +675,143 @@ mod tests {
             Response::History { messages } => messages,
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A refused cursor or retention event changes neither durable archive,
+    /// queue/cursor state, in-memory delivery tracking nor published events.
+    #[tokio::test]
+    async fn refused_archive_mutations_preserve_queue_cursors_and_events() {
+        for operation in ["conversation_read", "messages_pruned"] {
+            for fenced in [false, true] {
+                let dir = TempDir::new().unwrap();
+                let daemon = open(&dir);
+                let alice = register(&daemon, "alice", dir.path()).await;
+                let bob = register(&daemon, "bob", dir.path()).await;
+                send(&daemon, "alice", "bob", "first", None).await;
+                send(&daemon, "alice", "bob", "second", None).await;
+                let dm = ConversationId::dm(alice.id.as_str(), bob.id.as_str());
+                let mut state = lock(&daemon.state);
+                let before = state.store.history(&dm, None, 100).unwrap();
+                let through = before[0].seq;
+                if fenced {
+                    state.offer_transfer(1).unwrap();
+                } else {
+                    state.store.reject_event_for_test(operation);
+                }
+                let memory = serde_json::to_value(&state.inboxes).unwrap();
+                let bytes = state.inbox_bytes.clone();
+                let disk = serde_json::to_value(state.store.load_inboxes().unwrap()).unwrap();
+                let seq = state.next_seq;
+                let durable_seq = state.store.recent_events(1).unwrap()[0].seq;
+                let mut events = state.events.subscribe();
+                if operation == "conversation_read" {
+                    assert!(matches!(
+                        state.mark_read(&bob.id, &dm, through, Utc::now()),
+                        Response::Error { .. }
+                    ));
+                } else {
+                    state.prune_message_archive(None, 1, 10);
+                }
+                assert!(state.write_failure().is_some());
+                assert_eq!(state.next_seq, seq, "{operation}, fenced={fenced}");
+                assert_eq!(state.store.recent_events(1).unwrap()[0].seq, durable_seq);
+                assert!(events.try_recv().is_err());
+                assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), memory);
+                assert_eq!(state.inbox_bytes, bytes);
+                assert_eq!(
+                    serde_json::to_value(state.store.load_inboxes().unwrap()).unwrap(),
+                    disk
+                );
+                assert!(
+                    state
+                        .store
+                        .read_cursors(bob.id.as_str())
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    serde_json::to_value(state.store.history(&dm, None, 100).unwrap()).unwrap(),
+                    serde_json::to_value(before).unwrap()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_retention_commits_one_exact_event_and_preserves_pending_delivery() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alice = register(&daemon, "alice", dir.path()).await;
+        let bob = register(&daemon, "bob", dir.path()).await;
+        send(&daemon, "alice", "bob", "first", None).await;
+        let last = send(&daemon, "alice", "bob", "last", None).await;
+        let dm = ConversationId::dm(alice.id.as_str(), bob.id.as_str());
+        let mut state = lock(&daemon.state);
+        let queue = serde_json::to_value(&state.inboxes).unwrap();
+        let seq = state.next_seq;
+        let mut events = state.events.subscribe();
+        state.prune_message_archive(None, 1, 10);
+        let published = events.try_recv().unwrap();
+        assert_eq!(published.seq, seq);
+        assert!(matches!(
+            published.kind,
+            EventKind::MessagesPruned { removed: 1 }
+        ));
+        assert_eq!(
+            serde_json::to_value(&published).unwrap(),
+            serde_json::to_value(state.store.recent_events(1).unwrap()[0].clone()).unwrap()
+        );
+        let history = state.store.history(&dm, None, 100).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].envelope.id, last);
+        assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), queue);
+        assert_eq!(
+            serde_json::to_value(state.store.load_inboxes().unwrap()).unwrap(),
+            queue
+        );
+        state.prune_message_archive(None, 1, 10);
+        assert_eq!(state.next_seq, seq + 1, "empty prune creates no event");
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn archive_reads_remain_available_while_transfer_refuses_cursor_writes() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alice = register(&daemon, "alice", dir.path()).await;
+        let bob = register(&daemon, "bob", dir.path()).await;
+        let message = send(&daemon, "alice", "bob", "needle", None).await;
+        let dm = ConversationId::dm(alice.id.as_str(), bob.id.as_str());
+        let through = history(&daemon, &dm).await[0].seq;
+        lock(&daemon.state).offer_transfer(1).unwrap();
+        assert!(!conversations(&daemon, "bob").await.is_empty());
+        assert_eq!(history(&daemon, &dm).await.len(), 1);
+        assert!(matches!(
+            daemon
+                .handle(Request::Thread {
+                    message,
+                    after_seq: None,
+                    limit: 10
+                })
+                .await,
+            Response::Thread { .. }
+        ));
+        assert!(
+            matches!(daemon.handle(Request::SearchMessages { query: "needle".into(), project: None, reader: Some(bob.id.to_string()), before_seq: None, limit: 10 }).await, Response::History { messages } if messages.len()==1)
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::MarkRead {
+                    conversation: dm,
+                    through,
+                    reader: Some(bob.id.to_string())
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -973,6 +1116,21 @@ mod tests {
                 .any(|c| c.conversation == old_dm && c.unread != 0),
             "nothing regressed"
         );
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.next_seq, seq_before,
+                "a no-op must not emit ConversationRead"
+            );
+            assert!(
+                state
+                    .store
+                    .read_cursors(later.id.as_str())
+                    .unwrap()
+                    .is_empty(),
+                "no lower canonical cursor is inserted"
+            );
+        }
         // New words go to the record that is: its own conversation, with
         // the old one still listed and still read.
         send(&daemon, "alice", "later", "still there?", None).await;

@@ -130,7 +130,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let request: Request = match serde_json::from_str(&line) {
+        let frame: agentdocker_core::protocol::RequestFrame = match serde_json::from_str(&line) {
             Ok(request) => request,
             Err(err) => {
                 let response =
@@ -140,7 +140,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             }
         };
         // Streaming requests own the connection until it closes.
-        match request {
+        match frame.request {
             Request::Subscribe { agent, topics } => {
                 return stream_messages(&daemon, agent, topics, &mut reader, &mut writer).await;
             }
@@ -156,7 +156,15 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 tail,
             } => return stream_logs(&daemon, &agent, follow, tail, &mut reader, &mut writer).await,
             Request::Attach { agent, cols, rows } => {
-                return stream_attach(&daemon, &agent, cols, rows, &mut reader, &mut writer).await;
+                return stream_attach(
+                    &daemon,
+                    &agent,
+                    cols.zip(rows),
+                    frame.handover_retry,
+                    &mut reader,
+                    &mut writer,
+                )
+                .await;
             }
             unary => {
                 // A wait owns its connection: a claim's, or an ask's, whose
@@ -171,6 +179,8 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 } else {
                     daemon.handle(unary).await
                 };
+                let response =
+                    agentdocker_core::protocol::handover_response(response, frame.handover_retry);
                 write(&mut writer, &response).await?;
             }
         }
@@ -341,8 +351,8 @@ async fn stream_events(
 async fn stream_attach(
     daemon: &Arc<Daemon>,
     agent: &str,
-    cols: Option<u16>,
-    rows: Option<u16>,
+    size: Option<(u16, u16)>,
+    handover_retry: bool,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
@@ -360,7 +370,17 @@ async fn stream_attach(
         )
         .await;
     };
-    if let (Some(cols), Some(rows)) = (cols, rows) {
+    if let Some((cols, rows)) = size {
+        let _admitted = match daemon.admit_background() {
+            Ok(guard) => guard,
+            Err(response) => {
+                return write(
+                    writer,
+                    &agentdocker_core::protocol::handover_response(*response, handover_retry),
+                )
+                .await;
+            }
+        };
         let _ = session.resize(cols, rows);
     }
     // What it printed already, and what it prints next, taken together so
@@ -392,6 +412,13 @@ async fn stream_attach(
             line = reader.next_line() => match line {
                 Ok(Some(line)) => match serde_json::from_str::<Request>(&line) {
                     Ok(Request::AttachInput { data }) => {
+                        let _admitted = match daemon.admit_background() {
+                            Ok(guard) => guard,
+                            Err(response) => {
+                                write(writer, &agentdocker_core::protocol::handover_response(*response, handover_retry)).await?;
+                                continue;
+                            }
+                        };
                         if let Some(bytes) = agentdocker_core::protocol::decode_bytes(&data)
                             && session.input.send(bytes).await.is_err()
                         {
@@ -399,6 +426,13 @@ async fn stream_attach(
                         }
                     }
                     Ok(Request::AttachResize { cols, rows }) => {
+                        let _admitted = match daemon.admit_background() {
+                            Ok(guard) => guard,
+                            Err(response) => {
+                                write(writer, &agentdocker_core::protocol::handover_response(*response, handover_retry)).await?;
+                                continue;
+                            }
+                        };
                         let _ = session.resize(cols, rows);
                     }
                     // Anything else on an attached connection is a mistake
@@ -535,36 +569,57 @@ async fn read_from(path: &Path, offset: u64) -> (u64, String) {
 /// The restricted endpoint is optional: when it cannot be served the daemon
 /// says so, marks container access off so new grants are refused, and
 /// keeps serving the host socket. Never returns.
-pub async fn restricted_endpoint(daemon: Arc<Daemon>, socket: PathBuf) {
-    if let Err(err) = serve_restricted(daemon.clone(), socket.clone()).await {
+pub async fn restricted_endpoint(
+    daemon: Arc<Daemon>,
+    socket: PathBuf,
+    inherited: Option<Listener>,
+) {
+    if let Err(err) = serve_restricted(daemon.clone(), socket.clone(), inherited).await {
         tracing::error!(%err, socket = %socket.display(), "restricted endpoint unavailable; container access is off");
+        daemon.hold_restricted(Err(io::Error::other(format!("{err:#}"))));
         daemon.restricted_unavailable(format!("{err:#}"));
     }
     std::future::pending::<()>().await;
 }
 
-/// Serve the restricted endpoint on `socket`. Returns only on failure; the
-/// daemon's main treats that as "container access is off", not as a
-/// reason to stop serving the host socket.
-pub async fn serve_restricted(daemon: Arc<Daemon>, socket: PathBuf) -> anyhow::Result<()> {
+/// Bind the restricted endpoint on `socket`, or refuse when something else
+/// already answers there.
+pub async fn bind_restricted(daemon: &Daemon, socket: &Path) -> anyhow::Result<Listener> {
     if socket == daemon.socket {
         anyhow::bail!("restricted and host sockets must differ");
     }
-    require_fits(&socket)?;
-    prepare_socket_parent(&daemon.home, &socket)?;
+    require_fits(socket)?;
+    prepare_socket_parent(&daemon.home, socket)?;
     #[cfg(unix)]
     if socket.exists() {
-        if Stream::connect(&socket).await.is_ok() {
+        if Stream::connect(socket).await.is_ok() {
             anyhow::bail!("restricted endpoint is already listening");
         }
-        std::fs::remove_file(&socket)?;
+        std::fs::remove_file(socket)?;
     }
     let listener =
-        Listener::bind(&socket).with_context(|| format!("cannot bind {}", socket.display()))?;
+        Listener::bind(socket).with_context(|| format!("cannot bind {}", socket.display()))?;
     #[cfg(unix)]
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+/// Serve the restricted endpoint on `socket`, binding it unless a
+/// predecessor handed the listener over. Returns only on failure; the
+/// daemon's main treats that as "container access is off", not as a
+/// reason to stop serving the host socket.
+pub async fn serve_restricted(
+    daemon: Arc<Daemon>,
+    socket: PathBuf,
+    inherited: Option<Listener>,
+) -> anyhow::Result<()> {
+    let listener = match inherited {
+        Some(listener) => listener,
+        None => bind_restricted(&daemon, &socket).await?,
+    };
     info!(socket = %socket.display(), "restricted endpoint listening");
     daemon.restricted_listening(socket.clone());
+    daemon.hold_restricted(listener_fd(&listener));
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -654,7 +709,9 @@ fn prepare_socket_parent(_home: &Path, socket: &Path) -> anyhow::Result<()> {
     dirs::check_socket_parent(socket).map_err(Into::into)
 }
 
-async fn restricted_frame(reader: &mut BufReader<Stream>) -> io::Result<Request> {
+async fn restricted_frame(
+    reader: &mut BufReader<Stream>,
+) -> io::Result<agentdocker_core::protocol::RequestFrame> {
     let mut line = String::new();
     (&mut *reader)
         .take(1024 * 1024 + 1)
@@ -673,7 +730,7 @@ async fn restricted_reply(reader: &mut BufReader<Stream>, response: &Response) -
 
 async fn restricted_connection(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
-    let token = match restricted_frame(&mut reader).await? {
+    let token = match restricted_frame(&mut reader).await?.request {
         Request::Authenticate { token } => token,
         _ => {
             return restricted_reply(
@@ -687,18 +744,228 @@ async fn restricted_connection(daemon: Arc<Daemon>, stream: Stream) -> io::Resul
         return restricted_reply(&mut reader, &response).await;
     }
     restricted_reply(&mut reader, &Response::Ok).await?;
-    let request = match daemon.restricted_request(&token, restricted_frame(&mut reader).await?) {
+    let frame = restricted_frame(&mut reader).await?;
+    let request = match daemon.restricted_request(&token, frame.request) {
         Ok(request) => request,
         Err(response) => return restricted_reply(&mut reader, &response).await,
     };
     let response = daemon.handle(request).await;
+    let response = agentdocker_core::protocol::handover_response(response, frame.handover_retry);
     restricted_reply(&mut reader, &response).await
+}
+
+/// A second handle on a listening socket, for a later handover.
+#[cfg(unix)]
+pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::AsFd;
+    listener.as_fd().try_clone_to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn attached_terminal_fences_input_and_resize_but_keeps_output() {
+        async fn send(client: &mut BufReader<Stream>, request: Request, capable: bool) {
+            let line = if capable {
+                agentdocker_core::protocol::request_json(&request).unwrap()
+            } else {
+                serde_json::to_string(&request).unwrap()
+            } + "\n";
+            client.get_mut().write_all(line.as_bytes()).await.unwrap();
+        }
+        async fn next(client: &mut BufReader<Stream>) -> Response {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut line))
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        for capable in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let daemon =
+                Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+            let Response::Agent { agent } = daemon.handle(Request::Run { spec: AgentSpec {
+                name: "terminal-fence".into(), tty: true, workdir: Some(tmp.path().into()),
+                command: vec!["sh".into(), "-c".into(), "stty -echo; printf 'ready\\n'; while ! test -f go; do sleep .01; done; printf 'during-fence\\n'; read value; stty size; printf 'input:%s\\n' \"$value\"".into()],
+                ..Default::default()
+            }}).await else { panic!("terminal did not start") };
+            let target = agent.id.to_string();
+            let testing = daemon.clone();
+            let go = tmp.path().join("go");
+            let mut trial = tokio::spawn(async move {
+                let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
+                let serving = tokio::spawn(handle(testing.clone(), server));
+                let mut client = BufReader::new(client);
+                send(
+                    &mut client,
+                    Request::Attach {
+                        agent: target.clone(),
+                        cols: Some(80),
+                        rows: Some(24),
+                    },
+                    capable,
+                )
+                .await;
+                assert!(matches!(next(&mut client).await, Response::EventsReady));
+                let mut text = String::new();
+                while !text.contains("ready") {
+                    if let Response::Output { data } = next(&mut client).await {
+                        text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        ));
+                    }
+                }
+                testing.offer_transfer(1).unwrap();
+                // A new viewer's initial resize is also a mutation, even
+                // before its output stream has been established.
+                let (new_client, new_server) = agentdocker_host::ipc::pair().await.unwrap();
+                let new_serving = tokio::spawn(handle(testing.clone(), new_server));
+                let mut new_client = BufReader::new(new_client);
+                send(
+                    &mut new_client,
+                    Request::Attach {
+                        agent: target,
+                        cols: Some(132),
+                        rows: Some(55),
+                    },
+                    capable,
+                )
+                .await;
+                assert!(
+                    matches!(next(&mut new_client).await, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
+                );
+                drop(new_client);
+                new_serving.await.unwrap().unwrap();
+                for request in [
+                    Request::AttachInput {
+                        data: agentdocker_core::protocol::encode_bytes(b"blocked\n"),
+                    },
+                    Request::AttachResize {
+                        cols: 111,
+                        rows: 44,
+                    },
+                ] {
+                    send(&mut client, request, capable).await;
+                    assert!(
+                        matches!(next(&mut client).await, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
+                    );
+                }
+                std::fs::write(go, "").unwrap();
+                while !text.contains("during-fence") {
+                    if let Response::Output { data } = next(&mut client).await {
+                        text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        ));
+                    }
+                }
+                assert!(testing.abort_transfer("trial continues"));
+                send(
+                    &mut client,
+                    Request::AttachInput {
+                        data: agentdocker_core::protocol::encode_bytes(b"accepted\n"),
+                    },
+                    capable,
+                )
+                .await;
+                loop {
+                    match next(&mut client).await {
+                        Response::Output { data } => text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        )),
+                        Response::End => break,
+                        other => panic!("unexpected terminal frame: {other:?}"),
+                    }
+                }
+                assert!(text.contains("input:accepted"), "{text}");
+                assert!(!text.contains("input:blocked"), "{text}");
+                assert!(
+                    text.contains("24 80"),
+                    "refused resize changed the terminal: {text}"
+                );
+                drop(client);
+                serving.await.unwrap().unwrap();
+            });
+            let result = tokio::time::timeout(Duration::from_secs(15), &mut trial).await;
+            if result.is_err() {
+                trial.abort();
+                let _ = trial.await;
+            }
+            daemon.abort_transfer("test cleanup");
+            let _ = daemon
+                .handle(Request::Stop {
+                    agent: agent.id.to_string(),
+                    force: true,
+                })
+                .await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while daemon.is_live(&agent.id) && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                !daemon.is_live(&agent.id),
+                "owned terminal survived cleanup"
+            );
+            result.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn handover_refusal_is_decodable_for_legacy_clients_and_safe_to_retry() {
+        for capable in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let daemon =
+                Arc::new(Daemon::open(tmp.path().into(), tmp.path().join("sock")).unwrap());
+            daemon.offer_transfer(1).unwrap();
+            let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
+            let task = tokio::spawn(handle(daemon.clone(), server));
+            let mut client = BufReader::new(client);
+            let request = Request::Register {
+                spec: AgentSpec {
+                    name: "retry-once".into(),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            };
+            let line = if capable {
+                agentdocker_core::protocol::request_json(&request).unwrap()
+            } else {
+                serde_json::to_string(&request).unwrap()
+            } + "\n";
+            client.get_mut().write_all(line.as_bytes()).await.unwrap();
+            let mut reply = String::new();
+            client.read_line(&mut reply).await.unwrap();
+            let response: Response = serde_json::from_str(&reply).unwrap();
+            assert!(
+                matches!(response, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
+            );
+            assert!(matches!(
+                daemon
+                    .handle(Request::Inspect {
+                        agent: "retry-once".into()
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ));
+            assert!(daemon.abort_transfer("candidate refused"));
+            client.get_mut().write_all(line.as_bytes()).await.unwrap();
+            reply.clear();
+            client.read_line(&mut reply).await.unwrap();
+            assert!(matches!(
+                serde_json::from_str::<Response>(&reply).unwrap(),
+                Response::Agent { .. }
+            ));
+            drop(client);
+            task.await.unwrap().unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn checked_event_resume_covers_disconnect_replay_and_concurrent_live_tail() {
@@ -1197,7 +1464,7 @@ mod tests {
             .await;
         // Too long for the kernel: refused up front, with the limit named.
         let long = PathBuf::from(format!("/tmp/{}.sock", "x".repeat(paths::SOCKET_PATH_MAX)));
-        let err = serve_restricted(daemon.clone(), long.clone())
+        let err = serve_restricted(daemon.clone(), long.clone(), None)
             .await
             .unwrap_err()
             .to_string();
@@ -1207,7 +1474,7 @@ mod tests {
         // Through the daemon's wrapper the host side keeps going: the
         // failure is announced, pinged as "off", and grants are refused.
         let mut events = daemon.subscribe_events();
-        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), long));
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), long, None));
         let announced = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(event) = events.recv().await
@@ -1247,7 +1514,7 @@ mod tests {
         // A socket that fits is served, announced, and reported.
         let good = tmp.path().join("container.sock");
         let mut events = daemon.subscribe_events();
-        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone()));
+        let endpoint = tokio::spawn(restricted_endpoint(daemon.clone(), good.clone(), None));
         let announced = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(event) = events.recv().await

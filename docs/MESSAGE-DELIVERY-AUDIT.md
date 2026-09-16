@@ -6,6 +6,60 @@ It tracks partial implementation and the acceptance still needed for each provid
 
 Status on September 14, 2026: every pull request this log names (#103–#108, #115 and #119) is merged on `main`, so the per-checkpoint "final CI/source review remain" sentences below are historical. The opt-in Codex bridge (`--codex-input`) and Claude channel adapter (`--claude-channel`) are shipped, the MCP `ask_human` duplicate-input defect is fixed (`crates/cli/src/codex_input/mcp_answers.rs`), and the structured Iced approval/choice controls are merged. What is still open is the list in [REMAINING-WORK.md](REMAINING-WORK.md).
 
+## September 16: live Claude idle-wake gap reproduced
+
+The user reported the parallel Claude session idle at its prompt. In message
+`835523c328494b82`, Claude confirmed that twelve queued peer messages arrived
+only after a human `/btw` prompt. The running process lacked channel launch flags
+and its current registration had hooks/MCP contact but no input receiver evidence.
+This is a failed existing-session idle-wake trial, not verified provider delivery.
+It invalidates any blanket claim that every connected runtime already wakes.
+
+The current UI change defaults new Claude/Codex launches to **Idle messages: On**,
+retains provider consent, and exposes recipient readiness beside direct and thread
+composers. Unsupported tools disclose the missing automatic route at launch.
+Source `e417ca5` passed the full 1,009-Rust/77-Python gate and 338 rendered
+native workflow steps, including composer readiness and retained drafts.
+It does not retrofit the live Claude process. Safe same-session reconnect with
+old queue/receipt/draft preservation, other providers' input adapters, and installed
+acceptance remain open. No live provider was restarted for this finding.
+
+## September 16: CLI broadcast pause did not reach the active Codex turn
+
+The user's `agentdocker send --to all` request `5d0f2b149aa44cb6`, asking every
+agent to pause for laptop sleep, was saved at 07:55:46 UTC. A read-only `history
+all` lookup confirms its human sender and original text. Codex continued working
+until the user repeated the request directly. At 08:04 UTC the Codex record had a
+fresh receiver heartbeat, but its last recorded receipt was for a different
+message at 05:49 UTC. That heartbeat does not establish receipt of this broadcast.
+
+The original broadcast eventually arrived through the native receiver after
+the direct pause, behind earlier peer and stale notices. September 16 source
+inspection found a scheduling mismatch: the pinned Codex 0.154.0 queue service
+dispatches only while idle, and AgentDocker's external receiver keeps one
+outstanding offer until its exact receipt. It does not steer the active turn.
+The running TUI has no shared app-server control socket; starting an independent
+sidecar does not give it ownership of that TUI's active turn. This identifies an
+input-route limitation, not a completed per-recipient broadcast latency trace.
+
+This is distinct from Claude's missing channel connection. Require
+CLI human input to use the same priority and active-turn input procedure as typing
+into the provider, with equivalent peer routing but unchanged peer trust. Test a
+broadcast pause with idle and busy recipients, exact IDs and per-recipient
+receipts, provider waits, preserved drafts, retries and no duplicate execution.
+The original message remains subject to its normal receiver; inspecting its
+archive did not acknowledge or drain it. Codex paused after the direct request,
+and interrupted its verification campaign. This bug is open.
+
+PR #162 merged owned Codex active-input delivery as `7c6e779`. Source
+`01531dc` passed the full 1,015-Rust/77-Python gate and actual Codex 0.154.0
+trials using a local model fixture: human, peer and human-broadcast inputs in
+one active turn, one explicit steering refusal retained until the turn ended,
+and recovery from a dropped acceptance reply without resubmission. This covers
+the owned app-server bridge; the existing standalone-terminal pause failure
+and Claude sessions without channel input remain open. See the
+[recorded Codex acceptance](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue
@@ -21,6 +75,22 @@ steal focus, submit another person's unfinished draft, or type into an unrelated
 terminal. Repeated pings must not create duplicate turns or unbounded reply loops.
 
 ## Current evidence and gap
+
+### September 16: Native input across gated daemon handovers
+
+Clean driver `8ba6ac9` with the clean-built `055f45f` release binaries passed
+four private handovers using actual Codex CLI 0.154.0 and a loopback model fixture:
+idle wake, retained unsubmitted Codex draft, ordered human/peer input during a
+busy turn, and one pending-question answer with its exact thread/turn/item
+receipt. Provider/controller identities stayed unchanged at every switch and
+all trial daemons/controllers retired. Injected provider startup failure also
+cleaned its daemon. A harness-only terminal-reopen cleanup failure was retained,
+fixed at `b81a1f5` and rerun successfully. That final driver passed the full
+1,017-Rust/79-Python gate. See the [existing reload record](verification/2026-09-16-reload-controller-episode.json).
+
+This covers the native client's queue and receipts through same-binary handovers.
+Real model services, Claude, distinct-source provider upgrades and AgentDocker
+attached-terminal drafts remain open. The production reload gate stays off.
 
 ### September 15: AgentDocker native queue implementation
 

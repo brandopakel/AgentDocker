@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 9;
+const VERSION: u32 = 10;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -58,6 +58,106 @@ mod tests {
             turn: "turn".into(),
             item: "item".into(),
         }
+    }
+
+    #[test]
+    fn steering_survives_restart_and_keeps_its_receipt_separate_from_the_starting_input() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let first = message();
+        let input = ledger.prepare(&first).unwrap();
+        let next = message();
+        assert!(ledger.prepare_steering(&next, "turn").is_err());
+        ledger.accept(&input, receipt()).unwrap();
+        ledger.acknowledge(first.id.as_str()).unwrap();
+        assert!(ledger.prepare_steering(&first, "turn").is_err());
+        assert!(ledger.prepare_steering(&next, "wrong").is_err());
+        let steering = ledger.prepare_steering(&next, "turn").unwrap();
+        let path = ledger.path.clone();
+        let prepared = std::fs::read(&path).unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        assert_eq!(ledger.record().steering.as_ref().unwrap().input, steering);
+        assert!(ledger.prepare_steering(&next, "turn").is_err());
+        assert!(ledger.finish("turn").is_err());
+        assert!(ledger.acknowledge(next.id.as_str()).is_err());
+        let mut wrong = receipt();
+        wrong.turn = "another-turn".into();
+        wrong.item = "steering".into();
+        assert!(ledger.accept(&steering, wrong).is_err());
+        assert!(ledger.accept(&steering, receipt()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), prepared);
+        let mut accepted = receipt();
+        accepted.item = "steering".into();
+        ledger.accept(&steering, accepted.clone()).unwrap();
+        assert!(ledger.reject_steering().is_err());
+        ledger.acknowledge(next.id.as_str()).unwrap();
+        ledger.finish_steering().unwrap();
+        assert_eq!(
+            ledger.record().attempt.as_ref().unwrap().message,
+            first.id.as_str()
+        );
+        assert_eq!(ledger.record().completed.back().unwrap().receipt, accepted);
+        assert!(ledger.prepare_steering(&next, "turn").is_err());
+        let third = message();
+        let third_input = ledger.prepare_steering(&third, "turn").unwrap();
+        let prepared = std::fs::read(&path).unwrap();
+        assert!(ledger.accept(&third_input, accepted.clone()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), prepared);
+        ledger.reject_steering().unwrap();
+        ledger.finish("turn").unwrap();
+        assert_eq!(ledger.record().completed.len(), 2);
+    }
+
+    #[test]
+    fn rejected_steering_leaves_the_message_eligible_for_a_later_ordinary_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let first = message();
+        let input = ledger.prepare(&first).unwrap();
+        ledger.accept(&input, receipt()).unwrap();
+        ledger.acknowledge(first.id.as_str()).unwrap();
+        let next = message();
+        let input = ledger.prepare_steering(&next, "turn").unwrap();
+        ledger.reject_steering().unwrap();
+        assert!(ledger.record().completed.is_empty());
+        ledger.finish("turn").unwrap();
+        assert_eq!(ledger.prepare(&next).unwrap(), input);
+    }
+
+    #[test]
+    fn version_nine_upgrades_without_rewriting_pending_input_or_accepting_new_receipt_semantics() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let first = message();
+        let input = ledger.prepare(&first).unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        old["version"] = serde_json::json!(9);
+        old.as_object_mut().unwrap().remove("steering");
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(ledger.prepare(&first).is_err());
+        ledger.accept(&input, receipt()).unwrap();
+        ledger.acknowledge(first.id.as_str()).unwrap();
+        ledger.prepare_steering(&message(), "turn").unwrap();
+        drop(ledger);
+        let mut incompatible: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        incompatible["version"] = serde_json::json!(9);
+        let bytes = serde_json::to_vec(&incompatible).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Ledger::open(home.path(), binding).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
@@ -638,6 +738,10 @@ pub(super) struct Record {
     pub binding: Binding,
     pub thread: Option<String>,
     pub attempt: Option<Attempt>,
+    /// One additional input being steered into the accepted active turn.
+    /// Its receipt is independent of the input that started that turn.
+    #[serde(default)]
+    pub steering: Option<Attempt>,
     pub completed: VecDeque<Completed>,
     #[serde(default)]
     pub reviews: Vec<Pending>,
@@ -661,6 +765,10 @@ fn valid_id(id: &str) -> bool {
 
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
+        ensure!(
+            self.version >= 10 || self.steering.is_none(),
+            "legacy input cannot supply active-turn steering receipts"
+        );
         ensure!(
             self.version >= 9
                 || (self.reviews.iter().all(|r| !r.is_network_review())
@@ -705,7 +813,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=8)
+                || matches!(self.version, 3..=9)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
@@ -724,9 +832,14 @@ impl Record {
             self.completed.len() <= RETAINED_RECEIPTS,
             "too many retained Codex receipts"
         );
+        let mut input_receipts = std::collections::HashSet::new();
         for completed in &self.completed {
             ensure!(valid_id(&completed.message), "invalid retained message ID");
             self.validate_receipt(&completed.receipt)?;
+            ensure!(
+                input_receipts.insert((&completed.receipt.turn, &completed.receipt.item)),
+                "multiple inputs share a provider receipt"
+            );
         }
         ensure!(
             self.reviews.len() <= review::MAX_QUESTIONS
@@ -812,7 +925,7 @@ impl Record {
                 "MCP answer has no retained question route"
             );
         }
-        if let Some(attempt) = &self.attempt {
+        for attempt in self.attempt.iter().chain(self.steering.iter()) {
             if let Some(origin) = &attempt.mcp_origin {
                 origin.validate()?;
             }
@@ -832,6 +945,10 @@ impl Record {
             );
             if let Some(receipt) = &attempt.receipt {
                 self.validate_receipt(receipt)?;
+                ensure!(
+                    input_receipts.insert((&receipt.turn, &receipt.item)),
+                    "multiple inputs share a provider receipt"
+                );
             }
             ensure!(
                 !self
@@ -839,6 +956,35 @@ impl Record {
                     .iter()
                     .any(|done| done.message == attempt.message),
                 "pending input duplicates a completed receipt"
+            );
+        }
+        if let Some(steering) = &self.steering {
+            let active = self
+                .attempt
+                .as_ref()
+                .context("steering has no active input")?;
+            let receipt = active
+                .receipt
+                .as_ref()
+                .context("steering has no accepted turn")?;
+            ensure!(
+                active.acknowledged,
+                "steering precedes the starting input acknowledgement"
+            );
+            ensure!(
+                steering.message != active.message,
+                "steering repeats the starting input"
+            );
+            ensure!(
+                steering.mcp_origin == active.mcp_origin,
+                "steering changes the MCP binding"
+            );
+            ensure!(
+                steering
+                    .receipt
+                    .as_ref()
+                    .is_none_or(|r| r.turn == receipt.turn && r.item != receipt.item),
+                "steering receipt belongs to another turn or repeats its first item"
             );
         }
         Ok(())
@@ -898,6 +1044,7 @@ impl Ledger {
                 binding: binding.clone(),
                 thread: None,
                 attempt: None,
+                steering: None,
                 completed: VecDeque::new(),
                 reviews: Vec::new(),
                 closed_reviews: VecDeque::new(),
@@ -1079,6 +1226,45 @@ impl Ledger {
 
     pub fn prepare_bound(&mut self, envelope: &Envelope, origin: Option<Origin>) -> Result<String> {
         ensure!(
+            self.record.attempt.is_none() && self.record.steering.is_none(),
+            "an earlier Codex input still needs receipt recovery; automatic resubmission is refused"
+        );
+        let attempt = self.planned_input(envelope, origin)?;
+        let input = attempt.input.clone();
+        let mut next = self.record.clone();
+        next.attempt = Some(attempt);
+        self.save(next)?;
+        Ok(input)
+    }
+
+    pub fn prepare_steering(&mut self, envelope: &Envelope, turn: &str) -> Result<String> {
+        let active = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no active Codex input")?;
+        ensure!(
+            active.acknowledged && active.receipt.as_ref().is_some_and(|r| r.turn == turn),
+            "steering requires the exact acknowledged active turn"
+        );
+        ensure!(
+            self.record.steering.is_none(),
+            "earlier steering still needs receipt recovery"
+        );
+        ensure!(
+            active.message != envelope.id.as_str(),
+            "cannot steer the starting input again"
+        );
+        let attempt = self.planned_input(envelope, active.mcp_origin.clone())?;
+        let input = attempt.input.clone();
+        let mut next = self.record.clone();
+        next.steering = Some(attempt);
+        self.save(next)?;
+        Ok(input)
+    }
+
+    fn planned_input(&self, envelope: &Envelope, origin: Option<Origin>) -> Result<Attempt> {
+        ensure!(
             !origin
                 .as_ref()
                 .is_some_and(|o| envelope.kind == "answer" && envelope.from.as_str() == o.human),
@@ -1094,10 +1280,6 @@ impl Ledger {
         ensure!(
             self.record.thread.is_some(),
             "Codex conversation is not ready"
-        );
-        ensure!(
-            self.record.attempt.is_none(),
-            "an earlier Codex input still needs receipt recovery; automatic resubmission is refused"
         );
         ensure!(
             self.record.reviews.is_empty(),
@@ -1117,16 +1299,13 @@ impl Ledger {
             input.len() <= MAX_INPUT_BYTES,
             "queued input is too large for the Codex bridge"
         );
-        let mut next = self.record.clone();
-        next.attempt = Some(Attempt {
+        Ok(Attempt {
             message,
             input: input.clone(),
             mcp_origin: origin,
             receipt: None,
             acknowledged: false,
-        });
-        self.save(next)?;
-        Ok(input)
+        })
     }
 
     pub fn accept(&mut self, input: &str, receipt: Receipt) -> Result<()> {
@@ -1134,7 +1313,9 @@ impl Ledger {
         let mut next = self.record.clone();
         let attempt = next
             .attempt
-            .as_mut()
+            .iter_mut()
+            .chain(next.steering.iter_mut())
+            .find(|attempt| attempt.input == input)
             .context("provider receipt has no prepared input")?;
         ensure!(
             attempt.input == input,
@@ -1152,7 +1333,9 @@ impl Ledger {
         let mut next = self.record.clone();
         let attempt = next
             .attempt
-            .as_mut()
+            .iter_mut()
+            .chain(next.steering.iter_mut())
+            .find(|attempt| attempt.message == message)
             .context("queue acknowledgement has no prepared input")?;
         ensure!(
             attempt.message == message && attempt.receipt.is_some(),
@@ -1162,7 +1345,51 @@ impl Ledger {
         self.save(next)
     }
 
+    pub fn finish_steering(&mut self) -> Result<()> {
+        let mut next = self.record.clone();
+        let attempt = next
+            .steering
+            .take()
+            .context("no steering input to finish")?;
+        ensure!(
+            attempt.acknowledged,
+            "steering input still needs acknowledgement"
+        );
+        let receipt = attempt
+            .receipt
+            .context("steering input has no provider receipt")?;
+        next.completed.push_back(Completed {
+            message: attempt.message,
+            receipt,
+        });
+        while next.completed.len() > RETAINED_RECEIPTS {
+            next.completed.pop_front();
+        }
+        self.save(next)
+    }
+
+    /// Called only for a definitive precondition rejection of turn/steer.
+    /// Transport failures and unknown provider errors retain the attempt.
+    pub fn reject_steering(&mut self) -> Result<()> {
+        let pending = self
+            .record
+            .steering
+            .as_ref()
+            .context("no steering input to reject")?;
+        ensure!(
+            pending.receipt.is_none() && !pending.acknowledged,
+            "accepted steering cannot be rejected"
+        );
+        let mut next = self.record.clone();
+        next.steering = None;
+        self.save(next)
+    }
+
     pub fn finish(&mut self, turn: &str) -> Result<()> {
+        ensure!(
+            self.record.steering.is_none(),
+            "steering input still needs receipt recovery"
+        );
         ensure!(
             self.record.mcp_answers.iter().all(|a| a.acknowledged),
             "MCP answer still needs queue acknowledgement"

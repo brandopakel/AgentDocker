@@ -32,14 +32,14 @@ impl Daemon {
     /// of the event stream sees the exit before the restart.
     pub(crate) fn consider_restart(self: &Arc<Self>, id: &AgentId, status: &AgentStatus) {
         let record = {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             if state.storage_error.is_some() {
                 return;
             }
             let Some(record) = state.registry.get(id) else {
                 return;
             };
-            if !record.managed || record.container.is_some() {
+            if !record.managed || record.container.is_some() || record.status.is_live() {
                 return;
             }
             if !record.spec.restart.restarts(status, record.restarts) {
@@ -54,9 +54,17 @@ impl Daemon {
                 }
                 return;
             }
-            record.clone()
+            let record = record.clone();
+            if !state.pending_restarts.insert(id.clone()) {
+                return;
+            }
+            record
         };
-        let delay = restart_delay(record.restarts);
+        let elapsed = record
+            .finished_at
+            .and_then(|at| (Utc::now() - at).to_std().ok())
+            .unwrap_or_default();
+        let delay = restart_delay(record.restarts).saturating_sub(elapsed);
         // Weak, not strong. The wait is up to half a minute, and a
         // pending restart must not be the thing keeping a daemon alive
         // — it would hold its SQLite handle and its socket open long
@@ -66,15 +74,78 @@ impl Daemon {
         let id = id.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let Some(daemon) = daemon.upgrade() else {
-                return;
-            };
-            daemon.restart_now(&id, delay).await;
+            let mut refusal_delay = std::time::Duration::from_millis(250);
+            loop {
+                {
+                    let Some(daemon) = daemon.upgrade() else {
+                        return;
+                    };
+                    if daemon.restart_now(&id, delay).await {
+                        let status = {
+                            let mut state = lock(&daemon.state);
+                            state.pending_restarts.remove(&id);
+                            state.registry.get(&id).map(|record| record.status.clone())
+                        };
+                        // A failed spawn can need another policy attempt. A
+                        // running child will arrange its own on durable exit.
+                        if let Some(status) = status {
+                            daemon.consider_restart(&id, &status);
+                        }
+                        return;
+                    }
+                }
+                // A transfer refusal applies nothing. Keep the pending job
+                // for an aborted handover without keeping the daemon alive.
+                tokio::time::sleep(refusal_delay).await;
+                refusal_delay = (refusal_delay * 2).min(std::time::Duration::from_secs(5));
+            }
         });
     }
 
-    /// Start it again, under the same id.
-    async fn restart_now(self: &Arc<Self>, id: &AgentId, waited: std::time::Duration) {
+    /// Reconstruct delayed work from durable exit policy after takeover.
+    /// The pending set also makes repeated maintenance scans harmless.
+    pub(crate) fn resume_restarts(self: &Arc<Self>) {
+        let candidates: Vec<_> = {
+            let state = lock(&self.state);
+            if state.storage_error.is_some() || state.fenced() {
+                return;
+            }
+            state
+                .registry
+                .all()
+                .filter(|record| {
+                    record.managed
+                        && record.container.is_none()
+                        && !record.status.is_live()
+                        && record
+                            .spec
+                            .restart
+                            .restarts(&record.status, record.restarts)
+                        && !state.pending_restarts.contains(&record.id)
+                })
+                .map(|record| (record.id.clone(), record.status.clone()))
+                .collect()
+        };
+        for (id, status) in candidates {
+            self.consider_restart(&id, &status);
+        }
+    }
+
+    /// Start it again, under the same id. False means a transfer refused
+    /// admission and the pending task must retry; true finishes this attempt.
+    async fn restart_now(self: &Arc<Self>, id: &AgentId, waited: std::time::Duration) -> bool {
+        let _admitted = match self.admit_background() {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                return !matches!(
+                    *error,
+                    Response::Error {
+                        code: ErrorCode::Transferring,
+                        ..
+                    }
+                );
+            }
+        };
         // Re-read under the lock: the wait is long enough for somebody
         // to have stopped it, removed it, or started it themselves.
         let record = {
@@ -90,7 +161,7 @@ impl Daemon {
                 {
                     record.clone()
                 }
-                _ => return,
+                _ => return true,
             }
         };
         let attempt = record.restarts + 1;
@@ -138,10 +209,10 @@ impl Daemon {
                             Utc::now(),
                         );
                         event.seq = state.next_seq;
-                        state.persist("restart completion", |store| {
+                        let committed = state.persist("restart completion", |store| {
                             store.agent_transition(&running, &event)
                         });
-                        if state.storage_error.is_none() {
+                        if committed == Persisted::Committed {
                             *state
                                 .registry
                                 .get_mut(id)
@@ -181,14 +252,14 @@ impl Daemon {
                 {
                     let mut state = lock(&self.state);
                     if state.storage_error.is_some() {
-                        return;
+                        return true;
                     }
                     let Some(mut failed) = state.registry.get(id).cloned().filter(|current| {
                         !current.status.is_live()
                             && current.spec.restart == record.spec.restart
                             && current.restarts == record.restarts
                     }) else {
-                        return;
+                        return true;
                     };
                     failed.restarts = attempt;
                     failed.status = status.clone();
@@ -201,11 +272,11 @@ impl Daemon {
                         Utc::now(),
                     );
                     event.seq = state.next_seq;
-                    state.persist("failed restart", |store| {
+                    let committed = state.persist("failed restart", |store| {
                         store.agent_transition(&failed, &event)
                     });
-                    if state.storage_error.is_some() {
-                        return;
+                    if committed != Persisted::Committed {
+                        return true;
                     }
                     *state
                         .registry
@@ -214,31 +285,143 @@ impl Daemon {
                     state.next_seq += 1;
                     let _ = state.events.send(event);
                 }
-                self.consider_restart(id, &status);
             }
         }
+        true
     }
 
     /// An agent stopped on purpose stays stopped. Clearing the policy on
     /// the record says so where a reader will find it, rather than in a
     /// flag only the daemon can see.
-    pub(super) fn clear_restart(self: &Arc<Self>, id: &AgentId) {
+    /// Whether the policy is cleared (already, or by a committed write):
+    /// a stop must not go on when the policy that would start the agent
+    /// again is still in force on disk.
+    pub(super) fn clear_restart(self: &Arc<Self>, id: &AgentId) -> bool {
         let mut state = lock(&self.state);
-        let Some(record) = state.registry.get_mut(id) else {
-            return;
+        let Some(record) = state.registry.get(id) else {
+            return true;
         };
         if record.spec.restart.is_no() {
-            return;
+            return true;
         }
+        // Disk first, memory on commit: a write that did not land leaves
+        // the policy as it was, in both places.
+        let mut record = record.clone();
         record.spec.restart = agentdocker_core::RestartPolicy::No;
-        let record = record.clone();
-        state.persist("agent", |store| store.upsert_agent(&record));
+        let mut event = Event::new(
+            EventKind::AgentRestartCleared {
+                agent: record.id.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        let committed = state.persist("restart policy", |store| {
+            store.agent_transition(&record, &event)
+        });
+        if committed == Persisted::Committed {
+            if let Some(stored) = state.registry.get_mut(id) {
+                stored.spec.restart = agentdocker_core::RestartPolicy::No;
+            }
+            state.next_seq += 1;
+            let _ = state.events.send(event);
+            true
+        } else {
+            false
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restart_due_during_transfer_runs_once_after_abort_or_takeover() {
+        for takeover in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("state");
+            let predecessor =
+                Arc::new(Daemon::open(home.clone(), dir.path().join("sock")).unwrap());
+            let record = {
+                let mut record = AgentRecord::new(
+                    AgentSpec {
+                        name: "delayed-restart".into(),
+                        command: vec!["sleep".into(), "30".into()],
+                        restart: agentdocker_core::RestartPolicy::OnFailure { max: 1 },
+                        ..Default::default()
+                    },
+                    true,
+                    Utc::now(),
+                );
+                record.status = AgentStatus::Exited { code: Some(1) };
+                record.finished_at = Some(Utc::now());
+                assert!(matches!(
+                    lock(&predecessor.state).insert_record(record.clone()),
+                    Response::Agent { .. }
+                ));
+                record
+            };
+            predecessor.consider_restart(&record.id, &record.status);
+            let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+            // Let the backoff expire while admission is fenced.
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            assert_eq!(
+                lock(&predecessor.state)
+                    .registry
+                    .get(&record.id)
+                    .unwrap()
+                    .restarts,
+                0
+            );
+            assert!(
+                lock(&predecessor.state)
+                    .pending_restarts
+                    .contains(&record.id)
+            );
+            let serving = if takeover {
+                let successor =
+                    Arc::new(Daemon::open_pending(home, dir.path().join("next.sock")).unwrap());
+                successor.accept_transfer(&transfer.id).unwrap();
+                assert!(!predecessor.abort_transfer("already accepted"));
+                drop(predecessor);
+                successor
+            } else {
+                assert!(predecessor.abort_transfer("candidate refused"));
+                predecessor
+            };
+            for _ in 0..3 {
+                serving.resume_restarts();
+            }
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let ready = {
+                        let state = lock(&serving.state);
+                        state
+                            .registry
+                            .get(&record.id)
+                            .is_some_and(|a| a.status == AgentStatus::Running && a.restarts == 1)
+                    };
+                    if ready {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            // Reap owned work even if the assertion above would have failed.
+            serving.clear_restart(&record.id);
+            serving.stop_all().await;
+            result.expect("the scheduled restart must survive the handover");
+            assert_eq!(
+                serving
+                    .recent_events(100)
+                    .iter()
+                    .filter(|event| matches!(event.kind, EventKind::AgentRestarted { .. }))
+                    .count(),
+                1
+            );
+        }
+    }
 
     #[tokio::test]
     async fn automatic_restart_obeys_new_run_policy_before_execution() {

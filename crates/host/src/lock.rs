@@ -20,6 +20,16 @@ pub struct Lock {
     _file: File,
 }
 
+impl Lock {
+    /// The lock as a bare descriptor: `flock` locks travel with the open
+    /// file, so a process that receives this descriptor holds the lock for
+    /// as long as it keeps it open.
+    #[cfg(unix)]
+    pub fn into_fd(self) -> std::os::fd::OwnedFd {
+        self._file.into()
+    }
+}
+
 /// Take the exclusive lock on `path` without waiting. `Ok(None)` means
 /// another process holds it.
 #[cfg(unix)]

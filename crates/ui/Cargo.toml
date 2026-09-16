@@ -38,6 +38,7 @@ tempfile.workspace = true
 accesskit_macos = "0.26.3"
 block2 = "0.6"
 objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString"] }
 objc2-user-notifications = { version = "0.3", features = [
   "UNNotification",

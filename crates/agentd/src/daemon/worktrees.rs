@@ -436,7 +436,7 @@ impl Daemon {
     }
 
     pub(super) async fn integrate(
-        &self,
+        self: &Arc<Self>,
         reference: &str,
         source: String,
         validation: String,
