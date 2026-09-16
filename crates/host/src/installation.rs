@@ -32,7 +32,7 @@ pub fn redirect_managed_launcher() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn launcher_target(executable: &Path, home: Option<&Path>) -> io::Result<Option<PathBuf>> {
     use std::io::Read;
     let Some(binary) = executable.file_name().and_then(|name| name.to_str()) else {
