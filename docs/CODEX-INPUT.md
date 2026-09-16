@@ -199,13 +199,13 @@ older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
 Managed-network requests with an exact host/protocol now use the existing choice
 controls whenever `networkApprovalContext` is present. Optional command and
-folder metadata remain context; absent fields are not invented. The question
+folder metadata remain context; absent fields are not invented. Display controls, including bidi controls and line injection, are refused in these fields before publishing a question. The question
 shows the destination and any supplied access details, and explains that approval
 can cover multiple pending connections to that destination, as the
 [provider contract specifies](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
 Allow selects `accept` for the pending request, never a session or policy grant.
 Private ledger version 9 retains this separate review kind and refuses it in an
-older-version record without rewriting bytes.
+older-version record without rewriting bytes. Restored command records cannot carry a network choice presentation; legacy command records without a presentation remain supported.
 The implementation passed 60 focused input tests and the full 973-Rust/70-Python
 release gate. A private-profile actual Codex trial denied the connection before
 emitting an approval callback; actual managed-network provider, native UI and

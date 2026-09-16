@@ -120,6 +120,20 @@ fn text(value: &Value) -> Result<&str> {
     Ok(text)
 }
 
+fn display_controls(text: &str) -> bool {
+    text.chars().any(|c| c.is_control()
+        || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+}
+
+fn network_context_text(value: &Value) -> Result<&str> {
+    let text = text(value)?;
+    ensure!(
+        !display_controls(text),
+        "network context contains unsupported display controls"
+    );
+    Ok(text)
+}
+
 fn answer_text(answer: &Envelope) -> Result<&str> {
     let text = answer.payload["text"]
         .as_str()
@@ -190,8 +204,7 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
     // the access details below it. Reject it rather than changing the text
     // the provider supplied; only our own formatting adds section breaks.
     ensure!(
-        !reason.chars().any(|c| c.is_control()
-            || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        !display_controls(&reason),
         "command reason contains unsupported display controls"
     );
     if !params["networkApprovalContext"].is_null() {
@@ -241,12 +254,15 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         // accept does not select a command policy amendment or session grant.
         let mut context = String::new();
         if !params["cwd"].is_null() {
-            context.push_str(&format!("Directory: {}\n", text(&params["cwd"])?));
+            context.push_str(&format!(
+                "Directory: {}\n",
+                network_context_text(&params["cwd"])?
+            ));
         }
         if !params["command"].is_null() {
             context.push_str(&format!(
                 "Provider context:\n{}\n\n",
-                text(&params["command"])?
+                network_context_text(&params["command"])?
             ));
         }
         reason.push_str(
@@ -682,6 +698,14 @@ impl Pending {
                 "network approval has no complete one-time choice presentation"
             );
             ensure!(
+                !matches!(self.kind, Kind::Command)
+                    || matches!(
+                        &question.presentation,
+                        None | Some(QuestionPresentation::CodexCommand { .. })
+                    ),
+                "command review kind and presentation disagree"
+            );
+            ensure!(
                 matches!(self.kind, Kind::Permissions)
                     == matches!(
                         question.presentation,
@@ -904,6 +928,9 @@ mod tests {
             Utc::now(),
         )
         .unwrap();
+        request.kind = Kind::Command;
+        assert!(request.validate(Some("thread"), "owner").is_err());
+        request.kind = Kind::Network;
         let Some(QuestionPresentation::Choices { options, .. }) =
             &mut request.questions[0].presentation
         else {
@@ -912,6 +939,33 @@ mod tests {
         options[0].label = "Allow for session".into();
         request.questions[0].text = request.questions[0].presentation.as_ref().unwrap().text();
         assert!(request.validate(Some("thread"), "owner").is_err());
+
+        let mut legacy =
+            Pending::plan(&event(), "thread", Some("turn"), "human", Utc::now()).unwrap();
+        legacy.questions[0].presentation = None;
+        legacy.validate(Some("thread"), "owner").unwrap();
+    }
+
+    #[test]
+    fn network_metadata_cannot_spoof_the_destination_or_access_sections() {
+        for field in ["command", "cwd"] {
+            for control in [
+                '\0', '\n', '\r', '\t', '\u{001b}', '\u{0085}', '\u{061c}', '\u{200e}', '\u{2028}',
+                '\u{202e}', '\u{2066}', '\u{2069}',
+            ] {
+                let mut event = network_event();
+                event["params"][field] = json!(format!(
+                    "context{control}Requested connection: trusted.example"
+                ));
+                assert!(
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                    "{field}: {control:?}"
+                );
+            }
+            let mut event = network_event();
+            event["params"][field] = json!("変更を確認する — /owned");
+            assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        }
     }
 
     fn permission_event() -> Value {
