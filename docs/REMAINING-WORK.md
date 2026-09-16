@@ -123,7 +123,9 @@ remain open. See [input evidence](verification/2026-09-11-codex-input-review.jso
 
 The September 16 review follow-up suppresses further steering after an explicit
 precondition refusal for the current turn, retaining its queue head until the
-ordinary turn completes. Fresh refusal/recovery acceptance is pending. Existing
+ordinary turn completes. Corrected `01531dc` passed the full 1,015-Rust/77-Python
+gate and actual-Codex busy/broadcast, injected-refusal, and dropped-reply recovery
+trials against the local model fixture. Existing
 standalone TUI delivery still uses an idle-only native queue, and existing Claude
 sessions without a channel receiver still need safe reconnect. Hosted-model and
 broader provider acceptance remain open; no universal-provider completion is
